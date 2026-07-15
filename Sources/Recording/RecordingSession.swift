@@ -9,7 +9,7 @@ import OSLog
 /// Raw capture lives only under `NSTemporaryDirectory()`; it is deleted immediately after a
 /// transcript is successfully written. `sweepOrphans()` clears anything a crash left behind.
 final class RecordingSession {
-    enum State { case idle, recording, processing }
+    enum State { case idle, starting, recording, processing }
 
     static let sessionPrefix = "CallTranscriber-session-"
 
@@ -61,7 +61,15 @@ final class RecordingSession {
 
     func start(screenSource: ScreenSource) async throws {
         guard state == .idle else { return }
-        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        // Transitional state before the first await: the idle guard is check-then-act, so a
+        // second start() arriving mid-await must see "not idle".
+        state = .starting
+        do {
+            try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        } catch {
+            state = .idle
+            throw error
+        }
 
         activityToken = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .idleSystemSleepDisabled],
@@ -87,6 +95,7 @@ final class RecordingSession {
         } catch {
             mic.stop()
             endActivity()
+            state = .idle
             throw error
         }
         micCapture = mic
@@ -126,7 +135,7 @@ final class RecordingSession {
                     return
                 }
                 self.liveTranscriber = live
-                self.micCapture?.onBuffer = { [weak live] buffer in live?.feed(buffer) }
+                self.micCapture?.onBuffer = live.feed
             }
         }
     }
