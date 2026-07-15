@@ -9,11 +9,13 @@ final class LiveTranscriber {
     /// non-nil only when a line was finalized, so volatile ticks don't republish the whole array.
     var onUpdate: (@MainActor (_ finalized: [String]?, _ partial: String) -> Void)?
 
+    /// Feed for captured mic buffers, built once start() succeeds. It captures the analyzer
+    /// plumbing immutably, so the audio thread never reads this object's mutable state.
+    private(set) var feed: ((AVAudioPCMBuffer) -> Void)?
+
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
     private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
-    private var analyzerFormat: AVAudioFormat?
-    private var converter: AVAudioConverter?
     private var resultsTask: Task<Void, Never>?
 
     private var finalized: [String] = []
@@ -28,7 +30,10 @@ final class LiveTranscriber {
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
             try await request.downloadAndInstall()
         }
-        analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
+        guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
+            throw NSError(domain: "CallTranscriber", code: 203,
+                          userInfo: [NSLocalizedDescriptionKey: "No compatible audio format for live transcription."])
+        }
 
         let (sequence, builder) = AsyncStream<AnalyzerInput>.makeStream()
         inputBuilder = builder
@@ -43,6 +48,8 @@ final class LiveTranscriber {
             inputBuilder = nil
             throw error
         }
+
+        feed = Self.makeFeed(format: analyzerFormat, input: builder)
 
         // Created only after the analyzer is running: if start() threw, this task would retain
         // self and block in `transcriber.results` permanently. No audio is fed before start()
@@ -65,23 +72,28 @@ final class LiveTranscriber {
         }
     }
 
-    /// Feed one captured mic buffer (called on the audio thread). Converts to the analyzer's format.
-    func feed(_ buffer: AVAudioPCMBuffer) {
-        guard let analyzerFormat, let inputBuilder else { return }
-        if converter == nil { converter = AVAudioConverter(from: buffer.format, to: analyzerFormat) }
-        guard let converter else { return }
+    /// Builds the audio-thread feed closure: converts each mic buffer to the analyzer's format
+    /// and yields it. `format` and `input` are captured immutably; the lazily-created converter
+    /// is confined to the closure (and therefore to the single audio thread that calls it).
+    private static func makeFeed(format: AVAudioFormat,
+                                 input: AsyncStream<AnalyzerInput>.Continuation) -> (AVAudioPCMBuffer) -> Void {
+        var converter: AVAudioConverter?
+        return { buffer in
+            if converter == nil { converter = AVAudioConverter(from: buffer.format, to: format) }
+            guard let converter else { return }
 
-        let ratio = analyzerFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
-        guard let output = AVAudioPCMBuffer(pcmFormat: analyzerFormat, frameCapacity: capacity) else { return }
+            let ratio = format.sampleRate / buffer.format.sampleRate
+            let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
+            guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return }
 
-        var error: NSError?
-        var fed = false
-        converter.convert(to: output, error: &error) { _, status in
-            if fed { status.pointee = .noDataNow; return nil }
-            fed = true; status.pointee = .haveData; return buffer
+            var error: NSError?
+            var fed = false
+            converter.convert(to: output, error: &error) { _, status in
+                if fed { status.pointee = .noDataNow; return nil }
+                fed = true; status.pointee = .haveData; return buffer
+            }
+            if output.frameLength > 0 { input.yield(AnalyzerInput(buffer: output)) }
         }
-        if output.frameLength > 0 { inputBuilder.yield(AnalyzerInput(buffer: output)) }
     }
 
     func stop() async {
