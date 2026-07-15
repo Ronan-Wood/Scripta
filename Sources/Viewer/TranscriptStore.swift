@@ -86,22 +86,22 @@ enum TranscriptStore {
         guard let split, Frontmatter.hasOwnerMarker(split.frontmatter) else { return nil }
         let frontmatter = split.frontmatter
 
-        func field(_ key: String) -> String {
+        func rawField(_ key: String) -> String {
             for line in frontmatter.split(separator: "\n") {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 if trimmed.hasPrefix("\(key):") {
-                    return String(trimmed.dropFirst(key.count + 1))
-                        .trimmingCharacters(in: CharacterSet(charactersIn: " \"[]"))
+                    return String(trimmed.dropFirst(key.count + 1)).trimmingCharacters(in: .whitespaces)
                 }
             }
             return ""
         }
 
+        func field(_ key: String) -> String {
+            rawField(key).trimmingCharacters(in: CharacterSet(charactersIn: " \"[]"))
+        }
+
         func listField(_ key: String) -> [String] {
-            field(key)
-                .split(separator: ",")
-                .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " \"")) }
-                .filter { !$0.isEmpty }
+            parseList(rawField(key))
         }
 
         return TranscriptMeta(
@@ -113,6 +113,35 @@ enum TranscriptStore {
             participants: listField("participants"),
             tags: listField("tags").filter { $0 != TranscriptWriter.ownerMarker }
         )
+    }
+
+    /// Parses a frontmatter flow list. Quoted items are taken verbatim — a "Last, First" name
+    /// is ONE participant, not two; unquoted values (hand-edited files) fall back to commas.
+    static func parseList(_ raw: String) -> [String] {
+        var value = raw.trimmingCharacters(in: .whitespaces)
+        if value.hasPrefix("[") { value.removeFirst() }
+        if value.hasSuffix("]") { value.removeLast() }
+        guard value.contains("\"") else {
+            return value.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        }
+        var items: [String] = []
+        var current = ""
+        var inQuote = false
+        for ch in value {
+            if ch == "\"" {
+                if inQuote {
+                    let item = current.trimmingCharacters(in: .whitespaces)
+                    if !item.isEmpty { items.append(item) }
+                    current = ""
+                }
+                inQuote.toggle()
+            } else if inQuote {
+                current.append(ch)
+            }
+        }
+        return items
     }
 
     /// First bytes of the file, decoded leniently (a cut mid-character only mangles the tail,
