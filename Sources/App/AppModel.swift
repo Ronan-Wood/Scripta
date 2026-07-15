@@ -33,6 +33,12 @@ final class AppModel: ObservableObject {
     @Published var isPaused = false
     @Published var calls: [TranscriptMeta] = []
 
+    /// True when the current recording captures the mic (so the level meter and live transcript
+    /// are meaningful). False for a system-audio-only conference. Set by MenuController on start.
+    @Published var recordingCapturesMic = true
+    /// Non-nil while recording in a non-default mode (e.g. "Conference · System audio"), for the UI.
+    @Published var recordingModeName: String?
+
     // High-frequency recording surfaces, split out of this object (see M12): observing
     // AppModel must not mean re-rendering at mic-buffer rate.
     let meter = MicMeterModel()
@@ -90,6 +96,7 @@ final class AppModel: ObservableObject {
             clock?.invalidate(); clock = nil
             startedAt = nil; recordingElapsed = 0; meter.level = 0; isPaused = false; pauseStart = nil
             live.finalized = []; live.partial = ""
+            recordingCapturesMic = true; recordingModeName = nil
         }
     }
 

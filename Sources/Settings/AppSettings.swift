@@ -16,6 +16,7 @@ enum AppSettings {
         static let screenCaptureInterval = "screenCaptureInterval"
         static let screenFocus = "screenFocus"
         static let askScreenSourceOnRecord = "askScreenSourceOnRecord"
+        static let defaultRecordingMode = "defaultRecordingMode"
         static let calendarEnabled = "calendarEnabled"
         static let watchedCalendarIDs = "watchedCalendarIDs"
         static let calendarGroups = "calendarGroups"
@@ -120,11 +121,19 @@ enum AppSettings {
         set { defaults.set(newValue.rawValue, forKey: Keys.screenFocus) }
     }
 
-    /// Ask which window/screen to capture each time recording starts. On by default; when off,
-    /// screen context follows the frontmost window without prompting.
+    /// Show the pre-record options prompt (recording mode + screen source) each time recording
+    /// starts. On by default; when off, recording uses `defaultRecordingMode` and, if screen
+    /// context is on, follows the frontmost window without prompting.
     static var askScreenSourceOnRecord: Bool {
         get { defaults.object(forKey: Keys.askScreenSourceOnRecord) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Keys.askScreenSourceOnRecord) }
+    }
+
+    /// The recording mode used when not prompting, and the initial selection in the prompt.
+    /// Updated to whatever was last chosen, so a run of conference recordings stays sticky.
+    static var defaultRecordingMode: RecordingMode {
+        get { RecordingMode(storageValue: defaults.string(forKey: Keys.defaultRecordingMode) ?? "call") }
+        set { defaults.set(newValue.storageValue, forKey: Keys.defaultRecordingMode) }
     }
 
     /// Whether to surface upcoming video-call events in the menu. Off by default (needs

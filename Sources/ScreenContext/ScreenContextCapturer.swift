@@ -16,12 +16,6 @@ enum ScreenSource: Equatable {
     case off                        // no screen context this recording
 }
 
-/// Result of the record-time screen-source prompt.
-enum ScreenChoice {
-    case cancel
-    case source(ScreenSource)
-}
-
 /// Periodically screenshots the frontmost window, OCRs it, deduplicates against the last
 /// kept capture, and retains only meaningfully-new text — timestamped against the session
 /// start. The screenshot image is discarded immediately after OCR; only text is kept.
