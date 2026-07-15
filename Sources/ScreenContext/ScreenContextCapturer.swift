@@ -36,8 +36,20 @@ actor ScreenContextCapturer {
     private var snippets: [ScreenSnippet] = []
     private var loop: Task<Void, Never>?
     private var paused = false
+    // Snippet timestamps must exclude paused time, mirroring how the audio tracks splice
+    // out paused intervals — otherwise post-pause snippets drift late against the transcript.
+    private var pausedAccum: TimeInterval = 0
+    private var pauseBegan: Date?
 
-    func setPaused(_ value: Bool) { paused = value }
+    func setPaused(_ value: Bool) {
+        if value {
+            if pauseBegan == nil { pauseBegan = Date() }
+        } else if let began = pauseBegan {
+            pausedAccum += Date().timeIntervalSince(began)
+            pauseBegan = nil
+        }
+        paused = value
+    }
 
     init(interval: TimeInterval, sessionStart: Date, focus: ScreenFocus, source: ScreenSource) {
         self.interval = interval
@@ -99,7 +111,7 @@ actor ScreenContextCapturer {
             guard let structured = await DocumentReader.read(image, focus: focus) else { return }
             guard let text = deduplicator.consider(structured) else { return }
 
-            let offsetMs = Int(Date().timeIntervalSince(sessionStart) * 1000)
+            let offsetMs = Int((Date().timeIntervalSince(sessionStart) - pausedAccum) * 1000)
             snippets.append(ScreenSnippet(startMs: max(0, offsetMs), text: text))
         } catch {
             // Transient failures (window closed mid-capture, etc.) just skip this tick.

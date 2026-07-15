@@ -27,6 +27,10 @@ final class RecordingSession {
     private var liveTranscriber: LiveTranscriber?
     private var activityToken: NSObjectProtocol?
     private var startedAt = Date()
+    // Paused intervals are spliced out of the audio tracks, so wall-clock duration must
+    // splice them out too or the frontmatter overstates the call.
+    private var pausedAccum: TimeInterval = 0
+    private var pauseBegan: Date?
 
     /// Fired at most once, on the main actor, if system-audio capture dies mid-recording.
     /// The owner should stop the session so the mic track (and partial system track) survive.
@@ -127,8 +131,13 @@ final class RecordingSession {
         micCapture?.isPaused = true
         systemCapture?.setPaused(true)
         await screenCapturer?.setPaused(true)
+        if pauseBegan == nil { pauseBegan = Date() }
     }
     func resume() async {
+        if let began = pauseBegan {
+            pausedAccum += Date().timeIntervalSince(began)
+            pauseBegan = nil
+        }
         micCapture?.isPaused = false
         systemCapture?.setPaused(false)
         await screenCapturer?.setPaused(false)
@@ -159,7 +168,11 @@ final class RecordingSession {
         let youWavURL = self.youWavURL
         let themWavURL = self.themWavURL
         let startedAt = self.startedAt
-        let duration = Date().timeIntervalSince(startedAt)
+        if let began = pauseBegan {   // stopped while paused
+            pausedAccum += Date().timeIntervalSince(began)
+            pauseBegan = nil
+        }
+        let duration = Date().timeIntervalSince(startedAt) - pausedAccum
 
         do {
             // Heavy work (audio conversion + transcription) runs off the main actor.
