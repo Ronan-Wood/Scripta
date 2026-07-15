@@ -10,13 +10,15 @@ enum IndexBuilder {
     /// otherwise old spoken text stays retrievable via search/Ask/MCP with no in-app way to
     /// remove it (the file is also invisible in the viewer).
     static func index(_ url: URL, into store: IndexStore) {
+        // mtime is captured BEFORE reading the content: if the file changes mid-read we store
+        // the older stamp and the next reconcile re-indexes, instead of skipping forever.
+        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate?.timeIntervalSince1970 ?? 0
         guard let meta = TranscriptStore.meta(of: url) else {
             store.remove(path: url.path)
             return
         }
         let content = TranscriptStore.body(of: url)
-        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
-            .contentModificationDate?.timeIntervalSince1970 ?? 0
 
         let transcript = IndexedTranscript(
             path: url.path, title: meta.title, date: meta.date, time: meta.time,
@@ -46,7 +48,7 @@ enum IndexBuilder {
         for url in mdFiles {
             let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate?.timeIntervalSince1970 ?? 0
-            if let known = indexed[url.path], abs(known - mtime) < 1 { continue }
+            if let known = indexed[url.path], abs(known - mtime) < 0.01 { continue }
             index(url, into: store)
         }
     }
