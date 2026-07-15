@@ -45,12 +45,36 @@ struct HomeView: View {
         VStack(spacing: Space.x5) {
             recordCard
             HStack(alignment: .top, spacing: Space.x5) {
-                LiveTranscriptPane().frame(maxWidth: .infinity, maxHeight: .infinity)
+                if model.recordingCapturesMic {
+                    LiveTranscriptPane().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    conferenceNote.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 RelatedCallsPanel().frame(width: 300)
             }
         }
         .padding(Space.x7)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    // Shown in place of the live transcript when a conference records system audio only (no mic
+    // to stream from). The full transcript is still produced on stop.
+    private var conferenceNote: some View {
+        VStack(alignment: .leading, spacing: Space.x3) {
+            SectionHeader(title: model.recordingModeName ?? "Conference")
+            VStack(alignment: .leading, spacing: Space.x2) {
+                Text("Recording the meeting audio.")
+                    .font(CarbonFont.body(15)).foregroundStyle(Carbon.textPrimary)
+                Text("A single source is captured so the room and the stream aren't transcribed twice. The full transcript is written when you stop.")
+                    .font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(Space.x5)
+            .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
+        }
+        .frame(maxHeight: .infinity)
     }
 
     // MARK: - Record
@@ -67,7 +91,12 @@ struct HomeView: View {
                         }
                     }
                     if model.recordingState == .recording {
-                        MicLevelPane()
+                        if model.recordingCapturesMic {
+                            MicLevelPane()
+                        } else {
+                            Text(model.recordingModeName ?? "Recording system audio")
+                                .font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
+                        }
                     } else {
                         Text(statusSubtitle).font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
                     }

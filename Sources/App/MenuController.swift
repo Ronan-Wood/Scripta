@@ -266,28 +266,36 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 return
             }
 
-            // Decide what screen context reads from — optionally asking each time.
+            // Decide the recording mode (Call vs Conference) and what screen context reads from —
+            // optionally asking each time via one pre-record prompt.
+            let mode: RecordingMode
             let screenSource: ScreenSource
-            if AppSettings.screenContextEnabled && AppSettings.askScreenSourceOnRecord {
-                let windows = await ScreenContextCapturer.availableWindows()
-                    .map { ScreenSourcePrompt.WindowOption(id: $0.id, label: $0.label) }
-                switch askScreenSource(windows: windows) {
+            if AppSettings.askScreenSourceOnRecord {
+                let windows = AppSettings.screenContextEnabled
+                    ? await ScreenContextCapturer.availableWindows()
+                        .map { ScreenSourcePrompt.WindowOption(id: $0.id, label: $0.label) }
+                    : []
+                switch askRecordingOptions(windows: windows) {
                 case .cancel: return
-                case .source(let source): screenSource = source
+                case .start(let m, let s): mode = m; screenSource = s
                 }
             } else {
+                mode = AppSettings.defaultRecordingMode
                 screenSource = AppSettings.screenContextEnabled ? .frontmostWindow : .off
             }
+            AppSettings.defaultRecordingMode = mode   // remember the last choice as next time's default
 
             let newSession = RecordingSession()
             newSession.onSystemAudioFailure = { [weak self] error in
                 self?.handleSystemAudioFailure(error, in: newSession)
             }
             do {
-                try await newSession.start(screenSource: screenSource)
+                try await newSession.start(mode: mode, screenSource: screenSource)
                 session = newSession
                 tiedMeeting = meeting
                 recordingStartedAt = Date()
+                AppModel.shared.recordingCapturesMic = mode.capturesMic
+                AppModel.shared.recordingModeName = mode == .call ? nil : mode.displayName
                 uiState = .recording
                 updateIcon()
             } catch {
@@ -402,21 +410,21 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         }
     }
 
-    /// Modal prompt to name a just-finished call and its participants. Runs modally (like the
-    /// app's alerts) so the recording flow resumes only once it's resolved. The window has no
-    /// close button — Save/Cancel are the only exits — so the modal session can't be stranded.
-    /// Modal picker for the screen-capture source, shown as recording starts. Returns the choice
-    /// or `.cancel`. No close button — Cancel/Start are the only exits.
-    private func askScreenSource(windows: [ScreenSourcePrompt.WindowOption]) -> ScreenChoice {
-        var result: ScreenChoice = .cancel
+    /// Modal pre-record prompt for the recording mode (Call/Conference) and screen source, shown
+    /// as recording starts. Returns the choice or `.cancel`. No close button — Cancel/Start are
+    /// the only exits, so the modal session can't be stranded.
+    private func askRecordingOptions(windows: [ScreenSourcePrompt.WindowOption]) -> RecordingChoice {
+        var result: RecordingChoice = .cancel
         var window: NSWindow!
-        let view = ScreenSourcePrompt(windows: windows) { choice in
+        let view = ScreenSourcePrompt(windows: windows,
+                                      screenEnabled: AppSettings.screenContextEnabled,
+                                      initialMode: AppSettings.defaultRecordingMode) { choice in
             result = choice
             NSApp.stopModal()
             window.close()
         }
         window = NSWindow(contentViewController: NSHostingController(rootView: view))
-        window.title = "Screen Context"
+        window.title = "Recording Options"
         window.styleMask = [.titled]
         window.isReleasedWhenClosed = false
         window.center()
@@ -460,7 +468,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         window.center()
         NSApp.activate(ignoringOtherApps: true)
         NSApp.runModal(for: window)
-        window.contentViewController = nil   // same cycle as askScreenSource
+        window.contentViewController = nil   // same cycle as askRecordingOptions
     }
 
     private func presentAlert(title: String, message: String) {

@@ -18,6 +18,7 @@ struct SettingsView: View {
     @State private var captureInterval: Int = AppSettings.screenCaptureInterval
     @State private var screenFocus: ScreenFocus = AppSettings.screenFocus
     @State private var askScreenSource: Bool = AppSettings.askScreenSourceOnRecord
+    @State private var defaultMode: String = AppSettings.defaultRecordingMode.storageValue
     @State private var calendarEnabled: Bool = AppSettings.calendarEnabled
     @State private var calendarAuthorized: Bool = CalendarWatcher.shared.isAuthorized
     @State private var calendars: [EKCalendar] = []
@@ -177,6 +178,27 @@ struct SettingsView: View {
             }
 
             Section {
+                Picker("Default mode", selection: $defaultMode) {
+                    Text("Call").tag("call")
+                    Text("Conference · System audio").tag("conference-system")
+                    Text("Conference · Microphone").tag("conference-microphone")
+                }
+                .onChange(of: defaultMode) { _, newValue in
+                    AppSettings.defaultRecordingMode = RecordingMode(storageValue: newValue)
+                }
+                Toggle("Choose mode & screen before each recording", isOn: $askScreenSource)
+                    .onChange(of: askScreenSource) { _, newValue in
+                        AppSettings.askScreenSourceOnRecord = newValue
+                    }
+            } header: {
+                Text("Recording")
+            } footer: {
+                Text("Call records both sides and labels You/Them. Conference records a single source — use it when you're both in the room and joined online, so the meeting isn't transcribed twice. With the prompt off, new recordings just use the default mode.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 Toggle("Capture screen context", isOn: $screenEnabled)
                     .onChange(of: screenEnabled) { _, newValue in
                         AppSettings.screenContextEnabled = newValue
@@ -198,10 +220,6 @@ struct SettingsView: View {
                     .onChange(of: screenFocus) { _, newValue in
                         AppSettings.screenFocus = newValue
                     }
-                    Toggle("Ask what to capture each recording", isOn: $askScreenSource)
-                        .onChange(of: askScreenSource) { _, newValue in
-                            AppSettings.askScreenSourceOnRecord = newValue
-                        }
                 }
             } header: {
                 Text("Screen Context")

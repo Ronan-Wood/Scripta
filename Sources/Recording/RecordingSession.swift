@@ -100,7 +100,7 @@ final class RecordingSession {
         return sr > 0 ? Double(file.length) / sr : 0
     }
 
-    func start(screenSource: ScreenSource) async throws {
+    func start(mode: RecordingMode, screenSource: ScreenSource) async throws {
         guard state == .idle else { return }
         // Transitional state before the first await: the idle guard is check-then-act, so a
         // second start() arriving mid-await must see "not idle".
@@ -119,22 +119,33 @@ final class RecordingSession {
 
         startedAt = Date()
 
-        let mic = MicrophoneCapture(outputURL: micURL)
-        mic.onLevel = { level in
-            Task { @MainActor in AppModel.shared.meter.level = min(1, level) }
+        // Conference mode captures a single source; a call captures both. Capturing only one
+        // track is what stops a hybrid room being transcribed twice — and the merge step below
+        // leaves a single track unlabeled, which is exactly what a conference should be.
+        var mic: MicrophoneCapture?
+        if mode.capturesMic {
+            let m = MicrophoneCapture(outputURL: micURL)
+            m.onLevel = { level in
+                Task { @MainActor in AppModel.shared.meter.level = min(1, level) }
+            }
+            mic = m
         }
 
-        let system = SystemAudioCapture(outputURL: systemURL)
-        system.onError = { [weak self] error in
-            guard let self else { return }
-            Task { @MainActor in self.onSystemAudioFailure?(error) }
+        var system: SystemAudioCapture?
+        if mode.capturesSystem {
+            let s = SystemAudioCapture(outputURL: systemURL)
+            s.onError = { [weak self] error in
+                guard let self else { return }
+                Task { @MainActor in self.onSystemAudioFailure?(error) }
+            }
+            system = s
         }
 
         do {
-            try mic.start()
-            try await system.start()
+            try mic?.start()
+            try await system?.start()
         } catch {
-            mic.stop()
+            mic?.stop()
             endActivity()
             state = .idle
             throw error
@@ -158,7 +169,8 @@ final class RecordingSession {
         // Live transcript from the mic — best-effort, brought up in the background AFTER capture
         // is rolling: its setup can include a model download (first use per locale), which must
         // never delay the recording itself. The task is cancelled by stop() if it loses the race.
-        if AppSettings.liveTranscriptionEnabled {
+        // Needs the mic track, so it's skipped in a system-audio-only conference.
+        if mode.capturesMic, AppSettings.liveTranscriptionEnabled {
             let live = LiveTranscriber()
             live.onUpdate = { finalized, partial in
                 if let finalized { AppModel.shared.live.finalized = finalized }
