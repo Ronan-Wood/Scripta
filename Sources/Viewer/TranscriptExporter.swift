@@ -74,7 +74,7 @@ enum TranscriptExporter {
     }
 
     /// Renders the transcript to a paginated PDF (US Letter) with no print panel.
-    static func exportPDF(_ meta: TranscriptMeta, to url: URL) {
+    static func exportPDF(_ meta: TranscriptMeta, to url: URL) throws {
         let attr = attributed(meta)
         let margin: CGFloat = 54
         let pageWidth: CGFloat = 612, pageHeight: CGFloat = 792
@@ -100,7 +100,10 @@ enum TranscriptExporter {
         let op = NSPrintOperation(view: textView, printInfo: info)
         op.showsPrintPanel = false
         op.showsProgressPanel = false
-        op.run()
+        guard op.run() else {
+            throw NSError(domain: "CallTranscriber", code: 400,
+                          userInfo: [NSLocalizedDescriptionKey: "The PDF could not be written to \(url.lastPathComponent)."])
+        }
     }
 
     // MARK: - Save panel helper

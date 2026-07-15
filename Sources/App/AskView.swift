@@ -3,7 +3,7 @@ import SwiftUI
 /// Private, on-device chat over the user's calls. Retrieval + Foundation Models, cited to source
 /// calls. Everything stays local.
 struct AskView: View {
-    @StateObject private var ask = AskModel()
+    @ObservedObject private var ask = AppModel.shared.ask
     @ObservedObject private var app = AppModel.shared
 
     var body: some View {

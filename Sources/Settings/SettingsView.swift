@@ -108,7 +108,10 @@ struct SettingsView: View {
                 Toggle("Show in Dock", isOn: $showInDock)
                     .onChange(of: showInDock) { _, newValue in
                         AppSettings.showInDock = newValue
-                        NSApp.setActivationPolicy(newValue ? .regular : .accessory)
+                        // Only promote here. This toggle lives inside the hub, so demoting to
+                        // .accessory now would deactivate the very window the user is in —
+                        // the hub's windowWillClose applies the preference on close.
+                        if newValue { NSApp.setActivationPolicy(.regular) }
                     }
                 Toggle("Global ⌥⌘R to start/stop recording", isOn: $globalHotkey)
                     .onChange(of: globalHotkey) { _, newValue in
