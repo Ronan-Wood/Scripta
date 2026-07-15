@@ -17,9 +17,15 @@ struct TranscriptDetailsEditor: View {
     init(url: URL, title: String, participants: [String], tags: [String], onDone: @escaping (_ saved: Bool) -> Void) {
         self.url = url
         _title = State(initialValue: title)
-        _participants = State(initialValue: participants.joined(separator: ", "))
-        _tags = State(initialValue: tags.joined(separator: ", "))
+        _participants = State(initialValue: Self.joined(participants))
+        _tags = State(initialValue: Self.joined(tags))
         self.onDone = onDone
+    }
+
+    /// Comma-joined normally; semicolon-joined when any item itself contains a comma
+    /// ("Last, First" Exchange attendees), so the round-trip keeps names whole.
+    private static func joined(_ items: [String]) -> String {
+        items.contains { $0.contains(",") } ? items.joined(separator: "; ") : items.joined(separator: ", ")
     }
 
     var body: some View {
@@ -36,7 +42,7 @@ struct TranscriptDetailsEditor: View {
                 Text("Participants").font(.caption).foregroundStyle(.secondary)
                 TextField("e.g. Chris Dempsey, Jane Doe", text: $participants)
                     .textFieldStyle(.roundedBorder)
-                Text("Separate names with commas — used for “calls with …” search.")
+                Text("Separate names with commas — or semicolons if a name contains a comma. Used for “calls with …” search.")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
 
@@ -67,7 +73,8 @@ struct TranscriptDetailsEditor: View {
 
     private func save() {
         func list(_ s: String) -> [String] {
-            s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            let separator: Character = s.contains(";") ? ";" : ","
+            return s.split(separator: separator).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         }
         do {
             try TranscriptMetadataEditor.update(url: url, title: title,
