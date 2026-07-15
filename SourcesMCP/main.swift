@@ -28,30 +28,69 @@ struct Meta {
     let participants, tags: [String]
 }
 
-func frontmatterField(_ frontmatter: String, _ key: String) -> String {
+/// Splits on delimiter LINES (`---` alone on a line), mirroring the app's Frontmatter helper —
+/// a `---` inside a title or the body (Screen Context dividers) must not truncate parsing.
+func splitFrontmatter(_ content: String) -> (frontmatter: String, body: String)? {
+    var lines = content.components(separatedBy: "\n")[...]
+    guard lines.popFirst()?.trimmingCharacters(in: .whitespaces) == "---" else { return nil }
+    guard let close = lines.firstIndex(where: {
+        let t = $0.trimmingCharacters(in: .whitespaces)
+        return t == "---" || t == "..."
+    }) else { return nil }
+    return (lines[..<close].joined(separator: "\n"), lines[(close + 1)...].joined(separator: "\n"))
+}
+
+func rawFrontmatterValue(_ frontmatter: String, _ key: String) -> String {
     for line in frontmatter.split(separator: "\n") {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         if trimmed.hasPrefix("\(key):") {
-            return String(trimmed.dropFirst(key.count + 1))
-                .trimmingCharacters(in: CharacterSet(charactersIn: " \"[]"))
+            return String(trimmed.dropFirst(key.count + 1)).trimmingCharacters(in: .whitespaces)
         }
     }
     return ""
 }
 
+func frontmatterField(_ frontmatter: String, _ key: String) -> String {
+    rawFrontmatterValue(frontmatter, key).trimmingCharacters(in: CharacterSet(charactersIn: " \"[]"))
+}
+
+/// Quoted items are taken verbatim — a "Last, First" name is ONE participant, not two;
+/// unquoted values fall back to comma-splitting. Mirrors the app's TranscriptStore.parseList.
 func frontmatterList(_ frontmatter: String, _ key: String) -> [String] {
-    frontmatterField(frontmatter, key)
-        .split(separator: ",")
-        .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " \"")) }
-        .filter { !$0.isEmpty }
+    var value = rawFrontmatterValue(frontmatter, key)
+    if value.hasPrefix("[") { value.removeFirst() }
+    if value.hasSuffix("]") { value.removeLast() }
+    guard value.contains("\"") else {
+        return value.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+    var items: [String] = []
+    var current = ""
+    var inQuote = false
+    for ch in value {
+        if ch == "\"" {
+            if inQuote {
+                let item = current.trimmingCharacters(in: .whitespaces)
+                if !item.isEmpty { items.append(item) }
+                current = ""
+            }
+            inQuote.toggle()
+        } else if inQuote {
+            current.append(ch)
+        }
+    }
+    return items
 }
 
 func parseMeta(_ url: URL) -> Meta? {
-    guard let content = try? String(contentsOf: url, encoding: .utf8), content.hasPrefix("---") else { return nil }
-    let sections = content.components(separatedBy: "---")
-    guard sections.count >= 3 else { return nil }
-    let fm = sections[1]
-    guard fm.contains("app: \(ownerMarker)") else { return nil }   // only app-authored files
+    guard let content = try? String(contentsOf: url, encoding: .utf8),
+          let split = splitFrontmatter(content) else { return nil }
+    let fm = split.frontmatter
+    // Only app-authored files: the marker must sit on its own line inside the frontmatter.
+    guard fm.components(separatedBy: "\n").contains(where: {
+        $0.trimmingCharacters(in: .whitespaces) == "app: \(ownerMarker)"
+    }) else { return nil }
     return Meta(
         url: url,
         title: frontmatterField(fm, "title"),
@@ -64,10 +103,7 @@ func parseMeta(_ url: URL) -> Meta? {
 }
 
 func bodyText(_ content: String) -> String {
-    guard content.hasPrefix("---") else { return content }
-    let sections = content.components(separatedBy: "---")
-    guard sections.count >= 3 else { return content }
-    return sections.dropFirst(2).joined(separator: "---")
+    splitFrontmatter(content)?.body ?? content
 }
 
 /// Extracts the "## Summary" section, if present.
@@ -97,8 +133,10 @@ func allTranscripts() -> [Meta] {
 /// Resolves a client-provided path, but only if it's an app-authored transcript inside the
 /// output folder — so the tool can never be used to read arbitrary files.
 func safeTranscript(at path: String) -> Meta? {
-    let folder = outputFolder().standardizedFileURL
-    let url = URL(fileURLWithPath: path).standardizedFileURL
+    // Resolve symlinks on BOTH sides: a symlinked .md dropped inside the output folder must
+    // not read through to a file elsewhere (SPEC containment invariant).
+    let folder = outputFolder().standardizedFileURL.resolvingSymlinksInPath()
+    let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
     guard url.deletingLastPathComponent().path == folder.path else { return nil }
     return parseMeta(url)
 }
@@ -208,7 +246,8 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
         }
         sqlite3_finalize(stmt); stmt = nil
     }
-    return hits
+    // Both queries are individually capped, so the fused list can reach 2× limit — trim.
+    return Array(hits.prefix(max(1, limit)))
 }
 
 /// Per-value counts from a newline-joined column (participants or tags), most-frequent first.
