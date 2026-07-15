@@ -26,6 +26,19 @@ final class CalendarWatcher {
 
     private let store = EKEventStore()
 
+    // Synchronous EventKit fetches are not cheap and the dashboard asks repeatedly per pass —
+    // cache the 12h window briefly and drop it whenever the event store reports a change.
+    private var cached: (stamp: Date, calls: [UpcomingCall])?
+    private let cacheWindow: TimeInterval = 30
+
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: .EKEventStoreChanged, object: store, queue: .main
+        ) { [weak self] _ in
+            self?.cached = nil
+        }
+    }
+
     var isAuthorized: Bool {
         EKEventStore.authorizationStatus(for: .event) == .fullAccess
     }
@@ -44,13 +57,27 @@ final class CalendarWatcher {
         }
     }
 
-    /// Upcoming events within the next `hours` that carry a Zoom/Teams/Meet link, from the
-    /// watched calendars (all, if none are explicitly chosen).
+    /// Upcoming events within the next `hours` (max 12) that carry a Zoom/Teams/Meet link, from
+    /// the watched calendars (all, if none are explicitly chosen). Served from the cached 12h
+    /// fetch when fresh; narrower windows filter the cache.
     func upcomingCalls(within hours: Int = 12) -> [UpcomingCall] {
         guard isAuthorized else { return [] }
 
         let now = Date()
-        let end = now.addingTimeInterval(TimeInterval(hours) * 3600)
+        let calls: [UpcomingCall]
+        if let cached, now.timeIntervalSince(cached.stamp) < cacheWindow {
+            calls = cached.calls
+        } else {
+            calls = fetchUpcomingCalls(from: now)
+            cached = (now, calls)
+        }
+
+        let end = now.addingTimeInterval(TimeInterval(min(hours, 12)) * 3600)
+        return calls.filter { $0.start >= now && $0.start <= end }
+    }
+
+    private func fetchUpcomingCalls(from now: Date) -> [UpcomingCall] {
+        let end = now.addingTimeInterval(12 * 3600)
 
         let watched = Set(AppSettings.watchedCalendarIDs)
         let all = store.calendars(for: .event)
