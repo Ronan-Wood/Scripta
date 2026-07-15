@@ -64,19 +64,24 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         HotKeyManager.shared.onTrigger = { [weak self] in self?.toggleRecording() }
         HotKeyManager.shared.setEnabled(AppSettings.globalHotkeyEnabled)
 
-        // Show the running time next to the menu-bar icon while recording.
+        // Show the running time next to the menu-bar icon while recording. DispatchQueue, not
+        // RunLoop: RunLoop.main delivery pauses in the default mode while the menu is held open,
+        // freezing the timer text.
         AppModel.shared.$recordingElapsed
             .combineLatest(AppModel.shared.$recordingState)
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _, state in
                 self?.statusItem.button?.title = state == .recording ? " \(AppModel.shared.elapsedLabel)" : ""
             }
             .store(in: &cancellables)
 
-        // Refresh the upcoming-call proximity badge periodically.
-        proximityTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        // Refresh the upcoming-call proximity badge periodically (.common so it ticks while
+        // the status menu is open).
+        let proximity = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.updateIcon() }
         }
+        RunLoop.main.add(proximity, forMode: .common)
+        proximityTimer = proximity
     }
 
     // MARK: - Icon state
