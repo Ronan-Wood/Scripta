@@ -10,7 +10,9 @@ import AVFoundation
 ///
 /// v1 limitations (acceptable for transcription, noted for later):
 /// - Both tracks are treated as starting at t=0; sub-100ms start skew between them is ignored.
-/// - The converted track is held in memory before writing (~115 MB per recorded hour).
+///
+/// Conversion streams the source twice (peak pass, then gain-applied write) so memory stays
+/// O(1 second of audio) regardless of recording length.
 enum AudioConverter {
     private static let targetSampleRate = 16_000.0
     private static let targetPeak: Float = 0.7
@@ -27,36 +29,52 @@ enum AudioConverter {
                           userInfo: [NSLocalizedDescriptionKey: "Could not create the target audio format."])
         }
 
-        var samples = try loadAsMono16k(url: inputURL, target: target)
-        let sourcePeak = peak(of: samples)
+        // Pass 1: peak only.
+        var sourcePeak: Float = 0
+        try streamAsMono16k(url: inputURL, target: target) { buffer in
+            guard let channel = buffer.floatChannelData else { return }
+            for i in 0..<Int(buffer.frameLength) {
+                let magnitude = abs(channel[0][i])
+                if magnitude > sourcePeak { sourcePeak = magnitude }
+            }
+        }
         guard sourcePeak > silenceFloor else { return 0 }
 
+        // Pass 2: re-convert, apply gain in place, write.
         let gain = targetPeak / sourcePeak
-        for i in samples.indices { samples[i] *= gain }
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: targetSampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
+        let file = try AVAudioFile(forWriting: outputURL, settings: settings)
+        var writeError: Error?
+        try streamAsMono16k(url: inputURL, target: target) { buffer in
+            guard writeError == nil, let channel = buffer.floatChannelData else { return }
+            for i in 0..<Int(buffer.frameLength) { channel[0][i] *= gain }
+            do { try file.write(from: buffer) } catch { writeError = error }
+        }
+        if let writeError { throw writeError }
 
-        try writeWAV(samples: samples, sampleRate: targetSampleRate, url: outputURL)
         return sourcePeak
     }
 
-    private static func peak(of samples: [Float]) -> Float {
-        var maxValue: Float = 0
-        for sample in samples {
-            let magnitude = abs(sample)
-            if magnitude > maxValue { maxValue = magnitude }
-        }
-        return maxValue
-    }
-
-    /// Reads a source file, downmixing to mono and resampling to 16 kHz. A missing file
-    /// (e.g. no system audio was playing) is treated as silence.
-    private static func loadAsMono16k(url: URL, target: AVAudioFormat) throws -> [Float] {
-        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+    /// Streams a source file as mono 16 kHz chunks (~1s each), downmixing/resampling on the
+    /// fly. A missing file (e.g. no system audio was playing) yields nothing.
+    private static func streamAsMono16k(
+        url: URL, target: AVAudioFormat,
+        handle: (AVAudioPCMBuffer) -> Void
+    ) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
 
         let file = try AVAudioFile(forReading: url)
         let source = file.processingFormat
-        guard file.length > 0, let converter = AVAudioConverter(from: source, to: target) else { return [] }
+        guard file.length > 0, let converter = AVAudioConverter(from: source, to: target) else { return }
 
-        var samples = [Float]()
         let outputCapacity = AVAudioFrameCount(targetSampleRate)   // 1s of output per pass
 
         while true {
@@ -84,43 +102,9 @@ enum AudioConverter {
 
             if let conversionError { throw conversionError }
 
-            let frames = Int(outputBuffer.frameLength)
-            if frames > 0, let channel = outputBuffer.floatChannelData {
-                samples.append(contentsOf: UnsafeBufferPointer(start: channel[0], count: frames))
-            }
+            if outputBuffer.frameLength > 0 { handle(outputBuffer) }
 
             if status == .endOfStream || status == .error { break }
-        }
-
-        return samples
-    }
-
-    private static func writeWAV(samples: [Float], sampleRate: Double, url: URL) throws {
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false
-        ]
-
-        let file = try AVAudioFile(forWriting: url, settings: settings)
-        let format = file.processingFormat
-        let chunkSize = 16_000
-
-        var offset = 0
-        while offset < samples.count {
-            let frames = min(chunkSize, samples.count - offset)
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
-                  let channel = buffer.floatChannelData else { break }
-            buffer.frameLength = AVAudioFrameCount(frames)
-            samples.withUnsafeBufferPointer { source in
-                channel[0].update(from: source.baseAddress!.advanced(by: offset), count: frames)
-            }
-            try file.write(from: buffer)
-            offset += frames
         }
     }
 }
