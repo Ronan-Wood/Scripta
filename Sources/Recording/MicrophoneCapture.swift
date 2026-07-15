@@ -1,5 +1,6 @@
 import AVFoundation
 import OSLog
+import os
 
 /// Captures the microphone via AVAudioEngine and writes it to a CAF file in the
 /// input hardware's native format. Used on all supported OS versions because
@@ -15,7 +16,12 @@ final class MicrophoneCapture {
     var onLevel: ((Float) -> Void)?
 
     /// When paused, buffers are dropped (not written) so the track simply omits that interval.
-    var isPaused = false
+    /// Locked: written from the session (main) and read per-buffer on the audio tap thread.
+    var isPaused: Bool {
+        get { pausedFlag.withLock { $0 } }
+        set { pausedFlag.withLock { $0 = newValue } }
+    }
+    private let pausedFlag = OSAllocatedUnfairLock(initialState: false)
 
     /// Called on the audio thread with each captured buffer (for live transcription).
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
@@ -32,17 +38,20 @@ final class MicrophoneCapture {
                           userInfo: [NSLocalizedDescriptionKey: "No microphone input is available."])
         }
 
-        audioFile = try AVAudioFile(
+        let file = try AVAudioFile(
             forWriting: outputURL,
             settings: format.settings,
             commonFormat: format.commonFormat,
             interleaved: format.isInterleaved
         )
+        audioFile = file
 
+        // The tap captures the file immutably — no shared mutable var between the audio
+        // thread and stop() (which would be a torn read the moment they raced).
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self, !self.isPaused else { return }
             do {
-                try self.audioFile?.write(from: buffer)
+                try file.write(from: buffer)
             } catch {
                 self.log.error("mic write failed: \(error.localizedDescription, privacy: .public)")
             }
