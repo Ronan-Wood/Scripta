@@ -42,20 +42,15 @@ enum RetentionPruner {
     }
 
     /// Confirms the marker sits on its own line inside the leading frontmatter block — a note
-    /// that merely quotes the marker in its body can never match.
+    /// that merely quotes the marker in its body can never match. Reuses the shared line-based
+    /// splitter + marker check, so quoting/`---` handling stays consistent app-wide.
     private static func isAppAuthored(_ url: URL) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
         let head = (try? handle.read(upToCount: 2048)) ?? Data()
-        guard let text = String(data: head, encoding: .utf8) else { return false }
-        var lines = text.components(separatedBy: .newlines)[...]
-        guard lines.popFirst()?.trimmingCharacters(in: .whitespaces) == "---" else { return false }
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed == "---" || trimmed == "..." { return false }   // frontmatter ended without the marker
-            if trimmed == "app: \(TranscriptWriter.ownerMarker)" { return true }
-        }
-        return false
+        guard let text = String(data: head, encoding: .utf8),
+              let split = Frontmatter.split(text) else { return false }
+        return Frontmatter.hasOwnerMarker(split.frontmatter)
     }
 
     private static func fileDate(_ url: URL) -> Date? {

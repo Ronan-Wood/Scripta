@@ -24,8 +24,16 @@ enum Frontmatter {
 
     /// True when the `app: call-transcriber` owner marker sits on its own line in the block.
     static func hasOwnerMarker(_ frontmatter: String) -> Bool {
-        frontmatter.components(separatedBy: "\n").contains {
-            $0.trimmingCharacters(in: .whitespaces) == "app: \(TranscriptWriter.ownerMarker)"
-        }
+        frontmatter.components(separatedBy: "\n").contains(where: isOwnerMarkerLine)
+    }
+
+    /// Matches the owner-marker line, tolerating YAML quoting (`app: "call-transcriber"` or
+    /// `'call-transcriber'`) that Obsidian's properties editor adds — those are still our files.
+    /// Safe to accept broadly: the retention pruner also gates on the transcript filename shape.
+    static func isOwnerMarkerLine(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("app:") else { return false }
+        let value = trimmed.dropFirst(4).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+        return value == TranscriptWriter.ownerMarker
     }
 }
