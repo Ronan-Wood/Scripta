@@ -28,6 +28,10 @@ final class RecordingSession {
     private var activityToken: NSObjectProtocol?
     private var startedAt = Date()
 
+    /// Fired at most once, on the main actor, if system-audio capture dies mid-recording.
+    /// The owner should stop the session so the mic track (and partial system track) survive.
+    var onSystemAudioFailure: ((Error) -> Void)?
+
     private let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "Session")
 
     init() {
@@ -83,6 +87,10 @@ final class RecordingSession {
         }
 
         let system = SystemAudioCapture(outputURL: systemURL)
+        system.onError = { [weak self] error in
+            guard let self else { return }
+            Task { @MainActor in self.onSystemAudioFailure?(error) }
+        }
 
         try mic.start()
         do {
