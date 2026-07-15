@@ -74,12 +74,15 @@ final class AppModel: ObservableObject {
         case .recording:
             if startedAt == nil { startedAt = Date() }
             guard clock == nil else { return }
-            clock = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            // .common mode: the elapsed clock must keep ticking while the status menu is open.
+            let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     guard let self, !self.isPaused, let start = self.startedAt else { return }
                     self.recordingElapsed = Date().timeIntervalSince(start)
                 }
             }
+            RunLoop.main.add(timer, forMode: .common)
+            clock = timer
         case .processing:
             clock?.invalidate(); clock = nil
             meter.level = 0; isPaused = false; pauseStart = nil
