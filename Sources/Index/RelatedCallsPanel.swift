@@ -47,16 +47,23 @@ struct RelatedCallsPanel: View {
         .onDisappear { timer?.invalidate(); timer = nil }
     }
 
-    /// Searches the index with the most recent live text, deduped to distinct calls.
+    /// Searches the index with the most recent live text, deduped to distinct calls. The FTS
+    /// query runs off the main actor — it contends on the store's lock with background upserts,
+    /// which must not stall the recording UI.
     private func refresh() {
         let recent = AppModel.shared.live.finalized.suffix(4).joined(separator: " ")
         guard recent.split(separator: " ").count >= 4, let store = model.index else { return }
-        var seen = Set<URL>()
-        related = store.search(recent, limit: 12).compactMap { hit in
-            let url = URL(fileURLWithPath: hit.path)
-            guard seen.insert(url).inserted else { return nil }
-            let snippet = hit.snippet.replacingOccurrences(of: "⟦", with: "").replacingOccurrences(of: "⟧", with: "")
-            return Related(url: url, title: hit.title.isEmpty ? hit.date : hit.title, snippet: snippet)
-        }.prefix(4).map { $0 }
+        Task.detached(priority: .utility) {
+            let hits = store.search(recent, limit: 12)
+            await MainActor.run {
+                var seen = Set<URL>()
+                related = hits.compactMap { hit in
+                    let url = URL(fileURLWithPath: hit.path)
+                    guard seen.insert(url).inserted else { return nil }
+                    let snippet = hit.snippet.replacingOccurrences(of: "⟦", with: "").replacingOccurrences(of: "⟧", with: "")
+                    return Related(url: url, title: hit.title.isEmpty ? hit.date : hit.title, snippet: snippet)
+                }.prefix(4).map { $0 }
+            }
+        }
     }
 }
