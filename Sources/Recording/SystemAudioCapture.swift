@@ -13,11 +13,16 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
     private var stream: SCStream?
     private var audioFile: AVAudioFile?
     private var paused = false
+    // Both queue-confined. `stopped` blocks straggler buffers SCK may still dispatch after
+    // stopCapture() from re-creating (and truncating) the finished file.
+    private var stopped = false
+    private var failed = false
 
     /// When paused, buffers are dropped so the track omits that interval (stays aligned with mic).
     func setPaused(_ value: Bool) { queue.sync { paused = value } }
 
-    /// Fired if capture fails after it has started (e.g. the stream stops unexpectedly).
+    /// Fired at most once, on the capture queue, if capture fails after it has started
+    /// (e.g. the stream stops unexpectedly). Never fired for an intentional `stop()`.
     var onError: ((Error) -> Void)?
 
     init(outputURL: URL) {
@@ -52,6 +57,7 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
     }
 
     func stop() async {
+        queue.sync { stopped = true }
         if let stream {
             try? await stream.stopCapture()
         }
@@ -63,7 +69,7 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
     // MARK: - SCStreamOutput
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio, !paused,
+        guard type == .audio, !paused, !stopped,
               CMSampleBufferDataIsReady(sampleBuffer),
               let pcm = sampleBuffer.toPCMBuffer()
         else { return }
@@ -80,7 +86,7 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
             try audioFile?.write(from: pcm)
         } catch {
             log.error("system audio write failed: \(error.localizedDescription, privacy: .public)")
-            onError?(error)
+            reportFailure(error)
         }
     }
 
@@ -88,6 +94,14 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         log.error("system audio stream stopped: \(error.localizedDescription, privacy: .public)")
+        // The delegate fires on an SCStream-internal queue; hop to ours for the flags.
+        queue.async { [weak self] in self?.reportFailure(error) }
+    }
+
+    /// Queue-confined. Collapses repeated write failures / a stop-with-error into one report.
+    private func reportFailure(_ error: Error) {
+        guard !stopped, !failed else { return }
+        failed = true
         onError?(error)
     }
 }

@@ -245,6 +245,9 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             }
 
             let newSession = RecordingSession()
+            newSession.onSystemAudioFailure = { [weak self] error in
+                self?.handleSystemAudioFailure(error, in: newSession)
+            }
             do {
                 try await newSession.start(screenSource: screenSource)
                 session = newSession
@@ -259,6 +262,18 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 )
             }
         }
+    }
+
+    /// A mid-call SCStream death (display reconfigure, sleep, permission revoked) would otherwise
+    /// leave the session showing "recording" while the system track silently captures nothing —
+    /// stop now so everything captured so far still becomes a transcript.
+    private func handleSystemAudioFailure(_ error: Error, in failed: RecordingSession) {
+        guard session === failed, uiState == .recording else { return }
+        stopRecording()
+        presentAlert(
+            title: "System Audio Stopped",
+            message: "System-audio capture failed mid-recording: \(error.localizedDescription)\n\nThe recording was stopped; everything captured so far is being transcribed."
+        )
     }
 
     @objc private func pauseRecording() { togglePause() }
