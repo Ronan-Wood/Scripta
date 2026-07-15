@@ -1,7 +1,7 @@
 import Foundation
 
 /// A renderable block of a parsed transcript.
-enum TranscriptBlock {
+enum TranscriptBlock: Sendable {
     case section(String)                       // "## …" headers
     case audioLine(String, String?, String)    // timestamp, speaker (You/Them or nil), spoken text
     case screenMarker(String)                  // a Screen Context entry's timestamp

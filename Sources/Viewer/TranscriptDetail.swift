@@ -10,13 +10,18 @@ struct TranscriptDetail: View {
     @State private var showingEditor = false
     @State private var confirmingDelete = false
     @State private var exportError: String?
+    // Parsed once per transcript (off the main thread) and cached — re-reading + re-parsing the
+    // whole file inside `body` on every invalidation was a large part of the long-transcript lag.
+    @State private var blocks: [TranscriptBlock] = []
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            // Lazy: only on-screen blocks are realized/laid out. A non-lazy VStack built every
+            // block of an hour-long call up front (and re-laid them on each scroll tick).
+            LazyVStack(alignment: .leading, spacing: 14) {
                 header
                 Divider()
-                ForEach(Array(TranscriptParser.parse(TranscriptStore.body(of: meta.url)).enumerated()), id: \.offset) { _, block in
+                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                     BlockView(block: block)
                 }
             }
@@ -24,6 +29,7 @@ struct TranscriptDetail: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
         }
+        .task(id: meta.url) { await loadBlocks() }
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -80,6 +86,15 @@ struct TranscriptDetail: View {
         } message: {
             Text("This permanently deletes the transcript file. This can't be undone.")
         }
+    }
+
+    /// Reads + parses the transcript off the main thread, then swaps the cached blocks in. Runs
+    /// on first appearance and whenever the selected call changes (`.task(id:)`).
+    private func loadBlocks() async {
+        let url = meta.url
+        blocks = await Task.detached(priority: .userInitiated) {
+            TranscriptParser.parse(TranscriptStore.body(of: url))
+        }.value
     }
 
     private var fileName: String {
