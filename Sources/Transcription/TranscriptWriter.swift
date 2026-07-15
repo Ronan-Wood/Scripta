@@ -38,10 +38,20 @@ enum TranscriptWriter {
 
     // MARK: - Formatting
 
+    /// Frontmatter and filename stamps are machine-readable contracts (index parsing, `since`
+    /// filters, sorting) — POSIX-locked so Thai/Arabic system locales can't write Buddhist-era
+    /// years or non-ASCII digits into them.
+    private static func posixFormatter(_ format: String) -> DateFormatter {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = format
+        return f
+    }
+
     private static func frontmatter(startedAt: Date, duration: TimeInterval,
                                     participants: [String], tags: [String], title: String?) -> String {
-        let dateFmt = DateFormatter(); dateFmt.dateFormat = "yyyy-MM-dd"
-        let timeFmt = DateFormatter(); timeFmt.dateFormat = "HH:mm"
+        let dateFmt = posixFormatter("yyyy-MM-dd")
+        let timeFmt = posixFormatter("HH:mm")
         let dateStr = dateFmt.string(from: startedAt)
         let timeStr = timeFmt.string(from: startedAt)
 
@@ -111,8 +121,7 @@ enum TranscriptWriter {
     /// Builds a collision-free filename: "<Title> — 2026-07-13 1150.md", or
     /// "Call — 2026-07-13 1150.md" when there's no title.
     private static func uniqueURL(in folder: URL, startedAt: Date, title: String?) -> URL {
-        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd HHmm"
-        let stamp = fmt.string(from: startedAt)
+        let stamp = posixFormatter("yyyy-MM-dd HHmm").string(from: startedAt)
         let clean = title.map(sanitizeFilename) ?? ""
         let base = clean.isEmpty ? "Call — \(stamp)" : "\(clean) — \(stamp)"
 
