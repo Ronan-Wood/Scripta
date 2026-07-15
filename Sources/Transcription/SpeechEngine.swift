@@ -69,8 +69,16 @@ enum SpeechEngine {
         }
 
         // Creating the analyzer with the file starts analysis; finishAfterFile ends the stream.
-        let analyzer = try await SpeechAnalyzer(inputAudioFile: file, modules: [transcriber],
+        let analyzer: SpeechAnalyzer
+        do {
+            analyzer = try await SpeechAnalyzer(inputAudioFile: file, modules: [transcriber],
                                                 analysisContext: context, finishAfterFile: true)
+        } catch {
+            // The collector would otherwise wait on a stream that never starts — one leaked
+            // task + transcriber per failed transcription.
+            collector.cancel()
+            throw error
+        }
         _ = analyzer
         return try await collector.value
     }
