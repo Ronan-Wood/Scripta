@@ -45,11 +45,14 @@ enum TranscriptWriter {
         let dateStr = dateFmt.string(from: startedAt)
         let timeStr = timeFmt.string(from: startedAt)
 
-        let allTags = tags + [ownerMarker]
+        // Every scalar goes through the sanitizer — enricher topics and calendar attendees are
+        // uncontrolled input, and one embedded quote/newline invalidates the whole block.
+        let allTags = (tags + [ownerMarker]).map(sanitizeScalar).filter { !$0.isEmpty }
         let tagList = allTags.map { "\"\($0)\"" }.joined(separator: ", ")
-        let participantList = participants.map { "\"\($0)\"" }.joined(separator: ", ")
+        let participantList = participants.map(sanitizeScalar).filter { !$0.isEmpty }
+            .map { "\"\($0)\"" }.joined(separator: ", ")
 
-        let cleanTitle = title.map(sanitizeYAML) ?? ""
+        let cleanTitle = title.map(sanitizeScalar) ?? ""
         let heading = cleanTitle.isEmpty ? "Call — \(dateStr) \(timeStr)" : cleanTitle
 
         var yaml = "---\n"
@@ -64,9 +67,15 @@ enum TranscriptWriter {
         return yaml
     }
 
-    private static func sanitizeYAML(_ text: String) -> String {
+    /// The one YAML scalar sanitizer (writer + metadata editor). Values are emitted inside
+    /// double quotes on a single key line, so stripping quotes and newlines is what keeps a
+    /// value — including one containing `---` — from escaping its line. Parsers must split
+    /// frontmatter on delimiter LINES (see `Frontmatter`), never on the `---` substring.
+    static func sanitizeScalar(_ text: String) -> String {
         text.replacingOccurrences(of: "\"", with: "'")
+            .replacingOccurrences(of: "\r\n", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

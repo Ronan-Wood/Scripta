@@ -64,11 +64,10 @@ enum TranscriptStore {
     // MARK: - Frontmatter parsing
 
     private static func parseMeta(_ url: URL) -> TranscriptMeta? {
-        guard let content = try? String(contentsOf: url, encoding: .utf8), content.hasPrefix("---") else { return nil }
-        let sections = content.components(separatedBy: "---")
-        guard sections.count >= 3 else { return nil }
-        let frontmatter = sections[1]
-        guard frontmatter.contains("app: \(TranscriptWriter.ownerMarker)") else { return nil }
+        guard let content = try? String(contentsOf: url, encoding: .utf8),
+              let split = Frontmatter.split(content),
+              Frontmatter.hasOwnerMarker(split.frontmatter) else { return nil }
+        let frontmatter = split.frontmatter
 
         func field(_ key: String) -> String {
             for line in frontmatter.split(separator: "\n") {

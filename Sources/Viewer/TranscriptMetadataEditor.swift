@@ -18,18 +18,17 @@ enum TranscriptMetadataEditor {
     static func update(url: URL, title rawTitle: String, participants rawParticipants: [String],
                        tags rawTags: [String]) throws {
         let content = try String(contentsOf: url, encoding: .utf8)
-        let parts = content.components(separatedBy: "---")
-        guard parts.count >= 3, parts[1].contains("app: \(TranscriptWriter.ownerMarker)") else {
+        guard let split = Frontmatter.split(content), Frontmatter.hasOwnerMarker(split.frontmatter) else {
             throw EditError(message: "This isn’t a Call Transcriber transcript.")
         }
 
-        let title = sanitize(rawTitle)
-        let participants = rawParticipants.map(sanitize).filter { !$0.isEmpty }
+        let title = TranscriptWriter.sanitizeScalar(rawTitle)
+        let participants = rawParticipants.map(TranscriptWriter.sanitizeScalar).filter { !$0.isEmpty }
         let marker = TranscriptWriter.ownerMarker
-        let tags = rawTags.map(sanitize).filter { !$0.isEmpty && $0 != marker } + [marker]
+        let tags = rawTags.map(TranscriptWriter.sanitizeScalar).filter { !$0.isEmpty && $0 != marker } + [marker]
 
-        // --- Rewrite the frontmatter block (parts[1]). Preserve leading/trailing newlines. ---
-        var lines = parts[1].components(separatedBy: "\n")
+        // --- Rewrite the frontmatter block. ---
+        var lines = split.frontmatter.components(separatedBy: "\n")
         lines.removeAll {
             let t = $0.trimmingCharacters(in: .whitespaces)
             return t.hasPrefix("title:") || t.hasPrefix("participants:") || t.hasPrefix("tags:")
@@ -51,7 +50,7 @@ enum TranscriptMetadataEditor {
             }
         }
         if !inserted {   // no duration line (unexpected) — fall back to the top of the block
-            var at = 1
+            var at = 0
             if !title.isEmpty { rebuilt.insert("title: \"\(title)\"", at: at); at += 1 }
             rebuilt.insert(participantsLine, at: at); at += 1
             rebuilt.insert(tagsLine, at: at)
@@ -59,12 +58,12 @@ enum TranscriptMetadataEditor {
         let newFront = rebuilt.joined(separator: "\n")
 
         // --- Update the `# heading` line in the body (everything after the frontmatter). ---
-        var body = parts.dropFirst(2).joined(separator: "---")
+        var body = split.body
         if !title.isEmpty {
             body = replacingFirstHeading(in: body, with: "# \(title)")
         }
 
-        let result = "---" + newFront + "---" + body
+        let result = "---\n" + newFront + "\n---\n" + body
         try result.write(to: url, atomically: true, encoding: .utf8)
     }
 
@@ -76,12 +75,5 @@ enum TranscriptMetadataEditor {
             break
         }
         return lines.joined(separator: "\n")
-    }
-
-    /// Frontmatter values are double-quoted; strip characters that would break the YAML line.
-    private static func sanitize(_ text: String) -> String {
-        text.replacingOccurrences(of: "\"", with: "'")
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

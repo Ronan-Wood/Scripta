@@ -15,13 +15,7 @@ enum TranscriptBlock {
 enum TranscriptParser {
 
     static func parse(_ content: String) -> [TranscriptBlock] {
-        var body = content
-        if body.hasPrefix("---") {
-            let sections = body.components(separatedBy: "---")
-            if sections.count >= 3 {
-                body = sections.dropFirst(2).joined(separator: "---")   // drop frontmatter
-            }
-        }
+        let body = Frontmatter.split(content)?.body ?? content
 
         var blocks: [TranscriptBlock] = []
         var tableBuffer: [String] = []
