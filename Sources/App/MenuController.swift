@@ -294,7 +294,6 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 session = newSession
                 tiedMeeting = meeting
                 recordingStartedAt = Date()
-                AppModel.shared.recordingCapturesMic = mode.capturesMic
                 AppModel.shared.recordingModeName = mode == .call ? nil : mode.displayName
                 uiState = .recording
                 updateIcon()

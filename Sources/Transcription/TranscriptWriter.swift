@@ -16,14 +16,16 @@ enum TranscriptWriter {
         tags: [String] = ["call"],
         title: String? = nil,
         summary: String? = nil,
-        screenSnippets: [ScreenSnippet] = []
+        screenSnippets: [ScreenSnippet] = [],
+        isConference: Bool = false
     ) throws -> URL {
         let folder = AppSettings.outputFolder
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
         let url = uniqueURL(in: folder, startedAt: startedAt, title: title)
         var contents = frontmatter(startedAt: startedAt, duration: duration,
-                                   participants: participants, tags: tags, title: title)
+                                   participants: participants, tags: tags, title: title,
+                                   isConference: isConference)
         if let summary, !summary.isEmpty {
             contents += "\n\n## Summary\n\n" + summary
         }
@@ -49,7 +51,8 @@ enum TranscriptWriter {
     }
 
     private static func frontmatter(startedAt: Date, duration: TimeInterval,
-                                    participants: [String], tags: [String], title: String?) -> String {
+                                    participants: [String], tags: [String], title: String?,
+                                    isConference: Bool) -> String {
         let dateFmt = posixFormatter("yyyy-MM-dd")
         let timeFmt = posixFormatter("HH:mm")
         let dateStr = dateFmt.string(from: startedAt)
@@ -72,6 +75,8 @@ enum TranscriptWriter {
         if !cleanTitle.isEmpty { yaml += "title: \"\(cleanTitle)\"\n" }
         yaml += "participants: [\(participantList)]\n"
         yaml += "tags: [\(tagList)]\n"
+        // Recorded from a single source, unlabeled. Absent = a normal two-party call.
+        if isConference { yaml += "mode: conference\n" }
         yaml += "app: \(ownerMarker)\n"
         yaml += "---\n\n# \(heading)"
         return yaml
