@@ -92,11 +92,15 @@ final class RecordingSession {
             Task { @MainActor in self.onSystemAudioFailure?(error) }
         }
 
-        try mic.start()
         do {
+            try mic.start()
             try await system.start()
         } catch {
+            // Unwind everything already running, or a failed Start attempt leaks a live
+            // SpeechAnalyzer (results task blocked forever) and the sleep-prevention token.
             mic.stop()
+            await liveTranscriber?.stop()
+            liveTranscriber = nil
             endActivity()
             throw error
         }

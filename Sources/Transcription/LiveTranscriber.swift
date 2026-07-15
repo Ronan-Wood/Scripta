@@ -34,6 +34,18 @@ final class LiveTranscriber {
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         self.analyzer = analyzer
 
+        do {
+            try await analyzer.start(inputSequence: sequence)
+        } catch {
+            // Don't leave the input stream open — anything already wired would block forever.
+            inputBuilder?.finish()
+            inputBuilder = nil
+            throw error
+        }
+
+        // Created only after the analyzer is running: if start() threw, this task would retain
+        // self and block in `transcriber.results` permanently. No audio is fed before start()
+        // returns, so nothing is missed.
         resultsTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -51,8 +63,6 @@ final class LiveTranscriber {
                 }
             } catch { /* stream ended */ }
         }
-
-        try await analyzer.start(inputSequence: sequence)
     }
 
     /// Feed one captured mic buffer (called on the audio thread). Converts to the analyzer's format.
