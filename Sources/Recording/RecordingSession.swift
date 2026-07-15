@@ -180,6 +180,13 @@ final class RecordingSession {
                     .map { TranscriptSegment(startMs: $0.startMs, text: FillerCleaner.clean($0.text), speaker: $0.speaker) }
                     .filter { !$0.text.isEmpty }
 
+                // Zero segments must fail like any other pipeline error — writing a placeholder
+                // transcript would count as "success" and delete the only copy of the audio.
+                guard !segments.isEmpty else {
+                    throw NSError(domain: "CallTranscriber", code: 202,
+                                  userInfo: [NSLocalizedDescriptionKey: "No speech was recognized in the recording."])
+                }
+
                 // Optional on-device title + summary + topics — additive, never rewrites the transcript.
                 var title: String?
                 var summary: String?
