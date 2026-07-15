@@ -26,6 +26,7 @@ struct Meta {
     let url: URL
     let title, date, time, duration: String
     let participants, tags: [String]
+    let isConference: Bool
 }
 
 /// Splits on delimiter LINES (`---` alone on a line), mirroring the app's Frontmatter helper —
@@ -101,7 +102,8 @@ func parseMeta(_ url: URL) -> Meta? {
         time: frontmatterField(fm, "time"),
         duration: frontmatterField(fm, "duration"),
         participants: frontmatterList(fm, "participants"),
-        tags: frontmatterList(fm, "tags").filter { $0 != ownerMarker }
+        tags: frontmatterList(fm, "tags").filter { $0 != ownerMarker },
+        isConference: frontmatterField(fm, "mode") == "conference"
     )
 }
 
@@ -359,7 +361,7 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
             let summary = summaryOf(content)
             let meta = [[m.date, m.time].joined(separator: " "), m.duration]
                 .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.joined(separator: ", ")
-            var block = "### \(displayTitle(m))"
+            var block = "### \(displayTitle(m))\(m.isConference ? " · conference (unlabeled)" : "")"
             if !meta.isEmpty { block += "  (\(meta))" }
             if !m.participants.isEmpty { block += "\nParticipants: \(m.participants.joined(separator: ", "))" }
             block += "\n\(summary.isEmpty ? "(no summary)" : summary)"
@@ -384,6 +386,7 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         if items.isEmpty { return textResult("No transcripts found.") }
         let lines = items.map { m -> String in
             var parts = ["• \(displayTitle(m))"]
+            if m.isConference { parts.append("[conference]") }
             let meta = [[m.date, m.time].joined(separator: " "), m.duration].filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             if !meta.isEmpty { parts.append("(\(meta.joined(separator: ", ")))") }
             if !m.participants.isEmpty { parts.append("— \(m.participants.joined(separator: ", "))") }

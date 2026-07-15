@@ -1,6 +1,7 @@
 import AVFoundation
 import ScreenCaptureKit
 import OSLog
+import os
 
 /// Captures system (other participants') audio via ScreenCaptureKit and writes it
 /// to a CAF file in the stream's native format. Video is configured minimally and
@@ -24,6 +25,18 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
     /// Fired at most once, on the capture queue, if capture fails after it has started
     /// (e.g. the stream stops unexpectedly). Never fired for an intentional `stop()`.
     var onError: ((Error) -> Void)?
+
+    /// Per-buffer peak amplitude (0–1) on the capture queue, for the level meter when the system
+    /// track is the live source (a system-audio conference). Set before `start()`.
+    var onLevel: ((Float) -> Void)?
+
+    /// Per-buffer PCM on the capture queue, for live transcription of the system track. Locked
+    /// because live transcription attaches it after capture is already running.
+    var onBuffer: ((AVAudioPCMBuffer) -> Void)? {
+        get { bufferCallback.withLock { $0 } }
+        set { bufferCallback.withLock { $0 = newValue } }
+    }
+    private let bufferCallback = OSAllocatedUnfairLock<((AVAudioPCMBuffer) -> Void)?>(initialState: nil)
 
     init(outputURL: URL) {
         self.outputURL = outputURL
@@ -88,6 +101,29 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
             log.error("system audio write failed: \(error.localizedDescription, privacy: .public)")
             reportFailure(error)
         }
+
+        // Live transcript + meter, when the system track is the live source.
+        onBuffer?(pcm)
+        if let onLevel { onLevel(Self.peak(of: pcm)) }
+    }
+
+    /// Peak magnitude (0–1) across all channels of a PCM buffer, handling float or int16 samples.
+    private static func peak(of buffer: AVAudioPCMBuffer) -> Float {
+        let frames = Int(buffer.frameLength)
+        let channels = Int(buffer.format.channelCount)
+        var peak: Float = 0
+        if let data = buffer.floatChannelData {
+            for c in 0..<channels {
+                let ptr = data[c]
+                for i in 0..<frames { peak = max(peak, abs(ptr[i])) }
+            }
+        } else if let data = buffer.int16ChannelData {
+            for c in 0..<channels {
+                let ptr = data[c]
+                for i in 0..<frames { peak = max(peak, abs(Float(ptr[i]) / 32768)) }
+            }
+        }
+        return peak
     }
 
     // MARK: - SCStreamDelegate

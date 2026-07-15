@@ -45,11 +45,7 @@ struct HomeView: View {
         VStack(spacing: Space.x5) {
             recordCard
             HStack(alignment: .top, spacing: Space.x5) {
-                if model.recordingCapturesMic {
-                    LiveTranscriptPane().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    conferenceNote.frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                LiveTranscriptPane(title: liveTitle).frame(maxWidth: .infinity, maxHeight: .infinity)
                 RelatedCallsPanel().frame(width: 300)
             }
         }
@@ -57,24 +53,10 @@ struct HomeView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    // Shown in place of the live transcript when a conference records system audio only (no mic
-    // to stream from). The full transcript is still produced on stop.
-    private var conferenceNote: some View {
-        VStack(alignment: .leading, spacing: Space.x3) {
-            SectionHeader(title: model.recordingModeName ?? "Conference")
-            VStack(alignment: .leading, spacing: Space.x2) {
-                Text("Recording the meeting audio.")
-                    .font(CarbonFont.body(15)).foregroundStyle(Carbon.textPrimary)
-                Text("A single source is captured so the room and the stream aren't transcribed twice. The full transcript is written when you stop.")
-                    .font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(Space.x5)
-            .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
-        }
-        .frame(maxHeight: .infinity)
+    /// The live pane's header — "(you)" only for a two-party call; a conference is unlabeled.
+    private var liveTitle: String {
+        if !AppSettings.liveTranscriptionEnabled { return "Live transcript off" }
+        return model.recordingModeName == nil ? "Live transcript (you)" : "Live transcript"
     }
 
     // MARK: - Record
@@ -89,14 +71,16 @@ struct HomeView: View {
                         if model.recordingState == .recording {
                             Text(model.elapsedLabel).font(CarbonFont.monospace(15)).foregroundStyle(Carbon.danger)
                         }
+                        if let modeName = model.recordingModeName {
+                            Text(modeName)
+                                .font(CarbonFont.label(11))
+                                .padding(.horizontal, 6).padding(.vertical, 1)
+                                .background(Carbon.warning.opacity(0.16), in: Capsule())
+                                .foregroundStyle(Carbon.warning)
+                        }
                     }
                     if model.recordingState == .recording {
-                        if model.recordingCapturesMic {
-                            MicLevelPane()
-                        } else {
-                            Text(model.recordingModeName ?? "Recording system audio")
-                                .font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
-                        }
+                        LevelPane()
                     } else {
                         Text(statusSubtitle).font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
                     }
@@ -228,19 +212,21 @@ struct HomeView: View {
     }
 }
 
-/// Observes only the mic meter, so its ~12 Hz level updates re-render this view alone.
-private struct MicLevelPane: View {
+/// Observes only the recording level meter, so its ~12 Hz updates re-render this view alone.
+/// Driven by whichever track is the live source (mic, or system for a system-audio conference).
+private struct LevelPane: View {
     @ObservedObject var meter = AppModel.shared.meter
     var body: some View { LevelMeter(level: meter.level) }
 }
 
 /// Observes only the live transcript model; per-word volatile updates stay inside this pane.
 private struct LiveTranscriptPane: View {
+    let title: String
     @ObservedObject var live = AppModel.shared.live
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.x2) {
-            SectionHeader(title: AppSettings.liveTranscriptionEnabled ? "Live transcript (you)" : "Live transcript off")
+            SectionHeader(title: title)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: Space.x3) {

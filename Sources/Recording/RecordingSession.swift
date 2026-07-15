@@ -29,6 +29,7 @@ final class RecordingSession {
     private var liveStartTask: Task<Void, Never>?
     private var activityToken: NSObjectProtocol?
     private var startedAt = Date()
+    private var mode: RecordingMode = .call
     // Paused intervals are spliced out of the audio tracks, so wall-clock duration must
     // splice them out too or the frontmatter overstates the call.
     private var pausedAccum: TimeInterval = 0
@@ -71,12 +72,17 @@ final class RecordingSession {
 
             let startedAt = (try? dir.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? Date()
             let duration = max(audioDuration(systemURL), audioDuration(micURL))
+            // A call captures both tracks; a conference captures one — so a single track present
+            // means it was a conference (leave it unlabeled and mark it as such).
+            let fm = FileManager.default
+            let wasConference = !(fm.fileExists(atPath: micURL.path) && fm.fileExists(atPath: systemURL.path))
             do {
                 let url = try await produceTranscript(
                     systemURL: systemURL, micURL: micURL,
                     youWavURL: dir.appendingPathComponent("you.wav"),
                     themWavURL: dir.appendingPathComponent("them.wav"),
-                    startedAt: startedAt, duration: duration, snippets: [], extraTags: ["recovered"])
+                    startedAt: startedAt, duration: duration, snippets: [],
+                    extraTags: ["recovered"], isConference: wasConference)
                 log.notice("recovered orphaned recording → \(url.lastPathComponent, privacy: .public)")
                 try? FileManager.default.removeItem(at: dir)
             } catch let error as NSError where error.domain == "CallTranscriber"
@@ -105,6 +111,7 @@ final class RecordingSession {
         // Transitional state before the first await: the idle guard is check-then-act, so a
         // second start() arriving mid-await must see "not idle".
         state = .starting
+        self.mode = mode
         do {
             try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
         } catch {
@@ -124,11 +131,7 @@ final class RecordingSession {
         // leaves a single track unlabeled, which is exactly what a conference should be.
         var mic: MicrophoneCapture?
         if mode.capturesMic {
-            let m = MicrophoneCapture(outputURL: micURL)
-            m.onLevel = { level in
-                Task { @MainActor in AppModel.shared.meter.level = min(1, level) }
-            }
-            mic = m
+            mic = MicrophoneCapture(outputURL: micURL)
         }
 
         var system: SystemAudioCapture?
@@ -140,6 +143,13 @@ final class RecordingSession {
             }
             system = s
         }
+
+        // The level meter (and, below, the live transcript) follow the mic when it's captured,
+        // otherwise the system track — so a system-audio conference still shows a live meter.
+        let meterSink: (Float) -> Void = { level in
+            Task { @MainActor in AppModel.shared.meter.level = min(1, level) }
+        }
+        if mode.capturesMic { mic?.onLevel = meterSink } else { system?.onLevel = meterSink }
 
         do {
             try mic?.start()
@@ -166,16 +176,17 @@ final class RecordingSession {
 
         state = .recording
 
-        // Live transcript from the mic — best-effort, brought up in the background AFTER capture
-        // is rolling: its setup can include a model download (first use per locale), which must
-        // never delay the recording itself. The task is cancelled by stop() if it loses the race.
-        // Needs the mic track, so it's skipped in a system-audio-only conference.
-        if mode.capturesMic, AppSettings.liveTranscriptionEnabled {
+        // Live transcript from the live source — best-effort, brought up in the background AFTER
+        // capture is rolling: its setup can include a model download (first use per locale), which
+        // must never delay the recording itself. The task is cancelled by stop() if it loses the
+        // race. Fed by the mic when captured, otherwise the system track (system-audio conference).
+        if AppSettings.liveTranscriptionEnabled {
             let live = LiveTranscriber()
             live.onUpdate = { finalized, partial in
                 if let finalized { AppModel.shared.live.finalized = finalized }
                 AppModel.shared.live.partial = partial
             }
+            let feedsMic = mode.capturesMic
             liveStartTask = Task { [weak self] in
                 do {
                     try await live.start()
@@ -183,12 +194,12 @@ final class RecordingSession {
                     self?.log.error("live transcription unavailable: \(error.localizedDescription, privacy: .public)")
                     return
                 }
-                guard let self, !Task.isCancelled else {
+                guard let self, let feed = live.feed, !Task.isCancelled else {
                     await live.stop()
                     return
                 }
                 self.liveTranscriber = live
-                self.micCapture?.onBuffer = live.feed
+                if feedsMic { self.micCapture?.onBuffer = feed } else { self.systemCapture?.onBuffer = feed }
             }
         }
     }
@@ -239,6 +250,7 @@ final class RecordingSession {
         let youWavURL = self.youWavURL
         let themWavURL = self.themWavURL
         let startedAt = self.startedAt
+        let isConference = mode != .call
         if let began = pauseBegan {   // stopped while paused
             pausedAccum += Date().timeIntervalSince(began)
             pauseBegan = nil
@@ -250,7 +262,7 @@ final class RecordingSession {
             let transcriptURL = try await Task.detached(priority: .userInitiated) {
                 try await Self.produceTranscript(
                     systemURL: systemURL, micURL: micURL, youWavURL: youWavURL, themWavURL: themWavURL,
-                    startedAt: startedAt, duration: duration, snippets: snippets)
+                    startedAt: startedAt, duration: duration, snippets: snippets, isConference: isConference)
             }.value
 
             // Success: raw audio is no longer needed.
@@ -275,7 +287,7 @@ final class RecordingSession {
     static func produceTranscript(
         systemURL: URL, micURL: URL, youWavURL: URL, themWavURL: URL,
         startedAt: Date, duration: TimeInterval,
-        snippets: [ScreenSnippet], extraTags: [String] = []
+        snippets: [ScreenSnippet], extraTags: [String] = [], isConference: Bool = false
     ) async throws -> URL {
         // Convert each captured track to the transcription format. The peak tells us whether the
         // track actually carried speech.
@@ -332,7 +344,7 @@ final class RecordingSession {
         return try TranscriptWriter.write(segments: segments,
                                           startedAt: startedAt, duration: duration,
                                           tags: tags, title: title, summary: summary,
-                                          screenSnippets: snippets)
+                                          screenSnippets: snippets, isConference: isConference)
     }
 
     /// Labels each side and interleaves the two transcripts by start time. Both tracks share the

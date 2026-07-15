@@ -9,6 +9,8 @@ struct TranscriptMeta: Identifiable, Hashable {
     let duration: String
     let participants: [String]
     let tags: [String]
+    /// Recorded in Conference mode (single source, unlabeled) rather than a two-party call.
+    var isConference: Bool = false
 
     var id: URL { url }
 
@@ -111,7 +113,8 @@ enum TranscriptStore {
             time: field("time"),
             duration: field("duration"),
             participants: listField("participants"),
-            tags: listField("tags").filter { $0 != TranscriptWriter.ownerMarker }
+            tags: listField("tags").filter { $0 != TranscriptWriter.ownerMarker },
+            isConference: field("mode") == "conference"
         )
     }
 

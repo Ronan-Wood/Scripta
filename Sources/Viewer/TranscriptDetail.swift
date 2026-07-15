@@ -116,7 +116,16 @@ struct TranscriptDetail: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(meta.displayTitle).font(.title2).bold()
+            HStack(spacing: 8) {
+                Text(meta.displayTitle).font(.title2).bold()
+                if meta.isConference {
+                    Text("Conference")
+                        .font(.caption2).bold()
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.18), in: Capsule())
+                        .foregroundStyle(.orange)
+                }
+            }
             HStack(spacing: 10) {
                 if !meta.duration.isEmpty { label("clock", meta.duration) }
                 if !meta.participants.isEmpty { label("person.2", meta.participants.joined(separator: ", ")) }
