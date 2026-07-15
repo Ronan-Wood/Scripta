@@ -51,11 +51,33 @@ final class AskModel: ObservableObject {
 
         if session == nil { session = LanguageModelSession(instructions: instructions) }
         do {
-            let response = try await session!.respond(to: "Context:\n\(context)\n\nQuestion: \(question)")
-            messages.append(Message(fromUser: false, text: response.content, sources: sources))
+            let answer = try await respondWithRecovery(context: context, question: question)
+            messages.append(Message(fromUser: false, text: answer, sources: sources))
+        } catch let error as LanguageModelSession.GenerationError {
+            messages.append(Message(fromUser: false, text: Self.message(for: error)))
         } catch {
-            messages.append(Message(fromUser: false, text: "I couldn't answer that one."))
+            messages.append(Message(fromUser: false, text: "Something went wrong — try again."))
         }
+    }
+
+    /// Sends the prompt; if the multi-turn session has overflowed its context window, rebuilds it
+    /// once and retries. Each turn appends ~3k chars, so without this the chat throws after a
+    /// handful of turns and then fails *every* later turn — a fresh session with just this turn's
+    /// context always fits.
+    private func respondWithRecovery(context: String, question: String) async throws -> String {
+        let prompt = "Context:\n\(context)\n\nQuestion: \(question)"
+        do {
+            return try await session!.respond(to: prompt).content
+        } catch let error as LanguageModelSession.GenerationError {
+            guard case .exceededContextWindowSize = error else { throw error }
+            session = LanguageModelSession(instructions: instructions)
+            return try await session!.respond(to: prompt).content
+        }
+    }
+
+    private static func message(for error: LanguageModelSession.GenerationError) -> String {
+        if case .guardrailViolation = error { return "I can't answer that one." }
+        return "Something went wrong — try again."
     }
 
     private func distinctSources(_ chunks: [ContextChunk]) -> [Source] {
