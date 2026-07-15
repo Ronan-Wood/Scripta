@@ -87,9 +87,12 @@ func parseMeta(_ url: URL) -> Meta? {
     guard let content = try? String(contentsOf: url, encoding: .utf8),
           let split = splitFrontmatter(content) else { return nil }
     let fm = split.frontmatter
-    // Only app-authored files: the marker must sit on its own line inside the frontmatter.
-    guard fm.components(separatedBy: "\n").contains(where: {
-        $0.trimmingCharacters(in: .whitespaces) == "app: \(ownerMarker)"
+    // Only app-authored files: the marker must sit on its own line inside the frontmatter,
+    // tolerating YAML quoting (`app: "call-transcriber"`) an editor may have added.
+    guard fm.components(separatedBy: "\n").contains(where: { line -> Bool in
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("app:") else { return false }
+        return trimmed.dropFirst(4).trimmingCharacters(in: CharacterSet(charactersIn: " \"'")) == ownerMarker
     }) else { return nil }
     return Meta(
         url: url,
