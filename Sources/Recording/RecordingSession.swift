@@ -25,6 +25,7 @@ final class RecordingSession {
     private var systemCapture: SystemAudioCapture?
     private var screenCapturer: ScreenContextCapturer?
     private var liveTranscriber: LiveTranscriber?
+    private var liveStartTask: Task<Void, Never>?
     private var activityToken: NSObjectProtocol?
     private var startedAt = Date()
     // Paused intervals are spliced out of the audio tracks, so wall-clock duration must
@@ -74,22 +75,6 @@ final class RecordingSession {
             Task { @MainActor in AppModel.shared.micLevel = min(1, level) }
         }
 
-        // Live transcript from the mic (best-effort — never blocks the recording).
-        if AppSettings.liveTranscriptionEnabled {
-            let live = LiveTranscriber()
-            live.onUpdate = { finalized, partial in
-                AppModel.shared.liveFinalized = finalized
-                AppModel.shared.livePartial = partial
-            }
-            do {
-                try await live.start()
-                mic.onBuffer = { [weak live] buffer in live?.feed(buffer) }
-                liveTranscriber = live
-            } catch {
-                log.error("live transcription unavailable: \(error.localizedDescription, privacy: .public)")
-            }
-        }
-
         let system = SystemAudioCapture(outputURL: systemURL)
         system.onError = { [weak self] error in
             guard let self else { return }
@@ -100,11 +85,7 @@ final class RecordingSession {
             try mic.start()
             try await system.start()
         } catch {
-            // Unwind everything already running, or a failed Start attempt leaks a live
-            // SpeechAnalyzer (results task blocked forever) and the sleep-prevention token.
             mic.stop()
-            await liveTranscriber?.stop()
-            liveTranscriber = nil
             endActivity()
             throw error
         }
@@ -123,6 +104,31 @@ final class RecordingSession {
         }
 
         state = .recording
+
+        // Live transcript from the mic — best-effort, brought up in the background AFTER capture
+        // is rolling: its setup can include a model download (first use per locale), which must
+        // never delay the recording itself. The task is cancelled by stop() if it loses the race.
+        if AppSettings.liveTranscriptionEnabled {
+            let live = LiveTranscriber()
+            live.onUpdate = { finalized, partial in
+                AppModel.shared.liveFinalized = finalized
+                AppModel.shared.livePartial = partial
+            }
+            liveStartTask = Task { [weak self] in
+                do {
+                    try await live.start()
+                } catch {
+                    self?.log.error("live transcription unavailable: \(error.localizedDescription, privacy: .public)")
+                    return
+                }
+                guard let self, !Task.isCancelled else {
+                    await live.stop()
+                    return
+                }
+                self.liveTranscriber = live
+                self.micCapture?.onBuffer = { [weak live] buffer in live?.feed(buffer) }
+            }
+        }
     }
 
     /// Pauses/resumes capture. Paused intervals are simply omitted from both tracks, so they stay
@@ -156,6 +162,9 @@ final class RecordingSession {
         micCapture?.stop()
         await systemCapture?.stop()
         let snippets = await screenCapturer?.stop() ?? []
+        liveStartTask?.cancel()
+        await liveStartTask?.value   // no assignment can land after this point
+        liveStartTask = nil
         await liveTranscriber?.stop()
         micCapture = nil
         systemCapture = nil

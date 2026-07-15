@@ -23,8 +23,14 @@ final class MicrophoneCapture {
     }
     private let pausedFlag = OSAllocatedUnfairLock(initialState: false)
 
-    /// Called on the audio thread with each captured buffer (for live transcription).
-    var onBuffer: ((AVAudioPCMBuffer) -> Void)?
+    /// Called on the audio thread with each captured buffer (for live transcription). Locked:
+    /// live transcription attaches this while capture is already running (its setup can include
+    /// a model download, so it comes up in the background).
+    var onBuffer: ((AVAudioPCMBuffer) -> Void)? {
+        get { bufferCallback.withLock { $0 } }
+        set { bufferCallback.withLock { $0 = newValue } }
+    }
+    private let bufferCallback = OSAllocatedUnfairLock<((AVAudioPCMBuffer) -> Void)?>(initialState: nil)
 
     init(outputURL: URL) {
         self.outputURL = outputURL
