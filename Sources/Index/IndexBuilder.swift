@@ -5,9 +5,15 @@ import Foundation
 /// this only writes into the derived SQLite index.
 enum IndexBuilder {
 
-    /// Parses one transcript file and upserts it into the index. No-op for non-app files.
+    /// Parses one transcript file and upserts it into the index. For files that no longer parse
+    /// as app transcripts (de-marked, malformed frontmatter), any existing rows are purged —
+    /// otherwise old spoken text stays retrievable via search/Ask/MCP with no in-app way to
+    /// remove it (the file is also invisible in the viewer).
     static func index(_ url: URL, into store: IndexStore) {
-        guard let meta = TranscriptStore.meta(of: url) else { return }
+        guard let meta = TranscriptStore.meta(of: url) else {
+            store.remove(path: url.path)
+            return
+        }
         let content = TranscriptStore.body(of: url)
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate?.timeIntervalSince1970 ?? 0
