@@ -285,8 +285,15 @@ func toolDefinitions() -> [[String: Any]] {
     [
         [
             "name": "overview",
-            "description": "Scannable overview of ALL call transcripts — each one's title, date, participants, and summary, plus its file path. Use this FIRST to figure out which call(s) are relevant to a question, then call get_transcript for the full text.",
-            "inputSchema": ["type": "object"]
+            "description": "Scannable overview of recent call transcripts (newest first) — each one's title, date, participants, and summary, plus its file path. Returns a bounded page and tells you the total. Use this FIRST to figure out which call(s) are relevant, then get_transcript for the full text. For older calls, pass `since` or raise `limit`, or use list_transcripts filters.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "limit": ["type": "integer", "description": "Max transcripts to return (default 40, newest first)."],
+                    "since": ["type": "string", "description": "Only include transcripts on or after this date (YYYY-MM-DD)."],
+                    "compact": ["type": "boolean", "description": "Omit summaries — just title/date/participants per call."]
+                ]
+            ]
         ],
         [
             "name": "list_transcripts",
@@ -354,21 +361,31 @@ func textResult(_ text: String, isError: Bool = false) -> [String: Any] {
 func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
     switch name {
     case "overview":
-        let items = allTranscripts()
-        if items.isEmpty { return textResult("No transcripts yet.") }
-        let blocks = items.prefix(60).map { m -> String in
-            let content = (try? String(contentsOf: m.url, encoding: .utf8)) ?? ""
-            let summary = summaryOf(content)
+        var items = allTranscripts()
+        if let since = args["since"] as? String, !since.isEmpty { items = items.filter { $0.date >= since } }
+        let total = items.count
+        let overviewLimit = max(1, (args["limit"] as? Int) ?? 40)
+        let compact = (args["compact"] as? Bool) ?? false
+        let shown = Array(items.prefix(overviewLimit))
+        if shown.isEmpty { return textResult("No transcripts yet.") }
+        let blocks = shown.map { m -> String in
             let meta = [[m.date, m.time].joined(separator: " "), m.duration]
                 .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.joined(separator: ", ")
             var block = "### \(displayTitle(m))\(m.isConference ? " · conference (unlabeled)" : "")"
             if !meta.isEmpty { block += "  (\(meta))" }
             if !m.participants.isEmpty { block += "\nParticipants: \(m.participants.joined(separator: ", "))" }
-            block += "\n\(summary.isEmpty ? "(no summary)" : summary)"
+            if !compact {
+                let summary = summaryOf((try? String(contentsOf: m.url, encoding: .utf8)) ?? "")
+                block += "\n\(summary.isEmpty ? "(no summary)" : summary)"
+            }
             block += "\npath: \(m.url.path)"
             return block
         }
-        return textResult(blocks.joined(separator: "\n\n"))
+        var out = blocks.joined(separator: "\n\n")
+        if total > shown.count {
+            out += "\n\n— Showing \(shown.count) of \(total) calls (newest first). Pass `since` or a larger `limit`, or use list_transcripts filters, to see the rest."
+        }
+        return textResult(out)
 
     case "list_transcripts":
         var items = allTranscripts()
