@@ -22,4 +22,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task.detached(priority: .utility) { IndexBuilder.reconcile(store: store) }
         }
     }
+
+    /// Quit (menu item, logout, shutdown) must not kill the process mid-recording: the raw
+    /// audio would be the only copy of the call, and the next launch's sweep deletes it.
+    /// Stop and transcribe first, then let termination proceed.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let menuController, menuController.isWorking else { return .terminateNow }
+        menuController.finishBeforeTermination {
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
 }

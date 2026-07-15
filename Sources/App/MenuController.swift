@@ -25,6 +25,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         didSet { AppModel.shared.recordingState = uiState.appState }
     }
     private var isStarting = false
+    private var isTerminating = false
     private var proximityTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
 
@@ -210,6 +211,30 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         menu.addItem(quit)
     }
 
+    // MARK: - Termination
+
+    /// True while a recording is live or a transcript is still being produced — terminating
+    /// during either would lose the call (the next launch sweeps the raw audio).
+    var isWorking: Bool { uiState != .idle }
+
+    /// Stops any in-progress recording, waits for the transcript pipeline to finish, then calls
+    /// `completion`. Interactive follow-ups (details prompt, Finder reveal) are skipped — the
+    /// app is on its way out; only the transcript itself matters.
+    func finishBeforeTermination(completion: @escaping () -> Void) {
+        isTerminating = true
+        if uiState == .recording {
+            guard session != nil else { uiState = .idle; completion(); return }
+            stopRecording()
+        }
+        guard uiState != .idle else { completion(); return }
+        AppModel.shared.$recordingState
+            .receive(on: RunLoop.main)
+            .filter { $0 == .idle }
+            .first()
+            .sink { _ in completion() }
+            .store(in: &cancellables)
+    }
+
     // MARK: - Actions
 
     @objc private func toggleRecording() {
@@ -310,7 +335,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 if let groupTag, !groupTag.isEmpty { appendTag(groupTag, to: transcriptURL) }
 
                 // Optional post-record prompt to name the call + participants (modal, skippable).
-                if AppSettings.promptForDetails {
+                if AppSettings.promptForDetails && !isTerminating {
                     presentDetailsEditor(for: transcriptURL, window: window, tiedTitle: tied?.title)
                 }
                 // Add the finished transcript (with whatever metadata it now has) to the index.
@@ -322,7 +347,9 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 NotificationManager.shared.notifyTranscriptReady(url: transcriptURL)
                 // Also reveal immediately (a development convenience; the notification is
                 // the intended hands-off path).
-                NSWorkspace.shared.activateFileViewerSelecting([transcriptURL])
+                if !isTerminating {
+                    NSWorkspace.shared.activateFileViewerSelecting([transcriptURL])
+                }
             } catch {
                 // Raw audio is intentionally left for the launch-time sweep, not deleted here.
                 presentAlert(title: "Transcription Failed", message: error.localizedDescription)
