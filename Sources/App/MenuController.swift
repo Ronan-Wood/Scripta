@@ -50,8 +50,11 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         // Let the hub drive the same recording pipeline and see the same call list.
         AppModel.shared.toggleRecording = { [weak self] in self?.toggleRecording() }
         AppModel.shared.recordMeeting = { [weak self] meeting in
-            self?.tiedMeeting = meeting
-            self?.startRecording()
+            // Ignore while a recording is live (e.g. a calendar-grid click mid-recording) —
+            // starting a second session would orphan the first one's audio.
+            guard let self, self.uiState == .idle, !self.isStarting else { return }
+            self.tiedMeeting = meeting
+            self.startRecording()
         }
         AppModel.shared.togglePause = { [weak self] in self?.togglePause() }
         AppModel.shared.reloadCalls()
@@ -218,7 +221,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
     }
 
     private func startRecording() {
-        guard !isStarting else { return }
+        guard uiState == .idle, !isStarting else { return }
         isStarting = true
         Task {
             defer { isStarting = false }
