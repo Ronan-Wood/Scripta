@@ -72,7 +72,13 @@ struct HubView: View {
 
     private func navItem(_ item: HubSection) -> some View {
         let selected = section == item
-        return Button { section = item } label: {
+        return Button {
+            // Route-driven focus (open call / tag filter) is one-shot: manual navigation
+            // must not resurrect a stale selection on the next visit to Calls.
+            focusCall = nil
+            focusTag = nil
+            section = item
+        } label: {
             HStack(spacing: Space.x3) {
                 Image(systemName: item.sfIcon)
                     .font(.system(size: 16))
