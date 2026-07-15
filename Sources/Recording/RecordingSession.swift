@@ -72,7 +72,7 @@ final class RecordingSession {
 
         let mic = MicrophoneCapture(outputURL: micURL)
         mic.onLevel = { level in
-            Task { @MainActor in AppModel.shared.micLevel = min(1, level) }
+            Task { @MainActor in AppModel.shared.meter.level = min(1, level) }
         }
 
         let system = SystemAudioCapture(outputURL: systemURL)
@@ -111,8 +111,8 @@ final class RecordingSession {
         if AppSettings.liveTranscriptionEnabled {
             let live = LiveTranscriber()
             live.onUpdate = { finalized, partial in
-                AppModel.shared.liveFinalized = finalized
-                AppModel.shared.livePartial = partial
+                if let finalized { AppModel.shared.live.finalized = finalized }
+                AppModel.shared.live.partial = partial
             }
             liveStartTask = Task { [weak self] in
                 do {

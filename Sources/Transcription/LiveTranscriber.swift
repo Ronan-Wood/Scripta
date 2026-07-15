@@ -5,8 +5,9 @@ import AVFoundation
 /// `SpeechAnalyzer` with volatile results, so text appears as it's spoken. Runs alongside the
 /// file-based capture (which still produces the saved 2-track You/Them transcript on stop).
 final class LiveTranscriber {
-    /// Called on the main actor with the finalized lines and the current in-progress (volatile) line.
-    var onUpdate: (@MainActor (_ finalized: [String], _ partial: String) -> Void)?
+    /// Called on the main actor with the current in-progress (volatile) line; `finalized` is
+    /// non-nil only when a line was finalized, so volatile ticks don't republish the whole array.
+    var onUpdate: (@MainActor (_ finalized: [String]?, _ partial: String) -> Void)?
 
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
@@ -57,8 +58,7 @@ final class LiveTranscriber {
                         let lines = self.finalized
                         await MainActor.run { self.onUpdate?(lines, "") }
                     } else {
-                        let lines = self.finalized
-                        await MainActor.run { self.onUpdate?(lines, text) }
+                        await MainActor.run { self.onUpdate?(nil, text) }
                     }
                 }
             } catch { /* stream ended */ }
