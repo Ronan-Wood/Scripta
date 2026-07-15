@@ -21,7 +21,8 @@ struct CalendarView: View {
     private let callsByDay: [Date: [TranscriptMeta]]
 
     private static let dayFormatter: DateFormatter = {
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
+        // POSIX to match the frontmatter dates TranscriptWriter emits.
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f
     }()
 
     init(calls: [TranscriptMeta], meetings: [UpcomingCall],
@@ -275,7 +276,7 @@ struct CalendarView: View {
     // MARK: - Events
 
     struct GridEvent: Identifiable {
-        let id = UUID()
+        let id: String   // stable across renders, or the grid rebuilds every block every pass
         let title: String
         let startMin: Int
         let durationMin: Double
@@ -287,11 +288,13 @@ struct CalendarView: View {
     private func eventsOn(_ day: Date) -> [GridEvent] {
         var events: [GridEvent] = meetingsOn(day).map { m in
             let c = cal.dateComponents([.hour, .minute], from: m.start)
-            return GridEvent(title: m.title, startMin: (c.hour ?? 9) * 60 + (c.minute ?? 0),
+            return GridEvent(id: "meeting-\(m.id)", title: m.title,
+                             startMin: (c.hour ?? 9) * 60 + (c.minute ?? 0),
                              durationMin: 30, url: nil, meeting: m)
         }
         events += callsOn(day).map { meta in
-            GridEvent(title: meta.displayTitle, startMin: startMinutes(meta.time),
+            GridEvent(id: "call-\(meta.url.path)", title: meta.displayTitle,
+                      startMin: startMinutes(meta.time),
                       durationMin: durationMinutes(meta.duration), url: meta.url, meeting: nil)
         }
         return events
