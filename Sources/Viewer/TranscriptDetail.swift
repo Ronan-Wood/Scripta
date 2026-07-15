@@ -9,6 +9,7 @@ struct TranscriptDetail: View {
     var onDeleted: () -> Void = {}
     @State private var showingEditor = false
     @State private var confirmingDelete = false
+    @State private var exportError: String?
 
     var body: some View {
         ScrollView {
@@ -39,13 +40,15 @@ struct TranscriptDetail: View {
                     Button("Copy transcript") { copy(TranscriptExporter.plainText(of: meta.url)) }
                     Divider()
                     Button("Export as PDF…") {
-                        TranscriptExporter.savePanel(suggestedName: fileName, ext: "pdf") {
-                            TranscriptExporter.exportPDF(meta, to: $0)
+                        TranscriptExporter.savePanel(suggestedName: fileName, ext: "pdf") { url in
+                            do { try TranscriptExporter.exportPDF(meta, to: url) }
+                            catch { exportError = error.localizedDescription }
                         }
                     }
                     Button("Export as text…") {
-                        TranscriptExporter.savePanel(suggestedName: fileName, ext: "txt") {
-                            try? TranscriptExporter.exportText(meta, to: $0)
+                        TranscriptExporter.savePanel(suggestedName: fileName, ext: "txt") { url in
+                            do { try TranscriptExporter.exportText(meta, to: url) }
+                            catch { exportError = error.localizedDescription }
                         }
                     }
                 } label: { Label("Share", systemImage: "square.and.arrow.up") }
@@ -62,6 +65,14 @@ struct TranscriptDetail: View {
                     onEdited()
                 }
             }
+        }
+        .alert("Export Failed", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(exportError ?? "")
         }
         .confirmationDialog("Delete “\(meta.displayTitle)”?", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("Delete transcript", role: .destructive, action: performDelete)

@@ -417,6 +417,9 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         window.center()
         NSApp.activate(ignoringOtherApps: true)
         NSApp.runModal(for: window)
+        // Break the window → hosting → view → onDone-closure → window cycle, or every
+        // recording leaks the window + hosting pair.
+        window.contentViewController = nil
         return result
     }
 
@@ -452,6 +455,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         window.center()
         NSApp.activate(ignoringOtherApps: true)
         NSApp.runModal(for: window)
+        window.contentViewController = nil   // same cycle as askScreenSource
     }
 
     private func presentAlert(title: String, message: String) {

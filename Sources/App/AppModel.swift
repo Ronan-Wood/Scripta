@@ -38,6 +38,10 @@ final class AppModel: ObservableObject {
     let meter = MicMeterModel()
     let live = LiveTranscriptModel()
 
+    /// App-lifetime Ask conversation: clicking a citation (or any tab switch) swaps the hub's
+    /// content view, which must not wipe the messages or the in-flight LanguageModelSession.
+    let ask = AskModel()
+
     /// Set by MenuController; pauses/resumes the in-progress recording.
     var togglePause: (() -> Void)?
 
