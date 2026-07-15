@@ -45,42 +45,12 @@ struct HomeView: View {
         VStack(spacing: Space.x5) {
             recordCard
             HStack(alignment: .top, spacing: Space.x5) {
-                liveTranscript.frame(maxWidth: .infinity, maxHeight: .infinity)
+                LiveTranscriptPane().frame(maxWidth: .infinity, maxHeight: .infinity)
                 RelatedCallsPanel().frame(width: 300)
             }
         }
         .padding(Space.x7)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    private var liveTranscript: some View {
-        VStack(alignment: .leading, spacing: Space.x2) {
-            SectionHeader(title: AppSettings.liveTranscriptionEnabled ? "Live transcript (you)" : "Live transcript off")
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: Space.x3) {
-                        if model.liveFinalized.isEmpty && model.livePartial.isEmpty {
-                            Text("Listening…").font(CarbonFont.body(14)).foregroundStyle(Carbon.textSecondary)
-                        }
-                        ForEach(Array(model.liveFinalized.enumerated()), id: \.offset) { _, line in
-                            Text(line).font(CarbonFont.body(15)).foregroundStyle(Carbon.textPrimary)
-                        }
-                        if !model.livePartial.isEmpty {
-                            Text(model.livePartial).font(CarbonFont.body(15)).foregroundStyle(Carbon.textSecondary)
-                        }
-                        Color.clear.frame(height: 1).id("live-bottom")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(Space.x5)
-                }
-                .onChange(of: model.liveFinalized.count) { _, _ in withAnimation { proxy.scrollTo("live-bottom", anchor: .bottom) } }
-                .onChange(of: model.livePartial) { _, _ in proxy.scrollTo("live-bottom", anchor: .bottom) }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
-        }
-        .frame(maxHeight: .infinity)
     }
 
     // MARK: - Record
@@ -97,7 +67,7 @@ struct HomeView: View {
                         }
                     }
                     if model.recordingState == .recording {
-                        LevelMeter(level: model.micLevel)
+                        MicLevelPane()
                     } else {
                         Text(statusSubtitle).font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
                     }
@@ -226,6 +196,48 @@ struct HomeView: View {
         if mins < 60 { return "in \(mins) min" }
         let fmt = DateFormatter(); fmt.dateFormat = "h:mm a"
         return fmt.string(from: date)
+    }
+}
+
+/// Observes only the mic meter, so its ~12 Hz level updates re-render this view alone.
+private struct MicLevelPane: View {
+    @ObservedObject var meter = AppModel.shared.meter
+    var body: some View { LevelMeter(level: meter.level) }
+}
+
+/// Observes only the live transcript model; per-word volatile updates stay inside this pane.
+private struct LiveTranscriptPane: View {
+    @ObservedObject var live = AppModel.shared.live
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.x2) {
+            SectionHeader(title: AppSettings.liveTranscriptionEnabled ? "Live transcript (you)" : "Live transcript off")
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: Space.x3) {
+                        if live.finalized.isEmpty && live.partial.isEmpty {
+                            Text("Listening…").font(CarbonFont.body(14)).foregroundStyle(Carbon.textSecondary)
+                        }
+                        // Indices are stable ids here: the array is append-only during a recording.
+                        ForEach(live.finalized.indices, id: \.self) { i in
+                            Text(live.finalized[i]).font(CarbonFont.body(15)).foregroundStyle(Carbon.textPrimary)
+                        }
+                        if !live.partial.isEmpty {
+                            Text(live.partial).font(CarbonFont.body(15)).foregroundStyle(Carbon.textSecondary)
+                        }
+                        Color.clear.frame(height: 1).id("live-bottom")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Space.x5)
+                }
+                .onChange(of: live.finalized.count) { _, _ in withAnimation { proxy.scrollTo("live-bottom", anchor: .bottom) } }
+                .onChange(of: live.partial) { _, _ in proxy.scrollTo("live-bottom", anchor: .bottom) }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
+        }
+        .frame(maxHeight: .infinity)
     }
 }
 

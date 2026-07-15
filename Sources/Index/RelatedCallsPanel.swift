@@ -49,7 +49,7 @@ struct RelatedCallsPanel: View {
 
     /// Searches the index with the most recent live text, deduped to distinct calls.
     private func refresh() {
-        let recent = model.liveFinalized.suffix(4).joined(separator: " ")
+        let recent = AppModel.shared.live.finalized.suffix(4).joined(separator: " ")
         guard recent.split(separator: " ").count >= 4, let store = model.index else { return }
         var seen = Set<URL>()
         related = store.search(recent, limit: 12).compactMap { hit in

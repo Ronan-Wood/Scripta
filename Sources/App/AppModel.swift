@@ -6,6 +6,20 @@ import AppKit
 /// navigation. Recording is still driven through `MenuController` (which owns the capture
 /// pipeline and AppKit presentation); this model is the shared bridge so any surface — the hub's
 /// Home button or the menu bar — reflects and triggers the same state.
+/// The mic level ticks ~12×/s while recording; isolated so only the meter view re-renders.
+@MainActor
+final class MicMeterModel: ObservableObject {
+    @Published var level: Float = 0
+}
+
+/// The live transcript updates on every volatile speech result; isolated so the rest of the
+/// hub isn't invalidated per spoken word.
+@MainActor
+final class LiveTranscriptModel: ObservableObject {
+    @Published var finalized: [String] = []
+    @Published var partial = ""
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     static let shared = AppModel()
@@ -16,11 +30,13 @@ final class AppModel: ObservableObject {
         didSet { syncRecordingClock() }
     }
     @Published var recordingElapsed: TimeInterval = 0
-    @Published var micLevel: Float = 0
     @Published var isPaused = false
-    @Published var liveFinalized: [String] = []
-    @Published var livePartial: String = ""
     @Published var calls: [TranscriptMeta] = []
+
+    // High-frequency recording surfaces, split out of this object (see M12): observing
+    // AppModel must not mean re-rendering at mic-buffer rate.
+    let meter = MicMeterModel()
+    let live = LiveTranscriptModel()
 
     /// Set by MenuController; pauses/resumes the in-progress recording.
     var togglePause: (() -> Void)?
@@ -34,7 +50,7 @@ final class AppModel: ObservableObject {
     func applyPaused(_ paused: Bool) {
         if paused {
             pauseStart = Date()
-            micLevel = 0
+            meter.level = 0
         } else if let start = pauseStart {
             startedAt = startedAt?.addingTimeInterval(Date().timeIntervalSince(start))
             pauseStart = nil
@@ -62,11 +78,11 @@ final class AppModel: ObservableObject {
             }
         case .processing:
             clock?.invalidate(); clock = nil
-            micLevel = 0; isPaused = false; pauseStart = nil
+            meter.level = 0; isPaused = false; pauseStart = nil
         case .idle:
             clock?.invalidate(); clock = nil
-            startedAt = nil; recordingElapsed = 0; micLevel = 0; isPaused = false; pauseStart = nil
-            liveFinalized = []; livePartial = ""
+            startedAt = nil; recordingElapsed = 0; meter.level = 0; isPaused = false; pauseStart = nil
+            live.finalized = []; live.partial = ""
         }
     }
 
