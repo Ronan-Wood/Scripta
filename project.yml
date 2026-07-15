@@ -1,0 +1,59 @@
+name: CallTranscriber
+options:
+  bundleIdPrefix: com.ronanwood
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+
+targets:
+  CallTranscriber:
+    type: application
+    platform: macOS
+    sources:
+      - Sources
+      - path: Skill/call-transcriber/SKILL.md
+        buildPhase: resources
+      - path: Resources/Fonts
+        buildPhase: resources
+      - path: Resources/CarbonIcons
+        buildPhase: resources
+    info:
+      path: Sources/App/Info.plist
+      properties:
+        CFBundleDisplayName: Call Transcriber
+        CFBundleIconFile: AppIcon
+        LSUIElement: true
+        LSMinimumSystemVersion: "26.0"
+        NSHumanReadableCopyright: ""
+        NSMicrophoneUsageDescription: "Call Transcriber records your microphone alongside call audio so your side of the conversation is transcribed. Audio is processed on-device and deleted after transcription."
+        NSCalendarsFullAccessUsageDescription: "Call Transcriber reads your upcoming events to show which calls have Zoom/Teams/Meet links. It never modifies your calendar and never auto-starts recording."
+        NSSpeechRecognitionUsageDescription: "Call Transcriber transcribes your recordings on-device using Apple's speech recognition. Audio is processed locally and never sent anywhere."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ronanwood.CallTranscriber
+        SWIFT_VERSION: "5.0"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 6CTH5M9UWZ
+        ENABLE_HARDENED_RUNTIME: NO
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+        COMBINE_HIDPI_IMAGES: YES
+    dependencies:
+      - target: calltranscriber-mcp
+        copy:
+          destination: executables
+
+  calltranscriber-mcp:
+    type: tool
+    platform: macOS
+    sources:
+      - SourcesMCP
+    settings:
+      base:
+        PRODUCT_NAME: calltranscriber-mcp
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 6CTH5M9UWZ
+        ENABLE_HARDENED_RUNTIME: NO
