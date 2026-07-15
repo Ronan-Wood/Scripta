@@ -16,6 +16,29 @@ struct CalendarView: View {
     private let cal = Calendar.current
     private let hourHeight: CGFloat = 44
     private let gutter: CGFloat = 54
+    // Bucketed once per input change — the grids ask "calls on this day?" per cell per render,
+    // which used to parse every call's date with a fresh DateFormatter each time.
+    private let callsByDay: [Date: [TranscriptMeta]]
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
+    }()
+
+    init(calls: [TranscriptMeta], meetings: [UpcomingCall],
+         onOpenCall: @escaping (URL) -> Void, onRecordMeeting: @escaping (UpcomingCall) -> Void) {
+        self.calls = calls
+        self.meetings = meetings
+        self.onOpenCall = onOpenCall
+        self.onRecordMeeting = onRecordMeeting
+        let cal = Calendar.current
+        var buckets: [Date: [TranscriptMeta]] = [:]
+        for meta in calls {
+            guard let parsed = Self.dayFormatter.date(from: meta.date) else { continue }
+            buckets[cal.startOfDay(for: parsed), default: []].append(meta)
+        }
+        for key in buckets.keys { buckets[key]?.sort { $0.time < $1.time } }
+        callsByDay = buckets
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -277,13 +300,10 @@ struct CalendarView: View {
     // MARK: - Data + parsing
 
     private func callsOn(_ day: Date) -> [TranscriptMeta] {
-        calls.filter { parseDay($0.date).map { cal.isDate($0, inSameDayAs: day) } ?? false }.sorted { $0.time < $1.time }
+        callsByDay[cal.startOfDay(for: day)] ?? []
     }
     private func meetingsOn(_ day: Date) -> [UpcomingCall] {
         meetings.filter { cal.isDate($0.start, inSameDayAs: day) }.sorted { $0.start < $1.start }
-    }
-    private func parseDay(_ s: String) -> Date? {
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f.date(from: s)
     }
     private func startMinutes(_ time: String) -> Int {
         let p = time.split(separator: ":").compactMap { Int($0) }
