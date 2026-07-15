@@ -10,16 +10,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if AppSettings.showInDock {
             NSApp.setActivationPolicy(.regular)
         }
-        // Remove any raw-audio temp directories left behind by a prior crash.
-        RecordingSession.sweepOrphans()
         // Prune old transcripts if the user enabled auto-delete.
         RetentionPruner.pruneIfNeeded()
         NotificationManager.shared.configure()
         menuController = MenuController()
 
-        // Reconcile the retrieval index with the transcript folder in the background.
-        if let store = IndexStore.shared {
-            Task.detached(priority: .utility) { IndexBuilder.reconcile(store: store) }
+        // Recover any recordings a crash/forced-logout orphaned, then reconcile the retrieval
+        // index (which picks up whatever recovery just wrote). Both are background work.
+        Task.detached(priority: .utility) {
+            await RecordingSession.recoverOrphans()
+            if let store = IndexStore.shared { IndexBuilder.reconcile(store: store) }
         }
     }
 
