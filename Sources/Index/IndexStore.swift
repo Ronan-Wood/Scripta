@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import OSLog
 
 /// Transcript-level metadata as stored in the index.
 struct IndexedTranscript {
@@ -62,6 +63,7 @@ final class IndexStore {
 
     private let db: OpaquePointer
     private let lock = NSLock()
+    private let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "Index")
     private static let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     init(url: URL = IndexStore.defaultURL) throws {
@@ -116,40 +118,53 @@ final class IndexStore {
     /// via the triggers. Called on write and on any metadata edit.
     func upsert(_ t: IndexedTranscript, chunks: [IndexedChunk]) {
         lock.lock(); defer { lock.unlock() }
-        exec("BEGIN;")
-        removeRows(path: t.path)
-        run("INSERT INTO transcripts(path,title,date,time,duration,participants,tags,summary,mtime) VALUES(?,?,?,?,?,?,?,?,?)") { stmt in
-            bind(stmt, 1, t.path); bind(stmt, 2, t.title); bind(stmt, 3, t.date)
-            bind(stmt, 4, t.time); bind(stmt, 5, t.duration)
-            bind(stmt, 6, t.participants.joined(separator: "\n"))
-            bind(stmt, 7, t.tags.joined(separator: "\n"))
-            bind(stmt, 8, t.summary); sqlite3_bind_double(stmt, 9, t.mtime)
-        }
-        run("INSERT INTO transcripts_fts(path,title,summary,tags,participants) VALUES(?,?,?,?,?)") { stmt in
-            bind(stmt, 1, t.path); bind(stmt, 2, t.title); bind(stmt, 3, t.summary)
-            bind(stmt, 4, t.tags.joined(separator: " ")); bind(stmt, 5, t.participants.joined(separator: " "))
-        }
-        for c in chunks {
-            run("INSERT INTO chunks(path,start_ms,end_ms,speaker,text) VALUES(?,?,?,?,?)") { stmt in
-                bind(stmt, 1, t.path)
-                sqlite3_bind_int64(stmt, 2, Int64(c.startMs)); sqlite3_bind_int64(stmt, 3, Int64(c.endMs))
-                if let sp = c.speaker { bind(stmt, 4, sp) } else { sqlite3_bind_null(stmt, 4) }
-                bind(stmt, 5, c.text)
+        guard exec("BEGIN;") else { return }
+        var ok = removeRows(path: t.path)
+        if ok {
+            ok = run("INSERT INTO transcripts(path,title,date,time,duration,participants,tags,summary,mtime) VALUES(?,?,?,?,?,?,?,?,?)") { stmt in
+                bind(stmt, 1, t.path); bind(stmt, 2, t.title); bind(stmt, 3, t.date)
+                bind(stmt, 4, t.time); bind(stmt, 5, t.duration)
+                bind(stmt, 6, t.participants.joined(separator: "\n"))
+                bind(stmt, 7, t.tags.joined(separator: "\n"))
+                bind(stmt, 8, t.summary); sqlite3_bind_double(stmt, 9, t.mtime)
             }
         }
-        exec("COMMIT;")
+        if ok {
+            ok = run("INSERT INTO transcripts_fts(path,title,summary,tags,participants) VALUES(?,?,?,?,?)") { stmt in
+                bind(stmt, 1, t.path); bind(stmt, 2, t.title); bind(stmt, 3, t.summary)
+                bind(stmt, 4, t.tags.joined(separator: " ")); bind(stmt, 5, t.participants.joined(separator: " "))
+            }
+        }
+        if ok {
+            for c in chunks {
+                guard run("INSERT INTO chunks(path,start_ms,end_ms,speaker,text) VALUES(?,?,?,?,?)", bind: { stmt in
+                    bind(stmt, 1, t.path)
+                    sqlite3_bind_int64(stmt, 2, Int64(c.startMs)); sqlite3_bind_int64(stmt, 3, Int64(c.endMs))
+                    if let sp = c.speaker { bind(stmt, 4, sp) } else { sqlite3_bind_null(stmt, 4) }
+                    bind(stmt, 5, c.text)
+                }) else { ok = false; break }
+            }
+        }
+        // A partial upsert must never COMMIT: the fresh mtime would make reconcile's
+        // self-repair skip this file forever. Rolling back leaves the old rows (and old
+        // mtime) in place, so the next reconcile retries.
+        if ok && exec("COMMIT;") { return }
+        exec("ROLLBACK;")
     }
 
     /// Removes a transcript from the index (e.g. after retention prunes the file).
     func remove(path: String) {
         lock.lock(); defer { lock.unlock() }
-        exec("BEGIN;"); removeRows(path: path); exec("COMMIT;")
+        guard exec("BEGIN;") else { return }
+        if removeRows(path: path) && exec("COMMIT;") { return }
+        exec("ROLLBACK;")
     }
 
-    private func removeRows(path: String) {
-        run("DELETE FROM chunks WHERE path = ?") { bind($0, 1, path) }
-        run("DELETE FROM transcripts WHERE path = ?") { bind($0, 1, path) }
-        run("DELETE FROM transcripts_fts WHERE path = ?") { bind($0, 1, path) }
+    private func removeRows(path: String) -> Bool {
+        var ok = run("DELETE FROM chunks WHERE path = ?") { bind($0, 1, path) }
+        ok = run("DELETE FROM transcripts WHERE path = ?") { bind($0, 1, path) } && ok
+        ok = run("DELETE FROM transcripts_fts WHERE path = ?") { bind($0, 1, path) } && ok
+        return ok
     }
 
     /// path -> mtime for every indexed transcript, used to reconcile against the folder.
@@ -306,24 +321,39 @@ final class IndexStore {
 
     // MARK: - SQLite helpers
 
-    private func exec(_ sql: String) {
+    @discardableResult
+    private func exec(_ sql: String) -> Bool {
         var err: UnsafeMutablePointer<CChar>?
-        if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK, let err {
-            sqlite3_free(err)
-        }
+        if sqlite3_exec(db, sql, nil, nil, &err) == SQLITE_OK { return true }
+        let message = err.map { String(cString: $0) } ?? String(cString: sqlite3_errmsg(db))
+        log.error("exec failed (\(message, privacy: .public)): \(sql.prefix(80), privacy: .public)")
+        if let err { sqlite3_free(err) }
+        return false
     }
 
-    private func run(_ sql: String, bind: (OpaquePointer?) -> Void) {
+    @discardableResult
+    private func run(_ sql: String, bind: (OpaquePointer?) -> Void) -> Bool {
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            log.error("prepare failed (\(String(cString: sqlite3_errmsg(self.db)), privacy: .public)): \(sql.prefix(80), privacy: .public)")
+            return false
+        }
         bind(stmt)
-        sqlite3_step(stmt)
+        let rc = sqlite3_step(stmt)
         sqlite3_finalize(stmt)
+        guard rc == SQLITE_DONE || rc == SQLITE_ROW else {
+            log.error("step failed (\(String(cString: sqlite3_errmsg(self.db)), privacy: .public)): \(sql.prefix(80), privacy: .public)")
+            return false
+        }
+        return true
     }
 
     private func query(_ sql: String, bind: ((OpaquePointer?) -> Void)? = nil, row: (OpaquePointer?) -> Void) {
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            log.error("prepare failed (\(String(cString: sqlite3_errmsg(self.db)), privacy: .public)): \(sql.prefix(80), privacy: .public)")
+            return
+        }
         bind?(stmt)
         while sqlite3_step(stmt) == SQLITE_ROW { row(stmt) }
         sqlite3_finalize(stmt)
