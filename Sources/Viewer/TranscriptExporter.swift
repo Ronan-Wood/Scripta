@@ -23,10 +23,8 @@ enum TranscriptExporter {
     /// The transcript body without YAML frontmatter, as plain text.
     static func plainText(of url: URL) -> String {
         let content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        guard content.hasPrefix("---") else { return content }
-        let parts = content.components(separatedBy: "---")
-        guard parts.count >= 3 else { return content }
-        return parts.dropFirst(2).joined(separator: "---").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let split = Frontmatter.split(content) else { return content }
+        return split.body.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Attributed rendering (for PDF)
