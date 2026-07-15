@@ -26,6 +26,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
     }
     private var isStarting = false
     private var isTerminating = false
+    private var pauseTask: Task<Void, Never>?
     private var proximityTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
 
@@ -54,8 +55,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             // Ignore while a recording is live (e.g. a calendar-grid click mid-recording) —
             // starting a second session would orphan the first one's audio.
             guard let self, self.uiState == .idle, !self.isStarting else { return }
-            self.tiedMeeting = meeting
-            self.startRecording()
+            self.startRecording(tiedTo: meeting)
         }
         AppModel.shared.togglePause = { [weak self] in self?.togglePause() }
         AppModel.shared.reloadCalls()
@@ -245,7 +245,9 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         }
     }
 
-    private func startRecording() {
+    /// `meeting` ties the recording to a calendar event; it is stored only once the session
+    /// actually starts, so an aborted attempt can never mislabel the next recording.
+    private func startRecording(tiedTo meeting: UpcomingCall? = nil) {
         guard uiState == .idle, !isStarting else { return }
         isStarting = true
         Task {
@@ -279,6 +281,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             do {
                 try await newSession.start(screenSource: screenSource)
                 session = newSession
+                tiedMeeting = meeting
                 recordingStartedAt = Date()
                 uiState = .recording
                 updateIcon()
@@ -309,7 +312,13 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private func togglePause() {
         guard let current = session, uiState == .recording else { return }
         let nowPaused = !AppModel.shared.isPaused
-        Task { nowPaused ? await current.pause() : await current.resume() }
+        // Chained, not fire-and-forget: a rapid pause→resume must apply in order, or the
+        // capture flags can land reversed and both tracks silently stop writing.
+        let previous = pauseTask
+        pauseTask = Task {
+            await previous?.value
+            nowPaused ? await current.pause() : await current.resume()
+        }
         AppModel.shared.applyPaused(nowPaused)
         updateIcon()
     }
@@ -319,6 +328,10 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         // The recording window closes now (stop() then spends time transcribing).
         let window = recordingStartedAt.map { ($0, Date()) }
         recordingStartedAt = nil
+        // Cleared here, not in the success path — a failed stop must not leak the tie into
+        // the next unrelated recording.
+        let tied = tiedMeeting
+        tiedMeeting = nil
         // Reflect processing immediately — the heavy work happens inside stop().
         uiState = .processing
         updateIcon()
@@ -328,8 +341,6 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
                 // Auto-tag by calendar group: from the explicit "Record this" meeting, or the
                 // calendar event that overlapped the recording. Applied even if the prompt is off.
-                let tied = tiedMeeting
-                tiedMeeting = nil
                 let calendarContext = window.flatMap { CalendarWatcher.shared.callContext(from: $0.0, to: $0.1) }
                 let groupTag = (tied?.calendarID).flatMap { AppSettings.calendarGroups[$0] } ?? calendarContext?.groupTag
                 if let groupTag, !groupTag.isEmpty { appendTag(groupTag, to: transcriptURL) }
