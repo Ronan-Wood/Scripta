@@ -34,12 +34,12 @@ enum TranscriptStore {
     static func list() -> [TranscriptMeta] {
         let folder = AppSettings.outputFolder
         guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            at: folder, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
         ) else { return [] }
 
         return entries
             .filter { $0.pathExtension == "md" }
-            .compactMap(parseMeta)   // parseMeta returns nil for files without our marker
+            .compactMap(meta(of:))   // nil for files without our marker
             .sorted { ($0.date, $0.time) > ($1.date, $1.time) }   // newest first, from frontmatter
     }
 
@@ -48,25 +48,42 @@ enum TranscriptStore {
     }
 
     /// Frontmatter metadata for a single transcript, or nil if it isn't an app-authored file.
+    /// Cached by (path, mtime): list() runs on the main thread from several views, and the
+    /// reader re-resolves the selection per invalidation — neither should re-read files.
     static func meta(of url: URL) -> TranscriptMeta? {
-        parseMeta(url)
+        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate ?? .distantPast
+        cacheLock.lock()
+        if let cached = metaCache[url.path], cached.mtime == mtime {
+            let meta = cached.meta
+            cacheLock.unlock()
+            return meta
+        }
+        cacheLock.unlock()
+        let parsed = parseMeta(url)
+        cacheLock.lock()
+        metaCache[url.path] = (mtime, parsed)
+        cacheLock.unlock()
+        return parsed
     }
 
-    /// Full-text (case-insensitive) match against a transcript's contents.
-    static func matches(_ meta: TranscriptMeta, query: String) -> Bool {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return true }
-        if meta.displayTitle.lowercased().contains(q) { return true }
-        if meta.subtitle.lowercased().contains(q) { return true }
-        return body(of: meta.url).lowercased().contains(q)
-    }
+    private static var metaCache: [String: (mtime: Date, meta: TranscriptMeta?)] = [:]
+    private static let cacheLock = NSLock()
 
     // MARK: - Frontmatter parsing
 
+    /// Frontmatter lives in the first bytes — reading whole transcripts to list them made
+    /// every Calls/Home visit scale with total library size.
+    private static let headByteCount = 4096
+
     private static func parseMeta(_ url: URL) -> TranscriptMeta? {
-        guard let content = try? String(contentsOf: url, encoding: .utf8),
-              let split = Frontmatter.split(content),
-              Frontmatter.hasOwnerMarker(split.frontmatter) else { return nil }
+        guard let head = headText(of: url) else { return nil }
+        var split = Frontmatter.split(head)
+        if split == nil, head.utf8.count >= headByteCount - 4 {
+            // Frontmatter longer than the head (rare) — fall back to a full read.
+            split = (try? String(contentsOf: url, encoding: .utf8)).flatMap(Frontmatter.split)
+        }
+        guard let split, Frontmatter.hasOwnerMarker(split.frontmatter) else { return nil }
         let frontmatter = split.frontmatter
 
         func field(_ key: String) -> String {
@@ -96,5 +113,14 @@ enum TranscriptStore {
             participants: listField("participants"),
             tags: listField("tags").filter { $0 != TranscriptWriter.ownerMarker }
         )
+    }
+
+    /// First bytes of the file, decoded leniently (a cut mid-character only mangles the tail,
+    /// which is past the frontmatter we parse).
+    private static func headText(of url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: headByteCount) else { return nil }
+        return String(decoding: data, as: UTF8.self)
     }
 }
