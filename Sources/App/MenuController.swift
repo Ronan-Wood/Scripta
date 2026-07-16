@@ -404,6 +404,14 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             do {
                 let transcriptURL = try await current.stop()
 
+                // Post-call screen captioning (app layer, uses the vision model) — patches the
+                // transcript's Screen Context, then deletes the ephemeral screenshots.
+                if let captionDir = current.pendingCaptionDir {
+                    Task.detached(priority: .utility) {
+                        await ScreenCaptionPatcher.run(transcriptURL: transcriptURL, imageDir: captionDir)
+                    }
+                }
+
                 // The group is now captured into frontmatter at record time (see start()), so no
                 // stop-time group tagging is needed.
 
