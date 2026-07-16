@@ -36,6 +36,26 @@ final class AppModel: ObservableObject {
     /// Non-nil while recording in a non-default mode (e.g. "Conference · System audio"), for the UI.
     @Published var recordingModeName: String?
 
+    /// The active workspace (the privacy partition). Retrieval is hard-scoped to it. Persisted, and
+    /// republished to the MCP heartbeat so LLM clients honor the same scope.
+    @Published var activeGroup: String = AppSettings.activeGroup {
+        didSet {
+            guard oldValue != activeGroup else { return }
+            AppSettings.activeGroup = activeGroup
+            MCPStateFile.write()
+            reloadCalls()
+        }
+    }
+
+    /// Workspaces available in the switcher: configured calendar groups ∪ groups present in the
+    /// corpus (plus the active one). "" (Ungrouped) is offered separately by the UI.
+    func availableGroups() -> [String] {
+        var set = Set(AppSettings.calendarGroups.values.filter { !$0.isEmpty })
+        IndexStore.shared?.groups().forEach { set.insert($0.name) }
+        if !activeGroup.isEmpty { set.insert(activeGroup) }
+        return set.sorted()
+    }
+
     // High-frequency recording surfaces, split out of this object (see M12): observing
     // AppModel must not mean re-rendering at mic-buffer rate.
     let meter = MicMeterModel()

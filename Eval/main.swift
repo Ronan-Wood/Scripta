@@ -138,7 +138,56 @@ print("  corpus: \(indexed) transcripts · \(gold.cases.count) gold cases · k=\
 print(rows.joined(separator: "\n"))
 print(String(format: "\n  recall@1 %.2f   recall@%d %.2f   MRR %.3f", r1, topK, r5, mrr))
 
-let pass = r5 >= gold.gates.recallAt5 && r1 >= gold.gates.recallAt1 && mrr >= gold.gates.mrr
+let retrievalPass = r5 >= gold.gates.recallAt5 && r1 >= gold.gates.recallAt1 && mrr >= gold.gates.mrr
 print(String(format: "  gates: recall@5≥%.2f recall@1≥%.2f MRR≥%.2f  →  %@",
-             gold.gates.recallAt5, gold.gates.recallAt1, gold.gates.mrr, (pass ? "PASS" : "FAIL") as NSString))
+             gold.gates.recallAt5, gold.gates.recallAt1, gold.gates.mrr, (retrievalPass ? "PASS" : "FAIL") as NSString))
+
+// MARK: - Leak-check invariant (the Phase 1 gate)
+// The real corpus is ungrouped (""). Inject grouped fixtures with IDENTICAL content across two
+// groups, then assert as a TOTAL invariant (every result of every scoped query, not a sample):
+// a query scoped to a workspace NEVER returns a call from another. Also test the ungrouped bucket.
+
+print("\nPrivacy-wall leak check")
+var pathGroup: [String: String] = [:]   // real corpus paths default to "" via lookup fallback
+func fixture(_ path: String, _ group: String, _ text: String) {
+    let t = IndexedTranscript(path: path, title: "Fixture", date: "2026-07-16", time: "10:00",
+        duration: "1:00", participants: ["Sam"], tags: ["call"], summary: "shared budget project deal",
+        mtime: 0, mode: "", group: group)
+    store.upsert(t, chunks: [IndexedChunk(startMs: 0, endMs: 1000, speaker: nil, text: text)])
+    pathGroup[path] = group
+}
+let sharedText = "we discussed the budget and the baseball project and the acme deal pricing"
+fixture("/fx-alpha-1.md", "Alpha", sharedText)
+fixture("/fx-alpha-2.md", "Alpha", "alpha only vacation plans and the family reunion")
+fixture("/fx-beta-1.md",  "Beta",  sharedText)
+fixture("/fx-beta-2.md",  "Beta",  "beta only quarterly targets and the hiring plan")
+
+let probes = gold.cases.map(\.query) + ["budget", "baseball", "project", "deal", "vacation", "hiring", "the"]
+var checks = 0, leaks = 0
+for g in ["Alpha", "Beta", ""] {
+    for q in probes {
+        for hit in store.search(q, group: g, limit: 40) {
+            checks += 1
+            let actual = pathGroup[hit.path] ?? ""   // real (ungrouped) corpus → ""
+            if actual != g {
+                leaks += 1
+                print("  LEAK: query \"\(q)\" scoped \"\(g)\" returned a \"\(actual)\" call (\(hit.path))")
+            }
+        }
+    }
+}
+// Ungrouped-behavior: a grouped fixture must never surface in the "" bucket, and the all-groups
+// override must reach every group.
+let ungroupedShared = Set(store.search("budget baseball project", group: "", limit: 40).map(\.path))
+let ungroupedLeak = ungroupedShared.contains { pathGroup[$0] != nil }   // any fixture in "" = leak
+if ungroupedLeak { leaks += 1; print("  LEAK: a grouped fixture surfaced in the ungrouped bucket") }
+let allGroups = Set(store.search(sharedText, group: nil, limit: 40).map(\.path))
+let overrideReaches = allGroups.contains("/fx-alpha-1.md") && allGroups.contains("/fx-beta-1.md")
+
+let leakPass = leaks == 0 && overrideReaches
+print("  \(checks) scoped results checked across Alpha/Beta/ungrouped · all-groups override reaches both: \(overrideReaches)")
+print("  → \(leakPass ? "PASS — the wall holds" : "FAIL — cross-group leak")")
+
+let pass = retrievalPass && leakPass
+print("\nOVERALL: \(pass ? "PASS" : "FAIL")")
 exit(pass ? 0 : 1)

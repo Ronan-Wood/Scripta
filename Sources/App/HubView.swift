@@ -62,6 +62,9 @@ struct HubView: View {
             .padding(.horizontal, Space.x3)
             .padding(.top, Space.x2)
 
+            groupSwitcher
+            Rectangle().fill(Carbon.borderSubtle).frame(height: 1).padding(.horizontal, Space.x3).padding(.vertical, Space.x1)
+
             ForEach(HubSection.primary, id: \.self) { navItem($0) }
             Spacer()
             ForEach(HubSection.secondary, id: \.self) { navItem($0) }
@@ -69,6 +72,36 @@ struct HubView: View {
         .padding(.bottom, Space.x3)
         .frame(width: expanded ? 216 : 60)
         .background(VisualEffectView())
+    }
+
+    /// The active-workspace picker. Search and Ask are hard-scoped to the selection; changing it
+    /// reloads every scoped surface (via AppModel.activeGroup's didSet).
+    private var groupSwitcher: some View {
+        Menu {
+            Picker("Workspace", selection: Binding(get: { model.activeGroup }, set: { model.activeGroup = $0 })) {
+                Text("Ungrouped").tag("")
+                ForEach(model.availableGroups(), id: \.self) { Text($0).tag($0) }
+            }
+        } label: {
+            HStack(spacing: Space.x2) {
+                Image(systemName: "square.stack.3d.up.fill")
+                    .font(.system(size: 13)).foregroundStyle(Carbon.interactive)
+                if expanded {
+                    Text(model.activeGroup.isEmpty ? "Ungrouped" : model.activeGroup)
+                        .font(CarbonFont.medium(13)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9)).foregroundStyle(Carbon.iconSecondary)
+                }
+            }
+            .padding(.horizontal, Space.x3).padding(.vertical, Space.x2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .padding(.horizontal, Space.x3)
+        .help("Active workspace — search and Ask are scoped to it")
     }
 
     private func navItem(_ item: HubSection) -> some View {

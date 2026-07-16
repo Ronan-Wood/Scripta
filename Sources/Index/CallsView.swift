@@ -10,6 +10,10 @@ struct CallsView: View {
     @State private var rows: [CallRow] = []
     @State private var selection: URL?
     @State private var selectionMs: Int?
+    /// Transient, non-sticky: an explicit "search all workspaces" that resets on any navigation
+    /// (CallsView is recreated with a fresh @State), so it can never become a lingering default.
+    @State private var allGroups = false
+    @ObservedObject private var appModel = AppModel.shared
 
     init(focusCall: URL? = nil, focusMs: Int? = nil, focusTag: String? = nil) {
         _tag = State(initialValue: focusTag)
@@ -35,6 +39,11 @@ struct CallsView: View {
         }
         .background(Carbon.background)
         .onAppear(perform: refresh)
+        .onChange(of: appModel.activeGroup) { _, _ in allGroups = false; refresh() }
+    }
+
+    private var scopeName: String {
+        allGroups ? "all workspaces" : (appModel.activeGroup.isEmpty ? "Ungrouped" : appModel.activeGroup)
     }
 
     // MARK: - List column
@@ -59,7 +68,23 @@ struct CallsView: View {
             .frame(height: 34)
             .background(Carbon.field, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: Radius.field, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
-            .padding(Space.x4)
+            .padding(.horizontal, Space.x4).padding(.top, Space.x4)
+
+            // Scope indicator — always visible so the active workspace is never a hidden default.
+            HStack(spacing: Space.x2) {
+                CarbonIcon(name: "folder", size: 11, color: Carbon.iconSecondary)
+                Text(scopeName).font(CarbonFont.label(11)).foregroundStyle(Carbon.textSecondary)
+                if !allGroups {
+                    Text("· \(store?.count(group: appModel.activeGroup) ?? 0) calls")
+                        .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                }
+                Spacer()
+                if allGroups {
+                    Button("Back to workspace") { allGroups = false; refresh() }
+                        .buttonStyle(.plain).font(CarbonFont.label(11)).foregroundStyle(Carbon.interactive)
+                }
+            }
+            .padding(.horizontal, Space.x5).padding(.top, Space.x2).padding(.bottom, Space.x1)
 
             if participant != nil || tag != nil {
                 HStack(spacing: Space.x2) {
@@ -73,8 +98,14 @@ struct CallsView: View {
             if rows.isEmpty {
                 VStack(spacing: Space.x3) {
                     CarbonIcon(name: "document", size: 28, color: Carbon.iconSecondary)
-                    Text(query.isEmpty ? "No calls yet" : "No matches")
+                    Text(query.isEmpty ? "No calls in \(scopeName)" : "No matches in \(scopeName)")
                         .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
+                    // Blind affordance: offer to widen WITHOUT revealing whether other workspaces
+                    // actually contain matches (the privacy wall must not leak via the no-result path).
+                    if !query.isEmpty && !allGroups && !appModel.availableGroups().isEmpty {
+                        Button("Search all workspaces") { allGroups = true; refresh() }
+                            .buttonStyle(.borderedProminent).controlSize(.small)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -176,7 +207,8 @@ struct CallsView: View {
 
     private func refresh() {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
-        let group = AppSettings.activeGroup   // hard-scoped to the active workspace
+        // Hard-scoped to the active workspace; nil only under the explicit, transient all-groups.
+        let group: String? = allGroups ? nil : appModel.activeGroup
         if !trimmed.isEmpty, let store {
             var seen = Set<URL>()
             rows = store.search(trimmed, participant: participant, tag: tag, group: group, limit: 60).compactMap { hit in
@@ -190,7 +222,7 @@ struct CallsView: View {
             }
         } else {
             rows = TranscriptStore.list().filter { meta in
-                meta.group == group   // the privacy wall on the browse list
+                (group.map { meta.group == $0 } ?? true)   // the privacy wall on the browse list (nil = all)
                 && (participant.map { p in meta.participants.contains { $0.range(of: p, options: .caseInsensitive) != nil } } ?? true)
                 && (tag.map { t in meta.tags.contains { $0.range(of: t, options: .caseInsensitive) != nil } } ?? true)
             }.map { CallRow(id: $0.url, title: $0.displayTitle, subtitle: $0.subtitle, snippet: nil) }
