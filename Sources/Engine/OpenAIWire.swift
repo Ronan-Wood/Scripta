@@ -111,6 +111,34 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
         return chunk.choices.first?.delta.content
     }
 
+    // MARK: - Vision (screen captioning)
+
+    /// Captions an image with a local vision model (e.g. qwen2.5vl). OpenAI multimodal wire format:
+    /// a message whose content is [text, image_url(data URI)]. Non-streaming.
+    func caption(model: String, imageData: Data, prompt: String, timeout: TimeInterval = 90) async throws -> String {
+        let dataURI = "data:image/png;base64,\(imageData.base64EncodedString())"
+        let messages: [[String: Any]] = [[
+            "role": "user",
+            "content": [
+                ["type": "text", "text": prompt],
+                ["type": "image_url", "image_url": ["url": dataURI]],
+            ],
+        ]]
+        var req = URLRequest(url: try endpoint("chat/completions"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = timeout
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["model": model, "messages": messages, "stream": false])
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw EngineError.badResponse }
+        guard http.statusCode == 200 else { throw EngineError.http(http.statusCode) }
+        struct Resp: Decodable { struct C: Decodable { struct M: Decodable { let content: String }; let message: M }; let choices: [C] }
+        guard let r = try? JSONDecoder().decode(Resp.self, from: data), let text = r.choices.first?.message.content else {
+            throw EngineError.badResponse
+        }
+        return text
+    }
+
     // MARK: - Embeddings (Phase B)
 
     func embeddings(model: String, input: [String], timeout: TimeInterval = 30) async throws -> [[Float]] {

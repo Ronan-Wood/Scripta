@@ -40,6 +40,26 @@ final class RecordingSession {
     private var mode: RecordingMode = .call
     private var group = ""   // captured at start (calendar group or active workspace)
     private var extraVocab: [String] = []   // names to bias ASR toward (attendees, confirmed entities)
+    private var captionDir: URL?            // ephemeral retained screenshots, if a vision model is on
+
+    /// Retained screenshots awaiting the post-call VLM caption pass (nil if none). The app layer
+    /// captions + deletes this after stop; it lives outside the session dir so `cleanup()` (which
+    /// deletes the audio) doesn't take it.
+    var pendingCaptionDir: URL? { captionDir }
+
+    /// Root for ephemeral caption dirs — swept at launch so a crash can't leave screenshots behind.
+    static var pendingCaptionsRoot: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("CallTranscriber", isDirectory: true)
+            .appendingPathComponent("pending-captions", isDirectory: true)
+        return base
+    }
+
+    /// Deletes any leftover caption dirs from a previous run (their transcripts already have OCR
+    /// screen text; only the nice-to-have captions are lost). Call on launch.
+    static func sweepPendingCaptions() {
+        try? FileManager.default.removeItem(at: pendingCaptionsRoot)
+    }
     // Paused intervals are spliced out of the audio tracks, so wall-clock duration must
     // splice them out too or the frontmatter overstates the call.
     private var pausedAccum: TimeInterval = 0
@@ -181,11 +201,20 @@ final class RecordingSession {
         systemCapture = system
 
         if screenSource != .off {
+            // If a vision model is assigned, retain frame PNGs to an ephemeral caption dir OUTSIDE
+            // the session temp dir (so it survives `cleanup()` for the post-call caption pass; the
+            // captioner deletes it, and the launch sweep clears any crash leftovers).
+            if !AppSettings.visionModel.isEmpty {
+                let dir = Self.pendingCaptionsRoot.appendingPathComponent(sessionDir.lastPathComponent, isDirectory: true)
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                captionDir = dir
+            }
             let capturer = ScreenContextCapturer(
                 interval: TimeInterval(AppSettings.screenCaptureInterval),
                 sessionStart: startedAt,
                 focus: AppSettings.screenFocus,
-                source: screenSource
+                source: screenSource,
+                imageDir: captionDir
             )
             await capturer.start()
             screenCapturer = capturer

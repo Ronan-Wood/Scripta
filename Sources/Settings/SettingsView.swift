@@ -41,6 +41,7 @@ struct SettingsView: View {
     @State private var rerankEnabled = AppSettings.rerankEnabled
     @State private var embedModel = AppSettings.embedModel
     @State private var mirrorEnabled = AppSettings.mirrorEnabled
+    @State private var visionModel = AppSettings.visionModel
 
     var body: some View {
         Form {
@@ -155,6 +156,14 @@ struct SettingsView: View {
                         }
                     }
                     .onChange(of: embedModel) { _, v in AppSettings.embedModel = v }
+                    Picker("Screen captioning (vision)", selection: $visionModel) {
+                        Text("Off — OCR text only").tag("")
+                        ForEach(endpointModels, id: \.self) { Text($0).tag($0) }
+                        if !visionModel.isEmpty && !endpointModels.contains(visionModel) {
+                            Text("\(visionModel) (not on server)").tag(visionModel)
+                        }
+                    }
+                    .onChange(of: visionModel) { _, v in AppSettings.visionModel = v }
                     if !askModel.isEmpty {
                         Toggle("Rerank Ask results (experimental)", isOn: $rerankEnabled)
                             .onChange(of: rerankEnabled) { _, v in AppSettings.rerankEnabled = v }

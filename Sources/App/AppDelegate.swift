@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationManager.shared.configure()
         menuController = MenuController()
 
+        RecordingSession.sweepPendingCaptions()   // clear screenshots a crash may have orphaned
         // Recover any recordings a crash/forced-logout orphaned, then reconcile the retrieval
         // index (which picks up whatever recovery just wrote). Both are background work.
         Task.detached(priority: .utility) {

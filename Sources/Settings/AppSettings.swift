@@ -35,6 +35,7 @@ enum AppSettings {
         static let rerankEnabled = "rerankEnabled"
         static let embedModel = "embedModel"
         static let mirrorEnabled = "mirrorEnabled"
+        static let visionModel = "visionModel"
         static let sidebarExpanded = "sidebarExpanded"
         static let globalHotkey = "globalHotkey"
         static let liveTranscription = "liveTranscription"
@@ -263,6 +264,13 @@ enum AppSettings {
     static var embedModel: String {
         get { defaults.string(forKey: Keys.embedModel) ?? "" }
         set { defaults.set(newValue, forKey: Keys.embedModel) }
+    }
+
+    /// Local vision model for captioning screenshots OCR can't read (e.g. "qwen2.5vl:7b"). "" =
+    /// off. Runs only in the post-call pass, never during a meeting.
+    static var visionModel: String {
+        get { defaults.string(forKey: Keys.visionModel) ?? "" }
+        set { defaults.set(newValue, forKey: Keys.visionModel) }
     }
 
     /// Mirror the entity graph into the vault as `Entities/<Group>/…` stub notes. Default off —
