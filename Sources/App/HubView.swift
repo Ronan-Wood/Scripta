@@ -9,6 +9,8 @@ struct HubView: View {
     @State private var focusCall: URL?
     @State private var focusMs: Int?
     @State private var focusTag: String?
+    @State private var confirmingWorkspaceDelete = false
+    @State private var deleteCandidateCount = 0
 
     var body: some View {
         HStack(spacing: 0) {
@@ -21,6 +23,19 @@ struct HubView: View {
         .frame(minWidth: 940, minHeight: 640)
         .onChange(of: model.route) { _, route in handle(route) }
         .toolbar { ToolbarItem(placement: .primaryAction) { recordToolbarButton } }
+        .confirmationDialog("Delete the “\(model.activeGroup)” workspace?",
+                            isPresented: $confirmingWorkspaceDelete, titleVisibility: .visible) {
+            Button("Delete \(deleteCandidateCount) call\(deleteCandidateCount == 1 ? "" : "s")", role: .destructive) {
+                let group = model.activeGroup
+                Task.detached(priority: .userInitiated) {
+                    WorkspaceDeleter.delete(group: group)
+                    await MainActor.run { model.activeGroup = ""; model.reloadCalls() }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently deletes the transcript files for every call in “\(model.activeGroup)”. This can't be undone.")
+        }
     }
 
     /// Global record control in the window toolbar — present on every section, which also keeps
@@ -81,6 +96,14 @@ struct HubView: View {
             Picker("Workspace", selection: Binding(get: { model.activeGroup }, set: { model.activeGroup = $0 })) {
                 Text("Ungrouped").tag("")
                 ForEach(model.availableGroups(), id: \.self) { Text($0).tag($0) }
+            }
+            // Destructive: wipe every call in a named workspace (the "before I lend the laptop" case).
+            if !model.activeGroup.isEmpty {
+                Divider()
+                Button(role: .destructive) {
+                    deleteCandidateCount = WorkspaceDeleter.candidates(group: model.activeGroup).count
+                    confirmingWorkspaceDelete = true
+                } label: { Label("Delete “\(model.activeGroup)” workspace…", systemImage: "trash") }
             }
         } label: {
             HStack(spacing: Space.x2) {
