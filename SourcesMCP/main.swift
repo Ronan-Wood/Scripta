@@ -175,14 +175,16 @@ struct RetrieveHit {
     let title, date, path, speaker, snippet: String
     let startMs: Int
     let score: Double
+    var isTopic = false
 }
 
-func retrieve(_ query: String, participant: String?, tag: String?, since: String?, limit: Int) -> [RetrieveHit]? {
+func retrieve(_ query: String, participant: String?, tag: String?, since: String?, speaker: String?, limit: Int) -> [RetrieveHit]? {
     guard let db = openIndex() else { return nil }
     defer { sqlite3_close(db) }
+    let speakerSet = speaker?.isEmpty == false
 
-    // Passage + topic fusion for one MATCH expression. Mirrors IndexStore.search so the MCP and
-    // the app return the same results (query building is the shared FTSQuery).
+    // Passage + (unless a speaker filter is set) topic fusion for one MATCH expression. Mirrors
+    // IndexStore.search so the MCP and the app return the same results (shared FTSQuery).
     func fused(_ match: String) -> [RetrieveHit] {
         var hits: [RetrieveHit] = []
         var sql = """
@@ -194,6 +196,7 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
         if participant?.isEmpty == false { sql += " AND lower(t.participants) LIKE ?" }
         if tag?.isEmpty == false { sql += " AND lower(t.tags) LIKE ?" }
         if since?.isEmpty == false { sql += " AND t.date >= ?" }
+        if speakerSet { sql += " AND c.speaker = ?" }
         sql += " ORDER BY bm25(chunks_fts) LIMIT \(max(1, limit));"
 
         var stmt: OpaquePointer?
@@ -204,6 +207,7 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
             if let p = participant, !p.isEmpty { bind("%\(p.lowercased())%") }
             if let t = tag, !t.isEmpty { bind("%\(t.lowercased())%") }
             if let s = since, !s.isEmpty { bind(s) }
+            if let sp = speaker, speakerSet { bind(sp) }
             func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
             while sqlite3_step(stmt) == SQLITE_ROW {
                 hits.append(RetrieveHit(title: col(0), date: col(1), path: col(2), speaker: col(4),
@@ -214,6 +218,8 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
         sqlite3_finalize(stmt); stmt = nil
 
         // Topic-level fusion: calls matched by name/summary/concept-tag with no spoken-word hit.
+        // Skipped under a speaker filter (topic rows carry no speaker), mirroring the app.
+        guard !speakerSet else { return Array(hits.prefix(max(1, limit))) }
         let seen = Set(hits.map(\.path))
         var tsql = """
         SELECT f.title, t.date, f.path, f.summary
@@ -238,7 +244,7 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
                 let summary = tcol(3)
                 hits.append(RetrieveHit(title: tcol(0), date: tcol(1), path: path, speaker: "",
                                         snippet: summary.isEmpty ? "matched on topic" : String(summary.prefix(160)),
-                                        startMs: 0, score: 0))
+                                        startMs: 0, score: 0, isTopic: true))
             }
             sqlite3_finalize(stmt); stmt = nil
         }
@@ -251,6 +257,29 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
     if !hits.isEmpty { return hits }
     guard let orMatch = FTSQuery.orExpression(query) else { return [] }
     return fused(orMatch)
+}
+
+/// Spoken lines of one transcript within [start, end] ms (from the chunk index — Screen Context is
+/// naturally excluded since chunks are built only from audio lines). nil for an unknown/guarded
+/// path or an empty window.
+func getSection(path: String, start: Int, end: Int) -> String? {
+    guard let meta = safeTranscript(at: path), let db = openIndex() else { return nil }
+    defer { sqlite3_close(db) }
+    let sql = "SELECT start_ms, IFNULL(speaker,''), text FROM chunks WHERE path = ? AND start_ms >= ? AND start_ms <= ? ORDER BY start_ms;"
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, meta.url.path, -1, SQLITE_TRANSIENT_MCP)
+    sqlite3_bind_int64(stmt, 2, Int64(start))
+    sqlite3_bind_int64(stmt, 3, Int64(end))
+    func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
+    var lines: [String] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+        let ms = Int(sqlite3_column_int64(stmt, 0))
+        let who = col(1).isEmpty ? "" : " \(col(1)):"
+        lines.append("[\(clockStamp(ms))]\(who) \(col(2))")
+    }
+    return lines.isEmpty ? nil : lines.joined(separator: "\n")
 }
 
 /// Per-value counts from a newline-joined column (participants or tags), most-frequent first.
@@ -326,7 +355,7 @@ func toolDefinitions() -> [[String: Any]] {
         ],
         [
             "name": "retrieve",
-            "description": "Semantic-style retrieval over the indexed call chunks: keyword-ranked (BM25) passages with their call, timestamp, and speaker, optionally filtered by participant/tag/date. Prefer this over search_transcripts for finding the most relevant moments across many calls.",
+            "description": "Semantic-style retrieval over the indexed call chunks: keyword-ranked (BM25) passages with their call, date, timestamp, and speaker, optionally filtered by participant/tag/date/speaker. Calls that match only by topic/title are shown as 'topic match' with no timestamp. Prefer this over search_transcripts, then use get_section to read around a hit.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
@@ -334,9 +363,23 @@ func toolDefinitions() -> [[String: Any]] {
                     "participant": ["type": "string", "description": "Only calls naming this participant."],
                     "tag": ["type": "string", "description": "Only calls with this tag."],
                     "since": ["type": "string", "description": "Only calls on or after this date (YYYY-MM-DD)."],
+                    "speaker": ["type": "string", "description": "Only passages spoken by this side: 'You' or 'Them'. Excludes unlabeled (single-sided/in-person) calls and topic matches."],
                     "limit": ["type": "integer", "description": "Max passages to return (default 15)."]
                 ],
                 "required": ["query"]
+            ]
+        ],
+        [
+            "name": "get_section",
+            "description": "Read the spoken lines of one transcript within a time window — e.g. the two minutes around a retrieve hit — instead of pulling the whole file. Screen Context is excluded. Times are milliseconds from the call start; the window is padded ~30s before `start` and `end` defaults to start + 2 min.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "path": ["type": "string", "description": "The transcript's file path (from retrieve/list)."],
+                    "start": ["type": "integer", "description": "Start time in milliseconds from the call start."],
+                    "end": ["type": "integer", "description": "End time in milliseconds (default start + 120000)."]
+                ],
+                "required": ["path", "start"]
             ]
         ],
         [
@@ -405,9 +448,21 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
             let meta = [[m.date, m.time].joined(separator: " "), m.duration].filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             if !meta.isEmpty { parts.append("(\(meta.joined(separator: ", ")))") }
             if !m.participants.isEmpty { parts.append("— \(m.participants.joined(separator: ", "))") }
-            return parts.joined(separator: " ") + "\n  path: \(m.url.path)"
+            var line = parts.joined(separator: " ")
+            if !m.tags.isEmpty { line += "\n  tags: \(m.tags.joined(separator: ", "))" }
+            return line + "\n  path: \(m.url.path)"
         }
         return textResult(lines.joined(separator: "\n"))
+
+    case "get_section":
+        guard let path = args["path"] as? String, let start = args["start"] as? Int else {
+            return textResult("Provide `path` and `start` (milliseconds).", isError: true)
+        }
+        let end = (args["end"] as? Int) ?? (start + 120_000)
+        guard let section = getSection(path: path, start: max(0, start - 30_000), end: end) else {
+            return textResult("No section found there (unknown path, not an app transcript, or empty window).", isError: true)
+        }
+        return textResult(section)
 
     case "get_transcript":
         guard let path = args["path"] as? String, let meta = safeTranscript(at: path) else {
@@ -450,15 +505,19 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         let limit = (args["limit"] as? Int) ?? 15
         guard let hits = retrieve(query, participant: args["participant"] as? String,
                                   tag: args["tag"] as? String, since: args["since"] as? String,
-                                  limit: limit) else {
+                                  speaker: args["speaker"] as? String, limit: limit) else {
             return textResult("The retrieval index isn't built yet. Open Call Transcriber once to build it.", isError: true)
         }
         if hits.isEmpty { return textResult("No relevant passages for \"\(query)\".") }
         let blocks = hits.map { h -> String in
-            let title = h.title.isEmpty ? h.date : h.title
-            let who = h.speaker.isEmpty ? "" : " \(h.speaker):"
+            let title = h.title.isEmpty ? "Untitled" : h.title
+            let date = h.date.isEmpty ? "" : " (\(h.date))"
             let snippet = h.snippet.replacingOccurrences(of: "⟦", with: "**").replacingOccurrences(of: "⟧", with: "**")
-            return "• \(title) — [\(clockStamp(h.startMs))]\(who) …\(snippet)…\n  path: \(h.path)"
+            if h.isTopic {
+                return "• \(title)\(date) — topic match: \(snippet)\n  path: \(h.path)"
+            }
+            let who = h.speaker.isEmpty ? "" : " \(h.speaker):"
+            return "• \(title)\(date) — [\(clockStamp(h.startMs))]\(who) …\(snippet)…\n  path: \(h.path)"
         }
         return textResult(blocks.joined(separator: "\n\n"))
 
