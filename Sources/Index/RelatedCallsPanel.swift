@@ -61,7 +61,7 @@ struct RelatedCallsPanel: View {
         Task.detached(priority: .utility) {
             // Passage-only (a real spoken moment) and above the relevance floor — show nothing
             // rather than weak topic/filler cards fed by raw live speech.
-            let hits = store.search(recent, limit: 12)
+            let hits = store.search(recent, group: AppSettings.activeGroup, limit: 12)
                 .filter { $0.startMs > 0 && $0.score <= Self.relevanceFloor }
             await MainActor.run {
                 var seen = Set<URL>()

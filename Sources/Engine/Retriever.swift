@@ -5,11 +5,11 @@ import Foundation
 /// otherwise it returns the store's ranking directly. Fail-open: any rerank failure falls back to
 /// BM25 order. Only the Ask path uses this — ⌘F search stays a direct <50ms FTS call.
 enum Retriever {
-    static func context(for query: String, limit k: Int) async -> [ContextChunk] {
+    static func context(for query: String, group: String?, limit k: Int) async -> [ContextChunk] {
         guard let store = IndexStore.shared else { return [] }
         let reranker = EngineRouter.rerankEngine()
         // Widen the candidate pool only when we're going to rerank it.
-        let candidates = store.context(for: query, limit: reranker != nil ? 40 : k)
+        let candidates = store.context(for: query, group: group, limit: reranker != nil ? 40 : k)
         guard let reranker, candidates.count > k else { return Array(candidates.prefix(k)) }
 
         let passages = candidates.enumerated().map { (index: $0.offset, text: String($0.element.text.prefix(350))) }

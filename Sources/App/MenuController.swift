@@ -17,6 +17,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
     private let statusItem: NSStatusItem
     private var hubWindow: NSWindow?
+    private var quickNotePanel: NSPanel?
 
     private var session: RecordingSession?
     private var recordingStartedAt: Date?
@@ -58,10 +59,12 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             self.startRecording(tiedTo: meeting)
         }
         AppModel.shared.togglePause = { [weak self] in self?.togglePause() }
+        AppModel.shared.addNote = { [weak self] text in self?.jotNote(text) }
         AppModel.shared.reloadCalls()
 
-        // Global ⌥⌘R start/stop.
+        // Global ⌥⌘R start/stop, ⌥⌘N quick note.
         HotKeyManager.shared.onTrigger = { [weak self] in self?.toggleRecording() }
+        HotKeyManager.shared.onNote = { [weak self] in self?.showQuickNote() }
         HotKeyManager.shared.setEnabled(AppSettings.globalHotkeyEnabled)
 
         // Show the running time next to the menu-bar icon while recording. DispatchQueue, not
@@ -290,7 +293,10 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 self?.handleSystemAudioFailure(error, in: newSession)
             }
             do {
-                try await newSession.start(mode: mode, screenSource: screenSource)
+                // Capture the group at record time (calendar's group if tied, else the active
+                // workspace) — a stable string, per the partition's record-time-capture rule.
+                let group = AppSettings.recordingGroup(forCalendarID: meeting?.calendarID)
+                try await newSession.start(mode: mode, screenSource: screenSource, group: group)
                 session = newSession
                 tiedMeeting = meeting
                 recordingStartedAt = Date()
@@ -319,6 +325,48 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         )
     }
 
+    // MARK: - Notes
+
+    /// Records a manual note against the live recording and bumps the shared count on success.
+    private func jotNote(_ text: String) {
+        guard let session, uiState == .recording else { return }
+        if session.addNote(text) { AppModel.shared.noteCount += 1 }
+    }
+
+    /// Shows the floating quick-note input (⌥⌘N). Only meaningful while recording — a note has
+    /// nowhere to go otherwise, so it's a silent no-op when idle. Reuses the panel if already open.
+    private func showQuickNote() {
+        guard uiState == .recording else { return }
+        if let panel = quickNotePanel {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
+        let view = QuickNoteView(
+            onSubmit: { [weak self] text in self?.jotNote(text) },
+            onClose: { [weak self] in self?.closeQuickNote() }
+        )
+        let panel = NSPanel(contentViewController: NSHostingController(rootView: view))
+        panel.styleMask = [.titled, .closable, .hudWindow]
+        panel.title = "Add Note"
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.delegate = self
+        panel.setContentSize(NSSize(width: 380, height: 150))
+        if let screen = NSScreen.main {
+            let frame = panel.frame
+            panel.setFrameOrigin(NSPoint(x: screen.frame.midX - frame.width / 2,
+                                         y: screen.frame.maxY - frame.height - 140))
+        }
+        quickNotePanel = panel
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    private func closeQuickNote() { quickNotePanel?.close() }
+
     @objc private func pauseRecording() { togglePause() }
 
     private func togglePause() {
@@ -337,6 +385,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
     private func stopRecording() {
         guard let current = session else { return }
+        closeQuickNote()   // notes have nowhere to land once we leave the recording state
         // The recording window closes now (stop() then spends time transcribing).
         let window = recordingStartedAt.map { ($0, Date()) }
         recordingStartedAt = nil
@@ -351,11 +400,8 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             do {
                 let transcriptURL = try await current.stop()
 
-                // Auto-tag by calendar group: from the explicit "Record this" meeting, or the
-                // calendar event that overlapped the recording. Applied even if the prompt is off.
-                let calendarContext = window.flatMap { CalendarWatcher.shared.callContext(from: $0.0, to: $0.1) }
-                let groupTag = (tied?.calendarID).flatMap { AppSettings.calendarGroups[$0] } ?? calendarContext?.groupTag
-                if let groupTag, !groupTag.isEmpty { appendTag(groupTag, to: transcriptURL) }
+                // The group is now captured into frontmatter at record time (see start()), so no
+                // stop-time group tagging is needed.
 
                 // Optional post-record prompt to name the call + participants (modal, skippable).
                 if AppSettings.promptForDetails && !isTerminating {
@@ -402,7 +448,14 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        guard notification.object as? NSWindow === hubWindow else { return }
+        let closing = notification.object as? NSWindow
+        if closing === quickNotePanel {
+            // Break the panel → hosting → view → closure → controller retain cycle.
+            quickNotePanel?.contentViewController = nil
+            quickNotePanel = nil
+            return
+        }
+        guard closing === hubWindow else { return }
         // Revert to menu-bar-only unless the user opted into a permanent Dock icon.
         if !AppSettings.showInDock {
             NSApp.setActivationPolicy(.accessory)

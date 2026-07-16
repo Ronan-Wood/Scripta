@@ -23,6 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Keep the index fresh against external edits to the (often vault-hosted) output folder.
         IndexWatcher.shared?.start(folder: AppSettings.outputFolder)
+        // Publish the active-workspace scope + a heartbeat for the MCP server (which refuses when
+        // the beat is stale, so the privacy wall binds LLM clients too).
+        MCPStateFile.startHeartbeat()
     }
 
     /// Quit (menu item, logout, shutdown) must not kill the process mid-recording: the raw

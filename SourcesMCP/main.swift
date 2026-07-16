@@ -27,6 +27,7 @@ struct Meta {
     let title, date, time, duration: String
     let participants, tags: [String]
     let isConference: Bool
+    let group: String
 }
 
 /// Splits on delimiter LINES (`---` alone on a line), mirroring the app's Frontmatter helper —
@@ -103,8 +104,25 @@ func parseMeta(_ url: URL) -> Meta? {
         duration: frontmatterField(fm, "duration"),
         participants: frontmatterList(fm, "participants"),
         tags: frontmatterList(fm, "tags").filter { $0 != ownerMarker },
-        isConference: frontmatterField(fm, "mode") == "conference"
+        isConference: frontmatterField(fm, "mode") == "conference",
+        group: frontmatterField(fm, "group")
     )
+}
+
+/// The active-workspace scope the server must honor, or a refusal. Reads the app's heartbeat file;
+/// if the app isn't running (stale/absent beat), the server refuses rather than trust a stale
+/// scope — the privacy wall can't be one process-death deep.
+func activeGroupScope() -> (group: String, refusal: String?) {
+    let stateURL = indexDBURL().deletingLastPathComponent().appendingPathComponent("mcp-state.json")
+    guard let data = try? Data(contentsOf: stateURL),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let beat = obj["heartbeat"] as? Double else {
+        return ("", "Open CallTranscriber and pick a workspace — the assistant won't query your calls without a live scope.")
+    }
+    if Date().timeIntervalSince1970 - beat > 60 {
+        return ("", "CallTranscriber isn't running. Open it (and choose the workspace you mean) before I query your calls — I won't answer against a stale scope.")
+    }
+    return ((obj["activeGroup"] as? String) ?? "", nil)
 }
 
 func bodyText(_ content: String) -> String {
@@ -184,7 +202,7 @@ func delimitedClause(_ column: String) -> String { " AND (char(10)||lower(\(colu
 func delimitedValue(_ value: String) -> String { "%\n\(value.lowercased())\n%" }
 let topicBM25 = "bm25(transcripts_fts, 0.0, 4.0, 1.0, 3.0, 0.5)"
 
-func retrieve(_ query: String, participant: String?, tag: String?, since: String?, speaker: String?, limit: Int) -> [RetrieveHit]? {
+func retrieve(_ query: String, participant: String?, tag: String?, since: String?, speaker: String?, group: String, limit: Int) -> [RetrieveHit]? {
     guard let db = openIndex() else { return nil }
     defer { sqlite3_close(db) }
     let speakerSet = speaker?.isEmpty == false
@@ -203,6 +221,7 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
         if tag?.isEmpty == false { sql += " " + delimitedClause("t.tags") }
         if since?.isEmpty == false { sql += " AND t.date >= ?" }
         if speakerSet { sql += " AND c.speaker = ?" }
+        sql += " AND t.\"group\" = ?"   // the privacy wall (always applied)
         sql += " ORDER BY bm25(chunks_fts) LIMIT \(max(1, limit));"
 
         var stmt: OpaquePointer?
@@ -214,6 +233,7 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
             if let t = tag, !t.isEmpty { bind(delimitedValue(t)) }
             if let s = since, !s.isEmpty { bind(s) }
             if let sp = speaker, speakerSet { bind(sp) }
+            bind(group)
             func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
             while sqlite3_step(stmt) == SQLITE_ROW {
                 hits.append(RetrieveHit(title: col(0), date: col(1), path: col(2), speaker: col(4),
@@ -235,6 +255,7 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
         if participant?.isEmpty == false { tsql += " " + delimitedClause("t.participants") }
         if tag?.isEmpty == false { tsql += " " + delimitedClause("t.tags") }
         if since?.isEmpty == false { tsql += " AND t.date >= ?" }
+        tsql += " AND t.\"group\" = ?"   // the privacy wall
         tsql += " ORDER BY \(topicBM25) LIMIT \(max(1, limit));"
         if sqlite3_prepare_v2(db, tsql, -1, &stmt, nil) == SQLITE_OK {
             var j: Int32 = 1
@@ -243,6 +264,7 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
             if let p = participant, !p.isEmpty { tbind(delimitedValue(p)) }
             if let t = tag, !t.isEmpty { tbind(delimitedValue(t)) }
             if let s = since, !s.isEmpty { tbind(s) }
+            tbind(group)
             func tcol(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
             while sqlite3_step(stmt) == SQLITE_ROW {
                 let path = tcol(2)
@@ -289,12 +311,13 @@ func getSection(path: String, start: Int, end: Int) -> String? {
 }
 
 /// Per-value counts from a newline-joined column (participants or tags), most-frequent first.
-func indexAggregate(column: String) -> [(name: String, count: Int)]? {
+func indexAggregate(column: String, group: String) -> [(name: String, count: Int)]? {
     guard let db = openIndex() else { return nil }
     defer { sqlite3_close(db) }
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, "SELECT \(column) FROM transcripts", -1, &stmt, nil) == SQLITE_OK else { return [] }
+    guard sqlite3_prepare_v2(db, "SELECT \(column) FROM transcripts WHERE \"group\" = ?", -1, &stmt, nil) == SQLITE_OK else { return [] }
     defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, group, -1, SQLITE_TRANSIENT_MCP)
     var spellings: [String: [String: Int]] = [:]   // lowercased key -> [original spelling: count]
     while sqlite3_step(stmt) == SQLITE_ROW {
         let value = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
@@ -409,9 +432,14 @@ func textResult(_ text: String, isError: Bool = false) -> [String: Any] {
 }
 
 func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
+    // Every tool is hard-scoped to the app's active workspace; refuse entirely on a stale scope.
+    let scope = activeGroupScope()
+    if let refusal = scope.refusal { return textResult(refusal, isError: true) }
+    let group = scope.group
+
     switch name {
     case "overview":
-        var items = allTranscripts()
+        var items = allTranscripts().filter { $0.group == group }
         if let since = args["since"] as? String, !since.isEmpty { items = items.filter { $0.date >= since } }
         let total = items.count
         let overviewLimit = max(1, (args["limit"] as? Int) ?? 40)
@@ -438,7 +466,7 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         return textResult(out)
 
     case "list_transcripts":
-        var items = allTranscripts()
+        var items = allTranscripts().filter { $0.group == group }
         if let participant = (args["participant"] as? String)?.lowercased(), !participant.isEmpty {
             items = items.filter { $0.participants.contains { $0.lowercased().contains(participant) } }
         }
@@ -467,15 +495,22 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         guard let path = args["path"] as? String, let start = args["start"] as? Int else {
             return textResult("Provide `path` and `start` (milliseconds).", isError: true)
         }
+        // Refuse a path outside the active workspace (the wall applies to direct reads too).
+        guard let meta = safeTranscript(at: path), meta.group == group else {
+            return textResult("That call isn't in the active workspace.", isError: true)
+        }
         let end = (args["end"] as? Int) ?? (start + 120_000)
         guard let section = getSection(path: path, start: max(0, start - 30_000), end: end) else {
-            return textResult("No section found there (unknown path, not an app transcript, or empty window).", isError: true)
+            return textResult("No section found there (empty window).", isError: true)
         }
         return textResult(section)
 
     case "get_transcript":
         guard let path = args["path"] as? String, let meta = safeTranscript(at: path) else {
             return textResult("No transcript found at that path (or it isn't an app transcript).", isError: true)
+        }
+        guard meta.group == group else {
+            return textResult("That call isn't in the active workspace.", isError: true)
         }
         return textResult((try? String(contentsOf: meta.url, encoding: .utf8)) ?? "")
 
@@ -485,7 +520,7 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         }
         let needle = query.lowercased()
         var hits: [String] = []
-        for m in allTranscripts() {
+        for m in allTranscripts() where m.group == group {
             guard let content = try? String(contentsOf: m.url, encoding: .utf8) else { continue }
             let body = bodyText(content)   // exclude YAML frontmatter from snippets
             let title = displayTitle(m)
@@ -514,7 +549,7 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         let limit = (args["limit"] as? Int) ?? 15
         guard let hits = retrieve(query, participant: args["participant"] as? String,
                                   tag: args["tag"] as? String, since: args["since"] as? String,
-                                  speaker: args["speaker"] as? String, limit: limit) else {
+                                  speaker: args["speaker"] as? String, group: group, limit: limit) else {
             return textResult("The retrieval index isn't built yet. Open Call Transcriber once to build it.", isError: true)
         }
         if hits.isEmpty { return textResult("No relevant passages for \"\(query)\".") }
@@ -531,14 +566,14 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         return textResult(blocks.joined(separator: "\n\n"))
 
     case "people":
-        guard let entries = indexAggregate(column: "participants") else {
+        guard let entries = indexAggregate(column: "participants", group: group) else {
             return textResult("The retrieval index isn't built yet. Open Call Transcriber once to build it.", isError: true)
         }
         if entries.isEmpty { return textResult("No participants named yet. Name calls in the app to populate this.") }
         return textResult(entries.map { "• \($0.name) — \($0.count) call\($0.count == 1 ? "" : "s")" }.joined(separator: "\n"))
 
     case "tags":
-        guard let entries = indexAggregate(column: "tags") else {
+        guard let entries = indexAggregate(column: "tags", group: group) else {
             return textResult("The retrieval index isn't built yet. Open Call Transcriber once to build it.", isError: true)
         }
         if entries.isEmpty { return textResult("No topic tags yet.") }

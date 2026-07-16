@@ -2,6 +2,14 @@ import Foundation
 import AVFoundation
 import OSLog
 
+/// A manual note the user typed during a recording, timestamped against the session start
+/// (paused intervals spliced out, exactly like the audio tracks) so it interleaves into the
+/// transcript body at the right moment.
+struct CallNote: Sendable {
+    let startMs: Int
+    let text: String
+}
+
 /// Orchestrates one recording end-to-end: captures system + microphone audio to a private
 /// temp directory, then on stop transcribes each track separately (mic = "You", system =
 /// "Them"), interleaves the segments by timestamp, writes a Markdown transcript to the
@@ -30,10 +38,16 @@ final class RecordingSession {
     private var activityToken: NSObjectProtocol?
     private var startedAt = Date()
     private var mode: RecordingMode = .call
+    private var group = ""   // captured at start (calendar group or active workspace)
     // Paused intervals are spliced out of the audio tracks, so wall-clock duration must
     // splice them out too or the frontmatter overstates the call.
     private var pausedAccum: TimeInterval = 0
     private var pauseBegan: Date?
+
+    // Manual in-call notes. Appended from the UI (main actor) via `addNote`, read once in `stop()`;
+    // the lock keeps that hand-off race-free without pinning the whole session to an actor.
+    private let notesLock = NSLock()
+    private var notes: [CallNote] = []
 
     /// Fired at most once, on the main actor, if system-audio capture dies mid-recording.
     /// The owner should stop the session so the mic track (and partial system track) survive.
@@ -106,12 +120,13 @@ final class RecordingSession {
         return sr > 0 ? Double(file.length) / sr : 0
     }
 
-    func start(mode: RecordingMode, screenSource: ScreenSource) async throws {
+    func start(mode: RecordingMode, screenSource: ScreenSource, group: String = "") async throws {
         guard state == .idle else { return }
         // Transitional state before the first await: the idle guard is check-then-act, so a
         // second start() arriving mid-await must see "not idle".
         state = .starting
         self.mode = mode
+        self.group = group
         do {
             try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
         } catch {
@@ -222,6 +237,33 @@ final class RecordingSession {
         await screenCapturer?.setPaused(false)
     }
 
+    /// Records a manual note at the current point in the call. Timestamp excludes paused time,
+    /// mirroring the audio tracks (a note typed while paused lands at the pause boundary). Ignored
+    /// unless a recording is live; blank notes are dropped. Returns whether the note was stored,
+    /// so the caller can keep a running count. Safe to call from the main actor.
+    @discardableResult
+    func addNote(_ text: String) -> Bool {
+        let clean = text.replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard state == .recording, !clean.isEmpty else { return false }
+
+        var elapsedPaused = pausedAccum
+        if let began = pauseBegan { elapsedPaused += Date().timeIntervalSince(began) }
+        let ms = max(0, Int((Date().timeIntervalSince(startedAt) - elapsedPaused) * 1000))
+
+        notesLock.lock()
+        notes.append(CallNote(startMs: ms, text: clean))
+        notesLock.unlock()
+        return true
+    }
+
+    private func drainNotes() -> [CallNote] {
+        notesLock.lock(); defer { notesLock.unlock() }
+        return notes
+    }
+
     /// Stops capture and runs the mix → transcribe → write pipeline. Returns the transcript
     /// URL on success. On success the raw audio is deleted; on failure it is left for the
     /// launch-time sweep so nothing persists indefinitely.
@@ -251,18 +293,21 @@ final class RecordingSession {
         let themWavURL = self.themWavURL
         let startedAt = self.startedAt
         let isConference = mode != .call
+        let group = self.group
         if let began = pauseBegan {   // stopped while paused
             pausedAccum += Date().timeIntervalSince(began)
             pauseBegan = nil
         }
         let duration = Date().timeIntervalSince(startedAt) - pausedAccum
+        let notes = drainNotes()
 
         do {
             // Heavy work (audio conversion + transcription) runs off the main actor.
             let transcriptURL = try await Task.detached(priority: .userInitiated) {
                 try await Self.produceTranscript(
                     systemURL: systemURL, micURL: micURL, youWavURL: youWavURL, themWavURL: themWavURL,
-                    startedAt: startedAt, duration: duration, snippets: snippets, isConference: isConference)
+                    startedAt: startedAt, duration: duration, snippets: snippets,
+                    notes: notes, isConference: isConference, group: group)
             }.value
 
             // Success: raw audio is no longer needed.
@@ -287,7 +332,8 @@ final class RecordingSession {
     static func produceTranscript(
         systemURL: URL, micURL: URL, youWavURL: URL, themWavURL: URL,
         startedAt: Date, duration: TimeInterval,
-        snippets: [ScreenSnippet], extraTags: [String] = [], isConference: Bool = false
+        snippets: [ScreenSnippet], notes: [CallNote] = [], extraTags: [String] = [],
+        isConference: Bool = false, group: String = ""
     ) async throws -> URL {
         // Convert each captured track to the transcription format. The peak tells us whether the
         // track actually carried speech.
@@ -318,8 +364,9 @@ final class RecordingSession {
             .filter { !$0.text.isEmpty }
 
         // Zero segments must fail like any other pipeline error — writing a placeholder
-        // transcript would count as "success" and delete the only copy of the audio.
-        guard !segments.isEmpty else {
+        // transcript would count as "success" and delete the only copy of the audio. But a call
+        // the user annotated with notes is worth keeping even if no speech was recognized.
+        guard !segments.isEmpty || !notes.isEmpty else {
             throw NSError(domain: "CallTranscriber", code: noSpeechCode,
                           userInfo: [NSLocalizedDescriptionKey: "No speech was recognized in the recording."])
         }
@@ -348,7 +395,8 @@ final class RecordingSession {
         let url = try TranscriptWriter.write(segments: segments,
                                              startedAt: startedAt, duration: duration,
                                              tags: tags, title: title, summary: summary,
-                                             screenSnippets: snippets, isConference: isConference)
+                                             screenSnippets: snippets, notes: notes,
+                                             isConference: isConference, group: group)
 
         if deferEnrichment {
             Task.detached(priority: .utility) {
