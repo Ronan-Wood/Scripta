@@ -386,6 +386,24 @@ final class IndexStore {
         return hits
     }
 
+    /// Entities appearing in a workspace, with call counts — the "People & Orgs" browse. Group-
+    /// scoped by joining each mention's call to the active workspace (mentions carry no group).
+    func entities(group: String, limit: Int = 200) -> [(id: String, name: String, kind: String, count: Int)] {
+        lock.lock(); defer { lock.unlock() }
+        var out: [(String, String, String, Int)] = []
+        let sql = """
+        SELECT e.id, e.name, e.kind, COUNT(DISTINCT m.path) AS n
+        FROM entities e JOIN entity_mentions m ON m.entity_id = e.id
+        JOIN transcripts t ON t.path = m.path
+        WHERE t.\"group\" = ?
+        GROUP BY e.id ORDER BY n DESC, e.name LIMIT \(max(1, limit));
+        """
+        query(sql, bind: { Self.bindStatic($0, 1, group) }) { stmt in
+            out.append((text(stmt, 0), text(stmt, 1), text(stmt, 2), Int(sqlite3_column_int(stmt, 3))))
+        }
+        return out
+    }
+
     /// Distinct entity ids mentioned in a transcript (for its reader / entity chips).
     func entityIDs(forPath path: String) -> [String] {
         lock.lock(); defer { lock.unlock() }
