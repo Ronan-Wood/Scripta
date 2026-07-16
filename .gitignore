@@ -2,3 +2,4 @@ build/
 dist/
 *.xcodeproj/
 .DS_Store
+Eval/*.db

@@ -1,0 +1,27 @@
+{
+  "notes": "Gold retrieval cases over the SYNTHETIC transcript corpus in Eval/corpus (fictional calls). `expect` lists filename substrings that a relevant call's path must contain. A case passes recall@k if any expected call appears in the top-k results. Twelve distractor calls share vocabulary with the targets (gears, tiles, rehearsal halls, dough, compost), so a ranking change can move a target out of the top k. The 'cycling' case is the keyword blind-spot test: the call's spoken passages never say the word, only its title and summary do. To score another corpus, pass --folder and --gold.",
+  "cases": [
+    { "id": "cycling-topic", "query": "cycling", "expect": ["Cycling Chat"] },
+    { "id": "chain-slipping", "query": "chain keeps slipping on the smallest cog", "expect": ["Cycling Chat"] },
+    { "id": "derailleur-fix", "query": "derailleur limit screw barrel adjuster", "expect": ["Cycling Chat"] },
+    { "id": "hill-route", "query": "climb past the reservoir gear ratios cassette", "expect": ["Cycling Chat"] },
+    { "id": "plant-sale", "query": "spring plant sale tomato seedlings", "expect": ["Garden Club Planning"] },
+    { "id": "compost-rota", "query": "compost bins rota volunteers noticeboard", "expect": ["Garden Club Planning"] },
+    { "id": "seed-labels", "query": "seed swap table labels variety", "expect": ["Garden Club Planning"] },
+    { "id": "lighthouse-novel", "query": "lighthouse novel keeper's diary storm scene", "expect": ["Book Club"] },
+    { "id": "rushed-ending", "query": "the ending felt rushed sister's letter", "expect": ["Book Club"] },
+    { "id": "next-book", "query": "short story collection for next month", "expect": ["Book Club"] },
+    { "id": "plumber-schedule", "query": "plumber pushes the tiling back a week", "expect": ["Kitchen Renovation"] },
+    { "id": "tile-backorder", "query": "matte green tiles back-ordered zellige fallback", "expect": ["Kitchen Renovation"] },
+    { "id": "budget-overrun", "query": "budget over cabinet hinges electrical outlet", "expect": ["Kitchen Renovation"] },
+    { "id": "unavailable-thursday", "query": "who is unavailable next Thursday altos", "expect": ["Choir Rehearsal Logistics"] },
+    { "id": "hall-booking", "query": "move rehearsal to Friday church hall caretaker", "expect": ["Choir Rehearsal Logistics"] },
+    { "id": "page-turner", "query": "someone to turn pages for the pianist", "expect": ["Choir Rehearsal Logistics"] },
+    { "id": "sourdough-starter", "query": "sourdough starter doubled overnight", "expect": ["2026-01-10 1500 Call"] },
+    { "id": "flat-loaves", "query": "loaves come out flat dense crumb under-proofing", "expect": ["2026-01-10 1500 Call"] },
+    { "id": "home-projects", "query": "home improvement project costs", "expect": ["Kitchen Renovation"] },
+    { "id": "rehearsal-hall-either", "query": "rehearsal church hall booking who is away", "expect": ["Choir Rehearsal Logistics", "Orchestra Rehearsal"] },
+    { "id": "tiles-plumber-kitchen", "query": "plumber tiles back-ordered kitchen", "expect": ["Kitchen Renovation"] }
+  ],
+  "gates": { "recallAt5": 0.85, "recallAt1": 0.55, "mrr": 0.65 }
+}

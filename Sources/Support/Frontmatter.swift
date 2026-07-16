@@ -34,6 +34,6 @@ enum Frontmatter {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard trimmed.hasPrefix("app:") else { return false }
         let value = trimmed.dropFirst(4).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
-        return value == TranscriptWriter.ownerMarker
+        return value == OwnerMarker.value
     }
 }

@@ -5,7 +5,7 @@ import SQLite3
 // exposes the app's transcripts read-only to LLM clients (Claude Code / Desktop / Cowork).
 // It initiates nothing — it only answers requests. Bundled inside the .app; spawned per client.
 
-let ownerMarker = "call-transcriber"
+let ownerMarker = OwnerMarker.value
 let serverName = "calltranscriber"
 let serverVersion = "1.0.0"
 
@@ -171,15 +171,6 @@ func openIndex() -> OpaquePointer? {
     return db
 }
 
-/// OR-of-prefix-terms FTS query, mirroring the app's builder so results match.
-func ftsQuery(_ raw: String) -> String? {
-    let terms = raw.lowercased()
-        .components(separatedBy: CharacterSet.alphanumerics.inverted)
-        .filter { $0.count >= 2 }
-    guard !terms.isEmpty else { return nil }
-    return terms.map { "\"\($0)\"*" }.joined(separator: " OR ")
-}
-
 struct RetrieveHit {
     let title, date, path, speaker, snippet: String
     let startMs: Int
@@ -189,70 +180,77 @@ struct RetrieveHit {
 func retrieve(_ query: String, participant: String?, tag: String?, since: String?, limit: Int) -> [RetrieveHit]? {
     guard let db = openIndex() else { return nil }
     defer { sqlite3_close(db) }
-    guard let match = ftsQuery(query) else { return [] }
 
-    var sql = """
-    SELECT t.title, t.date, c.path, c.start_ms, IFNULL(c.speaker,''),
-           snippet(chunks_fts, 0, '⟦', '⟧', '…', 12), bm25(chunks_fts)
-    FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid JOIN transcripts t ON t.path = c.path
-    WHERE chunks_fts MATCH ?
-    """
-    if participant?.isEmpty == false { sql += " AND lower(t.participants) LIKE ?" }
-    if tag?.isEmpty == false { sql += " AND lower(t.tags) LIKE ?" }
-    if since?.isEmpty == false { sql += " AND t.date >= ?" }
-    sql += " ORDER BY bm25(chunks_fts) LIMIT \(max(1, limit));"
+    // Passage + topic fusion for one MATCH expression. Mirrors IndexStore.search so the MCP and
+    // the app return the same results (query building is the shared FTSQuery).
+    func fused(_ match: String) -> [RetrieveHit] {
+        var hits: [RetrieveHit] = []
+        var sql = """
+        SELECT t.title, t.date, c.path, c.start_ms, IFNULL(c.speaker,''),
+               snippet(chunks_fts, 0, '⟦', '⟧', '…', 12), bm25(chunks_fts)
+        FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid JOIN transcripts t ON t.path = c.path
+        WHERE chunks_fts MATCH ?
+        """
+        if participant?.isEmpty == false { sql += " AND lower(t.participants) LIKE ?" }
+        if tag?.isEmpty == false { sql += " AND lower(t.tags) LIKE ?" }
+        if since?.isEmpty == false { sql += " AND t.date >= ?" }
+        sql += " ORDER BY bm25(chunks_fts) LIMIT \(max(1, limit));"
 
-    var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-    defer { sqlite3_finalize(stmt) }
-    var i: Int32 = 1
-    func bind(_ s: String) { sqlite3_bind_text(stmt, i, s, -1, SQLITE_TRANSIENT_MCP); i += 1 }
-    bind(match)
-    if let p = participant, !p.isEmpty { bind("%\(p.lowercased())%") }
-    if let t = tag, !t.isEmpty { bind("%\(t.lowercased())%") }
-    if let s = since, !s.isEmpty { bind(s) }
-
-    func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
-    var hits: [RetrieveHit] = []
-    while sqlite3_step(stmt) == SQLITE_ROW {
-        hits.append(RetrieveHit(title: col(0), date: col(1), path: col(2), speaker: col(4),
-                                snippet: col(5), startMs: Int(sqlite3_column_int64(stmt, 3)),
-                                score: sqlite3_column_double(stmt, 6)))
-    }
-    sqlite3_finalize(stmt); stmt = nil
-
-    // Topic-level fusion: surface calls that matched by name/summary/concept-tag even when no
-    // spoken chunk contained the word. Appended for paths not already returned as passages.
-    let seen = Set(hits.map(\.path))
-    var tsql = """
-    SELECT f.title, t.date, f.path, f.summary
-    FROM transcripts_fts f JOIN transcripts t ON t.path = f.path
-    WHERE transcripts_fts MATCH ?
-    """
-    if participant?.isEmpty == false { tsql += " AND lower(t.participants) LIKE ?" }
-    if tag?.isEmpty == false { tsql += " AND lower(t.tags) LIKE ?" }
-    if since?.isEmpty == false { tsql += " AND t.date >= ?" }
-    tsql += " ORDER BY bm25(transcripts_fts) LIMIT \(max(1, limit));"
-    if sqlite3_prepare_v2(db, tsql, -1, &stmt, nil) == SQLITE_OK {
-        var j: Int32 = 1
-        func tbind(_ s: String) { sqlite3_bind_text(stmt, j, s, -1, SQLITE_TRANSIENT_MCP); j += 1 }
-        tbind(match)
-        if let p = participant, !p.isEmpty { tbind("%\(p.lowercased())%") }
-        if let t = tag, !t.isEmpty { tbind("%\(t.lowercased())%") }
-        if let s = since, !s.isEmpty { tbind(s) }
-        func tcol(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let path = tcol(2)
-            if seen.contains(path) { continue }
-            let summary = tcol(3)
-            hits.append(RetrieveHit(title: tcol(0), date: tcol(1), path: path, speaker: "",
-                                    snippet: summary.isEmpty ? "matched on topic" : String(summary.prefix(160)),
-                                    startMs: 0, score: 0))
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            var i: Int32 = 1
+            func bind(_ s: String) { sqlite3_bind_text(stmt, i, s, -1, SQLITE_TRANSIENT_MCP); i += 1 }
+            bind(match)
+            if let p = participant, !p.isEmpty { bind("%\(p.lowercased())%") }
+            if let t = tag, !t.isEmpty { bind("%\(t.lowercased())%") }
+            if let s = since, !s.isEmpty { bind(s) }
+            func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                hits.append(RetrieveHit(title: col(0), date: col(1), path: col(2), speaker: col(4),
+                                        snippet: col(5), startMs: Int(sqlite3_column_int64(stmt, 3)),
+                                        score: sqlite3_column_double(stmt, 6)))
+            }
         }
         sqlite3_finalize(stmt); stmt = nil
+
+        // Topic-level fusion: calls matched by name/summary/concept-tag with no spoken-word hit.
+        let seen = Set(hits.map(\.path))
+        var tsql = """
+        SELECT f.title, t.date, f.path, f.summary
+        FROM transcripts_fts f JOIN transcripts t ON t.path = f.path
+        WHERE transcripts_fts MATCH ?
+        """
+        if participant?.isEmpty == false { tsql += " AND lower(t.participants) LIKE ?" }
+        if tag?.isEmpty == false { tsql += " AND lower(t.tags) LIKE ?" }
+        if since?.isEmpty == false { tsql += " AND t.date >= ?" }
+        tsql += " ORDER BY bm25(transcripts_fts) LIMIT \(max(1, limit));"
+        if sqlite3_prepare_v2(db, tsql, -1, &stmt, nil) == SQLITE_OK {
+            var j: Int32 = 1
+            func tbind(_ s: String) { sqlite3_bind_text(stmt, j, s, -1, SQLITE_TRANSIENT_MCP); j += 1 }
+            tbind(match)
+            if let p = participant, !p.isEmpty { tbind("%\(p.lowercased())%") }
+            if let t = tag, !t.isEmpty { tbind("%\(t.lowercased())%") }
+            if let s = since, !s.isEmpty { tbind(s) }
+            func tcol(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let path = tcol(2)
+                if seen.contains(path) { continue }
+                let summary = tcol(3)
+                hits.append(RetrieveHit(title: tcol(0), date: tcol(1), path: path, speaker: "",
+                                        snippet: summary.isEmpty ? "matched on topic" : String(summary.prefix(160)),
+                                        startMs: 0, score: 0))
+            }
+            sqlite3_finalize(stmt); stmt = nil
+        }
+        return Array(hits.prefix(max(1, limit)))
     }
-    // Both queries are individually capped, so the fused list can reach 2× limit — trim.
-    return Array(hits.prefix(max(1, limit)))
+
+    // AND-first (precise), OR fallback (recall floor) — same two-pass as the app.
+    guard let andMatch = FTSQuery.andExpression(query) else { return [] }
+    let hits = fused(andMatch)
+    if !hits.isEmpty { return hits }
+    guard let orMatch = FTSQuery.orExpression(query) else { return [] }
+    return fused(orMatch)
 }
 
 /// Per-value counts from a newline-joined column (participants or tags), most-frequent first.
