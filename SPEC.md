@@ -26,9 +26,11 @@ frontmatter, written to a user-configured folder (typically inside an Obsidian v
 
 - Raw audio and screenshots are ALWAYS ephemeral (true temp dir; launch-time orphan sweep). No setting changes this.
 - Only extracted OCR text is retained, never images.
-- No network calls for transcription/OCR. No summarization/LLM features in-app. The app
-  never *calls* an LLM; LLM clients may call the app via the bundled MCP server (M8) —
-  the app is a passive local data provider only.
+- No network calls for transcription/OCR, and no cloud LLM calls, ever. In-app model use is
+  Apple's on-device Foundation Models (default) plus, opt-in, a user-run local server on
+  loopback/LAN (Ollama/LM Studio, OpenAI wire format) — public hosts are refused with no
+  override, and the app never downloads model weights. LLM clients may additionally call the
+  app via the bundled MCP server (M8) — the app stays a passive local data provider there.
 - Recording start/stop is fully manual. Calendar visibility (M6) is informational only.
 - Retention pruner deletes ONLY app-authored files (frontmatter marker `app: call-transcriber` AND filename pattern match), never recurses — output folder may live inside a real vault.
 - No in-app consent/disclosure feature; user discloses verbally.
