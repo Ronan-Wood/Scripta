@@ -328,23 +328,37 @@ final class RecordingSession {
         var title: String?
         var summary: String?
         var tags = ["call"] + extraTags
-        if AppSettings.summarizeEnabled {
-            let plain = segments.map { segment in
-                segment.speaker.map { "\($0.rawValue): \(segment.text)" } ?? segment.text
-            }.joined(separator: "\n")
+        let plain = segments.map { segment in
+            segment.speaker.map { "\($0.rawValue): \(segment.text)" } ?? segment.text
+        }.joined(separator: "\n")
+
+        // Apple FM enrichment (seconds) runs inline, exactly as before. A slow local endpoint is
+        // DEFERRED: `TranscriptWriter.uniqueURL` bakes the title into the filename and the launch
+        // sweep deletes crash leftovers, so every second of pre-write model time is a data-loss
+        // window — write immediately with a generic name, then patch title/topics/summary after.
+        let deferEnrichment = AppSettings.summarizeEnabled && EngineRouter.enrichmentIsDeferred
+        if AppSettings.summarizeEnabled && !deferEnrichment {
             if let digest = await TranscriptEnricher.enrich(plain) {
                 title = digest.title
                 summary = digest.summary
-                // Concept topics become tags — they power topic search (find "baseball"
-                // even when only "home runs" was said) and the tag index.
                 tags += digest.topics.filter { $0 != "call" }
             }
         }
 
-        return try TranscriptWriter.write(segments: segments,
-                                          startedAt: startedAt, duration: duration,
-                                          tags: tags, title: title, summary: summary,
-                                          screenSnippets: snippets, isConference: isConference)
+        let url = try TranscriptWriter.write(segments: segments,
+                                             startedAt: startedAt, duration: duration,
+                                             tags: tags, title: title, summary: summary,
+                                             screenSnippets: snippets, isConference: isConference)
+
+        if deferEnrichment {
+            Task.detached(priority: .utility) {
+                guard let digest = await TranscriptEnricher.enrich(plain) else { return }
+                try? TranscriptMetadataEditor.applyDigest(url: url, digest: digest)
+                if let store = IndexStore.shared { IndexBuilder.index(url, into: store) }
+                await MainActor.run { AppModel.shared.reloadCalls() }
+            }
+        }
+        return url
     }
 
     /// Labels each side and interleaves the two transcripts by start time. Both tracks share the

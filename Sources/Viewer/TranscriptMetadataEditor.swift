@@ -67,6 +67,33 @@ enum TranscriptMetadataEditor {
         try result.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// Applies a deferred enrichment digest to an already-written transcript: patches title (only
+    /// if the call has none — never overrides a user title) and merges topic tags in frontmatter,
+    /// and inserts the summary section into the body if absent. Used when enrichment runs on a
+    /// slow local endpoint, so the transcript is written immediately and enriched afterwards.
+    static func applyDigest(url: URL, digest: TranscriptDigest) throws {
+        guard let meta = TranscriptStore.meta(of: url) else { return }
+        let title = meta.title.isEmpty ? digest.title : meta.title
+        let tags = Array(Set(meta.tags + digest.topics.filter { $0 != "call" }))
+        try update(url: url, title: title, participants: meta.participants, tags: tags)
+        if !digest.summary.isEmpty { try insertSummary(url: url, summary: digest.summary) }
+    }
+
+    /// Inserts a "## Summary" section right after the `# heading` (or at the top) if the body has
+    /// none. The app's own generated summary — legitimate to write, unlike a user body edit.
+    private static func insertSummary(url: URL, summary: String) throws {
+        let content = try String(contentsOf: url, encoding: .utf8)
+        guard let split = Frontmatter.split(content), !split.body.contains("## Summary") else { return }
+        var lines = split.body.components(separatedBy: "\n")
+        if let heading = lines.firstIndex(where: { $0.hasPrefix("# ") }) {
+            lines.insert(contentsOf: ["", "## Summary", "", summary], at: heading + 1)
+        } else {
+            lines.insert(contentsOf: ["## Summary", "", summary, ""], at: 0)
+        }
+        let result = "---\n" + split.frontmatter + "\n---\n" + lines.joined(separator: "\n")
+        try result.write(to: url, atomically: true, encoding: .utf8)
+    }
+
     /// Replaces the first Markdown H1 (`# …`) line, leaving surrounding whitespace intact.
     private static func replacingFirstHeading(in body: String, with heading: String) -> String {
         var lines = body.components(separatedBy: "\n")
