@@ -39,6 +39,7 @@ struct SettingsView: View {
     @State private var testingEndpoint = false
     @State private var confirmLAN = false
     @State private var rerankEnabled = AppSettings.rerankEnabled
+    @State private var embedModel = AppSettings.embedModel
 
     var body: some View {
         Form {
@@ -145,6 +146,14 @@ struct SettingsView: View {
                         }
                     }
                     .onChange(of: enrichModel) { _, v in AppSettings.setEndpointModel(v.isEmpty ? nil : v, for: .enrich) }
+                    Picker("Semantic search (embeddings)", selection: $embedModel) {
+                        Text("Off — keyword only").tag("")
+                        ForEach(endpointModels, id: \.self) { Text($0).tag($0) }
+                        if !embedModel.isEmpty && !endpointModels.contains(embedModel) {
+                            Text("\(embedModel) (not on server)").tag(embedModel)
+                        }
+                    }
+                    .onChange(of: embedModel) { _, v in AppSettings.embedModel = v }
                     if !askModel.isEmpty {
                         Toggle("Rerank Ask results (experimental)", isOn: $rerankEnabled)
                             .onChange(of: rerankEnabled) { _, v in AppSettings.rerankEnabled = v }

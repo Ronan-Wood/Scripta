@@ -19,7 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // index (which picks up whatever recovery just wrote). Both are background work.
         Task.detached(priority: .utility) {
             await RecordingSession.recoverOrphans()
-            if let store = IndexStore.shared { IndexBuilder.reconcile(store: store) }
+            if let store = IndexStore.shared {
+                IndexBuilder.reconcile(store: store)
+                await IndexBuilder.embedPending(store: store)   // best-effort; no-op without an embedder
+            }
         }
         // Keep the index fresh against external edits to the (often vault-hosted) output folder.
         IndexWatcher.shared?.start(folder: AppSettings.outputFolder)
