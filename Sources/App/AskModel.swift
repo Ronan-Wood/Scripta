@@ -6,7 +6,7 @@ import FoundationModels
 /// connect related facts while refusing what isn't in the retrieved context (no hallucination).
 @MainActor
 final class AskModel: ObservableObject {
-    struct Source: Identifiable, Hashable { let id = UUID(); let title: String; let url: URL }
+    struct Source: Identifiable, Hashable { let id = UUID(); let title: String; let url: URL; let startMs: Int }
     struct Message: Identifiable {
         let id = UUID()
         let fromUser: Bool
@@ -122,7 +122,7 @@ final class AskModel: ObservableObject {
         return chunks.compactMap { chunk in
             guard seen.insert(chunk.path).inserted else { return nil }
             return Source(title: chunk.title.isEmpty ? "Untitled call" : chunk.title,
-                          url: URL(fileURLWithPath: chunk.path))
+                          url: URL(fileURLWithPath: chunk.path), startMs: chunk.startMs)
         }
     }
 }

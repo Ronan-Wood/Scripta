@@ -9,10 +9,12 @@ struct CallsView: View {
     @State private var tag: String?
     @State private var rows: [CallRow] = []
     @State private var selection: URL?
+    @State private var selectionMs: Int?
 
-    init(focusCall: URL? = nil, focusTag: String? = nil) {
+    init(focusCall: URL? = nil, focusMs: Int? = nil, focusTag: String? = nil) {
         _tag = State(initialValue: focusTag)
         _selection = State(initialValue: focusCall)
+        _selectionMs = State(initialValue: focusMs)
     }
 
     private var store: IndexStore? { IndexStore.shared }
@@ -21,7 +23,8 @@ struct CallsView: View {
         let id: URL
         let title: String
         let subtitle: String
-        let snippet: String?
+        let snippet: AttributedString?
+        var startMs: Int?
     }
 
     var body: some View {
@@ -118,6 +121,7 @@ struct CallsView: View {
         let selected = selection == row.id
         return Button {
             selection = row.id
+            selectionMs = row.startMs   // jump the reader to the matched passage
         } label: {
             VStack(alignment: .leading, spacing: Space.x1) {
                 Text(row.title).font(CarbonFont.medium(14))
@@ -155,7 +159,7 @@ struct CallsView: View {
 
     @ViewBuilder private var detailColumn: some View {
         if let selection, let meta = TranscriptStore.meta(of: selection) {
-            TranscriptDetail(meta: meta, onEdited: refresh, onDeleted: {
+            TranscriptDetail(meta: meta, scrollToMs: selectionMs, onEdited: refresh, onDeleted: {
                 self.selection = nil
                 refresh()
             }).id(selection)
@@ -177,8 +181,11 @@ struct CallsView: View {
             rows = store.search(trimmed, participant: participant, tag: tag, limit: 60).compactMap { hit in
                 let url = URL(fileURLWithPath: hit.path)
                 guard seen.insert(url).inserted else { return nil }
+                // startMs 0 = a topic-only match (no passage to scroll to).
                 return CallRow(id: url, title: hit.title.isEmpty ? hit.date : hit.title,
-                               subtitle: hit.date, snippet: clean(hit.snippet))
+                               subtitle: hit.date,
+                               snippet: SnippetHighlight.attributed(hit.snippet, accent: Carbon.interactive),
+                               startMs: hit.startMs > 0 ? hit.startMs : nil)
             }
         } else {
             rows = TranscriptStore.list().filter { meta in
@@ -189,9 +196,5 @@ struct CallsView: View {
         if selection == nil || !rows.contains(where: { $0.id == selection }) {
             selection = rows.first?.id
         }
-    }
-
-    private func clean(_ snippet: String) -> String {
-        snippet.replacingOccurrences(of: "⟦", with: "").replacingOccurrences(of: "⟧", with: "")
     }
 }

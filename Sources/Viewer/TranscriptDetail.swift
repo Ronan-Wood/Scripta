@@ -5,31 +5,38 @@ import AppKit
 /// was retired when the hub took over browsing.)
 struct TranscriptDetail: View {
     let meta: TranscriptMeta
+    /// When set, the reader scrolls to (and briefly flashes) the spoken line at/under this time —
+    /// so clicking a search hit or an Ask citation lands on the moment, not the top of the call.
+    var scrollToMs: Int? = nil
     let onEdited: () -> Void
     var onDeleted: () -> Void = {}
     @State private var showingEditor = false
     @State private var confirmingDelete = false
     @State private var exportError: String?
+    @State private var flashIndex: Int?
     // Parsed once per transcript (off the main thread) and cached — re-reading + re-parsing the
     // whole file inside `body` on every invalidation was a large part of the long-transcript lag.
     @State private var blocks: [TranscriptBlock] = []
 
     var body: some View {
-        ScrollView {
-            // Lazy: only on-screen blocks are realized/laid out. A non-lazy VStack built every
-            // block of an hour-long call up front (and re-laid them on each scroll tick).
-            LazyVStack(alignment: .leading, spacing: 14) {
-                header
-                Divider()
-                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                    BlockView(block: block)
+        ScrollViewReader { proxy in
+            ScrollView {
+                // Lazy: only on-screen blocks are realized/laid out. A non-lazy VStack built every
+                // block of an hour-long call up front (and re-laid them on each scroll tick).
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    header
+                    Divider()
+                    ForEach(Array(blocks.enumerated()), id: \.offset) { offset, block in
+                        BlockView(block: block, highlighted: offset == flashIndex).id(offset)
+                    }
                 }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .textSelection(.enabled)
+            .task(id: meta.url) { await loadBlocks(); scrollToTarget(proxy) }
+            .onChange(of: scrollToMs) { _, _ in scrollToTarget(proxy) }
         }
-        .task(id: meta.url) { await loadBlocks() }
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -97,6 +104,24 @@ struct TranscriptDetail: View {
         }.value
     }
 
+    /// Scrolls to the last spoken line at/under `scrollToMs` and flashes it briefly.
+    @MainActor private func scrollToTarget(_ proxy: ScrollViewProxy) {
+        guard let ms = scrollToMs, !blocks.isEmpty else { return }
+        var target: Int?
+        for (i, block) in blocks.enumerated() {
+            if case let .audioLine(stamp, _, _) = block, let bms = Indexing.parseStamp(stamp), bms <= ms {
+                target = i
+            }
+        }
+        guard let target else { return }
+        withAnimation { proxy.scrollTo(target, anchor: .center) }
+        flashIndex = target
+        Task {
+            try? await Task.sleep(nanoseconds: 1_900_000_000)
+            if flashIndex == target { flashIndex = nil }
+        }
+    }
+
     private var fileName: String {
         meta.displayTitle.components(separatedBy: CharacterSet(charactersIn: "/\\:*?\"<>|")).joined(separator: "-")
     }
@@ -150,6 +175,7 @@ struct TranscriptDetail: View {
 
 private struct BlockView: View {
     let block: TranscriptBlock
+    var highlighted: Bool = false
 
     var body: some View {
         switch block {
@@ -167,6 +193,10 @@ private struct BlockView: View {
                 }
                 Text(text)
             }
+            .padding(.vertical, highlighted ? 4 : 0)
+            .padding(.horizontal, highlighted ? 8 : 0)
+            .background(highlighted ? Color.accentColor.opacity(0.15) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 6))
         case .screenMarker(let stamp):
             Text(stamp).font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.tertiary).padding(.top, 4)

@@ -101,9 +101,12 @@ final class AppModel: ObservableObject {
     @Published var route: Route?
 
     enum Route: Equatable {
-        case call(URL)
+        /// Jump to a call, optionally scrolling the reader to a passage timestamp (ms).
+        case call(URL, ms: Int?)
         case tag(String)
         case section(HubSection)
+
+        static func call(_ url: URL) -> Route { .call(url, ms: nil) }
     }
 
     /// Set by MenuController; toggles start/stop through the real capture pipeline.

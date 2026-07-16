@@ -311,7 +311,7 @@ final class IndexStore {
                              since: String?, speaker: String?, limit: Int) -> [SearchHit] {
         var sql = """
         SELECT c.path, t.title, t.date, c.start_ms, c.speaker,
-               snippet(chunks_fts, 0, '⟦', '⟧', '…', 10) AS snip, bm25(chunks_fts) AS score
+               snippet(chunks_fts, 0, '⟦', '⟧', '…', 14) AS snip, bm25(chunks_fts) AS score
         FROM chunks_fts
         JOIN chunks c ON c.id = chunks_fts.rowid
         JOIN transcripts t ON t.path = c.path

@@ -7,6 +7,7 @@ struct HubView: View {
     @State private var section: HubSection = .home
     @State private var expanded: Bool = AppSettings.sidebarExpanded
     @State private var focusCall: URL?
+    @State private var focusMs: Int?
     @State private var focusTag: String?
 
     var body: some View {
@@ -76,6 +77,7 @@ struct HubView: View {
             // Route-driven focus (open call / tag filter) is one-shot: manual navigation
             // must not resurrect a stale selection on the next visit to Calls.
             focusCall = nil
+            focusMs = nil
             focusTag = nil
             section = item
         } label: {
@@ -109,8 +111,8 @@ struct HubView: View {
         case .home:
             HomeView()
         case .calls:
-            CallsView(focusCall: focusCall, focusTag: focusTag)
-                .id("\(focusCall?.path ?? "")|\(focusTag ?? "")")
+            CallsView(focusCall: focusCall, focusMs: focusMs, focusTag: focusTag)
+                .id("\(focusCall?.path ?? "")|\(focusMs.map(String.init) ?? "")|\(focusTag ?? "")")
         case .meetings:
             MeetingsView()
         case .ask:
@@ -124,8 +126,8 @@ struct HubView: View {
 
     private func handle(_ route: AppModel.Route?) {
         switch route {
-        case .call(let url): focusCall = url; focusTag = nil; section = .calls
-        case .tag(let tag): focusTag = tag; focusCall = nil; section = .calls
+        case .call(let url, let ms): focusCall = url; focusMs = ms; focusTag = nil; section = .calls
+        case .tag(let tag): focusTag = tag; focusCall = nil; focusMs = nil; section = .calls
         case .section(let s): section = s
         case nil: return
         }

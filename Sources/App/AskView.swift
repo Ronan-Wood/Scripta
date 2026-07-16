@@ -57,7 +57,7 @@ struct AskView: View {
             if !message.sources.isEmpty {
                 FlexWrap(spacing: Space.x2) {
                     ForEach(message.sources) { source in
-                        Button { app.route = .call(source.url) } label: {
+                        Button { app.route = .call(source.url, ms: source.startMs > 0 ? source.startMs : nil) } label: {
                             HStack(spacing: Space.x2) {
                                 Image(systemName: "doc.text").font(.system(size: 11))
                                 Text(source.title).font(CarbonFont.label(12))

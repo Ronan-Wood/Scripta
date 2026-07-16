@@ -195,7 +195,7 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
         var hits: [RetrieveHit] = []
         var sql = """
         SELECT t.title, t.date, c.path, c.start_ms, IFNULL(c.speaker,''),
-               snippet(chunks_fts, 0, '⟦', '⟧', '…', 12), bm25(chunks_fts)
+               snippet(chunks_fts, 0, '⟦', '⟧', '…', 14), bm25(chunks_fts)
         FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid JOIN transcripts t ON t.path = c.path
         WHERE chunks_fts MATCH ?
         """
