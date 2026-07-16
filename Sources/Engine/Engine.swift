@@ -48,6 +48,21 @@ struct DigestDTO: Decodable {
     let topics: [String]
 }
 
+// MARK: - Reranking + embeddings (gated experiments — see P10 / design phases E, F)
+
+/// Listwise reranker. Apple FM deliberately does NOT conform (measured too weak); only a capable
+/// endpoint model does. Returns candidate indices most→least relevant, or nil to fail open.
+protocol RerankEngine {
+    func rerank(query: String, passages: [(index: Int, text: String)]) async -> [Int]?
+}
+
+/// Text embedder for Phase B vector fusion. Only reopened behind a measured eval gate — the
+/// on-device NLContextualEmbedding already failed it.
+protocol EmbeddingEngine {
+    var embedModel: String { get }
+    func embed(_ texts: [String]) async -> [[Float]]?
+}
+
 // MARK: - Errors
 
 enum EngineError: LocalizedError {

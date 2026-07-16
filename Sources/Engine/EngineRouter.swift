@@ -32,6 +32,13 @@ enum EngineRouter {
     /// enrichment in that case (the endpoint's 60–240s digest must not delay the write).
     static var enrichmentIsDeferred: Bool { endpointEngine(for: .enrich) != nil }
 
+    /// The reranker (gated experiment). nil unless rerank is enabled AND an endpoint model is
+    /// assigned for Ask — Apple FM deliberately doesn't rerank (measured too weak).
+    static func rerankEngine() -> RerankEngine? {
+        guard AppSettings.rerankEnabled else { return nil }
+        return endpointEngine(for: .ask)
+    }
+
     // MARK: -
 
     private static func endpointEngine(for task: EngineTask) -> EndpointEngine? {

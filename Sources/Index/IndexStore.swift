@@ -73,8 +73,9 @@ final class IndexStore {
 
     /// Bumped whenever the schema OR the chunking geometry (see `Indexing`) changes. A DB at a
     /// different version is dropped and recreated — correct for a declared rebuildable cache —
-    /// then reconcile at launch repopulates it. v2 added the transcript `mode` column.
-    private static let schemaVersion: Int32 = 2
+    /// then reconcile at launch repopulates it. v2 added the transcript `mode` column; v3 versioned
+    /// `chunk_vectors` (embed model + dimension) so Phase B can't silently mix vector spaces.
+    private static let schemaVersion: Int32 = 3
 
     private let db: OpaquePointer
     private let lock = NSLock()
@@ -145,9 +146,12 @@ final class IndexStore {
         -- match a call by its topic/name even when no spoken chunk contains the literal word
         -- (e.g. "baseball" finding a call that only says "home runs"). Standalone FTS keyed by path.
         CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(path UNINDEXED, title, summary, tags, participants);
-        -- Reserved for Phase B: chunk_id -> embedding BLOB. Left empty until an on-device
-        -- embedder passes a real quality gate; the retriever works without it.
-        CREATE TABLE IF NOT EXISTS chunk_vectors(chunk_id INTEGER PRIMARY KEY, vector BLOB);
+        -- Reserved for Phase B: chunk_id -> embedding BLOB, tagged with the embed model + its
+        -- dimension so vectors from different models/spaces never mix (invalidate-on-change).
+        -- Left empty until an embedder passes a measured eval gate; the retriever works without it.
+        CREATE TABLE IF NOT EXISTS chunk_vectors(
+            chunk_id INTEGER PRIMARY KEY, vector BLOB, embed_model TEXT, dim INTEGER
+        );
         """)
     }
 

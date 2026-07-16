@@ -110,4 +110,20 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
         guard let data = json.data(using: .utf8), let chunk = try? JSONDecoder().decode(Chunk.self, from: data) else { return nil }
         return chunk.choices.first?.delta.content
     }
+
+    // MARK: - Embeddings (Phase B)
+
+    func embeddings(model: String, input: [String], timeout: TimeInterval = 30) async throws -> [[Float]] {
+        var req = URLRequest(url: try endpoint("embeddings"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = timeout
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["model": model, "input": input])
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw EngineError.badResponse }
+        guard http.statusCode == 200 else { throw EngineError.http(http.statusCode) }
+        struct Resp: Decodable { struct E: Decodable { let embedding: [Float] }; let data: [E] }
+        guard let r = try? JSONDecoder().decode(Resp.self, from: data) else { throw EngineError.badResponse }
+        return r.data.map(\.embedding)
+    }
 }
