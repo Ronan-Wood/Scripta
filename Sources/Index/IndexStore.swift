@@ -77,8 +77,8 @@ final class IndexStore {
     /// different version is dropped and recreated — correct for a declared rebuildable cache —
     /// then reconcile at launch repopulates it. v2 added the transcript `mode` column; v3 versioned
     /// `chunk_vectors` (embed model + dimension) so Phase B can't silently mix vector spaces;
-    /// v4 added the `group` partition column.
-    private static let schemaVersion: Int32 = 4
+    /// v4 added the `group` partition column; v5 added the enrichment ledger.
+    private static let schemaVersion: Int32 = 5
 
     private let db: OpaquePointer
     private let lock = NSLock()
@@ -156,6 +156,13 @@ final class IndexStore {
         CREATE TABLE IF NOT EXISTS chunk_vectors(
             chunk_id INTEGER PRIMARY KEY, vector BLOB, embed_model TEXT, dim INTEGER
         );
+        -- Enrichment ledger: per-transcript, per-stage {chunk, embed, extract, summarize} status
+        -- so multi-stage processing heals independently. content_hash is over the derived chunks
+        -- (Indexing.contentHash) — a stage whose stored hash != the current one is stale and re-runs.
+        CREATE TABLE IF NOT EXISTS enrichment_ledger(
+            path TEXT, stage TEXT, content_hash TEXT, model_version TEXT,
+            PRIMARY KEY(path, stage)
+        );
         """)
     }
 
@@ -209,10 +216,35 @@ final class IndexStore {
     }
 
     private func removeRows(path: String) -> Bool {
-        var ok = run("DELETE FROM chunks WHERE path = ?") { bind($0, 1, path) }
+        // Cascade (I6): vectors reference chunk ids, so drop them before the chunks; ledger + FTS
+        // + transcript row follow. As entity mentions/registry arrive, delete them here too.
+        var ok = run("DELETE FROM chunk_vectors WHERE chunk_id IN (SELECT id FROM chunks WHERE path = ?)") { bind($0, 1, path) }
+        ok = run("DELETE FROM chunks WHERE path = ?") { bind($0, 1, path) } && ok
+        ok = run("DELETE FROM enrichment_ledger WHERE path = ?") { bind($0, 1, path) } && ok
         ok = run("DELETE FROM transcripts WHERE path = ?") { bind($0, 1, path) } && ok
         ok = run("DELETE FROM transcripts_fts WHERE path = ?") { bind($0, 1, path) } && ok
         return ok
+    }
+
+    // MARK: - Enrichment ledger
+
+    /// Records that `stage` completed for `path` at content `hash` with `model`. A later reconcile
+    /// treats a stage whose stored hash differs from the current content hash as stale.
+    func recordStage(path: String, stage: String, hash: String, model: String) {
+        lock.lock(); defer { lock.unlock() }
+        run("INSERT OR REPLACE INTO enrichment_ledger(path,stage,content_hash,model_version) VALUES(?,?,?,?)") { stmt in
+            bind(stmt, 1, path); bind(stmt, 2, stage); bind(stmt, 3, hash); bind(stmt, 4, model)
+        }
+    }
+
+    /// The content hash recorded for a completed stage, or nil if it never ran — so a caller can
+    /// decide whether to (re)run embed/extract/summarize for a transcript at its current hash.
+    func stageHash(path: String, stage: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        var h: String?
+        query("SELECT content_hash FROM enrichment_ledger WHERE path = ? AND stage = ?",
+              bind: { stmt in Self.bindStatic(stmt, 1, path); Self.bindStatic(stmt, 2, stage) }) { h = text($0, 0) }
+        return h
     }
 
     /// Empties every table (keeping the schema) so a caller can reindex from disk — the "Rebuild
