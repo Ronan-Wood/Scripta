@@ -8,8 +8,22 @@ enum Retriever {
     static func context(for query: String, group: String?, limit k: Int) async -> [ContextChunk] {
         guard let store = IndexStore.shared else { return [] }
         let reranker = EngineRouter.rerankEngine()
-        // Widen the candidate pool only when we're going to rerank it.
-        let candidates = store.context(for: query, group: group, limit: reranker != nil ? 40 : k)
+
+        // Hybrid path: fuse lexical (FTS) + semantic (cosine) candidate lists via RRF when the
+        // corpus is embedded with the active model. Falls back to pure FTS otherwise (endpoint off,
+        // no embedder, or embeddings not built) — the reliability story.
+        let candidates: [ContextChunk]
+        if !AppSettings.embedModel.isEmpty,
+           store.hasVectors(model: AppSettings.embedModel),
+           let qvec = await Embedder.embedQuery(query) {
+            let fts = store.ftsCandidates(query, group: group, limit: 40)
+            let vec = store.vectorCandidates(vector: qvec, group: group, model: AppSettings.embedModel, limit: 40)
+            let fused = RRF.fuse([fts, vec], limit: (reranker != nil ? 40 : k))
+            candidates = store.contextForChunkIDs(fused, limit: reranker != nil ? 40 : k)
+        } else {
+            // Widen the candidate pool only when we're going to rerank it.
+            candidates = store.context(for: query, group: group, limit: reranker != nil ? 40 : k)
+        }
         guard let reranker, candidates.count > k else { return Array(candidates.prefix(k)) }
 
         let passages = candidates.enumerated().map { (index: $0.offset, text: String($0.element.text.prefix(350))) }

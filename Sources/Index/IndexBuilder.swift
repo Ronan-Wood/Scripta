@@ -42,6 +42,24 @@ enum IndexBuilder {
         }
     }
 
+    /// Best-effort semantic embedding pass (Phase B). No-op unless a local embedder is configured.
+    /// Ledger-gated per transcript so it only (re)embeds what changed; batched to respect the
+    /// endpoint's one-in-flight limit. Enforces embed-version discipline first.
+    static func embedPending(store: IndexStore) async {
+        guard Embedder.isConfigured else { return }
+        let model = Embedder.model
+        store.dropVectors(keepingModel: model)   // a model change invalidates the whole space
+        for path in store.indexedPaths().keys {
+            guard let current = store.stageHash(path: path, stage: "chunk"),
+                  store.stageHash(path: path, stage: "embed") != current else { continue }
+            let rows = store.chunkRows(path: path)
+            guard !rows.isEmpty, let vectors = await Embedder.embedDocuments(rows.map(\.text)),
+                  vectors.count == rows.count else { continue }
+            for (row, vec) in zip(rows, vectors) { store.storeVector(chunkID: row.id, vector: vec, model: model) }
+            store.recordStage(path: path, stage: "embed", hash: current, model: model)
+        }
+    }
+
     private static func extractEntities(url: URL, group: String, attendees: [String],
                                         chunks: [IndexedChunk], store: IndexStore) {
         let registry = EntityRegistry.shared

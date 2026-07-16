@@ -33,6 +33,7 @@ enum AppSettings {
         static let endpointKnownModels = "endpointKnownModels"
         static let appleFMSizeClass = "appleFMSizeClass"
         static let rerankEnabled = "rerankEnabled"
+        static let embedModel = "embedModel"
         static let sidebarExpanded = "sidebarExpanded"
         static let globalHotkey = "globalHotkey"
         static let liveTranscription = "liveTranscription"
@@ -254,6 +255,13 @@ enum AppSettings {
     static var rerankEnabled: Bool {
         get { defaults.bool(forKey: Keys.rerankEnabled) }
         set { defaults.set(newValue, forKey: Keys.rerankEnabled) }
+    }
+
+    /// The local embedding model for semantic retrieval (e.g. "nomic-embed-text"). "" = off, so
+    /// retrieval stays pure-FTS. Hybrid fusion turns on once chunks are embedded with it.
+    static var embedModel: String {
+        get { defaults.string(forKey: Keys.embedModel) ?? "" }
+        set { defaults.set(newValue, forKey: Keys.embedModel) }
     }
 }
 

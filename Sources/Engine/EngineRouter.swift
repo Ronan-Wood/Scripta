@@ -39,6 +39,15 @@ enum EngineRouter {
         return endpointEngine(for: .ask)
     }
 
+    /// The embedding engine (Phase B), or nil to stay FTS-only. Requires the endpoint on + local +
+    /// an embed model assigned. Apple FM doesn't embed.
+    static func embeddingEngine() -> EmbeddingEngine? {
+        guard AppSettings.endpointEnabled, !AppSettings.embedModel.isEmpty,
+              let url = AppSettings.endpointURL,
+              Locality.isAllowedForRequest(url, lanConfirmed: AppSettings.endpointLANConfirmed) else { return nil }
+        return EndpointEngine(baseURL: url, model: AppSettings.embedModel, lanConfirmed: AppSettings.endpointLANConfirmed)
+    }
+
     // MARK: -
 
     private static func endpointEngine(for task: EngineTask) -> EndpointEngine? {

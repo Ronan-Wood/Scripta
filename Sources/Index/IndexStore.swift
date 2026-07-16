@@ -1,6 +1,7 @@
 import Foundation
 import SQLite3
 import OSLog
+import Accelerate
 
 /// Transcript-level metadata as stored in the index.
 struct IndexedTranscript {
@@ -240,6 +241,104 @@ final class IndexStore {
         ok = run("DELETE FROM transcripts WHERE path = ?") { bind($0, 1, path) } && ok
         ok = run("DELETE FROM transcripts_fts WHERE path = ?") { bind($0, 1, path) } && ok
         return ok
+    }
+
+    // MARK: - Semantic vectors (Phase B — hybrid retrieval)
+
+    /// Stores a chunk embedding, tagged with its embed model + dimension so vector spaces can never
+    /// silently mix (Fable: a model change means a full re-embed, never mixed-space fusion).
+    func storeVector(chunkID: Int64, vector: [Float], model: String) {
+        lock.lock(); defer { lock.unlock() }
+        let data = vector.withUnsafeBytes { Data($0) }
+        run("INSERT OR REPLACE INTO chunk_vectors(chunk_id,vector,embed_model,dim) VALUES(?,?,?,?)") { stmt in
+            sqlite3_bind_int64(stmt, 1, chunkID)
+            _ = data.withUnsafeBytes { sqlite3_bind_blob(stmt, 2, $0.baseAddress, Int32(data.count), Self.TRANSIENT) }
+            bind(stmt, 3, model); sqlite3_bind_int64(stmt, 4, Int64(vector.count))
+        }
+    }
+
+    /// (chunk id, text) for a transcript — the embed pipeline's input.
+    func chunkRows(path: String) -> [(id: Int64, text: String)] {
+        lock.lock(); defer { lock.unlock() }
+        var out: [(Int64, String)] = []
+        query("SELECT id, text FROM chunks WHERE path = ? ORDER BY id",
+              bind: { Self.bindStatic($0, 1, path) }) { out.append((sqlite3_column_int64($0, 0), text($0, 1))) }
+        return out
+    }
+
+    /// True once any chunk is embedded with `model` (so the retriever knows to go hybrid).
+    func hasVectors(model: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        var n = 0
+        query("SELECT 1 FROM chunk_vectors WHERE embed_model = ? LIMIT 1",
+              bind: { Self.bindStatic($0, 1, model) }) { _ in n = 1 }
+        return n == 1
+    }
+
+    /// Embed-version discipline: drop every vector NOT from the current model (a model change
+    /// invalidates the whole space; cheap to re-embed at personal scale).
+    func dropVectors(keepingModel model: String) {
+        lock.lock(); defer { lock.unlock() }
+        run("DELETE FROM chunk_vectors WHERE embed_model <> ?") { bind($0, 1, model) }
+    }
+
+    /// Cosine top-k over in-group chunk vectors (brute-force vDSP — instant at personal scale, and
+    /// no ANN index to maintain). Group-scoped inside the query, before ranking.
+    func vectorCandidates(vector queryVec: [Float], group: String?, model: String, limit: Int) -> [Int64] {
+        lock.lock(); defer { lock.unlock() }
+        var qnorm = queryVec
+        var qmag: Float = 0; vDSP_svesq(queryVec, 1, &qmag, vDSP_Length(queryVec.count)); qmag = sqrt(qmag)
+        if qmag > 0 { var inv = 1 / qmag; vDSP_vsmul(queryVec, 1, &inv, &qnorm, 1, vDSP_Length(queryVec.count)) }
+
+        var sql = """
+        SELECT v.chunk_id, v.vector FROM chunk_vectors v
+        JOIN chunks c ON c.id = v.chunk_id JOIN transcripts t ON t.path = c.path
+        WHERE v.embed_model = ?
+        """
+        if group != nil { sql += " AND t.\"group\" = ?" }
+        var scored: [(Int64, Float)] = []
+        query(sql, bind: { stmt in
+            Self.bindStatic(stmt, 1, model)
+            if let group { Self.bindStatic(stmt, 2, group) }
+        }) { stmt in
+            let id = sqlite3_column_int64(stmt, 0)
+            guard let blob = sqlite3_column_blob(stmt, 1) else { return }
+            let bytes = Int(sqlite3_column_bytes(stmt, 1))
+            let count = bytes / MemoryLayout<Float>.size
+            guard count == queryVec.count else { return }   // never compare across dimensions
+            let vec = [Float](unsafeUninitializedCapacity: count) { buf, n in
+                memcpy(buf.baseAddress, blob, bytes); n = count
+            }
+            var mag: Float = 0; vDSP_svesq(vec, 1, &mag, vDSP_Length(count)); mag = sqrt(mag)
+            var dot: Float = 0; vDSP_dotpr(qnorm, 1, vec, 1, &dot, vDSP_Length(count))
+            scored.append((id, mag > 0 ? dot / mag : 0))
+        }
+        return scored.sorted { $0.1 > $1.1 }.prefix(max(1, limit)).map(\.0)
+    }
+
+    /// FTS spoken-passage candidate chunk ids (group-scoped) — the lexical half of hybrid fusion.
+    func ftsCandidates(_ rawQuery: String, group: String?, limit: Int) -> [Int64] {
+        lock.lock(); defer { lock.unlock() }
+        var ids = rankedChunkIDs(FTSQuery.andExpression(rawQuery), group: group, limit: limit)
+        if ids.isEmpty { ids = rankedChunkIDs(FTSQuery.orExpression(rawQuery), group: group, limit: limit) }
+        return ids.map(\.id)
+    }
+
+    /// Materialises chunk ids into context passages (neighbour-expanded), preserving the given
+    /// order — used by the hybrid retriever after RRF fusion.
+    func contextForChunkIDs(_ ids: [Int64], limit: Int) -> [ContextChunk] {
+        lock.lock(); defer { lock.unlock() }
+        var out: [ContextChunk] = []
+        var seenID = Set<Int64>()
+        for id in ids.prefix(limit) {
+            var path = ""
+            query("SELECT path FROM chunks WHERE id = ?", bind: { sqlite3_bind_int64($0, 1, id) }) { path = text($0, 0) }
+            guard !path.isEmpty else { continue }
+            for chunk in neighbours(of: id, path: path) where seenID.insert(chunk.id).inserted {
+                out.append(chunk.chunk)
+            }
+        }
+        return out
     }
 
     // MARK: - Entity graph (cache of the registry)
