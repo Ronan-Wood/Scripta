@@ -508,6 +508,27 @@ final class IndexStore {
         return out
     }
 
+    /// Distinct non-empty groups (workspaces) with call counts, most-populated first.
+    func groups() -> [(name: String, count: Int)] {
+        lock.lock(); defer { lock.unlock() }
+        var counts: [String: Int] = [:]
+        query("SELECT \"group\", COUNT(*) FROM transcripts GROUP BY \"group\"") { stmt in
+            let g = text(stmt, 0)
+            if !g.isEmpty { counts[g] = Int(sqlite3_column_int(stmt, 1)) }
+        }
+        return counts.map { (name: $0.key, count: $0.value) }
+            .sorted { $0.count != $1.count ? $0.count > $1.count : $0.name < $1.name }
+    }
+
+    /// Call count in one workspace ("" = ungrouped) — for the scope indicator.
+    func count(group: String) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        var n = 0
+        query("SELECT COUNT(*) FROM transcripts WHERE \"group\" = ?",
+              bind: { Self.bindStatic($0, 1, group) }) { n = Int(sqlite3_column_int($0, 0)) }
+        return n
+    }
+
     /// All participants across transcripts with a call count, most-frequent first.
     func people() -> [(name: String, count: Int)] {
         aggregateList(column: "participants")

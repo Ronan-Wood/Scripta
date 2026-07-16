@@ -55,8 +55,14 @@ final class AskModel: ObservableObject {
         // Short-circuit empty retrieval: answer deterministically instead of spending an inference
         // on "(nothing found)" and risking a source-less hallucination.
         guard !chunks.isEmpty else {
-            messages.append(Message(fromUser: false,
-                text: "I couldn’t find anything about that in your calls — try different words, or a person’s name."))
+            // Scoped + truthful: never claim "nothing in your calls" (false across the partition).
+            // Blind: offer to widen without asserting other workspaces actually contain a match.
+            let ws = group.isEmpty ? "the Ungrouped workspace" : "the \(group) workspace"
+            var text = "I couldn’t find anything about that in \(ws) — try different words, or a person’s name."
+            if !AppModel.shared.availableGroups().isEmpty {
+                text += " You can switch workspaces, or use Calls → “Search all workspaces” to look across them."
+            }
+            messages.append(Message(fromUser: false, text: text))
             return
         }
 
