@@ -59,6 +59,29 @@ enum Indexing {
         return seconds * 1000
     }
 
+    /// Chunks the "## Screen Context" section so on-screen text becomes searchable + embeddable
+    /// (it's captured today but invisible to retrieval). Marked speaker "Screen" so retrieval
+    /// provenance distinguishes what was shown from what was said. Each captured entry is one chunk.
+    static func screenChunks(from content: String) -> [IndexedChunk] {
+        guard let range = content.range(of: "## Screen Context") else { return [] }
+        let section = String(content[range.upperBound...])
+        var chunks: [IndexedChunk] = []
+        for entry in section.components(separatedBy: "\n\n---\n\n") {
+            let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            var startMs = 0
+            var text = trimmed
+            // Entries are "**[m:ss]**\n\n<ocr text>".
+            if trimmed.hasPrefix("**["), let close = trimmed.range(of: "]**") {
+                let stamp = String(trimmed[trimmed.index(trimmed.startIndex, offsetBy: 3)..<close.lowerBound])
+                startMs = parseStamp(stamp) ?? 0
+                text = String(trimmed[close.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if !text.isEmpty { chunks.append(IndexedChunk(startMs: startMs, endMs: startMs, speaker: "Screen", text: text)) }
+        }
+        return chunks
+    }
+
     /// Pulls the "## Summary" section text (if any) for the transcript-level row.
     static func summary(from content: String) -> String {
         guard let range = content.range(of: "## Summary") else { return "" }

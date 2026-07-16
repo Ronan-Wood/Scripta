@@ -74,6 +74,16 @@ final class EntityRegistry {
         return id
     }
 
+    /// Marks the entity matching a surface as user-confirmed (ground truth) — e.g. a name the user
+    /// entered as a participant. Confirmed names are the only ones that feed ASR (Fable F).
+    func confirm(surface: String, group: String) {
+        let norm = Self.normalize(surface)
+        if let i = entities.firstIndex(where: { $0.aliases.contains(norm) || Self.normalize($0.name) == norm }) {
+            if !entities[i].confirmed { entities[i].confirmed = true; dirty = true }
+            if !entities[i].groups.contains(group) { entities[i].groups.append(group); dirty = true }
+        }
+    }
+
     /// A confirmed same/distinct verdict between two identities (reversible: change or delete it).
     func recordVerdict(_ a: String, _ b: String, same: Bool, by: String = "user") {
         verdicts.removeAll { ($0.a == a && $0.b == b) || ($0.a == b && $0.b == a) }

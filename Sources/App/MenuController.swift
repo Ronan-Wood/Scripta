@@ -296,7 +296,11 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 // Capture the group at record time (calendar's group if tied, else the active
                 // workspace) — a stable string, per the partition's record-time-capture rule.
                 let group = AppSettings.recordingGroup(forCalendarID: meeting?.calendarID)
-                try await newSession.start(mode: mode, screenSource: screenSource, group: group)
+                // Bias ASR toward names known for this workspace (the contextualStrings loop —
+                // free, source-level fix for mangled names). Confirmed-only, so unreviewed junk
+                // never steers future transcription.
+                let vocab = EntityRegistry.shared.confirmedAliases(group: group)
+                try await newSession.start(mode: mode, screenSource: screenSource, group: group, extraVocab: vocab)
                 session = newSession
                 tiedMeeting = meeting
                 recordingStartedAt = Date()

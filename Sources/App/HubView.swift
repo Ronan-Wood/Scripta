@@ -11,6 +11,8 @@ struct HubView: View {
     @State private var focusTag: String?
     @State private var confirmingWorkspaceDelete = false
     @State private var deleteCandidateCount = 0
+    @State private var creatingWorkspace = false
+    @State private var newWorkspaceName = ""
 
     var body: some View {
         HStack(spacing: 0) {
@@ -35,6 +37,16 @@ struct HubView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This permanently deletes the transcript files for every call in “\(model.activeGroup)”. This can't be undone.")
+        }
+        .alert("New workspace", isPresented: $creatingWorkspace) {
+            TextField("Name (e.g. Deals)", text: $newWorkspaceName)
+            Button("Create") {
+                let name = newWorkspaceName.trimmingCharacters(in: .whitespaces)
+                if !name.isEmpty { model.activeGroup = name }   // becomes active; new recordings land here
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Switches you into the new workspace. Calls you record while it's active are captured into it.")
         }
     }
 
@@ -97,6 +109,7 @@ struct HubView: View {
                 Text("Ungrouped").tag("")
                 ForEach(model.availableGroups(), id: \.self) { Text($0).tag($0) }
             }
+            Button { newWorkspaceName = ""; creatingWorkspace = true } label: { Label("New workspace…", systemImage: "plus") }
             // Destructive: wipe every call in a named workspace (the "before I lend the laptop" case).
             if !model.activeGroup.isEmpty {
                 Divider()

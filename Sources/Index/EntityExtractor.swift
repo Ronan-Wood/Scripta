@@ -23,7 +23,11 @@ enum EntityExtractor {
                 }
                 if let kind {
                     let surface = String(chunk.text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if surface.count >= 2 { out.append((surface, kind, chunk.startMs)) }
+                    // Junk gate (cheap confidence proxy): real names carry a capital; drop
+                    // all-lowercase single tokens NLTagger occasionally mis-tags from ASR noise.
+                    if surface.count >= 2, surface.contains(where: \.isUppercase) {
+                        out.append((surface, kind, chunk.startMs))
+                    }
                 }
                 return true
             }

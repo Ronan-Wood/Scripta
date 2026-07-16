@@ -33,8 +33,10 @@ enum SpeechEngine {
         var errorDescription: String? { message }
     }
 
-    /// Transcribes the audio file. Call off the main thread.
-    static func transcribe(audioURL: URL) async throws -> [TranscriptSegment] {
+    /// Transcribes the audio file. Call off the main thread. `extraVocab` biases recognition toward
+    /// names known for this call (calendar attendees, confirmed entities) on top of the domain
+    /// vocabulary — the source-level fix for mangled names, no transcript rewriting.
+    static func transcribe(audioURL: URL, extraVocab: [String] = []) async throws -> [TranscriptSegment] {
         let locale = try await resolvedLocale()
         let transcriber = SpeechTranscriber(locale: locale,
                                             transcriptionOptions: [],
@@ -46,9 +48,10 @@ enum SpeechEngine {
             try await request.downloadAndInstall()
         }
 
-        // Bias recognition toward the user's domain vocabulary.
+        // Bias recognition toward the user's domain vocabulary + the names known for this call.
         let context = AnalysisContext()
-        let vocab = AppSettings.domainVocabulary.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        var vocab = AppSettings.domainVocabulary + extraVocab
+        vocab = Array(Set(vocab.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }))
         if !vocab.isEmpty {
             context.contextualStrings = [.general: vocab]
         }

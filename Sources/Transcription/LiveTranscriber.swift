@@ -35,6 +35,8 @@ final class LiveTranscriber {
                           userInfo: [NSLocalizedDescriptionKey: "No compatible audio format for live transcription."])
         }
 
+        // (Name biasing is applied on the final pass, which produces the saved transcript; the live
+        // pane is volatile/cosmetic.)
         let (sequence, builder) = AsyncStream<AnalyzerInput>.makeStream()
         inputBuilder = builder
         let analyzer = SpeechAnalyzer(modules: [transcriber])

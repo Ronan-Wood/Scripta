@@ -39,6 +39,7 @@ final class RecordingSession {
     private var startedAt = Date()
     private var mode: RecordingMode = .call
     private var group = ""   // captured at start (calendar group or active workspace)
+    private var extraVocab: [String] = []   // names to bias ASR toward (attendees, confirmed entities)
     // Paused intervals are spliced out of the audio tracks, so wall-clock duration must
     // splice them out too or the frontmatter overstates the call.
     private var pausedAccum: TimeInterval = 0
@@ -120,13 +121,14 @@ final class RecordingSession {
         return sr > 0 ? Double(file.length) / sr : 0
     }
 
-    func start(mode: RecordingMode, screenSource: ScreenSource, group: String = "") async throws {
+    func start(mode: RecordingMode, screenSource: ScreenSource, group: String = "", extraVocab: [String] = []) async throws {
         guard state == .idle else { return }
         // Transitional state before the first await: the idle guard is check-then-act, so a
         // second start() arriving mid-await must see "not idle".
         state = .starting
         self.mode = mode
         self.group = group
+        self.extraVocab = extraVocab
         do {
             try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
         } catch {
@@ -293,6 +295,7 @@ final class RecordingSession {
         let themWavURL = self.themWavURL
         let startedAt = self.startedAt
         let isConference = mode != .call
+        let extraVocab = self.extraVocab
         let group = self.group
         if let began = pauseBegan {   // stopped while paused
             pausedAccum += Date().timeIntervalSince(began)
@@ -307,7 +310,7 @@ final class RecordingSession {
                 try await Self.produceTranscript(
                     systemURL: systemURL, micURL: micURL, youWavURL: youWavURL, themWavURL: themWavURL,
                     startedAt: startedAt, duration: duration, snippets: snippets,
-                    notes: notes, isConference: isConference, group: group)
+                    notes: notes, isConference: isConference, group: group, extraVocab: extraVocab)
             }.value
 
             // Success: raw audio is no longer needed.
@@ -333,7 +336,7 @@ final class RecordingSession {
         systemURL: URL, micURL: URL, youWavURL: URL, themWavURL: URL,
         startedAt: Date, duration: TimeInterval,
         snippets: [ScreenSnippet], notes: [CallNote] = [], extraTags: [String] = [],
-        isConference: Bool = false, group: String = ""
+        isConference: Bool = false, group: String = "", extraVocab: [String] = []
     ) async throws -> URL {
         // Convert each captured track to the transcription format. The peak tells us whether the
         // track actually carried speech.
@@ -346,8 +349,8 @@ final class RecordingSession {
         }
 
         // Transcribe each side separately (sequential — avoids double locale reservation).
-        let youSegments = micPeak > 0 ? try await SpeechEngine.transcribe(audioURL: youWavURL) : []
-        let themSegments = systemPeak > 0 ? try await SpeechEngine.transcribe(audioURL: themWavURL) : []
+        let youSegments = micPeak > 0 ? try await SpeechEngine.transcribe(audioURL: youWavURL, extraVocab: extraVocab) : []
+        let themSegments = systemPeak > 0 ? try await SpeechEngine.transcribe(audioURL: themWavURL, extraVocab: extraVocab) : []
 
         // Label + interleave only when both sides have speech — otherwise a single side
         // (in-person, or a one-sided call) would be mislabeled, so leave it unlabeled.
