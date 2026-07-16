@@ -7,6 +7,7 @@ struct CallsView: View {
     @State private var query = ""
     @State private var participant: String?
     @State private var tag: String?
+    @State private var entity: (id: String, name: String)?   // entity-anchored browse
     @State private var rows: [CallRow] = []
     @State private var selection: URL?
     @State private var selectionMs: Int?
@@ -86,10 +87,11 @@ struct CallsView: View {
             }
             .padding(.horizontal, Space.x5).padding(.top, Space.x2).padding(.bottom, Space.x1)
 
-            if participant != nil || tag != nil {
+            if participant != nil || tag != nil || entity != nil {
                 HStack(spacing: Space.x2) {
                     if let participant { filterChip("user", participant) { self.participant = nil; refresh() } }
                     if let tag { filterChip("tag", tag) { self.tag = nil; refresh() } }
+                    if let entity { filterChip("user", "mentions \(entity.name)") { self.entity = nil; refresh() } }
                     Spacer()
                 }
                 .padding(.horizontal, Space.x5).padding(.vertical, Space.x3)
@@ -138,8 +140,16 @@ struct CallsView: View {
                     }
                 }
             }
-            if people.isEmpty && tags.isEmpty {
-                Text("No people or tags yet")
+            let entities = store?.entities(group: appModel.activeGroup) ?? []
+            if !entities.isEmpty {
+                Menu("Entity") {
+                    ForEach(entities, id: \.id) { e in
+                        Button("\(e.name) (\(e.count))") { entity = (e.id, e.name); refresh() }
+                    }
+                }
+            }
+            if people.isEmpty && tags.isEmpty && entities.isEmpty {
+                Text("No people, tags, or entities yet")
             }
         } label: {
             CarbonIcon(name: "list", size: 16, color: Carbon.iconSecondary)
@@ -209,7 +219,13 @@ struct CallsView: View {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         // Hard-scoped to the active workspace; nil only under the explicit, transient all-groups.
         let group: String? = allGroups ? nil : appModel.activeGroup
-        if !trimmed.isEmpty, let store {
+        if let entity, let store {
+            // Entity-anchored: every call that mentions this person/org (mode 3, group-scoped).
+            rows = store.callsMentioning(entityID: entity.id, group: group).map { hit in
+                CallRow(id: URL(fileURLWithPath: hit.path),
+                        title: hit.title.isEmpty ? hit.date : hit.title, subtitle: hit.date, snippet: nil)
+            }
+        } else if !trimmed.isEmpty, let store {
             var seen = Set<URL>()
             rows = store.search(trimmed, participant: participant, tag: tag, group: group, limit: 60).compactMap { hit in
                 let url = URL(fileURLWithPath: hit.path)
