@@ -27,9 +27,12 @@ struct IndexedChunk {
 struct ContextChunk {
     let path: String
     let title: String
+    let date: String
     let startMs: Int
     let speaker: String
     let text: String
+    /// True for a synthetic "call summary/topics" passage (topic fusion), not spoken content.
+    var isTopic: Bool = false
 }
 
 /// A ranked search result pointing back into a transcript.
@@ -285,25 +288,96 @@ final class IndexStore {
 
     /// Full-text passages for retrieval-augmented answering: the whole chunk text (not a snippet),
     /// ranked by BM25, with provenance. Feeds the on-device "Ask your calls" chat.
+    /// Retrieval for grounded answering. Ranks spoken passages (AND-first, OR fallback), caps to
+    /// ≤2 per call for source diversity, expands each hit to its neighbour turns so the model sees
+    /// the answer around the question, and appends up to 2 topic passages (title/summary/tags) so
+    /// concept-tag matches — the "baseball" ↔ "home runs" layer — reach Ask too, not just search.
     func context(for rawQuery: String, limit: Int = 6) -> [ContextChunk] {
         lock.lock(); defer { lock.unlock() }
-        var out = contextHits(FTSQuery.andExpression(rawQuery), limit: limit)
-        if out.isEmpty { out = contextHits(FTSQuery.orExpression(rawQuery), limit: limit) }
+        var hits = rankedChunkIDs(FTSQuery.andExpression(rawQuery), limit: limit * 3)
+        if hits.isEmpty { hits = rankedChunkIDs(FTSQuery.orExpression(rawQuery), limit: limit * 3) }
+
+        // Per-call diversity: at most 2 chunks per path, keeping best-ranked.
+        var perPath: [String: Int] = [:]
+        var kept: [(id: Int64, path: String)] = []
+        for h in hits {
+            let n = perPath[h.path, default: 0]
+            if n >= 2 { continue }
+            perPath[h.path] = n + 1
+            kept.append((h.id, h.path))
+            if kept.count >= limit { break }
+        }
+
+        // Expand each kept chunk to id-1…id+1 (chunk ids are contiguous and ordered per path),
+        // de-duplicated, so a retrieved turn carries its surrounding exchange.
+        var seenID = Set<Int64>()
+        var out: [ContextChunk] = []
+        for k in kept {
+            for chunk in neighbours(of: k.id, path: k.path) where seenID.insert(chunk.id).inserted {
+                out.append(chunk.chunk)
+            }
+        }
+
+        // Topic fusion: append summary passages for concept/title/tag matches not already present.
+        let seenPath = Set(out.map(\.path))
+        for topic in topicContext(FTSQuery.andExpression(rawQuery) ?? FTSQuery.orExpression(rawQuery), limit: 2)
+        where !seenPath.contains(topic.path) {
+            out.append(topic)
+        }
         return out
     }
 
-    private func contextHits(_ match: String?, limit: Int) -> [ContextChunk] {
+    /// (chunk id, path) for spoken-passage hits, best-ranked first.
+    private func rankedChunkIDs(_ match: String?, limit: Int) -> [(id: Int64, path: String)] {
         guard let match else { return [] }
-        var out: [ContextChunk] = []
+        var out: [(Int64, String)] = []
         let sql = """
-        SELECT c.path, t.title, c.start_ms, IFNULL(c.speaker,''), c.text
-        FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid JOIN transcripts t ON t.path = c.path
+        SELECT c.id, c.path FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid
         WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT \(max(1, limit));
         """
         query(sql, bind: { Self.bindStatic($0, 1, match) }) { stmt in
-            out.append(ContextChunk(path: text(stmt, 0), title: text(stmt, 1),
-                                    startMs: Int(sqlite3_column_int64(stmt, 2)),
-                                    speaker: text(stmt, 3), text: text(stmt, 4)))
+            out.append((sqlite3_column_int64(stmt, 0), text(stmt, 1)))
+        }
+        return out
+    }
+
+    /// The chunk and its immediate neighbours on the same path, ordered by start time.
+    private func neighbours(of id: Int64, path: String) -> [(id: Int64, chunk: ContextChunk)] {
+        var out: [(Int64, ContextChunk)] = []
+        let sql = """
+        SELECT c.id, c.path, t.title, t.date, c.start_ms, IFNULL(c.speaker,''), c.text
+        FROM chunks c JOIN transcripts t ON t.path = c.path
+        WHERE c.path = ? AND c.id BETWEEN ? AND ? ORDER BY c.start_ms;
+        """
+        query(sql, bind: { stmt in
+            Self.bindStatic(stmt, 1, path)
+            sqlite3_bind_int64(stmt, 2, id - 1); sqlite3_bind_int64(stmt, 3, id + 1)
+        }) { stmt in
+            out.append((sqlite3_column_int64(stmt, 0),
+                        ContextChunk(path: text(stmt, 1), title: text(stmt, 2), date: text(stmt, 3),
+                                     startMs: Int(sqlite3_column_int64(stmt, 4)),
+                                     speaker: text(stmt, 5), text: text(stmt, 6))))
+        }
+        return out
+    }
+
+    /// Synthetic passages for calls that matched by title/summary/tags — the connective tissue
+    /// the on-device model uses for "reasonable connections" and whole-call questions.
+    private func topicContext(_ match: String?, limit: Int) -> [ContextChunk] {
+        guard let match else { return [] }
+        var out: [ContextChunk] = []
+        let sql = """
+        SELECT f.path, f.title, t.date, f.summary, f.tags
+        FROM transcripts_fts f JOIN transcripts t ON t.path = f.path
+        WHERE transcripts_fts MATCH ? ORDER BY bm25(transcripts_fts) LIMIT \(max(1, limit));
+        """
+        query(sql, bind: { Self.bindStatic($0, 1, match) }) { stmt in
+            let title = text(stmt, 1), summary = text(stmt, 3), tags = text(stmt, 4)
+            var parts = ["Call: \(title.isEmpty ? "Untitled" : title)"]
+            if !summary.isEmpty { parts.append("Summary: \(summary)") }
+            if !tags.isEmpty { parts.append("Topics: \(tags.replacingOccurrences(of: " ", with: ", "))") }
+            out.append(ContextChunk(path: text(stmt, 0), title: title, date: text(stmt, 2),
+                                    startMs: 0, speaker: "", text: parts.joined(separator: ". "), isTopic: true))
         }
         return out
     }

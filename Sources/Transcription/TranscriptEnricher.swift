@@ -23,6 +23,24 @@ enum TranscriptEnricher {
         return false
     }
 
+    /// A specific, actionable explanation of why the model isn't usable — or nil when it is.
+    /// "Enable it in Settings" is a dead end on an ineligible Mac and wrong while the model is
+    /// still downloading, so surface the actual reason.
+    static var availabilityMessage: String? {
+        switch SystemLanguageModel.default.availability {
+        case .available:
+            return nil
+        case .unavailable(.deviceNotEligible):
+            return "This Mac doesn’t support Apple Intelligence, so Ask isn’t available here."
+        case .unavailable(.appleIntelligenceNotEnabled):
+            return "Turn on Apple Intelligence to use Ask (System Settings › Apple Intelligence & Siri)."
+        case .unavailable(.modelNotReady):
+            return "The on-device model is still downloading — try again in a few minutes."
+        case .unavailable:
+            return "On-device answering isn’t available right now."
+        }
+    }
+
     static func enrich(_ transcript: String) async -> TranscriptDigest? {
         guard isAvailable else { return nil }
 
