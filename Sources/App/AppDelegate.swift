@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let store = IndexStore.shared {
                 IndexBuilder.reconcile(store: store)
                 await IndexBuilder.embedPending(store: store)   // best-effort; no-op without an embedder
+                EntityMirror.sync(store: store)                 // opt-in; no-op unless enabled
             }
         }
         // Keep the index fresh against external edits to the (often vault-hosted) output folder.

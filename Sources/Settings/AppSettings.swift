@@ -34,6 +34,7 @@ enum AppSettings {
         static let appleFMSizeClass = "appleFMSizeClass"
         static let rerankEnabled = "rerankEnabled"
         static let embedModel = "embedModel"
+        static let mirrorEnabled = "mirrorEnabled"
         static let sidebarExpanded = "sidebarExpanded"
         static let globalHotkey = "globalHotkey"
         static let liveTranscription = "liveTranscription"
@@ -262,6 +263,13 @@ enum AppSettings {
     static var embedModel: String {
         get { defaults.string(forKey: Keys.embedModel) ?? "" }
         set { defaults.set(newValue, forKey: Keys.embedModel) }
+    }
+
+    /// Mirror the entity graph into the vault as `Entities/<Group>/…` stub notes. Default off —
+    /// it writes into your vault and (since the vault can't enforce the wall) weakens group privacy.
+    static var mirrorEnabled: Bool {
+        get { defaults.bool(forKey: Keys.mirrorEnabled) }
+        set { defaults.set(newValue, forKey: Keys.mirrorEnabled) }
     }
 }
 
