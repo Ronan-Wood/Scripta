@@ -61,6 +61,11 @@ final class IndexStore {
         return base.appendingPathComponent("index.db")
     }
 
+    /// How `search`/`context` build their MATCH expression. Production is `.andFirst`; the eval
+    /// harness flips to `.legacyOr` to measure the before/after of the stopword + AND-first change.
+    enum QueryMode { case andFirst, legacyOr }
+    var queryMode: QueryMode = .andFirst
+
     private let db: OpaquePointer
     private let lock = NSLock()
     private let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "Index")
@@ -179,27 +184,41 @@ final class IndexStore {
 
     // MARK: - Retrieval
 
-    /// Holistic search: free-text terms (OR-matched, prefix, BM25-ranked) hit both spoken passages
-    /// AND transcript-level fields (title/summary/tags/participants), so a call surfaces whether the
-    /// word was said or is merely its topic. Passage hits rank first; topic-only calls are appended.
-    /// participant/tag/date/speaker narrow results. Returns [] if there are no usable terms.
+    /// Holistic search: free-text terms (AND-first, prefix, BM25-ranked, OR fallback) hit both
+    /// spoken passages AND transcript-level fields (title/summary/tags/participants), so a call
+    /// surfaces whether the word was said or is merely its topic. Passage hits rank first;
+    /// topic-only calls are appended. participant/tag/date/speaker narrow results. [] if no terms.
     func search(_ rawQuery: String, participant: String? = nil, tag: String? = nil,
                 since: String? = nil, speaker: String? = nil, limit: Int = 30) -> [SearchHit] {
-        guard let match = Self.ftsQuery(rawQuery) else { return [] }
         lock.lock(); defer { lock.unlock() }
+        if queryMode == .legacyOr {
+            return Array(fusedHits(FTSQuery.legacyOr(rawQuery), participant: participant, tag: tag,
+                                   since: since, speaker: speaker, limit: limit).prefix(limit))
+        }
+        // AND is near-precise for multi-word queries; fall back to OR (the recall floor) only when
+        // AND finds nothing across both passages and topics.
+        var hits = fusedHits(FTSQuery.andExpression(rawQuery), participant: participant, tag: tag,
+                             since: since, speaker: speaker, limit: limit)
+        if hits.isEmpty {
+            hits = fusedHits(FTSQuery.orExpression(rawQuery), participant: participant, tag: tag,
+                             since: since, speaker: speaker, limit: limit)
+        }
+        return Array(hits.prefix(limit))
+    }
 
+    /// Passage hits + (unless a speaker filter is set) topic hits for one MATCH expression.
+    private func fusedHits(_ match: String?, participant: String?, tag: String?,
+                           since: String?, speaker: String?, limit: Int) -> [SearchHit] {
+        guard let match else { return [] }
         var hits = passageHits(match, participant: participant, tag: tag, since: since, speaker: speaker, limit: limit)
         let seen = Set(hits.map(\.path))
-
-        // Topic-level hits fill in calls that matched by name/summary/concept but had no passage
-        // match. They don't carry a speaker/timestamp, so skip them when a speaker filter is set.
         if speaker == nil || speaker?.isEmpty == true {
             for hit in topicHits(match, participant: participant, tag: tag, since: since, limit: limit)
             where !seen.contains(hit.path) {
                 hits.append(hit)
             }
         }
-        return Array(hits.prefix(limit))
+        return hits
     }
 
     private func passageHits(_ match: String, participant: String?, tag: String?,
@@ -267,8 +286,14 @@ final class IndexStore {
     /// Full-text passages for retrieval-augmented answering: the whole chunk text (not a snippet),
     /// ranked by BM25, with provenance. Feeds the on-device "Ask your calls" chat.
     func context(for rawQuery: String, limit: Int = 6) -> [ContextChunk] {
-        guard let match = Self.ftsQuery(rawQuery) else { return [] }
         lock.lock(); defer { lock.unlock() }
+        var out = contextHits(FTSQuery.andExpression(rawQuery), limit: limit)
+        if out.isEmpty { out = contextHits(FTSQuery.orExpression(rawQuery), limit: limit) }
+        return out
+    }
+
+    private func contextHits(_ match: String?, limit: Int) -> [ContextChunk] {
+        guard let match else { return [] }
         var out: [ContextChunk] = []
         let sql = """
         SELECT c.path, t.title, c.start_ms, IFNULL(c.speaker,''), c.text
@@ -290,7 +315,7 @@ final class IndexStore {
 
     /// All tags across transcripts (excluding the owner marker) with a count, most-frequent first.
     func tags() -> [(name: String, count: Int)] {
-        aggregateList(column: "tags").filter { $0.name != TranscriptWriter.ownerMarker }
+        aggregateList(column: "tags").filter { $0.name != OwnerMarker.value }
     }
 
     /// Splits a newline-joined column across all transcripts into per-value counts.
@@ -305,18 +330,6 @@ final class IndexStore {
         }
         return counts.map { (name: $0.key, count: $0.value) }
             .sorted { $0.count != $1.count ? $0.count > $1.count : $0.name < $1.name }
-    }
-
-    // MARK: - FTS query building
-
-    /// Turns free text into an FTS5 OR-of-prefix-terms query, quoting each term so punctuation
-    /// can't break the syntax. Returns nil when there's nothing searchable.
-    static func ftsQuery(_ raw: String) -> String? {
-        let terms = raw.lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.count >= 2 }
-        guard !terms.isEmpty else { return nil }
-        return terms.map { "\"\($0)\"*" }.joined(separator: " OR ")
     }
 
     // MARK: - SQLite helpers

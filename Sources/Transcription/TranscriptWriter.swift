@@ -6,7 +6,8 @@ import Foundation
 enum TranscriptWriter {
 
     /// Marker written into every transcript's frontmatter. Load-bearing for safe pruning.
-    static let ownerMarker = "call-transcriber"
+    /// The value lives in the shared `OwnerMarker` so retrieval code can reference it too.
+    static let ownerMarker = OwnerMarker.value
 
     static func write(
         segments: [TranscriptSegment],

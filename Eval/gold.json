@@ -1,0 +1,25 @@
+{
+  "notes": "Gold retrieval cases over the real transcript corpus. `expect` lists filename substrings that a relevant call's path must contain. A case passes recall@k if any expected call appears in the top-k results. Authored from actual transcript content — the 'baseball' / 'home runs' pair is the keyword blind-spot test.",
+  "cases": [
+    { "id": "baseball-topic", "query": "baseball", "expect": ["2026-07-13 2107"] },
+    { "id": "home-runs-passage", "query": "29 home runs single season high", "expect": ["2026-07-13 2107"] },
+    { "id": "problem-solving-hitting", "query": "hitting is a problem solving game adjustments", "expect": ["2026-07-13 2107"] },
+    { "id": "junior-caminero", "query": "junior caminero runner up", "expect": ["2026-07-13 2107"] },
+    { "id": "cpa-market", "query": "CPA market Lehigh Valley", "expect": ["Lehigh Valley CPA"] },
+    { "id": "central-pennsylvania", "query": "central Pennsylvania market stability", "expect": ["Lehigh Valley CPA"] },
+    { "id": "danny-lehigh", "query": "how is Lehigh Valley going Danny", "expect": ["Lehigh Valley CPA"] },
+    { "id": "dhl-locations", "query": "mapping DHL locations", "expect": ["Project Management"] },
+    { "id": "repitching", "query": "repitching projects competitors research", "expect": ["Project Management"] },
+    { "id": "negotiation-logistics", "query": "deal negotiation logistics strategic planning", "expect": ["Project Management"] },
+    { "id": "jersey-guillotine", "query": "guillotine over here in Jersey", "expect": ["Project Management"] },
+    { "id": "player-availability", "query": "player availability who is unavailable Thursday Friday", "expect": ["Team Outings"] },
+    { "id": "barker-vacation", "query": "Barker is on vacation", "expect": ["Team Outings"] },
+    { "id": "colby-paul-out", "query": "Colby Paul Drew Parker McGinn out", "expect": ["Team Outings", "Project Management"] },
+    { "id": "ai-misunderstood", "query": "could AI help people stop feeling misunderstood", "expect": ["Call 2026-07-13 1222"] },
+    { "id": "radnor-derby", "query": "do you live in Radnor upper Darby", "expect": ["Call 2026-07-13 1539"] },
+    { "id": "team-outings-topic", "query": "team outing games without players", "expect": ["Team Outings"] },
+    { "id": "market-trends-business", "query": "market trends business growth", "expect": ["Lehigh Valley CPA"] },
+    { "id": "client-meetings-prep", "query": "preparing for upcoming client meetings", "expect": ["Project Management"] }
+  ],
+  "gates": { "recallAt5": 0.85, "recallAt1": 0.55, "mrr": 0.65 }
+}

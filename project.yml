@@ -49,6 +49,7 @@ targets:
     platform: macOS
     sources:
       - SourcesMCP
+      - Sources/Shared
     settings:
       base:
         PRODUCT_NAME: calltranscriber-mcp
