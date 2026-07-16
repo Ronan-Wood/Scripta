@@ -38,6 +38,7 @@ struct SettingsView: View {
     @State private var endpointOK: Bool?
     @State private var testingEndpoint = false
     @State private var confirmLAN = false
+    @State private var rerankEnabled = AppSettings.rerankEnabled
 
     var body: some View {
         Form {
@@ -144,6 +145,10 @@ struct SettingsView: View {
                         }
                     }
                     .onChange(of: enrichModel) { _, v in AppSettings.setEndpointModel(v.isEmpty ? nil : v, for: .enrich) }
+                    if !askModel.isEmpty {
+                        Toggle("Rerank Ask results (experimental)", isOn: $rerankEnabled)
+                            .onChange(of: rerankEnabled) { _, v in AppSettings.rerankEnabled = v }
+                    }
                 }
             } header: {
                 Text("Local Model (advanced)")

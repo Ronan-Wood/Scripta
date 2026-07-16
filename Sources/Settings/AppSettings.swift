@@ -31,6 +31,7 @@ enum AppSettings {
         static let endpointModelEnrich = "endpointModelEnrich"
         static let endpointKnownModels = "endpointKnownModels"
         static let appleFMSizeClass = "appleFMSizeClass"
+        static let rerankEnabled = "rerankEnabled"
         static let sidebarExpanded = "sidebarExpanded"
         static let globalHotkey = "globalHotkey"
         static let liveTranscription = "liveTranscription"
@@ -230,6 +231,13 @@ enum AppSettings {
     /// tester flip to `.capable` without brittle CPU brand-string probing.
     static var appleFMSizeClass: SizeClass {
         SizeClass(rawValue: defaults.string(forKey: Keys.appleFMSizeClass) ?? "") ?? .compact
+    }
+
+    /// Rerank Ask's retrieved candidates with the assigned local model (gated experiment).
+    /// Default off — turn on only if the eval shows it helps on your corpus.
+    static var rerankEnabled: Bool {
+        get { defaults.bool(forKey: Keys.rerankEnabled) }
+        set { defaults.set(newValue, forKey: Keys.rerankEnabled) }
     }
 }
 

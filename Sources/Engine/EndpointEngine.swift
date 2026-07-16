@@ -51,6 +51,41 @@ final class EndpointEngine: ChatEngine, EnrichEngine {
     }
 }
 
+extension EndpointEngine: RerankEngine {
+    /// One JSON-mode call: number the passages and ask for a relevance ordering of their indices.
+    func rerank(query: String, passages: [(index: Int, text: String)]) async -> [Int]? {
+        let numbered = passages.map { "[\($0.index)] \($0.text)" }.joined(separator: "\n")
+        let user = """
+        Query: \(query)
+
+        Passages:
+        \(numbered)
+
+        Return ONLY JSON {"ranking": [indices]} ordering the passage indices from most to least \
+        relevant to the query. Include every index exactly once.
+        """
+        do {
+            let raw = try await wire.complete(
+                model: model,
+                messages: [["role": "system", "content": "You rank passages by relevance. Respond with JSON only."],
+                           ["role": "user", "content": user]],
+                jsonMode: true, timeout: 10)
+            struct Ranking: Decodable { let ranking: [Int] }
+            guard let r = try? JSONDecoder().decode(Ranking.self, from: Data(Self.extractJSON(raw).utf8)) else { return nil }
+            return r.ranking
+        } catch {
+            return nil
+        }
+    }
+}
+
+extension EndpointEngine: EmbeddingEngine {
+    var embedModel: String { model }
+    func embed(_ texts: [String]) async -> [[Float]]? {
+        (try? await wire.embeddings(model: model, input: texts))
+    }
+}
+
 /// One endpoint conversation. Keeps message history app-side so multi-turn context is preserved
 /// (the server is stateless per request).
 private final class EndpointChat: ChatConversing {
