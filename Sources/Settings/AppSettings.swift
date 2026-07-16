@@ -24,6 +24,13 @@ enum AppSettings {
         static let promptForDetails = "promptForDetails"
         static let showInDock = "showInDock"
         static let appearance = "appearance"
+        static let endpointEnabled = "endpointEnabled"
+        static let endpointURL = "endpointURL"
+        static let endpointLANConfirmed = "endpointLANConfirmed"
+        static let endpointModelAsk = "endpointModelAsk"
+        static let endpointModelEnrich = "endpointModelEnrich"
+        static let endpointKnownModels = "endpointKnownModels"
+        static let appleFMSizeClass = "appleFMSizeClass"
         static let sidebarExpanded = "sidebarExpanded"
         static let globalHotkey = "globalHotkey"
         static let liveTranscription = "liveTranscription"
@@ -176,6 +183,53 @@ enum AppSettings {
     static var showInDock: Bool {
         get { defaults.bool(forKey: Keys.showInDock) }
         set { defaults.set(newValue, forKey: Keys.showInDock) }
+    }
+
+    // MARK: - Local model endpoint (opt-in; Apple FM is always the default + fallback)
+
+    /// When true, tasks assigned to the endpoint use it. Default false — nothing constructs a
+    /// URLSession or makes any network call while this is off.
+    static var endpointEnabled: Bool {
+        get { defaults.bool(forKey: Keys.endpointEnabled) }
+        set { defaults.set(newValue, forKey: Keys.endpointEnabled) }
+    }
+
+    /// The local server base URL (e.g. http://localhost:11434/v1). Only loopback/LAN is ever used.
+    static var endpointURL: URL? {
+        get { (defaults.string(forKey: Keys.endpointURL)).flatMap(URL.init(string:)) }
+        set { defaults.set(newValue?.absoluteString, forKey: Keys.endpointURL) }
+    }
+    static var endpointURLString: String {
+        get { defaults.string(forKey: Keys.endpointURL) ?? "" }
+        set { defaults.set(newValue, forKey: Keys.endpointURL) }
+    }
+
+    /// Set once the user confirms a private-LAN (non-loopback) address. Loopback needs no confirm.
+    static var endpointLANConfirmed: Bool {
+        get { defaults.bool(forKey: Keys.endpointLANConfirmed) }
+        set { defaults.set(newValue, forKey: Keys.endpointLANConfirmed) }
+    }
+
+    /// Model ids assigned per task, or nil to use Apple FM for that task.
+    static func endpointModel(for task: EngineTask) -> String? {
+        let key = task == .ask ? Keys.endpointModelAsk : Keys.endpointModelEnrich
+        let value = defaults.string(forKey: key) ?? ""
+        return value.isEmpty ? nil : value
+    }
+    static func setEndpointModel(_ model: String?, for task: EngineTask) {
+        defaults.set(model ?? "", forKey: task == .ask ? Keys.endpointModelAsk : Keys.endpointModelEnrich)
+    }
+
+    /// Last-seen model ids, so the pickers stay populated when the server is momentarily down.
+    static var endpointKnownModels: [String] {
+        get { defaults.stringArray(forKey: Keys.endpointKnownModels) ?? [] }
+        set { defaults.set(newValue, forKey: Keys.endpointKnownModels) }
+    }
+
+    /// Which prompt tier Apple FM gets. `.compact` today; a hidden override lets a newer-silicon
+    /// tester flip to `.capable` without brittle CPU brand-string probing.
+    static var appleFMSizeClass: SizeClass {
+        SizeClass(rawValue: defaults.string(forKey: Keys.appleFMSizeClass) ?? "") ?? .compact
     }
 }
 

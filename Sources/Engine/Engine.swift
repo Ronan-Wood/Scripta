@@ -1,0 +1,73 @@
+import Foundation
+
+/// The pluggable model engine. Apple Foundation Models is the zero-setup default for every AI
+/// task; a power user can point the app at an OpenAI-*format* localhost/LAN server (Ollama /
+/// LM Studio / MLX — the wire format only, never cloud) and assign a bigger model per task.
+///
+/// Design invariants (see the ratified design note): everything local; Apple FM is the default and
+/// the automatic downward fallback; no SDK deps; the recording pipeline never imports this layer.
+
+/// Rough capability tier a prompt is written for — NOT the engine's identity. `.compact` = today's
+/// ~3B Apple FM (strict, literal); `.capable` = a 7–20B local model or a future on-device tier.
+enum SizeClass: String { case compact, capable }
+
+/// The AI tasks the app performs. Each can resolve to a different engine.
+enum EngineTask: String { case ask, enrich }
+
+// MARK: - Chat
+
+/// One streaming chat turn. Cumulative snapshots (each contains the whole answer so far), so a
+/// consumer just assigns the latest to its message text.
+protocol ChatConversing: AnyObject {
+    func stream(_ prompt: String) -> AsyncThrowingStream<String, Error>
+}
+
+/// A chat-capable engine (Ask). `makeChat` opens a multi-turn conversation seeded with grounding
+/// instructions; the conversation owns its own history/recovery.
+protocol ChatEngine {
+    var sizeClass: SizeClass { get }
+    /// Short user-facing attribution, e.g. "Apple Intelligence" or "qwen2.5:14b (local)".
+    var label: String { get }
+    func makeChat(instructions: String) -> ChatConversing
+}
+
+// MARK: - Enrichment
+
+/// A title/summary/topics generator (concrete return type — sidesteps the Generable-vs-Codable
+/// generic-dispatch problem: Apple FM builds it via @Generable, the endpoint via JSON decode).
+protocol EnrichEngine {
+    var label: String { get }
+    func digest(transcript: String, sizeClass: SizeClass) async -> TranscriptDigest?
+}
+
+/// Plain decodable shape the endpoint parses JSON-mode output into (TranscriptDigest itself is
+/// @Generable, which doesn't give us Codable).
+struct DigestDTO: Decodable {
+    let title: String
+    let summary: String
+    let topics: [String]
+}
+
+// MARK: - Errors
+
+enum EngineError: LocalizedError {
+    case notConfigured
+    case refusedHost(String)
+    case unreachable
+    case modelNotFound(String)
+    case badResponse
+    case timedOut
+    case http(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .notConfigured: return "No local model server is configured."
+        case .refusedHost(let h): return "“\(h)” isn’t a local address. Only localhost and your local network are allowed."
+        case .unreachable: return "Couldn’t reach the local model server."
+        case .modelNotFound(let m): return "The assigned model “\(m)” isn’t on the server anymore."
+        case .badResponse: return "The local model server returned an unexpected response."
+        case .timedOut: return "The local model server timed out."
+        case .http(let code): return "The local model server returned HTTP \(code)."
+        }
+    }
+}

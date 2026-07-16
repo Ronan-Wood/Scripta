@@ -12,21 +12,21 @@ final class AskModel: ObservableObject {
         let fromUser: Bool
         var text: String
         var sources: [Source] = []
+        /// The engine that produced this answer (badge under the bubble); nil for user messages.
+        var engineLabel: String? = nil
     }
 
     @Published var messages: [Message] = []
     @Published var input = ""
     @Published var thinking = false
 
-    var available: Bool { TranscriptEnricher.isAvailable }
+    /// Answering is available if the endpoint is assigned for Ask, or Apple Intelligence is on.
+    var available: Bool { EngineRouter.usesEndpoint(for: .ask) || TranscriptEnricher.isAvailable }
 
-    private var session: LanguageModelSession?
-    private let instructions = """
-    You answer questions about the user's own recorded calls, using ONLY the provided context \
-    passages. You may make reasonable connections between related facts in the context. Cite the \
-    call by name when you answer. If the answer is genuinely not in the context, say you don't \
-    have it in these calls. Be concise and specific.
-    """
+    private var chat: ChatConversing?
+    private var sizeClass: SizeClass = .compact
+    private var engineLabel: String?
+    private var usingEndpoint = false
 
     func send() async {
         let question = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -35,20 +35,24 @@ final class AskModel: ObservableObject {
         let previousUser = messages.last(where: { $0.fromUser })?.text
         messages.append(Message(fromUser: true, text: question))
 
-        if let unavailable = TranscriptEnricher.availabilityMessage {
+        // Only require Apple Intelligence when we're not using the local endpoint.
+        if !EngineRouter.usesEndpoint(for: .ask), let unavailable = TranscriptEnricher.availabilityMessage {
             messages.append(Message(fromUser: false, text: unavailable))
             return
         }
 
+        ensureChat()
+
         // Retrieve. If the question alone finds nothing — a pronoun-laden follow-up like "what
         // else did she say about it?" — fall back to including the previous turn's terms.
-        var chunks = IndexStore.shared?.context(for: question, limit: 6) ?? []
+        let limit = PromptCatalog.askContextChunks(sizeClass)
+        var chunks = IndexStore.shared?.context(for: question, limit: limit) ?? []
         if chunks.isEmpty, let previousUser {
-            chunks = IndexStore.shared?.context(for: previousUser + " " + question, limit: 6) ?? []
+            chunks = IndexStore.shared?.context(for: previousUser + " " + question, limit: limit) ?? []
         }
 
         // Short-circuit empty retrieval: answer deterministically instead of spending an inference
-        // on "(nothing found)" and risking a source-less hallucination. Session untouched.
+        // on "(nothing found)" and risking a source-less hallucination.
         guard !chunks.isEmpty else {
             messages.append(Message(fromUser: false,
                 text: "I couldn’t find anything about that in your calls — try different words, or a person’s name."))
@@ -57,49 +61,62 @@ final class AskModel: ObservableObject {
 
         let sources = distinctSources(chunks)
         let context = chunks.map(Self.label).joined(separator: "\n\n")
+        let prompt = "Context:\n\(context)\n\nQuestion: \(question)"
 
         thinking = true
-        if session == nil { session = LanguageModelSession(instructions: instructions) }
+        let firstAnswer = !messages.contains { !$0.fromUser && !$0.text.isEmpty }
         let index = messages.count
-        messages.append(Message(fromUser: false, text: ""))
+        messages.append(Message(fromUser: false, text: "", engineLabel: engineLabel))
         do {
-            try await streamWithRecovery(context: context, question: question, into: index)
+            try await run(prompt, into: index)
             messages[index].sources = sources
-        } catch let error as LanguageModelSession.GenerationError {
-            messages[index].text = Self.message(for: error)
         } catch {
-            messages[index].text = "Something went wrong — try again."
+            // Ask, first message → auto-fall back to Apple FM with a notice, and the answer still
+            // arrives. Mid-conversation → no silent swap: keep the partial text, hint at retry.
+            if firstAnswer && usingEndpoint {
+                resetToAppleFM()
+                messages[index].text = ""
+                messages[index].engineLabel = engineLabel
+                do { try await run(prompt, into: index); messages[index].sources = sources }
+                catch { messages[index].text = Self.errorText(error) }
+            } else if messages[index].text.isEmpty {
+                messages[index].text = Self.errorText(error)
+            } else {
+                messages[index].text += "\n\n_(Interrupted — send again to retry.)_"
+            }
         }
         thinking = false
     }
 
-    /// Streams the answer into `messages[index]`; on context-window overflow rebuilds the session
-    /// once, discards the partial text, and retries — a fresh context block always fits. Without
-    /// this the chat throws after a handful of turns and then fails every later turn.
-    private func streamWithRecovery(context: String, question: String, into index: Int) async throws {
-        let prompt = "Context:\n\(context)\n\nQuestion: \(question)"
-        do {
-            try await stream(prompt, into: index)
-        } catch let error as LanguageModelSession.GenerationError {
-            guard case .exceededContextWindowSize = error else { throw error }
-            session = LanguageModelSession(instructions: instructions)
-            messages[index].text = ""
-            try await stream(prompt, into: index)
-        }
+    /// Resolves the Ask engine once per conversation (multi-turn history lives inside the chat).
+    private func ensureChat() {
+        guard chat == nil else { return }
+        let engine = EngineRouter.chatEngine(for: .ask)
+        sizeClass = engine.sizeClass
+        engineLabel = engine.label
+        usingEndpoint = EngineRouter.usesEndpoint(for: .ask)
+        chat = engine.makeChat(instructions: PromptCatalog.askInstructions(sizeClass))
     }
 
-    /// Streams snapshots into the placeholder message so tokens appear as they generate.
-    private func stream(_ prompt: String, into index: Int) async throws {
-        for try await snapshot in session!.streamResponse(to: prompt) {
+    private func resetToAppleFM() {
+        let engine = AppleFMEngine()
+        sizeClass = engine.sizeClass
+        engineLabel = "\(engine.label) (fallback)"
+        usingEndpoint = false
+        chat = engine.makeChat(instructions: PromptCatalog.askInstructions(sizeClass))
+    }
+
+    /// Streams cumulative snapshots into the placeholder message so tokens appear as they generate.
+    private func run(_ prompt: String, into index: Int) async throws {
+        for try await snapshot in chat!.stream(prompt) {
             guard index < messages.count else { return }
-            messages[index].text = snapshot.content
+            messages[index].text = snapshot
             thinking = false   // first token has arrived
         }
     }
 
-    private static func message(for error: LanguageModelSession.GenerationError) -> String {
-        if case .guardrailViolation = error { return "I can’t answer that one." }
-        return "Something went wrong — try again."
+    private static func errorText(_ error: Error) -> String {
+        (error as? EngineError)?.errorDescription ?? "Something went wrong — try again."
     }
 
     /// Context label — includes the call date so temporal questions ("when did I last…") can be
