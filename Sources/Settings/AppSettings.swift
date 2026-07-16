@@ -20,6 +20,7 @@ enum AppSettings {
         static let calendarEnabled = "calendarEnabled"
         static let watchedCalendarIDs = "watchedCalendarIDs"
         static let calendarGroups = "calendarGroups"
+        static let activeGroup = "activeGroup"
         static let summarizeEnabled = "summarizeEnabled"
         static let promptForDetails = "promptForDetails"
         static let showInDock = "showInDock"
@@ -157,11 +158,26 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: Keys.watchedCalendarIDs) }
     }
 
-    /// Maps a calendar identifier to a group tag. Calls recorded from that calendar are auto-tagged
-    /// with it, so a calendar becomes a grouping dimension in search and the tag index.
+    /// Maps a calendar identifier to a group. Calls recorded from that calendar are captured into
+    /// that group; a calendar becomes a first-class privacy/workspace partition.
     static var calendarGroups: [String: String] {
         get { (defaults.dictionary(forKey: Keys.calendarGroups) as? [String: String]) ?? [:] }
         set { defaults.set(newValue, forKey: Keys.calendarGroups) }
+    }
+
+    /// The workspace the user is currently in. Retrieval is hard-scoped to it (secure by default).
+    /// "" = the ungrouped workspace (also the fresh-install default, so the app behaves as one
+    /// bucket until groups exist). The explicit "all groups" action is transient, never persisted.
+    static var activeGroup: String {
+        get { defaults.string(forKey: Keys.activeGroup) ?? "" }
+        set { defaults.set(newValue, forKey: Keys.activeGroup) }
+    }
+
+    /// The group captured for a new recording: a calendar's group if tied to one, else the active
+    /// workspace. Captured at record time so it's a stable string, not a live calendar reference.
+    static func recordingGroup(forCalendarID calendarID: String?) -> String {
+        if let calendarID, let group = calendarGroups[calendarID], !group.isEmpty { return group }
+        return activeGroup
     }
 
     /// Generate an on-device title + summary for each transcript (needs Apple Intelligence).

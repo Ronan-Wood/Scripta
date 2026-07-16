@@ -176,9 +176,10 @@ struct CallsView: View {
 
     private func refresh() {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
+        let group = AppSettings.activeGroup   // hard-scoped to the active workspace
         if !trimmed.isEmpty, let store {
             var seen = Set<URL>()
-            rows = store.search(trimmed, participant: participant, tag: tag, limit: 60).compactMap { hit in
+            rows = store.search(trimmed, participant: participant, tag: tag, group: group, limit: 60).compactMap { hit in
                 let url = URL(fileURLWithPath: hit.path)
                 guard seen.insert(url).inserted else { return nil }
                 // startMs 0 = a topic-only match (no passage to scroll to).
@@ -189,7 +190,8 @@ struct CallsView: View {
             }
         } else {
             rows = TranscriptStore.list().filter { meta in
-                (participant.map { p in meta.participants.contains { $0.range(of: p, options: .caseInsensitive) != nil } } ?? true)
+                meta.group == group   // the privacy wall on the browse list
+                && (participant.map { p in meta.participants.contains { $0.range(of: p, options: .caseInsensitive) != nil } } ?? true)
                 && (tag.map { t in meta.tags.contains { $0.range(of: t, options: .caseInsensitive) != nil } } ?? true)
             }.map { CallRow(id: $0.url, title: $0.displayTitle, subtitle: $0.subtitle, snippet: nil) }
         }

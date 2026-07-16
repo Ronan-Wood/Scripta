@@ -18,7 +18,9 @@ enum TranscriptWriter {
         title: String? = nil,
         summary: String? = nil,
         screenSnippets: [ScreenSnippet] = [],
-        isConference: Bool = false
+        notes: [CallNote] = [],
+        isConference: Bool = false,
+        group: String = ""
     ) throws -> URL {
         let folder = AppSettings.outputFolder
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -26,11 +28,11 @@ enum TranscriptWriter {
         let url = uniqueURL(in: folder, startedAt: startedAt, title: title)
         var contents = frontmatter(startedAt: startedAt, duration: duration,
                                    participants: participants, tags: tags, title: title,
-                                   isConference: isConference)
+                                   isConference: isConference, group: group)
         if let summary, !summary.isEmpty {
             contents += "\n\n## Summary\n\n" + summary
         }
-        contents += "\n" + body(segments: segments) + "\n"
+        contents += "\n" + body(segments: segments, notes: notes) + "\n"
         if !screenSnippets.isEmpty {
             contents += "\n" + screenContext(screenSnippets) + "\n"
         }
@@ -53,7 +55,7 @@ enum TranscriptWriter {
 
     private static func frontmatter(startedAt: Date, duration: TimeInterval,
                                     participants: [String], tags: [String], title: String?,
-                                    isConference: Bool) -> String {
+                                    isConference: Bool, group: String) -> String {
         let dateFmt = posixFormatter("yyyy-MM-dd")
         let timeFmt = posixFormatter("HH:mm")
         let dateStr = dateFmt.string(from: startedAt)
@@ -78,6 +80,8 @@ enum TranscriptWriter {
         yaml += "tags: [\(tagList)]\n"
         // Recorded from a single source, unlabeled. Absent = a normal two-party call.
         if isConference { yaml += "mode: conference\n" }
+        // The privacy/workspace partition. Absent/empty = ungrouped. Captured at record time.
+        if !group.isEmpty { yaml += "group: \"\(sanitizeScalar(group))\"\n" }
         yaml += "app: \(ownerMarker)\n"
         yaml += "---\n\n# \(heading)"
         return yaml
@@ -95,16 +99,26 @@ enum TranscriptWriter {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func body(segments: [TranscriptSegment]) -> String {
-        guard !segments.isEmpty else {
+    /// Renders spoken segments and manual notes as one chronological stream. A note is emitted as
+    /// a `Note:`-labelled line — the same `**[stamp] Label:**` shape as a speaker turn — so the
+    /// viewer renders it in place and the index chunks it as a searchable "Note" turn for free.
+    /// At an identical timestamp the note sorts after the segment (it was typed in response to it).
+    private static func body(segments: [TranscriptSegment], notes: [CallNote]) -> String {
+        guard !segments.isEmpty || !notes.isEmpty else {
             return "\n_(No speech detected.)_"
         }
-        let lines = segments.map { segment in
+        var lines: [(ms: Int, order: Int, text: String)] = []
+        for segment in segments {
             let stamp = formatClock(Double(segment.startMs) / 1000.0)
             let label = segment.speaker.map { " \($0.rawValue):" } ?? ""
-            return "**[\(stamp)]\(label)** \(segment.text)"
+            lines.append((segment.startMs, 0, "**[\(stamp)]\(label)** \(segment.text)"))
         }
-        return "\n" + lines.joined(separator: "\n\n")
+        for note in notes {
+            let stamp = formatClock(Double(note.startMs) / 1000.0)
+            lines.append((note.startMs, 1, "**[\(stamp)] Note:** \(note.text)"))
+        }
+        let ordered = lines.sorted { $0.ms != $1.ms ? $0.ms < $1.ms : $0.order < $1.order }
+        return "\n" + ordered.map(\.text).joined(separator: "\n\n")
     }
 
     private static func screenContext(_ snippets: [ScreenSnippet]) -> String {

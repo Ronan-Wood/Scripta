@@ -1,14 +1,20 @@
 import AppKit
 import Carbon.HIToolbox
 
-/// Registers a system-wide hotkey (⌥⌘R) to start/stop recording from anywhere. Uses Carbon's
-/// RegisterEventHotKey, which needs no accessibility permission for a registered combo.
+/// Registers system-wide hotkeys — ⌥⌘R to start/stop recording, ⌥⌘N to jot a quick note —
+/// from anywhere. Uses Carbon's RegisterEventHotKey, which needs no accessibility permission for
+/// a registered combo.
 final class HotKeyManager {
     static let shared = HotKeyManager()
 
     var onTrigger: (() -> Void)?
+    var onNote: (() -> Void)?
 
-    private var hotKeyRef: EventHotKeyRef?
+    private static let recordID: UInt32 = 1
+    private static let noteID: UInt32 = 2
+
+    private var recordRef: EventHotKeyRef?
+    private var noteRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
 
     func setEnabled(_ enabled: Bool) {
@@ -16,20 +22,34 @@ final class HotKeyManager {
     }
 
     private func register() {
-        guard hotKeyRef == nil else { return }
+        guard handlerRef == nil else { return }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: OSType(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            HotKeyManager.shared.onTrigger?()
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+            var hotKeyID = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                              nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
+            switch hotKeyID.id {
+            case HotKeyManager.recordID: HotKeyManager.shared.onTrigger?()
+            case HotKeyManager.noteID:   HotKeyManager.shared.onNote?()
+            default: break
+            }
             return noErr
         }, 1, &spec, nil, &handlerRef)
 
-        let id = EventHotKeyID(signature: fourCharCode("CTrx"), id: 1)
-        RegisterEventHotKey(UInt32(kVK_ANSI_R), UInt32(cmdKey | optionKey), id, GetApplicationEventTarget(), 0, &hotKeyRef)
+        let sig = fourCharCode("CTrx")
+        RegisterEventHotKey(UInt32(kVK_ANSI_R), UInt32(cmdKey | optionKey),
+                            EventHotKeyID(signature: sig, id: Self.recordID),
+                            GetApplicationEventTarget(), 0, &recordRef)
+        RegisterEventHotKey(UInt32(kVK_ANSI_N), UInt32(cmdKey | optionKey),
+                            EventHotKeyID(signature: sig, id: Self.noteID),
+                            GetApplicationEventTarget(), 0, &noteRef)
     }
 
     private func unregister() {
-        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
-        hotKeyRef = nil
+        if let recordRef { UnregisterEventHotKey(recordRef) }
+        recordRef = nil
+        if let noteRef { UnregisterEventHotKey(noteRef) }
+        noteRef = nil
         if let handlerRef { RemoveEventHandler(handlerRef) }
         handlerRef = nil
     }

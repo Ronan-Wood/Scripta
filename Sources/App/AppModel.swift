@@ -48,6 +48,13 @@ final class AppModel: ObservableObject {
     /// Set by MenuController; pauses/resumes the in-progress recording.
     var togglePause: (() -> Void)?
 
+    /// Set by MenuController; records a manual note against the live recording. No-op when idle.
+    var addNote: ((String) -> Void)?
+
+    /// Bumped each time a note is accepted, so recording surfaces can show a lightweight
+    /// "N notes this call" confirmation without reaching into the session.
+    @Published var noteCount = 0
+
     private var clock: Timer?
     private var startedAt: Date?
     private var pauseStart: Date?
@@ -93,7 +100,7 @@ final class AppModel: ObservableObject {
             clock?.invalidate(); clock = nil
             startedAt = nil; recordingElapsed = 0; meter.level = 0; isPaused = false; pauseStart = nil
             live.finalized = []; live.partial = ""
-            recordingModeName = nil
+            recordingModeName = nil; noteCount = 0
         }
     }
 

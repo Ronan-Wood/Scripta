@@ -15,6 +15,8 @@ struct IndexedTranscript {
     let mtime: Double
     /// "conference" for a single-source conference recording, "" for a normal call.
     var mode: String = ""
+    /// The privacy/workspace partition. "" = ungrouped.
+    var group: String = ""
 }
 
 /// One retrievable chunk of a transcript (a speaker turn).
@@ -74,8 +76,9 @@ final class IndexStore {
     /// Bumped whenever the schema OR the chunking geometry (see `Indexing`) changes. A DB at a
     /// different version is dropped and recreated — correct for a declared rebuildable cache —
     /// then reconcile at launch repopulates it. v2 added the transcript `mode` column; v3 versioned
-    /// `chunk_vectors` (embed model + dimension) so Phase B can't silently mix vector spaces.
-    private static let schemaVersion: Int32 = 3
+    /// `chunk_vectors` (embed model + dimension) so Phase B can't silently mix vector spaces;
+    /// v4 added the `group` partition column.
+    private static let schemaVersion: Int32 = 4
 
     private let db: OpaquePointer
     private let lock = NSLock()
@@ -128,8 +131,9 @@ final class IndexStore {
         CREATE TABLE IF NOT EXISTS transcripts(
             path TEXT PRIMARY KEY,
             title TEXT, date TEXT, time TEXT, duration TEXT,
-            participants TEXT, tags TEXT, summary TEXT, mtime REAL, mode TEXT
+            participants TEXT, tags TEXT, summary TEXT, mtime REAL, mode TEXT, "group" TEXT
         );
+        CREATE INDEX IF NOT EXISTS idx_transcripts_group ON transcripts("group");
         CREATE TABLE IF NOT EXISTS chunks(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             path TEXT NOT NULL, start_ms INTEGER, end_ms INTEGER, speaker TEXT, text TEXT
@@ -164,13 +168,13 @@ final class IndexStore {
         guard exec("BEGIN;") else { return }
         var ok = removeRows(path: t.path)
         if ok {
-            ok = run("INSERT INTO transcripts(path,title,date,time,duration,participants,tags,summary,mtime,mode) VALUES(?,?,?,?,?,?,?,?,?,?)") { stmt in
+            ok = run("INSERT INTO transcripts(path,title,date,time,duration,participants,tags,summary,mtime,mode,\"group\") VALUES(?,?,?,?,?,?,?,?,?,?,?)") { stmt in
                 bind(stmt, 1, t.path); bind(stmt, 2, t.title); bind(stmt, 3, t.date)
                 bind(stmt, 4, t.time); bind(stmt, 5, t.duration)
                 bind(stmt, 6, t.participants.joined(separator: "\n"))
                 bind(stmt, 7, t.tags.joined(separator: "\n"))
                 bind(stmt, 8, t.summary); sqlite3_bind_double(stmt, 9, t.mtime)
-                bind(stmt, 10, t.mode)
+                bind(stmt, 10, t.mode); bind(stmt, 11, t.group)
             }
         }
         if ok {
@@ -253,20 +257,23 @@ final class IndexStore {
     /// spoken passages AND transcript-level fields (title/summary/tags/participants), so a call
     /// surfaces whether the word was said or is merely its topic. Passage hits rank first;
     /// topic-only calls are appended. participant/tag/date/speaker narrow results. [] if no terms.
+    /// `group` is the privacy wall: non-nil scopes to that workspace ("" = ungrouped), nil means
+    /// all groups (the explicit, non-default cross-group action). Applied inside the candidate
+    /// query, before LIMIT.
     func search(_ rawQuery: String, participant: String? = nil, tag: String? = nil,
-                since: String? = nil, speaker: String? = nil, limit: Int = 30) -> [SearchHit] {
+                since: String? = nil, speaker: String? = nil, group: String? = nil, limit: Int = 30) -> [SearchHit] {
         lock.lock(); defer { lock.unlock() }
         if queryMode == .legacyOr {
             return Array(fusedHits(FTSQuery.legacyOr(rawQuery), participant: participant, tag: tag,
-                                   since: since, speaker: speaker, limit: limit).prefix(limit))
+                                   since: since, speaker: speaker, group: group, limit: limit).prefix(limit))
         }
         // AND is near-precise for multi-word queries; fall back to OR (the recall floor) only when
         // AND finds nothing across both passages and topics.
         var hits = fusedHits(FTSQuery.andExpression(rawQuery), participant: participant, tag: tag,
-                             since: since, speaker: speaker, limit: limit)
+                             since: since, speaker: speaker, group: group, limit: limit)
         if hits.isEmpty {
             hits = fusedHits(FTSQuery.orExpression(rawQuery), participant: participant, tag: tag,
-                             since: since, speaker: speaker, limit: limit)
+                             since: since, speaker: speaker, group: group, limit: limit)
         }
         return Array(hits.prefix(limit))
     }
@@ -276,13 +283,13 @@ final class IndexStore {
     /// limit. BM25 scores aren't comparable across the two FTS tables, so reserve slots rather than
     /// merge scores.
     private func fusedHits(_ match: String?, participant: String?, tag: String?,
-                           since: String?, speaker: String?, limit: Int) -> [SearchHit] {
+                           since: String?, speaker: String?, group: String?, limit: Int) -> [SearchHit] {
         guard let match else { return [] }
-        let passages = passageHits(match, participant: participant, tag: tag, since: since, speaker: speaker, limit: limit)
+        let passages = passageHits(match, participant: participant, tag: tag, since: since, speaker: speaker, group: group, limit: limit)
         let speakerScoped = !(speaker == nil || speaker?.isEmpty == true)
         let passagePaths = Set(passages.map(\.path))
         let topics = speakerScoped ? [] :
-            topicHits(match, participant: participant, tag: tag, since: since, limit: limit)
+            topicHits(match, participant: participant, tag: tag, since: since, group: group, limit: limit)
                 .filter { !passagePaths.contains($0.path) }
         guard !topics.isEmpty else { return passages }
 
@@ -312,7 +319,7 @@ final class IndexStore {
     private static func delimitedValue(_ value: String) -> String { "%\n\(value.lowercased())\n%" }
 
     private func passageHits(_ match: String, participant: String?, tag: String?,
-                             since: String?, speaker: String?, limit: Int) -> [SearchHit] {
+                             since: String?, speaker: String?, group: String?, limit: Int) -> [SearchHit] {
         var sql = """
         SELECT c.path, t.title, t.date, c.start_ms, c.speaker,
                snippet(chunks_fts, 0, '⟦', '⟧', '…', 14) AS snip, bm25(chunks_fts) AS score
@@ -330,6 +337,7 @@ final class IndexStore {
         if let tag, !tag.isEmpty { filter(Self.delimitedClause("t.tags"), Self.delimitedValue(tag)) }
         if let since, !since.isEmpty { filter(" AND t.date >= ?", since) }
         if let speaker, !speaker.isEmpty { filter(" AND c.speaker = ?", speaker) }
+        if let group { filter(" AND t.\"group\" = ?", group) }   // the privacy wall, before LIMIT
         // Over-fetch so the per-call diversity cap below still leaves `limit` results. (The cap is
         // applied in Swift, not via a SQL window function — FTS5 snippet/bm25 don't survive being
         // wrapped in a windowed subquery.)
@@ -358,7 +366,7 @@ final class IndexStore {
     }
 
     private func topicHits(_ match: String, participant: String?, tag: String?,
-                           since: String?, limit: Int) -> [SearchHit] {
+                           since: String?, group: String?, limit: Int) -> [SearchHit] {
         // Column-weighted BM25: title strongest, then tags (the deliberate concept surface), then
         // summary, participants weakest (the participant filter already covers people-scoped search).
         var sql = """
@@ -377,6 +385,7 @@ final class IndexStore {
         if let participant, !participant.isEmpty { filter(Self.delimitedClause("t.participants"), Self.delimitedValue(participant)) }
         if let tag, !tag.isEmpty { filter(Self.delimitedClause("t.tags"), Self.delimitedValue(tag)) }
         if let since, !since.isEmpty { filter(" AND t.date >= ?", since) }
+        if let group { filter(" AND t.\"group\" = ?", group) }   // the privacy wall
         sql += " ORDER BY score LIMIT \(max(1, limit));"
 
         var hits: [SearchHit] = []
@@ -396,10 +405,10 @@ final class IndexStore {
     /// ≤2 per call for source diversity, expands each hit to its neighbour turns so the model sees
     /// the answer around the question, and appends up to 2 topic passages (title/summary/tags) so
     /// concept-tag matches — the "baseball" ↔ "home runs" layer — reach Ask too, not just search.
-    func context(for rawQuery: String, limit: Int = 6) -> [ContextChunk] {
+    func context(for rawQuery: String, group: String? = nil, limit: Int = 6) -> [ContextChunk] {
         lock.lock(); defer { lock.unlock() }
-        var hits = rankedChunkIDs(FTSQuery.andExpression(rawQuery), limit: limit * 3)
-        if hits.isEmpty { hits = rankedChunkIDs(FTSQuery.orExpression(rawQuery), limit: limit * 3) }
+        var hits = rankedChunkIDs(FTSQuery.andExpression(rawQuery), group: group, limit: limit * 3)
+        if hits.isEmpty { hits = rankedChunkIDs(FTSQuery.orExpression(rawQuery), group: group, limit: limit * 3) }
 
         // Per-call diversity: at most 2 chunks per path, keeping best-ranked.
         var perPath: [String: Int] = [:]
@@ -424,22 +433,30 @@ final class IndexStore {
 
         // Topic fusion: append summary passages for concept/title/tag matches not already present.
         let seenPath = Set(out.map(\.path))
-        for topic in topicContext(FTSQuery.andExpression(rawQuery) ?? FTSQuery.orExpression(rawQuery), limit: 2)
+        for topic in topicContext(FTSQuery.andExpression(rawQuery) ?? FTSQuery.orExpression(rawQuery), group: group, limit: 2)
         where !seenPath.contains(topic.path) {
             out.append(topic)
         }
         return out
     }
 
-    /// (chunk id, path) for spoken-passage hits, best-ranked first.
-    private func rankedChunkIDs(_ match: String?, limit: Int) -> [(id: Int64, path: String)] {
+    /// (chunk id, path) for spoken-passage hits, best-ranked first. Group-scoped inside the query
+    /// (joins transcripts to apply the wall before LIMIT).
+    private func rankedChunkIDs(_ match: String?, group: String?, limit: Int) -> [(id: Int64, path: String)] {
         guard let match else { return [] }
         var out: [(Int64, String)] = []
-        let sql = """
-        SELECT c.id, c.path FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid
-        WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT \(max(1, limit));
+        var sql = """
+        SELECT c.id, c.path FROM chunks_fts
+        JOIN chunks c ON c.id = chunks_fts.rowid
+        JOIN transcripts t ON t.path = c.path
+        WHERE chunks_fts MATCH ?
         """
-        query(sql, bind: { Self.bindStatic($0, 1, match) }) { stmt in
+        if group != nil { sql += " AND t.\"group\" = ?" }
+        sql += " ORDER BY bm25(chunks_fts) LIMIT \(max(1, limit));"
+        query(sql, bind: { stmt in
+            Self.bindStatic(stmt, 1, match)
+            if let group { Self.bindStatic(stmt, 2, group) }
+        }) { stmt in
             out.append((sqlite3_column_int64(stmt, 0), text(stmt, 1)))
         }
         return out
@@ -467,15 +484,20 @@ final class IndexStore {
 
     /// Synthetic passages for calls that matched by title/summary/tags — the connective tissue
     /// the on-device model uses for "reasonable connections" and whole-call questions.
-    private func topicContext(_ match: String?, limit: Int) -> [ContextChunk] {
+    private func topicContext(_ match: String?, group: String?, limit: Int) -> [ContextChunk] {
         guard let match else { return [] }
         var out: [ContextChunk] = []
-        let sql = """
+        var sql = """
         SELECT f.path, f.title, t.date, f.summary, f.tags
         FROM transcripts_fts f JOIN transcripts t ON t.path = f.path
-        WHERE transcripts_fts MATCH ? ORDER BY bm25(transcripts_fts) LIMIT \(max(1, limit));
+        WHERE transcripts_fts MATCH ?
         """
-        query(sql, bind: { Self.bindStatic($0, 1, match) }) { stmt in
+        if group != nil { sql += " AND t.\"group\" = ?" }
+        sql += " ORDER BY bm25(transcripts_fts) LIMIT \(max(1, limit));"
+        query(sql, bind: { stmt in
+            Self.bindStatic(stmt, 1, match)
+            if let group { Self.bindStatic(stmt, 2, group) }
+        }) { stmt in
             let title = text(stmt, 1), summary = text(stmt, 3), tags = text(stmt, 4)
             var parts = ["Call: \(title.isEmpty ? "Untitled" : title)"]
             if !summary.isEmpty { parts.append("Summary: \(summary)") }

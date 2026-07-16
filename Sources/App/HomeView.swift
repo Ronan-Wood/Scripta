@@ -44,6 +44,7 @@ struct HomeView: View {
     private var recordingScreen: some View {
         VStack(spacing: Space.x5) {
             recordCard
+            NoteComposer()
             HStack(alignment: .top, spacing: Space.x5) {
                 LiveTranscriptPane(title: liveTitle).frame(maxWidth: .infinity, maxHeight: .infinity)
                 RelatedCallsPanel().frame(width: 300)
@@ -209,6 +210,42 @@ struct HomeView: View {
         if mins < 60 { return "in \(mins) min" }
         let fmt = DateFormatter(); fmt.dateFormat = "h:mm a"
         return fmt.string(from: date)
+    }
+}
+
+/// Inline note entry shown on the recording screen. Timestamps the note against the current
+/// point in the call (the model routes it to the live session); ⌥⌘N does the same from anywhere.
+private struct NoteComposer: View {
+    @ObservedObject var model = AppModel.shared
+    @State private var text = ""
+
+    var body: some View {
+        HStack(spacing: Space.x3) {
+            CarbonIcon(name: "edit", size: 16, color: Carbon.iconSecondary)
+            TextField("Add a note at this point in the call…  (⌥⌘N from anywhere)", text: $text)
+                .textFieldStyle(.plain)
+                .font(CarbonFont.body(14))
+                .foregroundStyle(Carbon.textPrimary)
+                .onSubmit(submit)
+            if model.noteCount > 0 {
+                Text("\(model.noteCount) note\(model.noteCount == 1 ? "" : "s")")
+                    .font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
+            }
+            CarbonButton(title: "Add note", icon: "edit", kind: .secondary, action: submit)
+        }
+        .padding(Space.x4)
+        .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .strokeBorder(Carbon.borderSubtle, lineWidth: 1)
+        }
+    }
+
+    private func submit() {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        model.addNote?(trimmed)
+        text = ""
     }
 }
 

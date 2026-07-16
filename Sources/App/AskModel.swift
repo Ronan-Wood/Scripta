@@ -46,9 +46,10 @@ final class AskModel: ObservableObject {
         // Retrieve. If the question alone finds nothing — a pronoun-laden follow-up like "what
         // else did she say about it?" — fall back to including the previous turn's terms.
         let limit = PromptCatalog.askContextChunks(sizeClass)
-        var chunks = await Retriever.context(for: question, limit: limit)
+        let group = AppSettings.activeGroup   // hard-scoped to the active workspace (the privacy wall)
+        var chunks = await Retriever.context(for: question, group: group, limit: limit)
         if chunks.isEmpty, let previousUser {
-            chunks = await Retriever.context(for: previousUser + " " + question, limit: limit)
+            chunks = await Retriever.context(for: previousUser + " " + question, group: group, limit: limit)
         }
 
         // Short-circuit empty retrieval: answer deterministically instead of spending an inference

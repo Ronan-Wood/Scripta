@@ -26,7 +26,7 @@ enum IndexBuilder {
             path: url.path, title: meta.title, date: meta.date, time: meta.time,
             duration: meta.duration, participants: meta.participants, tags: meta.tags,
             summary: Indexing.summary(from: content), mtime: mtime,
-            mode: meta.isConference ? "conference" : "")
+            mode: meta.isConference ? "conference" : "", group: meta.group)
 
         store.upsert(transcript, chunks: Indexing.chunks(from: content))
     }

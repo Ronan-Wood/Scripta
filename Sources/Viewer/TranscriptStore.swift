@@ -11,6 +11,8 @@ struct TranscriptMeta: Identifiable, Hashable {
     let tags: [String]
     /// Recorded in Conference mode (single source, unlabeled) rather than a two-party call.
     var isConference: Bool = false
+    /// The privacy/workspace partition this call belongs to. "" = ungrouped.
+    var group: String = ""
 
     var id: URL { url }
 
@@ -114,7 +116,8 @@ enum TranscriptStore {
             duration: field("duration"),
             participants: listField("participants"),
             tags: listField("tags").filter { $0 != TranscriptWriter.ownerMarker },
-            isConference: field("mode") == "conference"
+            isConference: field("mode") == "conference",
+            group: field("group")
         )
     }
 
