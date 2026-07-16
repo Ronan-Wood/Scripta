@@ -1,8 +1,17 @@
 import Foundation
+import CryptoKit
 
 /// Transcript → index derivation: speaker-turn chunking and summary extraction. Shared so the
 /// app's `IndexBuilder` and the eval harness produce identical index rows from the same Markdown.
 enum Indexing {
+    /// Content hash for the enrichment ledger, taken over the DERIVED chunks (not the raw file).
+    /// So a frontmatter edit (title / group / tag) never invalidates chunks/embeddings/entities,
+    /// but a body edit (a user ASR fix in Obsidian) does — which is exactly when re-enrich is due.
+    static func contentHash(_ chunks: [IndexedChunk]) -> String {
+        let joined = chunks.map { "\($0.startMs):\($0.speaker ?? ""):\($0.text)" }.joined(separator: "\n")
+        return SHA256.hash(data: Data(joined.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Budgets keep unlabeled/monologue calls from collapsing into one enormous chunk (which would
     /// give BM25 nothing to rank and produce useless snippets/timestamps).
     static let maxChunkChars = 500

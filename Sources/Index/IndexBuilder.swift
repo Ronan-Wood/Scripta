@@ -28,7 +28,11 @@ enum IndexBuilder {
             summary: Indexing.summary(from: content), mtime: mtime,
             mode: meta.isConference ? "conference" : "", group: meta.group)
 
-        store.upsert(transcript, chunks: Indexing.chunks(from: content))
+        let chunks = Indexing.chunks(from: content)
+        store.upsert(transcript, chunks: chunks)
+        // Ledger: the chunk stage is now current at this content hash. Embed/extract (Phase 4)
+        // record their own stages and heal against a hash mismatch here.
+        store.recordStage(path: url.path, stage: "chunk", hash: Indexing.contentHash(chunks), model: "chunker-v1")
     }
 
     /// Reconciles the whole output folder against the index: indexes new/changed files, drops
