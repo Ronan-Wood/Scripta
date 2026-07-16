@@ -40,6 +40,7 @@ struct SettingsView: View {
     @State private var confirmLAN = false
     @State private var rerankEnabled = AppSettings.rerankEnabled
     @State private var embedModel = AppSettings.embedModel
+    @State private var mirrorEnabled = AppSettings.mirrorEnabled
 
     var body: some View {
         Form {
@@ -159,6 +160,13 @@ struct SettingsView: View {
                             .onChange(of: rerankEnabled) { _, v in AppSettings.rerankEnabled = v }
                     }
                 }
+                Toggle("Mirror entities into the vault", isOn: $mirrorEnabled)
+                    .onChange(of: mirrorEnabled) { _, v in
+                        AppSettings.mirrorEnabled = v
+                        if v, let store = IndexStore.shared {
+                            Task.detached(priority: .utility) { EntityMirror.sync(store: store) }
+                        }
+                    }
             } header: {
                 Text("Local Model (advanced)")
             } footer: {
