@@ -29,6 +29,15 @@ struct SettingsView: View {
     @State private var backfillPending = 0
     @State private var backfilling = false
     @State private var backfillProgress = ""
+    @State private var endpointEnabled = AppSettings.endpointEnabled
+    @State private var endpointURLText = AppSettings.endpointURLString
+    @State private var endpointModels: [String] = AppSettings.endpointKnownModels
+    @State private var askModel = AppSettings.endpointModel(for: .ask) ?? ""
+    @State private var enrichModel = AppSettings.endpointModel(for: .enrich) ?? ""
+    @State private var endpointStatus = ""
+    @State private var endpointOK: Bool?
+    @State private var testingEndpoint = false
+    @State private var confirmLAN = false
 
     var body: some View {
         Form {
@@ -86,18 +95,60 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle("Title & summarize with Apple Intelligence", isOn: $summarizeEnabled)
+                Toggle("Title & summarize new calls", isOn: $summarizeEnabled)
                     .onChange(of: summarizeEnabled) { _, newValue in
                         AppSettings.summarizeEnabled = newValue
                     }
-                if summarizeEnabled && !TranscriptEnricher.isAvailable {
-                    Text("Requires Apple Intelligence — enable it in System Settings › Apple Intelligence & Siri.")
+                if summarizeEnabled && !TranscriptEnricher.isAvailable && !endpointEnabled {
+                    Text("Requires Apple Intelligence — enable it in System Settings › Apple Intelligence & Siri, or set up a local model server below.")
                         .font(.caption).foregroundStyle(.orange)
                 }
             } header: {
                 Text("Intelligence")
             } footer: {
                 Text("Generates a descriptive title and short summary for each transcript, on-device. Filler words (um, uh) are always removed. Your transcript wording is never rewritten — only the title and summary are AI-generated.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Use a local model server", isOn: $endpointEnabled)
+                    .onChange(of: endpointEnabled) { _, v in AppSettings.endpointEnabled = v }
+                if endpointEnabled {
+                    TextField("http://localhost:11434/v1", text: $endpointURLText)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: endpointURLText) { _, v in
+                            AppSettings.endpointURLString = v.trimmingCharacters(in: .whitespaces)
+                        }
+                    HStack(spacing: 8) {
+                        Button(testingEndpoint ? "Testing…" : "Test connection") { testEndpoint() }
+                            .disabled(testingEndpoint || endpointURLText.isEmpty)
+                        if let ok = endpointOK {
+                            Circle().fill(ok ? Color.green : Color.red).frame(width: 8, height: 8)
+                        }
+                        Text(endpointStatus).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                    Picker("Ask your calls", selection: $askModel) {
+                        Text("Apple Intelligence (default)").tag("")
+                        ForEach(endpointModels, id: \.self) { Text($0).tag($0) }
+                        if !askModel.isEmpty && !endpointModels.contains(askModel) {
+                            Text("\(askModel) (not on server)").tag(askModel)
+                        }
+                    }
+                    .onChange(of: askModel) { _, v in AppSettings.setEndpointModel(v.isEmpty ? nil : v, for: .ask) }
+                    Picker("Titles & summaries", selection: $enrichModel) {
+                        Text("Apple Intelligence (default)").tag("")
+                        ForEach(endpointModels, id: \.self) { Text($0).tag($0) }
+                        if !enrichModel.isEmpty && !endpointModels.contains(enrichModel) {
+                            Text("\(enrichModel) (not on server)").tag(enrichModel)
+                        }
+                    }
+                    .onChange(of: enrichModel) { _, v in AppSettings.setEndpointModel(v.isEmpty ? nil : v, for: .enrich) }
+                }
+            } header: {
+                Text("Local Model (advanced)")
+            } footer: {
+                Text("Point the app at an OpenAI-compatible server on this Mac or your LAN (Ollama, LM Studio) and assign a bigger model per task. Apple Intelligence stays the default and the automatic fallback. Only localhost and private addresses are ever contacted — never the public internet. Setup: `brew install ollama`, then e.g. `ollama pull qwen2.5:14b` (≈9 GB, smarter) or `qwen2.5:7b` (≈4.5 GB, faster).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -309,6 +360,47 @@ struct SettingsView: View {
         .onAppear {
             if calendarEnabled && calendarAuthorized { calendars = CalendarWatcher.shared.calendars() }
             refreshIndexInfo()
+        }
+        .alert("Allow this local network address?", isPresented: $confirmLAN) {
+            Button("Cancel", role: .cancel) {}
+            Button("Allow") { AppSettings.endpointLANConfirmed = true; runEndpointTest() }
+        } message: {
+            Text("\(endpointURLText) is on your local network. The app will connect to it directly. Public internet addresses are never allowed.")
+        }
+    }
+
+    private func testEndpoint() {
+        guard let url = URL(string: endpointURLText.trimmingCharacters(in: .whitespaces)), url.host != nil else {
+            endpointOK = false; endpointStatus = "Invalid URL"; return
+        }
+        switch Locality.classify(url) {
+        case .refused:
+            endpointOK = false; endpointStatus = "Not a local address — only localhost/LAN is allowed"
+        case .lan where !AppSettings.endpointLANConfirmed:
+            confirmLAN = true
+        default:
+            runEndpointTest()
+        }
+    }
+
+    private func runEndpointTest() {
+        testingEndpoint = true; endpointStatus = "Connecting…"; endpointOK = nil
+        Task {
+            guard let url = AppSettings.endpointURL else { testingEndpoint = false; return }
+            let wire = OpenAIWire(baseURL: url, lanConfirmed: AppSettings.endpointLANConfirmed)
+            let started = Date()
+            do {
+                let models = try await wire.models(timeout: 3)
+                let ms = Int(Date().timeIntervalSince(started) * 1000)
+                AppSettings.endpointKnownModels = models
+                endpointModels = models
+                endpointOK = true
+                endpointStatus = "Connected — \(models.count) model\(models.count == 1 ? "" : "s"), \(ms) ms"
+            } catch {
+                endpointOK = false
+                endpointStatus = (error as? EngineError)?.errorDescription ?? "Couldn’t connect"
+            }
+            testingEndpoint = false
         }
     }
 

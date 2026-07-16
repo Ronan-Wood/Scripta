@@ -41,35 +41,21 @@ enum TranscriptEnricher {
         }
     }
 
+    /// Generates a digest via the resolved engine (Apple FM by default, or an assigned local
+    /// model). Kept as the app-wide entry point so callers don't reach into the engine layer.
     static func enrich(_ transcript: String) async -> TranscriptDigest? {
-        guard isAvailable else { return nil }
+        await EngineRouter.enrich(transcript)
+    }
 
-        // Cap input to stay within the model's context window.
-        let input = String(transcript.prefix(8000))
-        guard input.count > 20 else { return nil }
-
-        let prompt = """
-        Below is a transcript of a conversation. Produce a short descriptive title, a concise \
-        summary, and a list of broad topic keywords for search. For the topics, include the \
-        general subject area even if it is never stated outright. Focus on substance — topics \
-        discussed, decisions, and any action items. Do not invent details that aren't in the transcript.
-
-        \(input)
-        """
-
-        do {
-            let session = LanguageModelSession()
-            let response = try await session.respond(to: prompt, generating: TranscriptDigest.self)
-            let digest = response.content
-            let title = digest.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            let summary = digest.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-            let topics = digest.topics
-                .map { $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            guard !summary.isEmpty else { return nil }
-            return TranscriptDigest(title: title, summary: summary, topics: topics)
-        } catch {
-            return nil
-        }
+    /// Trims + lowercases + filters a raw digest; nil when it has no usable summary. Shared by
+    /// every enrich engine so their output is normalised identically.
+    static func normalize(_ digest: TranscriptDigest) -> TranscriptDigest? {
+        let title = digest.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = digest.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let topics = digest.topics
+            .map { $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !summary.isEmpty else { return nil }
+        return TranscriptDigest(title: title, summary: summary, topics: topics)
     }
 }

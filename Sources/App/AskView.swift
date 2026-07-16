@@ -70,6 +70,11 @@ struct AskView: View {
                 }
                 .padding(.leading, Space.x6)
             }
+            if !message.fromUser, let engine = message.engineLabel, !message.text.isEmpty {
+                Text(engine)
+                    .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                    .padding(.leading, Space.x6)
+            }
         }
     }
 
