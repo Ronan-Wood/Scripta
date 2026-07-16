@@ -1,9 +1,11 @@
 import Foundation
+import OSLog
 
 /// Builds the retrieval index from transcript Markdown files. Chunks by speaker turn so each
 /// retrievable unit is a coherent stretch of one voice. The Markdown stays the source of truth;
 /// this only writes into the derived SQLite index.
 enum IndexBuilder {
+    private static let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "Index")
 
     /// Parses one transcript file and upserts it into the index. For files that no longer parse
     /// as app transcripts (de-marked, malformed frontmatter), any existing rows are purged —
@@ -23,7 +25,8 @@ enum IndexBuilder {
         let transcript = IndexedTranscript(
             path: url.path, title: meta.title, date: meta.date, time: meta.time,
             duration: meta.duration, participants: meta.participants, tags: meta.tags,
-            summary: Indexing.summary(from: content), mtime: mtime)
+            summary: Indexing.summary(from: content), mtime: mtime,
+            mode: meta.isConference ? "conference" : "")
 
         store.upsert(transcript, chunks: Indexing.chunks(from: content))
     }
@@ -37,19 +40,24 @@ enum IndexBuilder {
         )) ?? []
         let mdFiles = onDisk.filter { $0.pathExtension == "md" }
 
+        let start = Date()
         let indexed = store.indexedPaths()
         let livePaths = Set(mdFiles.map(\.path))
 
         // Remove entries whose files no longer exist.
+        var removed = 0
         for path in indexed.keys where !livePaths.contains(path) {
-            store.remove(path: path)
+            store.remove(path: path); removed += 1
         }
         // Index anything new or modified since it was last indexed.
+        var reindexed = 0, unchanged = 0
         for url in mdFiles {
             let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate?.timeIntervalSince1970 ?? 0
-            if let known = indexed[url.path], abs(known - mtime) < 0.01 { continue }
-            index(url, into: store)
+            if let known = indexed[url.path], abs(known - mtime) < 0.01 { unchanged += 1; continue }
+            index(url, into: store); reindexed += 1
         }
+        let ms = Int(Date().timeIntervalSince(start) * 1000)
+        log.info("reconcile: \(mdFiles.count) on disk, \(reindexed) indexed, \(removed) removed, \(unchanged) unchanged, \(ms)ms")
     }
 }

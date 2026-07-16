@@ -21,6 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await RecordingSession.recoverOrphans()
             if let store = IndexStore.shared { IndexBuilder.reconcile(store: store) }
         }
+        // Keep the index fresh against external edits to the (often vault-hosted) output folder.
+        IndexWatcher.shared?.start(folder: AppSettings.outputFolder)
     }
 
     /// Quit (menu item, logout, shutdown) must not kill the process mid-recording: the raw

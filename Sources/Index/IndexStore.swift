@@ -13,6 +13,8 @@ struct IndexedTranscript {
     let tags: [String]
     let summary: String
     let mtime: Double
+    /// "conference" for a single-source conference recording, "" for a normal call.
+    var mode: String = ""
 }
 
 /// One retrievable chunk of a transcript (a speaker turn).
@@ -69,6 +71,11 @@ final class IndexStore {
     enum QueryMode { case andFirst, legacyOr }
     var queryMode: QueryMode = .andFirst
 
+    /// Bumped whenever the schema OR the chunking geometry (see `Indexing`) changes. A DB at a
+    /// different version is dropped and recreated — correct for a declared rebuildable cache —
+    /// then reconcile at launch repopulates it. v2 added the transcript `mode` column.
+    private static let schemaVersion: Int32 = 2
+
     private let db: OpaquePointer
     private let lock = NSLock()
     private let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "Index")
@@ -84,6 +91,7 @@ final class IndexStore {
         sqlite3_busy_timeout(db, 3000)
         exec("PRAGMA journal_mode=WAL;")
         exec("PRAGMA foreign_keys=ON;")
+        migrateIfNeeded()
         createSchema()
     }
 
@@ -91,12 +99,35 @@ final class IndexStore {
 
     // MARK: - Schema
 
+    /// Drops everything if the stored schema version differs, so a schema/chunking change can't
+    /// silently no-op against an old DB (createSchema is all `IF NOT EXISTS`).
+    private func migrateIfNeeded() {
+        var version: Int32 = 0
+        query("PRAGMA user_version;") { version = sqlite3_column_int($0, 0) }
+        guard version != Self.schemaVersion else { return }
+        if version != 0 { log.notice("index schema \(version) → \(Self.schemaVersion): rebuilding") }
+        dropAll()
+        exec("PRAGMA user_version = \(Self.schemaVersion);")
+    }
+
+    private func dropAll() {
+        exec("""
+        DROP TRIGGER IF EXISTS chunks_ai;
+        DROP TRIGGER IF EXISTS chunks_ad;
+        DROP TABLE IF EXISTS chunks_fts;
+        DROP TABLE IF EXISTS transcripts_fts;
+        DROP TABLE IF EXISTS chunk_vectors;
+        DROP TABLE IF EXISTS chunks;
+        DROP TABLE IF EXISTS transcripts;
+        """)
+    }
+
     private func createSchema() {
         exec("""
         CREATE TABLE IF NOT EXISTS transcripts(
             path TEXT PRIMARY KEY,
             title TEXT, date TEXT, time TEXT, duration TEXT,
-            participants TEXT, tags TEXT, summary TEXT, mtime REAL
+            participants TEXT, tags TEXT, summary TEXT, mtime REAL, mode TEXT
         );
         CREATE TABLE IF NOT EXISTS chunks(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,12 +160,13 @@ final class IndexStore {
         guard exec("BEGIN;") else { return }
         var ok = removeRows(path: t.path)
         if ok {
-            ok = run("INSERT INTO transcripts(path,title,date,time,duration,participants,tags,summary,mtime) VALUES(?,?,?,?,?,?,?,?,?)") { stmt in
+            ok = run("INSERT INTO transcripts(path,title,date,time,duration,participants,tags,summary,mtime,mode) VALUES(?,?,?,?,?,?,?,?,?,?)") { stmt in
                 bind(stmt, 1, t.path); bind(stmt, 2, t.title); bind(stmt, 3, t.date)
                 bind(stmt, 4, t.time); bind(stmt, 5, t.duration)
                 bind(stmt, 6, t.participants.joined(separator: "\n"))
                 bind(stmt, 7, t.tags.joined(separator: "\n"))
                 bind(stmt, 8, t.summary); sqlite3_bind_double(stmt, 9, t.mtime)
+                bind(stmt, 10, t.mode)
             }
         }
         if ok {
@@ -173,6 +205,32 @@ final class IndexStore {
         ok = run("DELETE FROM transcripts WHERE path = ?") { bind($0, 1, path) } && ok
         ok = run("DELETE FROM transcripts_fts WHERE path = ?") { bind($0, 1, path) } && ok
         return ok
+    }
+
+    /// Empties every table (keeping the schema) so a caller can reindex from disk — the "Rebuild
+    /// Index" escape hatch for corruption, chunking changes, or "search seems wrong".
+    func clear() {
+        lock.lock(); defer { lock.unlock() }
+        guard exec("BEGIN;") else { return }
+        exec("DELETE FROM chunks;")            // triggers keep chunks_fts in sync
+        exec("DELETE FROM transcripts;")
+        exec("DELETE FROM transcripts_fts;")
+        exec("DELETE FROM chunk_vectors;")
+        if !exec("COMMIT;") { exec("ROLLBACK;") }
+    }
+
+    /// Row counts + on-disk size for the Settings "Index" section.
+    func stats() -> (calls: Int, passages: Int, bytes: Int) {
+        lock.lock(); defer { lock.unlock() }
+        var calls = 0, passages = 0
+        query("SELECT (SELECT COUNT(*) FROM transcripts), (SELECT COUNT(*) FROM chunks);") { stmt in
+            calls = Int(sqlite3_column_int(stmt, 0)); passages = Int(sqlite3_column_int(stmt, 1))
+        }
+        var bytes = 0
+        query("SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size();") { stmt in
+            bytes = Int(sqlite3_column_int64(stmt, 0))
+        }
+        return (calls, passages, bytes)
     }
 
     /// path -> mtime for every indexed transcript, used to reconcile against the folder.

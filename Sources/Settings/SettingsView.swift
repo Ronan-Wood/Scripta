@@ -24,6 +24,11 @@ struct SettingsView: View {
     @State private var calendars: [EKCalendar] = []
     @State private var watchedIDs: Set<String> = Set(AppSettings.watchedCalendarIDs)
     @State private var calendarGroups: [String: String] = AppSettings.calendarGroups
+    @State private var indexStats: (calls: Int, passages: Int, bytes: Int) = (0, 0, 0)
+    @State private var rebuilding = false
+    @State private var backfillPending = 0
+    @State private var backfilling = false
+    @State private var backfillProgress = ""
 
     var body: some View {
         Form {
@@ -275,6 +280,25 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section {
+                LabeledContent("Search index",
+                               value: "\(indexStats.calls) calls · \(indexStats.passages) passages · \(byteString(indexStats.bytes))")
+                Button(rebuilding ? "Rebuilding…" : "Rebuild Index") { rebuildIndex() }
+                    .disabled(rebuilding)
+                if backfillPending > 0 {
+                    Button(backfilling
+                           ? "Adding topic tags… \(backfillProgress)"
+                           : "Add topic tags to \(backfillPending) older call\(backfillPending == 1 ? "" : "s")") { runBackfill() }
+                        .disabled(backfilling || !TranscriptEnricher.isAvailable)
+                }
+            } header: {
+                Text("Index")
+            } footer: {
+                Text("The search index is a rebuildable cache derived from your transcripts — never your notes. Rebuild it if search or Ask results look wrong. Topic tags let a call surface by subject even when the word was never spoken; older calls can be tagged in one on-device pass.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .font(CarbonFont.body(13))
@@ -284,6 +308,39 @@ struct SettingsView: View {
         .background(Carbon.background)
         .onAppear {
             if calendarEnabled && calendarAuthorized { calendars = CalendarWatcher.shared.calendars() }
+            refreshIndexInfo()
+        }
+    }
+
+    private func byteString(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    private func refreshIndexInfo() {
+        indexStats = IndexStore.shared?.stats() ?? (0, 0, 0)
+        backfillPending = ConceptBackfill.pending().count
+    }
+
+    private func rebuildIndex() {
+        rebuilding = true
+        Task.detached(priority: .userInitiated) {
+            IndexStore.shared?.clear()
+            if let store = IndexStore.shared { IndexBuilder.reconcile(store: store) }
+            await MainActor.run {
+                AppModel.shared.reloadCalls()
+                rebuilding = false
+                refreshIndexInfo()
+            }
+        }
+    }
+
+    private func runBackfill() {
+        backfilling = true
+        Task {
+            _ = await ConceptBackfill.run { done, total in backfillProgress = "\(done)/\(total)" }
+            AppModel.shared.reloadCalls()
+            backfilling = false
+            refreshIndexInfo()
         }
     }
 
@@ -341,6 +398,13 @@ struct SettingsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             AppSettings.outputFolder = url
             outputPath = url.path
+            // Re-point the watcher and index the new folder — otherwise the index keeps pointing
+            // at the old corpus until the next launch.
+            IndexWatcher.shared?.start(folder: url)
+            Task.detached(priority: .utility) {
+                if let store = IndexStore.shared { IndexBuilder.reconcile(store: store) }
+                await MainActor.run { AppModel.shared.reloadCalls(); refreshIndexInfo() }
+            }
         }
     }
 
