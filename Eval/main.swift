@@ -17,10 +17,18 @@ struct Gold: Decodable {
         var participant: String?
         var tag: String?
         var since: String?
+        var slice: String?   // "lexical" (default), "paraphrase", "temporal", … for slice-level gates
     }
     struct Gates: Decodable { let recallAt5: Double; let recallAt1: Double; let mrr: Double }
     let cases: [Case]
     let gates: Gates
+}
+
+/// Per-case pass/fail from the last run at the SAME config+corpus fingerprint. Used to flag
+/// regressions (a case that used to pass now failing) — gated total, not aggregate. Local-only.
+struct Baseline: Codable {
+    var fingerprint: String
+    var passed: [String: Bool]
 }
 
 // MARK: - Args
@@ -115,16 +123,30 @@ func relevant(_ path: String, _ expect: [String]) -> Bool {
     return expect.contains { name.contains($0) }
 }
 
+// Config + corpus fingerprint: a baseline/gate only compares runs at the SAME fingerprint. Corpus
+// growth or an engine-config change is a deliberate event that resets the regression baseline.
+let mode = legacy ? "legacyOr" : "andFirst"
+let fingerprint = "mode=\(mode);corpus=\(indexed);gold=\(gold.cases.count);k=\(topK)"
+
 var recall1 = 0.0, recall5 = 0.0, mrrSum = 0.0
 var rows: [String] = []
+var latencies: [Double] = []
+var nowPassed: [String: Bool] = [:]
+var bySlice: [String: (n: Int, r5: Int)] = [:]
 for c in gold.cases {
+    let t0 = Date()
     let hits = store.search(c.query, participant: c.participant, tag: c.tag, since: c.since, limit: max(topK, 10))
+    latencies.append(Date().timeIntervalSince(t0) * 1000)
     let rank = hits.firstIndex(where: { relevant($0.path, c.expect) }).map { $0 + 1 }
     let inTop1 = (rank ?? 99) <= 1
     let inTopK = (rank ?? 99) <= topK
     if inTop1 { recall1 += 1 }
     if inTopK { recall5 += 1 }
     if let r = rank { mrrSum += 1.0 / Double(r) }
+    nowPassed[c.id] = inTopK
+    let slice = c.slice ?? "lexical"
+    bySlice[slice, default: (0, 0)].n += 1
+    if inTopK { bySlice[slice]!.r5 += 1 }
     let mark = inTopK ? "ok " : "MISS"
     let rankStr = rank.map { "#\($0)" } ?? "—"
     rows.append(String(format: "  [%@] %-26@ rank %@", mark, c.id as NSString, rankStr as NSString))
@@ -132,15 +154,39 @@ for c in gold.cases {
 
 let n = Double(gold.cases.count)
 let r1 = recall1 / n, r5 = recall5 / n, mrr = mrrSum / n
+latencies.sort()
+func pct(_ p: Double) -> Double { latencies.isEmpty ? 0 : latencies[min(latencies.count - 1, Int(p * Double(latencies.count)))] }
 
 print("Retrieval eval — \(legacy ? "LEGACY (OR-of-all-terms)" : "current (AND-first + stopwords)")")
-print("  corpus: \(indexed) transcripts · \(gold.cases.count) gold cases · k=\(topK)\n")
+print("  fingerprint: \(fingerprint)\n")
 print(rows.joined(separator: "\n"))
 print(String(format: "\n  recall@1 %.2f   recall@%d %.2f   MRR %.3f", r1, topK, r5, mrr))
+print(String(format: "  latency: p50 %.2f ms · p95 %.2f ms", pct(0.5), pct(0.95)))
+for (slice, s) in bySlice.sorted(by: { $0.key < $1.key }) {
+    print(String(format: "  slice %-12@ recall@%d %.2f (%d cases)", slice as NSString, topK, Double(s.r5) / Double(s.n), s.n))
+}
 
-let retrievalPass = r5 >= gold.gates.recallAt5 && r1 >= gold.gates.recallAt1 && mrr >= gold.gates.mrr
-print(String(format: "  gates: recall@5≥%.2f recall@1≥%.2f MRR≥%.2f  →  %@",
+// Per-case regression check against the frozen baseline (same fingerprint only).
+let baselineURL = URL(fileURLWithPath: "Eval/.eval-baseline.json")
+var regressions: [String] = []
+if let data = try? Data(contentsOf: baselineURL),
+   let base = try? JSONDecoder().decode(Baseline.self, from: data), base.fingerprint == fingerprint {
+    regressions = nowPassed.filter { id, pass in base.passed[id] == true && !pass }.keys.sorted()
+    if regressions.isEmpty { print("  regression check: no previously-passing case regressed") }
+    else { print("  regression check: FAIL — regressed: \(regressions.joined(separator: ", "))") }
+} else {
+    print("  regression check: new fingerprint — establishing baseline (no comparison)")
+}
+
+let aggregatePass = r5 >= gold.gates.recallAt5 && r1 >= gold.gates.recallAt1 && mrr >= gold.gates.mrr
+let retrievalPass = aggregatePass && regressions.isEmpty
+print(String(format: "  gates: recall@5≥%.2f recall@1≥%.2f MRR≥%.2f + no-regression  →  %@",
              gold.gates.recallAt5, gold.gates.recallAt1, gold.gates.mrr, (retrievalPass ? "PASS" : "FAIL") as NSString))
+
+// Update the baseline only on a clean pass (a regression stays flagged until fixed).
+if retrievalPass, let data = try? JSONEncoder().encode(Baseline(fingerprint: fingerprint, passed: nowPassed)) {
+    try? data.write(to: baselineURL)
+}
 
 // MARK: - Leak-check invariant (the Phase 1 gate)
 // The real corpus is ungrouped (""). Inject grouped fixtures with IDENTICAL content across two
