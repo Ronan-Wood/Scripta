@@ -79,8 +79,8 @@ final class IndexStore {
     /// then reconcile at launch repopulates it. v2 added the transcript `mode` column; v3 versioned
     /// `chunk_vectors` (embed model + dimension) so Phase B can't silently mix vector spaces;
     /// v4 added the `group` partition column; v5 added the enrichment ledger; v6 added the entity
-    /// graph (entities cache + mentions + action items).
-    private static let schemaVersion: Int32 = 6
+    /// graph (entities cache + mentions + action items); v7 chunks on-screen text too.
+    private static let schemaVersion: Int32 = 7
 
     private let db: OpaquePointer
     private let lock = NSLock()

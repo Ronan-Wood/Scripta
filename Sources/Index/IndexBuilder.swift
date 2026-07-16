@@ -28,7 +28,8 @@ enum IndexBuilder {
             summary: Indexing.summary(from: content), mtime: mtime,
             mode: meta.isConference ? "conference" : "", group: meta.group)
 
-        let chunks = Indexing.chunks(from: content)
+        // Spoken chunks + on-screen text (marked "Screen") — both searchable + embeddable now.
+        let chunks = Indexing.chunks(from: content) + Indexing.screenChunks(from: content)
         store.upsert(transcript, chunks: chunks)
         let hash = Indexing.contentHash(chunks)
         store.recordStage(path: url.path, stage: "chunk", hash: hash, model: "chunker-v1")
@@ -68,6 +69,9 @@ enum IndexBuilder {
             let id = registry.resolve(surface: m.surface, kind: m.kind, group: group)
             resolved.append((id, m.startMs, m.surface))
         }
+        // Participants are user/calendar-provided ground truth → confirm them, so their names feed
+        // ASR (contextualStrings) on future calls in this workspace. The self-reinforcing loop.
+        for name in attendees where !name.isEmpty { registry.confirm(surface: name, group: group) }
         registry.save()
         var ents: [(id: String, name: String, kind: String)] = []
         for id in Set(resolved.map(\.entityID)) {
