@@ -77,8 +77,9 @@ final class IndexStore {
     /// different version is dropped and recreated — correct for a declared rebuildable cache —
     /// then reconcile at launch repopulates it. v2 added the transcript `mode` column; v3 versioned
     /// `chunk_vectors` (embed model + dimension) so Phase B can't silently mix vector spaces;
-    /// v4 added the `group` partition column; v5 added the enrichment ledger.
-    private static let schemaVersion: Int32 = 5
+    /// v4 added the `group` partition column; v5 added the enrichment ledger; v6 added the entity
+    /// graph (entities cache + mentions + action items).
+    private static let schemaVersion: Int32 = 6
 
     private let db: OpaquePointer
     private let lock = NSLock()
@@ -163,6 +164,19 @@ final class IndexStore {
             path TEXT, stage TEXT, content_hash TEXT, model_version TEXT,
             PRIMARY KEY(path, stage)
         );
+        -- Entity graph (a CACHE of the EntityRegistry, which is the system of record). Mentions
+        -- carry no group column — a mention's group is its call's group, derived by joining
+        -- transcripts (Fable: don't tag edges). Action items are call-attached rows, not entities.
+        CREATE TABLE IF NOT EXISTS entities(id TEXT PRIMARY KEY, name TEXT, kind TEXT);
+        CREATE TABLE IF NOT EXISTS entity_mentions(
+            entity_id TEXT, path TEXT, start_ms INTEGER, surface TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_mentions_entity ON entity_mentions(entity_id);
+        CREATE INDEX IF NOT EXISTS idx_mentions_path ON entity_mentions(path);
+        CREATE TABLE IF NOT EXISTS action_items(
+            path TEXT, owner_id TEXT, text TEXT, status TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_actions_path ON action_items(path);
         """)
     }
 
@@ -221,9 +235,65 @@ final class IndexStore {
         var ok = run("DELETE FROM chunk_vectors WHERE chunk_id IN (SELECT id FROM chunks WHERE path = ?)") { bind($0, 1, path) }
         ok = run("DELETE FROM chunks WHERE path = ?") { bind($0, 1, path) } && ok
         ok = run("DELETE FROM enrichment_ledger WHERE path = ?") { bind($0, 1, path) } && ok
+        ok = run("DELETE FROM entity_mentions WHERE path = ?") { bind($0, 1, path) } && ok
+        ok = run("DELETE FROM action_items WHERE path = ?") { bind($0, 1, path) } && ok
         ok = run("DELETE FROM transcripts WHERE path = ?") { bind($0, 1, path) } && ok
         ok = run("DELETE FROM transcripts_fts WHERE path = ?") { bind($0, 1, path) } && ok
         return ok
+    }
+
+    // MARK: - Entity graph (cache of the registry)
+
+    /// Upserts entity cache rows (from the registry) and replaces a transcript's mentions wholesale.
+    func setEntities(_ ents: [(id: String, name: String, kind: String)],
+                     mentions path: String, _ mentions: [(entityID: String, startMs: Int, surface: String)]) {
+        lock.lock(); defer { lock.unlock() }
+        guard exec("BEGIN;") else { return }
+        for e in ents {
+            run("INSERT OR REPLACE INTO entities(id,name,kind) VALUES(?,?,?)") { stmt in
+                bind(stmt, 1, e.id); bind(stmt, 2, e.name); bind(stmt, 3, e.kind)
+            }
+        }
+        run("DELETE FROM entity_mentions WHERE path = ?") { bind($0, 1, path) }
+        for m in mentions {
+            run("INSERT INTO entity_mentions(entity_id,path,start_ms,surface) VALUES(?,?,?,?)") { stmt in
+                bind(stmt, 1, m.entityID); bind(stmt, 2, path)
+                sqlite3_bind_int64(stmt, 3, Int64(m.startMs)); bind(stmt, 4, m.surface)
+            }
+        }
+        if !exec("COMMIT;") { exec("ROLLBACK;") }
+    }
+
+    /// Calls that mention an entity, newest first — the entity-anchored retrieval rail (mode 3).
+    /// Group-scoped by joining transcripts (a mention's group IS its call's group).
+    func callsMentioning(entityID: String, group: String?, limit: Int = 50) -> [SearchHit] {
+        lock.lock(); defer { lock.unlock() }
+        var sql = """
+        SELECT DISTINCT t.path, t.title, t.date, MIN(m.start_ms)
+        FROM entity_mentions m JOIN transcripts t ON t.path = m.path
+        WHERE m.entity_id = ?
+        """
+        if group != nil { sql += " AND t.\"group\" = ?" }
+        sql += " GROUP BY t.path ORDER BY t.date DESC, t.time DESC LIMIT \(max(1, limit));"
+        var hits: [SearchHit] = []
+        query(sql, bind: { stmt in
+            Self.bindStatic(stmt, 1, entityID)
+            if let group { Self.bindStatic(stmt, 2, group) }
+        }) { stmt in
+            hits.append(SearchHit(path: text(stmt, 0), title: text(stmt, 1), date: text(stmt, 2),
+                                  startMs: Int(sqlite3_column_int64(stmt, 3)), speaker: nil,
+                                  snippet: "mentions this entity", score: 0))
+        }
+        return hits
+    }
+
+    /// Distinct entity ids mentioned in a transcript (for its reader / entity chips).
+    func entityIDs(forPath path: String) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        var ids: [String] = []
+        query("SELECT DISTINCT entity_id FROM entity_mentions WHERE path = ?",
+              bind: { Self.bindStatic($0, 1, path) }) { ids.append(text($0, 0)) }
+        return ids
     }
 
     // MARK: - Enrichment ledger

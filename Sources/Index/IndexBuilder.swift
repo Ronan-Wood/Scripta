@@ -30,9 +30,32 @@ enum IndexBuilder {
 
         let chunks = Indexing.chunks(from: content)
         store.upsert(transcript, chunks: chunks)
-        // Ledger: the chunk stage is now current at this content hash. Embed/extract (Phase 4)
-        // record their own stages and heal against a hash mismatch here.
-        store.recordStage(path: url.path, stage: "chunk", hash: Indexing.contentHash(chunks), model: "chunker-v1")
+        let hash = Indexing.contentHash(chunks)
+        store.recordStage(path: url.path, stage: "chunk", hash: hash, model: "chunker-v1")
+
+        // Entity extraction (deterministic: NLTagger + calendar attendees → registry → cache).
+        // Ledger-gated: only re-runs when the derived content changed. The registry is the identity
+        // system-of-record; the entity/mention tables are a cache resolved from it.
+        if store.stageHash(path: url.path, stage: "extract") != hash {
+            extractEntities(url: url, group: meta.group, attendees: meta.participants, chunks: chunks, store: store)
+            store.recordStage(path: url.path, stage: "extract", hash: hash, model: "nltagger-v1")
+        }
+    }
+
+    private static func extractEntities(url: URL, group: String, attendees: [String],
+                                        chunks: [IndexedChunk], store: IndexStore) {
+        let registry = EntityRegistry.shared
+        var resolved: [(entityID: String, startMs: Int, surface: String)] = []
+        for m in EntityExtractor.mentions(chunks: chunks, attendees: attendees) {
+            let id = registry.resolve(surface: m.surface, kind: m.kind, group: group)
+            resolved.append((id, m.startMs, m.surface))
+        }
+        registry.save()
+        var ents: [(id: String, name: String, kind: String)] = []
+        for id in Set(resolved.map(\.entityID)) {
+            if let e = registry.entities.first(where: { $0.id == id }) { ents.append((e.id, e.name, e.kind)) }
+        }
+        store.setEntities(ents, mentions: url.path, resolved)
     }
 
     /// Reconciles the whole output folder against the index: indexes new/changed files, drops
