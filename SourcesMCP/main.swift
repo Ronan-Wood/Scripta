@@ -178,6 +178,12 @@ struct RetrieveHit {
     var isTopic = false
 }
 
+/// Whole-value match against a newline-joined column (tag "ai" must not match "training"), and the
+/// column-weighted BM25 for the topic table — mirroring IndexStore so the MCP and app rank alike.
+func delimitedClause(_ column: String) -> String { " AND (char(10)||lower(\(column))||char(10)) LIKE ?" }
+func delimitedValue(_ value: String) -> String { "%\n\(value.lowercased())\n%" }
+let topicBM25 = "bm25(transcripts_fts, 0.0, 4.0, 1.0, 3.0, 0.5)"
+
 func retrieve(_ query: String, participant: String?, tag: String?, since: String?, speaker: String?, limit: Int) -> [RetrieveHit]? {
     guard let db = openIndex() else { return nil }
     defer { sqlite3_close(db) }
@@ -193,8 +199,8 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
         FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid JOIN transcripts t ON t.path = c.path
         WHERE chunks_fts MATCH ?
         """
-        if participant?.isEmpty == false { sql += " AND lower(t.participants) LIKE ?" }
-        if tag?.isEmpty == false { sql += " AND lower(t.tags) LIKE ?" }
+        if participant?.isEmpty == false { sql += " " + delimitedClause("t.participants") }
+        if tag?.isEmpty == false { sql += " " + delimitedClause("t.tags") }
         if since?.isEmpty == false { sql += " AND t.date >= ?" }
         if speakerSet { sql += " AND c.speaker = ?" }
         sql += " ORDER BY bm25(chunks_fts) LIMIT \(max(1, limit));"
@@ -204,8 +210,8 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
             var i: Int32 = 1
             func bind(_ s: String) { sqlite3_bind_text(stmt, i, s, -1, SQLITE_TRANSIENT_MCP); i += 1 }
             bind(match)
-            if let p = participant, !p.isEmpty { bind("%\(p.lowercased())%") }
-            if let t = tag, !t.isEmpty { bind("%\(t.lowercased())%") }
+            if let p = participant, !p.isEmpty { bind(delimitedValue(p)) }
+            if let t = tag, !t.isEmpty { bind(delimitedValue(t)) }
             if let s = since, !s.isEmpty { bind(s) }
             if let sp = speaker, speakerSet { bind(sp) }
             func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
@@ -226,16 +232,16 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
         FROM transcripts_fts f JOIN transcripts t ON t.path = f.path
         WHERE transcripts_fts MATCH ?
         """
-        if participant?.isEmpty == false { tsql += " AND lower(t.participants) LIKE ?" }
-        if tag?.isEmpty == false { tsql += " AND lower(t.tags) LIKE ?" }
+        if participant?.isEmpty == false { tsql += " " + delimitedClause("t.participants") }
+        if tag?.isEmpty == false { tsql += " " + delimitedClause("t.tags") }
         if since?.isEmpty == false { tsql += " AND t.date >= ?" }
-        tsql += " ORDER BY bm25(transcripts_fts) LIMIT \(max(1, limit));"
+        tsql += " ORDER BY \(topicBM25) LIMIT \(max(1, limit));"
         if sqlite3_prepare_v2(db, tsql, -1, &stmt, nil) == SQLITE_OK {
             var j: Int32 = 1
             func tbind(_ s: String) { sqlite3_bind_text(stmt, j, s, -1, SQLITE_TRANSIENT_MCP); j += 1 }
             tbind(match)
-            if let p = participant, !p.isEmpty { tbind("%\(p.lowercased())%") }
-            if let t = tag, !t.isEmpty { tbind("%\(t.lowercased())%") }
+            if let p = participant, !p.isEmpty { tbind(delimitedValue(p)) }
+            if let t = tag, !t.isEmpty { tbind(delimitedValue(t)) }
             if let s = since, !s.isEmpty { tbind(s) }
             func tcol(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
             while sqlite3_step(stmt) == SQLITE_ROW {
@@ -289,16 +295,19 @@ func indexAggregate(column: String) -> [(name: String, count: Int)]? {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, "SELECT \(column) FROM transcripts", -1, &stmt, nil) == SQLITE_OK else { return [] }
     defer { sqlite3_finalize(stmt) }
-    var counts: [String: Int] = [:]
+    var spellings: [String: [String: Int]] = [:]   // lowercased key -> [original spelling: count]
     while sqlite3_step(stmt) == SQLITE_ROW {
         let value = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
         for v in value.split(separator: "\n") {
             let name = v.trimmingCharacters(in: .whitespaces)
-            if !name.isEmpty && name != ownerMarker { counts[name, default: 0] += 1 }
+            if !name.isEmpty && name != ownerMarker { spellings[name.lowercased(), default: [:]][name, default: 0] += 1 }
         }
     }
-    return counts.map { (name: $0.key, count: $0.value) }
-        .sorted { $0.count != $1.count ? $0.count > $1.count : $0.name < $1.name }
+    // Fold case-insensitively; display the most frequent original spelling.
+    return spellings.values.map { forms -> (name: String, count: Int) in
+        (forms.max { $0.value < $1.value }?.key ?? "", forms.values.reduce(0, +))
+    }
+    .sorted { $0.count != $1.count ? $0.count > $1.count : $0.name < $1.name }
 }
 
 func clockStamp(_ ms: Int) -> String {
@@ -434,7 +443,7 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
             items = items.filter { $0.participants.contains { $0.lowercased().contains(participant) } }
         }
         if let tag = (args["tag"] as? String)?.lowercased(), !tag.isEmpty {
-            items = items.filter { $0.tags.contains { $0.lowercased().contains(tag) } }
+            items = items.filter { $0.tags.contains { $0.lowercased() == tag } }   // whole tag, not substring
         }
         if let since = args["since"] as? String, !since.isEmpty {
             items = items.filter { $0.date >= since }

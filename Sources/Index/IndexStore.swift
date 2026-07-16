@@ -267,20 +267,45 @@ final class IndexStore {
         return Array(hits.prefix(limit))
     }
 
-    /// Passage hits + (unless a speaker filter is set) topic hits for one MATCH expression.
+    /// Passage hits + (unless a speaker filter is set) topic hits for one MATCH expression, with
+    /// slots reserved for topic matches so a concept-tag hit isn't starved when passages fill the
+    /// limit. BM25 scores aren't comparable across the two FTS tables, so reserve slots rather than
+    /// merge scores.
     private func fusedHits(_ match: String?, participant: String?, tag: String?,
                            since: String?, speaker: String?, limit: Int) -> [SearchHit] {
         guard let match else { return [] }
-        var hits = passageHits(match, participant: participant, tag: tag, since: since, speaker: speaker, limit: limit)
-        let seen = Set(hits.map(\.path))
-        if speaker == nil || speaker?.isEmpty == true {
-            for hit in topicHits(match, participant: participant, tag: tag, since: since, limit: limit)
-            where !seen.contains(hit.path) {
-                hits.append(hit)
+        let passages = passageHits(match, participant: participant, tag: tag, since: since, speaker: speaker, limit: limit)
+        let speakerScoped = !(speaker == nil || speaker?.isEmpty == true)
+        let passagePaths = Set(passages.map(\.path))
+        let topics = speakerScoped ? [] :
+            topicHits(match, participant: participant, tag: tag, since: since, limit: limit)
+                .filter { !passagePaths.contains($0.path) }
+        guard !topics.isEmpty else { return passages }
+
+        let reserve = min(3, topics.count)
+        var out = Array(passages.prefix(max(0, limit - reserve)))
+        var seenPaths = Set(out.map(\.path))
+        for topic in topics where !seenPaths.contains(topic.path) {
+            out.append(topic); seenPaths.insert(topic.path)
+            if out.count >= limit { break }
+        }
+        // Backfill any remaining budget with the passages held back by the reservation.
+        if out.count < limit {
+            var seenKeys = Set(out.map { "\($0.path)|\($0.startMs)" })
+            for p in passages where out.count < limit {
+                if seenKeys.insert("\(p.path)|\(p.startMs)").inserted { out.append(p) }
             }
         }
-        return hits
+        return out
     }
+
+    /// Whole-value match against a newline-joined column, so filtering by tag "ai" doesn't also
+    /// match "training"/"email". The stored blob is wrapped in newlines and the value is matched
+    /// as `%\nvalue\n%`.
+    private static func delimitedClause(_ column: String) -> String {
+        " AND (char(10)||lower(\(column))||char(10)) LIKE ?"
+    }
+    private static func delimitedValue(_ value: String) -> String { "%\n\(value.lowercased())\n%" }
 
     private func passageHits(_ match: String, participant: String?, tag: String?,
                              since: String?, speaker: String?, limit: Int) -> [SearchHit] {
@@ -297,28 +322,45 @@ final class IndexStore {
         func filter(_ clause: String, _ value: String) {
             sql += clause; let i = n; binds.append { Self.bindStatic($0, i, value) }; n += 1
         }
-        if let participant, !participant.isEmpty { filter(" AND lower(t.participants) LIKE ?", "%\(participant.lowercased())%") }
-        if let tag, !tag.isEmpty { filter(" AND lower(t.tags) LIKE ?", "%\(tag.lowercased())%") }
+        if let participant, !participant.isEmpty { filter(Self.delimitedClause("t.participants"), Self.delimitedValue(participant)) }
+        if let tag, !tag.isEmpty { filter(Self.delimitedClause("t.tags"), Self.delimitedValue(tag)) }
         if let since, !since.isEmpty { filter(" AND t.date >= ?", since) }
         if let speaker, !speaker.isEmpty { filter(" AND c.speaker = ?", speaker) }
-        sql += " ORDER BY score LIMIT \(max(1, limit));"
+        // Over-fetch so the per-call diversity cap below still leaves `limit` results. (The cap is
+        // applied in Swift, not via a SQL window function — FTS5 snippet/bm25 don't survive being
+        // wrapped in a windowed subquery.)
+        sql += " ORDER BY score LIMIT \(max(1, limit) * 4);"
 
-        var hits: [SearchHit] = []
+        var raw: [SearchHit] = []
         query(sql, bind: { stmt in binds.forEach { $0(stmt) } }) { stmt in
-            hits.append(SearchHit(
+            raw.append(SearchHit(
                 path: text(stmt, 0), title: text(stmt, 1), date: text(stmt, 2),
                 startMs: Int(sqlite3_column_int64(stmt, 3)),
                 speaker: sqlite3_column_type(stmt, 4) == SQLITE_NULL ? nil : text(stmt, 4),
                 snippet: text(stmt, 5), score: sqlite3_column_double(stmt, 6)))
+        }
+
+        // Per-call diversity: keep each call's 2 best chunks so one long call can't monopolise.
+        var perPath: [String: Int] = [:]
+        var hits: [SearchHit] = []
+        for h in raw {
+            let seen = perPath[h.path, default: 0]
+            if seen >= 2 { continue }
+            perPath[h.path] = seen + 1
+            hits.append(h)
+            if hits.count >= limit { break }
         }
         return hits
     }
 
     private func topicHits(_ match: String, participant: String?, tag: String?,
                            since: String?, limit: Int) -> [SearchHit] {
+        // Column-weighted BM25: title strongest, then tags (the deliberate concept surface), then
+        // summary, participants weakest (the participant filter already covers people-scoped search).
         var sql = """
         SELECT f.path, f.title, t.date, f.summary,
-               snippet(transcripts_fts, 2, '⟦', '⟧', '…', 10) AS tagsnip, bm25(transcripts_fts) AS score
+               snippet(transcripts_fts, 2, '⟦', '⟧', '…', 10) AS tagsnip,
+               bm25(transcripts_fts, 0.0, 4.0, 1.0, 3.0, 0.5) AS score
         FROM transcripts_fts f
         JOIN transcripts t ON t.path = f.path
         WHERE transcripts_fts MATCH ?
@@ -328,8 +370,8 @@ final class IndexStore {
         func filter(_ clause: String, _ value: String) {
             sql += clause; let i = n; binds.append { Self.bindStatic($0, i, value) }; n += 1
         }
-        if let participant, !participant.isEmpty { filter(" AND lower(t.participants) LIKE ?", "%\(participant.lowercased())%") }
-        if let tag, !tag.isEmpty { filter(" AND lower(t.tags) LIKE ?", "%\(tag.lowercased())%") }
+        if let participant, !participant.isEmpty { filter(Self.delimitedClause("t.participants"), Self.delimitedValue(participant)) }
+        if let tag, !tag.isEmpty { filter(Self.delimitedClause("t.tags"), Self.delimitedValue(tag)) }
         if let since, !since.isEmpty { filter(" AND t.date >= ?", since) }
         sql += " ORDER BY score LIMIT \(max(1, limit));"
 
@@ -450,18 +492,23 @@ final class IndexStore {
         aggregateList(column: "tags").filter { $0.name != OwnerMarker.value }
     }
 
-    /// Splits a newline-joined column across all transcripts into per-value counts.
+    /// Splits a newline-joined column across all transcripts into per-value counts, folded
+    /// case-insensitively so "Planning" and "planning" are one entry (displayed with the most
+    /// frequent spelling) instead of two sidebar rows with split counts.
     private func aggregateList(column: String) -> [(name: String, count: Int)] {
         lock.lock(); defer { lock.unlock() }
-        var counts: [String: Int] = [:]
+        var spellings: [String: [String: Int]] = [:]   // lowercased key -> [original spelling: count]
         query("SELECT \(column) FROM transcripts") { stmt in
             for value in text(stmt, 0).split(separator: "\n") {
                 let v = value.trimmingCharacters(in: .whitespaces)
-                if !v.isEmpty { counts[v, default: 0] += 1 }
+                if !v.isEmpty { spellings[v.lowercased(), default: [:]][v, default: 0] += 1 }
             }
         }
-        return counts.map { (name: $0.key, count: $0.value) }
-            .sorted { $0.count != $1.count ? $0.count > $1.count : $0.name < $1.name }
+        return spellings.values.map { forms -> (name: String, count: Int) in
+            let display = forms.max { $0.value < $1.value }?.key ?? ""
+            return (display, forms.values.reduce(0, +))
+        }
+        .sorted { $0.count != $1.count ? $0.count > $1.count : $0.name < $1.name }
     }
 
     // MARK: - SQLite helpers
