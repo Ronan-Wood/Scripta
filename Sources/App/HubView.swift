@@ -13,6 +13,7 @@ struct HubView: View {
     @State private var deleteCandidateCount = 0
     @State private var creatingWorkspace = false
     @State private var newWorkspaceName = ""
+    @State private var workspaceHovering = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -140,7 +141,13 @@ struct HubView: View {
     @ViewBuilder private var logoHeader: some View {
         if expanded {
             VStack(alignment: .leading, spacing: 1) {
-                Text("Scripta").font(CarbonFont.semibold(15)).foregroundStyle(Carbon.textPrimary)
+                // Wordmark A1: opening quote (spoken) · Scripta · square end-mark (written).
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text("“").font(CarbonFont.semibold(17)).foregroundStyle(Carbon.interactive)
+                    Text("Scripta").font(CarbonFont.semibold(15)).foregroundStyle(Carbon.textPrimary)
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(Carbon.interactive).frame(width: 5, height: 5)
+                }
                 Text("verba volant, scripta manent")
                     .font(CarbonFont.label(10.5)).italic().foregroundStyle(Carbon.textHelper)
             }
@@ -202,25 +209,28 @@ struct HubView: View {
                 } label: { Label("Delete “\(model.activeGroup)” workspace…", systemImage: "trash") }
             }
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 7) {
                 Image(systemName: "folder")
-                    .font(.system(size: 13)).foregroundStyle(Carbon.interactive)
+                    .font(.system(size: 12.5)).foregroundStyle(Carbon.iconSecondary)
                     .frame(width: 18)
                 if expanded {
                     Text(model.activeGroup.isEmpty ? "Ungrouped" : model.activeGroup)
                         .font(CarbonFont.medium(13)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                    Spacer(minLength: 0)
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 8, weight: .semibold)).foregroundStyle(Carbon.iconSecondary)
+                        .font(.system(size: 7.5, weight: .semibold)).foregroundStyle(Carbon.textHelper)
+                    Spacer(minLength: 0)
                 }
             }
             .padding(.horizontal, 10)
             .frame(height: 30)
             .frame(maxWidth: .infinity, alignment: expanded ? .leading : .center)
+            .background(workspaceHovering ? Carbon.layerHover : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+        .onHover { workspaceHovering = $0 }
         .help("Active workspace — search and Ask are scoped to it")
     }
 
