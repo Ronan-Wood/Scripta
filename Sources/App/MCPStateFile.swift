@@ -6,18 +6,15 @@ import Foundation
 /// **refuses** rather than trust a stale scope: the privacy wall binds LLM clients too, and a
 /// silently-wrong active group would leak a private workspace to the model.
 enum MCPStateFile {
-    static var url: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("CallTranscriber", isDirectory: true)
-            .appendingPathComponent("mcp-state.json")
-    }
+    static var url: URL { SharedLocations.mcpState }
 
     static func write() {
-        let dir = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let state: [String: Any] = [
             "activeGroup": AppSettings.activeGroup,
             "heartbeat": Date().timeIntervalSince1970,
+            // The server can't read the sandboxed app's preferences, so the output-folder
+            // path is published here instead of the old shared prefs domain.
+            "outputFolderPath": AppSettings.outputFolder.path,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: state) {
             try? data.write(to: url, options: .atomic)

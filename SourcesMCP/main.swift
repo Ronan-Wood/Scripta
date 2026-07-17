@@ -9,11 +9,17 @@ let ownerMarker = OwnerMarker.value
 let serverName = "calltranscriber"
 let serverVersion = "1.0.0"
 
-// MARK: - Output folder (shared with the app via its preferences domain)
+// MARK: - Output folder (published by the app in the shared state file)
+
+/// The app→server handoff file in the App Group container. The sandboxed app's preferences
+/// are invisible to this process, so the folder path travels here with the heartbeat.
+func stateFileObject() -> [String: Any]? {
+    guard let data = try? Data(contentsOf: SharedLocations.mcpState) else { return nil }
+    return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+}
 
 func outputFolder() -> URL {
-    if let path = UserDefaults(suiteName: "com.ronanwood.CallTranscriber")?.string(forKey: "outputFolderPath"),
-       !path.isEmpty {
+    if let path = stateFileObject()?["outputFolderPath"] as? String, !path.isEmpty {
         return URL(fileURLWithPath: path)
     }
     return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -113,9 +119,7 @@ func parseMeta(_ url: URL) -> Meta? {
 /// if the app isn't running (stale/absent beat), the server refuses rather than trust a stale
 /// scope — the privacy wall can't be one process-death deep.
 func activeGroupScope() -> (group: String, refusal: String?) {
-    let stateURL = indexDBURL().deletingLastPathComponent().appendingPathComponent("mcp-state.json")
-    guard let data = try? Data(contentsOf: stateURL),
-          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    guard let obj = stateFileObject(),
           let beat = obj["heartbeat"] as? Double else {
         return ("", "Open CallTranscriber and pick a workspace — the assistant won't query your calls without a live scope.")
     }
@@ -174,11 +178,7 @@ func displayTitle(_ m: Meta) -> String {
 // Path is fixed, independent of the transcript output folder.
 let SQLITE_TRANSIENT_MCP = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-func indexDBURL() -> URL {
-    FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("CallTranscriber", isDirectory: true)
-        .appendingPathComponent("index.db")
-}
+func indexDBURL() -> URL { SharedLocations.indexDB }
 
 func openIndex() -> OpaquePointer? {
     let path = indexDBURL().path

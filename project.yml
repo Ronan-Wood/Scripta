@@ -28,6 +28,9 @@ targets:
         NSMicrophoneUsageDescription: "Call Transcriber records your microphone alongside call audio so your side of the conversation is transcribed. Audio is processed on-device and deleted after transcription."
         NSCalendarsFullAccessUsageDescription: "Call Transcriber reads your upcoming events to show which calls have Zoom/Teams/Meet links. It never modifies your calendar and never auto-starts recording."
         NSSpeechRecognitionUsageDescription: "Call Transcriber transcribes your recordings on-device using Apple's speech recognition. Audio is processed locally and never sent anywhere."
+        NSLocalNetworkUsageDescription: "Only used if you connect a local AI server on your own network (e.g. Ollama). The app never talks to the internet."
+        LSApplicationCategoryType: public.app-category.productivity
+        ITSAppUsesNonExemptEncryption: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ronanwood.CallTranscriber
@@ -38,12 +41,13 @@ targets:
         ENABLE_HARDENED_RUNTIME: NO
         GENERATE_INFOPLIST_FILE: NO
         COMBINE_HIDPI_IMAGES: YES
+        # Sandboxed in every configuration: the App Store requires it, and the direct build
+        # ships the same way so both channels behave identically (only signing + the bundled
+        # MCP helper differ).
+        CODE_SIGN_ENTITLEMENTS: Sources/App/CallTranscriber.entitlements
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
-          # Sandbox spike (App Store feasibility): Debug runs sandboxed so a real recording
-          # can prove SCK system audio + screenshots survive it. Release/dmg untouched.
-          CODE_SIGN_ENTITLEMENTS: Sources/App/CallTranscriber.entitlements
     dependencies:
       - target: calltranscriber-mcp
         copy:
@@ -63,3 +67,6 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 6CTH5M9UWZ
         ENABLE_HARDENED_RUNTIME: NO
+        # Unsandboxed (LLM clients spawn it, so it can't inherit a sandbox), but entitled to
+        # the shared App Group so it reads the index + state file without container prompts.
+        CODE_SIGN_ENTITLEMENTS: SourcesMCP/calltranscriber-mcp.entitlements
