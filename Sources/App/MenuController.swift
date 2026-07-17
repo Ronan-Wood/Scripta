@@ -425,12 +425,9 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                     Task.detached(priority: .utility) { IndexBuilder.index(url, into: store) }
                 }
                 AppModel.shared.reloadCalls()
+                // Hands-off finish: the notification's Reveal action (and the reader's Reveal
+                // button) are the ways into Finder — no window steals focus after a call.
                 NotificationManager.shared.notifyTranscriptReady(url: transcriptURL)
-                // Also reveal immediately (a development convenience; the notification is
-                // the intended hands-off path).
-                if !isTerminating {
-                    NSWorkspace.shared.activateFileViewerSelecting([transcriptURL])
-                }
             } catch {
                 // Raw audio is intentionally left for the launch-time sweep, not deleted here.
                 presentAlert(title: "Transcription Failed", message: error.localizedDescription)
@@ -440,6 +437,9 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             updateIcon()
         }
     }
+
+    /// Launch-time entry (normal-app mode shows the hub like any app shows its window).
+    func showHub() { openHub() }
 
     @objc private func openHub() {
         if hubWindow == nil {

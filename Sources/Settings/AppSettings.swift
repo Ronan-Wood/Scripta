@@ -246,10 +246,11 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: Keys.promptForDetails) }
     }
 
-    /// Show a Dock icon (full app in ⌘-Tab). Off by default keeps the menu-bar-only feel; the hub
-    /// still appears in the Dock while open regardless, then reverts on close.
+    /// Behave like a normal app: Dock icon, ⌘-Tab, hub window at launch. ON by default —
+    /// turning it off makes Scripta a menu-bar-only app (the hub still appears in the Dock
+    /// while open, then the app tucks back into the menu bar on close).
     static var showInDock: Bool {
-        get { defaults.bool(forKey: Keys.showInDock) }
+        get { defaults.object(forKey: Keys.showInDock) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Keys.showInDock) }
     }
 

@@ -209,7 +209,7 @@ struct SettingsView: View {
             } header: {
                 Text("Appearance")
             } footer: {
-                Text("Theme follows the system by default, or lock it to Light or Dark. Show in Dock adds a Dock icon and ⌘-Tab; off keeps the app in the menu bar (the hub still shows in the Dock while open). ⌥⌘R starts or stops a recording from any app.")
+                Text("Theme follows the system by default, or lock it to Light or Dark. Show in Dock (the default) makes Scripta behave like a normal app — Dock icon, ⌘-Tab, window at launch; turn it off for a quiet menu-bar-only app. ⌥⌘R starts or stops a recording from any app.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
