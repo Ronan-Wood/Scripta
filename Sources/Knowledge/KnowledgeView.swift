@@ -20,10 +20,12 @@ struct KnowledgeView: View {
     @State private var suggestions: [String] = []
     @State private var collisions: [(a: EntityRegistry.Entity, b: EntityRegistry.Entity)] = []
     @State private var docs: [(mdURL: URL, title: String, created: String, file: String)] = []
-    @State private var deleteTarget: DeleteTarget?
+    @State private var deleteTarget: ItemTarget?
+    @State private var renameTarget: ItemTarget?
+    @State private var renameText = ""
 
-    /// Something the user asked to delete, pending confirmation.
-    enum DeleteTarget: Identifiable {
+    /// A note or document the user is acting on (rename/delete), pending confirmation.
+    enum ItemTarget: Identifiable {
         case note(KnowledgeNote)
         case doc(mdURL: URL, title: String)
 
@@ -95,6 +97,12 @@ struct KnowledgeView: View {
             case .doc: Text("This deletes the copied file and its extracted text from your vault. Your original file is not affected.")
             }
         }
+        .alert("Rename \(renameTarget?.kindWord ?? "item")",
+               isPresented: Binding(get: { renameTarget != nil }, set: { if !$0 { renameTarget = nil } })) {
+            TextField("Name", text: $renameText)
+            Button("Rename") { performRename() }
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+        }
         .sheet(item: $openNote) { note in
             NoteDetailView(note: note, pendingLink: pendingLink) { refreshed in
                 openNote = refreshed
@@ -135,7 +143,7 @@ struct KnowledgeView: View {
         Task.detached(priority: .utility) { IndexBuilder.indexNote(url, into: store) }
     }
 
-    private func performDelete(_ target: DeleteTarget) {
+    private func performDelete(_ target: ItemTarget) {
         switch target {
         case .note(let note):
             NoteStore.delete(note)
@@ -147,6 +155,28 @@ struct KnowledgeView: View {
         }
         deleteTarget = nil
         reload()
+    }
+
+    private func performRename() {
+        guard let target = renameTarget else { return }
+        let newName = renameText.trimmingCharacters(in: .whitespaces)
+        guard !newName.isEmpty else { renameTarget = nil; return }
+        switch target {
+        case .note(let note):
+            NoteStore.rename(note, to: newName)
+            if let store = model.index { IndexBuilder.indexNote(note.url, into: store) }
+        case .doc(let mdURL, _):
+            DocumentImporter.rename(mdURL: mdURL, to: newName)
+            if let store = model.index { IndexBuilder.indexDoc(mdURL, into: store) }
+        }
+        renameTarget = nil
+        reload()
+    }
+
+    /// Opens the rename dialog seeded with the current name.
+    private func startRename(_ target: ItemTarget) {
+        renameText = target.name
+        renameTarget = target
     }
 
     private func reload() {
@@ -231,10 +261,9 @@ struct KnowledgeView: View {
                 let columns = [GridItem(.adaptive(minimum: 240), spacing: Space.x4)]
                 LazyVGrid(columns: columns, alignment: .leading, spacing: Space.x4) {
                     ForEach(notes) { note in
-                        NoteShelfCard(note: note) { openNote = note }
-                            .contextMenu {
-                                Button("Delete note", role: .destructive) { deleteTarget = .note(note) }
-                            }
+                        NoteShelfCard(note: note, open: { openNote = note },
+                                      onRename: { startRename(.note(note)) },
+                                      onDelete: { deleteTarget = .note(note) })
                     }
                 }
             }
@@ -372,32 +401,26 @@ struct KnowledgeView: View {
                 ForEach(model.importJobs) { job in importJobRow(job) }
                 VStack(spacing: 1) {
                     ForEach(docs.prefix(6), id: \.mdURL) { doc in
-                        Button {
-                            NSWorkspace.shared.open(DocumentImporter.folder.appendingPathComponent(doc.file))
-                        } label: {
-                            HStack(spacing: Space.x3) {
-                                CarbonIcon(name: "document", size: 14, color: Carbon.iconSecondary)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(doc.title).font(CarbonFont.medium(13))
-                                        .foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                                    Text(doc.created).font(CarbonFont.label(11))
-                                        .foregroundStyle(Carbon.textHelper)
-                                }
-                                Spacer()
+                        HStack(spacing: Space.x3) {
+                            CarbonIcon(name: "document", size: 14, color: Carbon.iconSecondary)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(doc.title).font(CarbonFont.medium(13))
+                                    .foregroundStyle(Carbon.textPrimary).lineLimit(1)
+                                Text(doc.created).font(CarbonFont.label(11))
+                                    .foregroundStyle(Carbon.textHelper)
                             }
-                            .padding(Space.x4)
-                            .background(Carbon.layer)
-                            .contentShape(Rectangle())
+                            Spacer()
+                            ItemMenu(
+                                open: { NSWorkspace.shared.open(DocumentImporter.folder.appendingPathComponent(doc.file)) },
+                                openLabel: "Open original",
+                                onRename: { startRename(.doc(mdURL: doc.mdURL, title: doc.title)) },
+                                onDelete: { deleteTarget = .doc(mdURL: doc.mdURL, title: doc.title) })
                         }
-                        .buttonStyle(.plain)
-                        .help("Open the original — its text is already searchable in Calls, Clovis, and the MCP")
-                        .contextMenu {
-                            Button("Open original") {
-                                NSWorkspace.shared.open(DocumentImporter.folder.appendingPathComponent(doc.file))
-                            }
-                            Button("Delete document", role: .destructive) {
-                                deleteTarget = .doc(mdURL: doc.mdURL, title: doc.title)
-                            }
+                        .padding(Space.x4)
+                        .background(Carbon.layer)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            NSWorkspace.shared.open(DocumentImporter.folder.appendingPathComponent(doc.file))
                         }
                     }
                 }
@@ -649,31 +672,60 @@ private struct DigestCard: View {
 private struct NoteShelfCard: View {
     let note: KnowledgeNote
     let open: () -> Void
+    let onRename: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
-        Button(action: open) {
-            VStack(alignment: .leading, spacing: Space.x2) {
-                HStack {
-                    CarbonIcon(name: "book", size: 14, color: Carbon.interactive)
-                    Text(note.title).font(CarbonFont.medium(14)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                    Spacer()
-                }
-                if let last = note.entries.last {
-                    Text(last.text).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary).lineLimit(2)
-                }
-                Text("\(note.entries.count) entr\(note.entries.count == 1 ? "y" : "ies") · updated \(note.updated)")
-                    .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+        VStack(alignment: .leading, spacing: Space.x2) {
+            HStack(spacing: Space.x2) {
+                CarbonIcon(name: "book", size: 14, color: Carbon.interactive)
+                Text(note.title).font(CarbonFont.medium(14)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
+                Spacer()
+                ItemMenu(open: open, openLabel: "Open", onRename: onRename, onDelete: onDelete)
             }
-            .padding(Space.x4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
-                    .strokeBorder(Carbon.borderSubtle, lineWidth: 1)
+            if let last = note.entries.last {
+                Text(last.text).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary).lineLimit(2)
             }
-            .contentShape(Rectangle())
+            Text("\(note.entries.count) entr\(note.entries.count == 1 ? "y" : "ies") · updated \(note.updated)")
+                .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
         }
-        .buttonStyle(.plain)
+        .padding(Space.x4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .strokeBorder(Carbon.borderSubtle, lineWidth: 1)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: open)
+    }
+}
+
+/// The visible "•••" actions menu used on note cards and document rows (Open / Rename / Delete),
+/// so those actions don't require right-clicking.
+private struct ItemMenu: View {
+    let open: () -> Void
+    let openLabel: String
+    let onRename: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        Menu {
+            Button(openLabel, action: open)
+            Button("Rename…", action: onRename)
+            Divider()
+            Button("Delete", role: .destructive, action: onDelete)
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Carbon.iconSecondary)
+                .frame(width: 26, height: 22)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("More actions")
     }
 }
 

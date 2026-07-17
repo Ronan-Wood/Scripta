@@ -50,6 +50,31 @@ enum NoteStore {
         try? FileManager.default.removeItem(at: note.url)
     }
 
+    /// Renames a note: patches the frontmatter `title:` and the `# heading` in place. The file
+    /// itself keeps its name (display reads from frontmatter, and renaming files risks vault
+    /// backlinks — same rule transcripts follow).
+    static func rename(_ note: KnowledgeNote, to newTitle: String) {
+        retitle(fileAt: note.url, to: newTitle)
+    }
+
+    /// Shared retitle used by notes and documents: replace `title:` inside the frontmatter block
+    /// and the first `# heading` after it.
+    static func retitle(fileAt url: URL, to newTitle: String) {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return }
+        var lines = content.components(separatedBy: "\n")
+        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---",
+              let close = lines.dropFirst().firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "---" })
+        else { return }
+        for i in 1..<close where lines[i].hasPrefix("title:") {
+            lines[i] = "title: \"\(sanitize(newTitle))\""
+        }
+        for i in (close + 1)..<lines.count where lines[i].hasPrefix("# ") {
+            lines[i] = "# \(newTitle)"
+            break
+        }
+        try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
     /// Creates an empty note in the workspace and returns it.
     static func create(title: String, group: String) -> KnowledgeNote? {
         let trimmed = title.trimmingCharacters(in: .whitespaces)

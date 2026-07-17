@@ -99,6 +99,11 @@ enum DocumentImporter {
         try? FileManager.default.removeItem(at: mdURL)
     }
 
+    /// Renames a document (its display title in the companion note). The copied file keeps its name.
+    static func rename(mdURL: URL, to newTitle: String) {
+        NoteStore.retitle(fileAt: mdURL, to: newTitle)
+    }
+
     /// Doc notes in one workspace, newest first — for the Documents shelf.
     static func list(group: String) -> [(mdURL: URL, title: String, created: String, file: String)] {
         guard let entries = try? FileManager.default.contentsOfDirectory(
