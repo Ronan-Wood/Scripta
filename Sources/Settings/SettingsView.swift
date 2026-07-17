@@ -48,6 +48,7 @@ struct SettingsView: View {
     @State private var showInDock: Bool = AppSettings.showInDock
     @State private var appearance: AppAppearance = AppSettings.appearance
     @State private var globalHotkey: Bool = AppSettings.globalHotkeyEnabled
+    @State private var conversationRetention: Int = AppSettings.conversationRetentionDays
     @State private var retentionEnabled: Bool = AppSettings.retentionEnabled
     @State private var retentionCount: Int = AppSettings.retentionCount
     @State private var retentionUnit: RetentionUnit = AppSettings.retentionUnit
@@ -217,6 +218,25 @@ struct SettingsView: View {
             Text("Call Details")
         } footer: {
             Text("When a recording finishes, prompt for a title and participants. You can skip it, and edit details any time in the reader. Naming participants is what makes “calls with …” search work.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        Section {
+            Picker("Delete conversations", selection: $conversationRetention) {
+                Text("Never").tag(0)
+                Text("After 7 days").tag(7)
+                Text("After 30 days").tag(30)
+                Text("After 90 days").tag(90)
+            }
+            .onChange(of: conversationRetention) { _, newValue in
+                AppSettings.conversationRetentionDays = newValue
+                AppModel.shared.ask.pruneExpiredConversations()
+            }
+        } header: {
+            Text("Clovis")
+        } footer: {
+            Text("Automatically delete Clovis chat conversations older than this. Off by default (kept until you delete them). Your calls and notes are never affected.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
