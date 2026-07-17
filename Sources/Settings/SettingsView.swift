@@ -519,7 +519,8 @@ struct SettingsView: View {
         panel.prompt = "Choose"
         panel.directoryURL = URL(fileURLWithPath: outputPath)
         if panel.runModal() == .OK, let url = panel.url {
-            AppSettings.outputFolder = url
+            AppSettings.setOutputFolder(url)
+            MCPStateFile.write()   // publish the new path to the MCP server promptly
             outputPath = url.path
             // Re-point the watcher and index the new folder — otherwise the index keeps pointing
             // at the old corpus until the next launch.
