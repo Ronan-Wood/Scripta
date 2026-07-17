@@ -20,6 +20,32 @@ struct KnowledgeView: View {
     @State private var suggestions: [String] = []
     @State private var collisions: [(a: EntityRegistry.Entity, b: EntityRegistry.Entity)] = []
     @State private var docs: [(mdURL: URL, title: String, created: String, file: String)] = []
+    @State private var deleteTarget: DeleteTarget?
+
+    /// Something the user asked to delete, pending confirmation.
+    enum DeleteTarget: Identifiable {
+        case note(KnowledgeNote)
+        case doc(mdURL: URL, title: String)
+
+        var id: String {
+            switch self {
+            case .note(let n): return n.url.path
+            case .doc(let url, _): return url.path
+            }
+        }
+        var name: String {
+            switch self {
+            case .note(let n): return n.title
+            case .doc(_, let title): return title
+            }
+        }
+        var kindWord: String {
+            switch self {
+            case .note: return "note"
+            case .doc: return "document"
+            }
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -56,6 +82,19 @@ struct KnowledgeView: View {
             return true
         }
         .onChange(of: model.importJobs) { _, _ in reload() }
+        .confirmationDialog(
+            deleteTarget.map { "Delete the “\($0.name)” \($0.kindWord)?" } ?? "",
+            isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
+            presenting: deleteTarget
+        ) { target in
+            Button("Delete", role: .destructive) { performDelete(target) }
+            Button("Cancel", role: .cancel) {}
+        } message: { target in
+            switch target {
+            case .note: Text("This permanently deletes the note file. This can't be undone.")
+            case .doc: Text("This deletes the copied file and its extracted text from your vault. Your original file is not affected.")
+            }
+        }
         .sheet(item: $openNote) { note in
             NoteDetailView(note: note, pendingLink: pendingLink) { refreshed in
                 openNote = refreshed
@@ -66,6 +105,10 @@ struct KnowledgeView: View {
                 openNote = nil
                 pendingLink = nil
                 notes = NoteStore.list(group: model.activeGroup)
+            } onDelete: {
+                let target = openNote
+                openNote = nil
+                if let target { deleteTarget = .note(target) }
             }
         }
         .alert("New note", isPresented: $creatingNote) {
@@ -90,6 +133,20 @@ struct KnowledgeView: View {
         guard let store = model.index else { return }
         let url = note.url
         Task.detached(priority: .utility) { IndexBuilder.indexNote(url, into: store) }
+    }
+
+    private func performDelete(_ target: DeleteTarget) {
+        switch target {
+        case .note(let note):
+            NoteStore.delete(note)
+            model.index?.remove(path: note.url.path)
+            if openNote?.id == note.id { openNote = nil }
+        case .doc(let mdURL, _):
+            DocumentImporter.delete(mdURL: mdURL)
+            model.index?.remove(path: mdURL.path)
+        }
+        deleteTarget = nil
+        reload()
     }
 
     private func reload() {
@@ -175,6 +232,9 @@ struct KnowledgeView: View {
                 LazyVGrid(columns: columns, alignment: .leading, spacing: Space.x4) {
                     ForEach(notes) { note in
                         NoteShelfCard(note: note) { openNote = note }
+                            .contextMenu {
+                                Button("Delete note", role: .destructive) { deleteTarget = .note(note) }
+                            }
                     }
                 }
             }
@@ -331,6 +391,14 @@ struct KnowledgeView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Open the original — its text is already searchable in Calls, Clovis, and the MCP")
+                        .contextMenu {
+                            Button("Open original") {
+                                NSWorkspace.shared.open(DocumentImporter.folder.appendingPathComponent(doc.file))
+                            }
+                            Button("Delete document", role: .destructive) {
+                                deleteTarget = .doc(mdURL: doc.mdURL, title: doc.title)
+                            }
+                        }
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
@@ -617,6 +685,7 @@ private struct NoteDetailView: View {
     let pendingLink: URL?
     let onChanged: (KnowledgeNote) -> Void
     let onClose: () -> Void
+    let onDelete: () -> Void
 
     @ObservedObject var model = AppModel.shared
     @State private var draft = ""
@@ -631,6 +700,13 @@ private struct NoteDetailView: View {
                         .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
                 }
                 Spacer()
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 13)).foregroundStyle(Carbon.danger)
+                        .frame(width: 28, height: 28).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Delete this note")
                 CarbonButton(title: "Done", kind: .secondary, action: onClose)
             }
             .padding(Space.x6)
