@@ -147,6 +147,49 @@ final class AppModel: ObservableObject {
         calls = TranscriptStore.list()
     }
 
+    // MARK: - Document import (lives here, not in a view, so it survives navigating away and
+    // its progress is observable app-wide).
+
+    struct ImportJob: Identifiable, Equatable {
+        let id = UUID()
+        let filename: String
+        var state: State
+        enum State: Equatable { case processing, done, failed(String) }
+        var isFailed: Bool { if case .failed = state { return true }; return false }
+    }
+
+    /// In-flight and recently-finished imports. Done jobs self-remove; failed jobs stay until
+    /// dismissed so the reason is visible.
+    @Published var importJobs: [ImportJob] = []
+
+    /// Copies a document in, extracts its text on-device, and indexes it as kind='doc'. Job state
+    /// drives the Documents shelf rows; a notification fires on completion (mirrors recordings).
+    func importDocument(_ url: URL, linkedCall: URL? = nil) async {
+        let job = ImportJob(filename: url.lastPathComponent, state: .processing)
+        importJobs.append(job)
+        do {
+            let imported = try await DocumentImporter.importFile(url, group: activeGroup, linkedCall: linkedCall)
+            if let store = index { IndexBuilder.indexDoc(imported.mdURL, into: store) }
+            setJob(job.id, .done)
+            NotificationManager.shared.notifyDocumentReady(
+                title: imported.title,
+                revealing: DocumentImporter.folder.appendingPathComponent(imported.fileName))
+            // Let the "done" row linger briefly, then clear it.
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            importJobs.removeAll { $0.id == job.id }
+        } catch {
+            setJob(job.id, .failed(error.localizedDescription))
+        }
+    }
+
+    func dismissImportJob(_ id: UUID) {
+        importJobs.removeAll { $0.id == id }
+    }
+
+    private func setJob(_ id: UUID, _ state: ImportJob.State) {
+        if let i = importJobs.firstIndex(where: { $0.id == id }) { importJobs[i].state = state }
+    }
+
     /// Applies the saved Light/Dark/System preference app-wide. The Carbon tokens already adapt,
     /// so overriding `NSApp.appearance` flips the whole UI (hub + menus + modals).
     func applyAppearance() {

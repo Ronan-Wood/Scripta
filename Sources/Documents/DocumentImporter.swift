@@ -18,6 +18,7 @@ enum DocumentImporter {
     struct Imported {
         let mdURL: URL
         let title: String
+        let fileName: String   // the copied original's name inside Files/
     }
 
     enum ImportError: LocalizedError {
@@ -46,6 +47,11 @@ enum DocumentImporter {
 
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let copied = uniqueURL(for: source.lastPathComponent)
+        // A dropped or panel-selected file is security-scoped under the sandbox: open access
+        // before reading, or the copy fails silently. Harmless (returns false) for files we
+        // already own, e.g. an in-vault path.
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
         try FileManager.default.copyItem(at: source, to: copied)
 
         let text = try await extractText(copied)
@@ -73,7 +79,7 @@ enum DocumentImporter {
 
         let mdURL = uniqueURL(for: "\(title) — extracted.md")
         try frontmatter.write(to: mdURL, atomically: true, encoding: .utf8)
-        return Imported(mdURL: mdURL, title: title)
+        return Imported(mdURL: mdURL, title: title, fileName: copied.lastPathComponent)
     }
 
     /// Doc notes in one workspace, newest first — for the Documents shelf.
