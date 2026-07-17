@@ -7,14 +7,20 @@ import SwiftUI
 struct KnowledgeView: View {
     @ObservedObject var model = AppModel.shared
     @State private var rows: [IndexStore.DigestRow] = []
+    @State private var notes: [KnowledgeNote] = []
+    @State private var openNote: KnowledgeNote?
+    @State private var pendingLink: URL?
+    @State private var creatingNote = false
+    @State private var newNoteTitle = ""
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.x6) {
                 header
-                if rows.isEmpty {
+                notesShelf
+                if rows.isEmpty && notes.isEmpty {
                     emptyState
-                } else {
+                } else if !rows.isEmpty {
                     HStack(alignment: .top, spacing: Space.x6) {
                         digestColumn.frame(maxWidth: .infinity, alignment: .leading)
                         rail.frame(width: 300)
@@ -28,10 +34,73 @@ struct KnowledgeView: View {
         .onAppear(perform: reload)
         .onChange(of: model.activeGroup) { _, _ in reload() }
         .onChange(of: model.calls) { _, _ in reload() }
+        .sheet(item: $openNote) { note in
+            NoteDetailView(note: note, pendingLink: pendingLink) { refreshed in
+                openNote = refreshed
+                pendingLink = nil
+                notes = NoteStore.list(group: model.activeGroup)
+            } onClose: {
+                openNote = nil
+                pendingLink = nil
+                notes = NoteStore.list(group: model.activeGroup)
+            }
+        }
+        .alert("New note", isPresented: $creatingNote) {
+            TextField("Title (e.g. 425 Park)", text: $newNoteTitle)
+            Button("Create") {
+                if let note = NoteStore.create(title: newNoteTitle, group: model.activeGroup) {
+                    notes = NoteStore.list(group: model.activeGroup)
+                    openNote = note
+                }
+                newNoteTitle = ""
+            }
+            Button("Cancel", role: .cancel) { newNoteTitle = "" }
+        } message: {
+            Text("A standing note you keep adding to — it lives in Notes/ inside your transcripts folder.")
+        }
     }
 
     private func reload() {
         rows = model.index?.digest(group: model.activeGroup) ?? []
+        notes = NoteStore.list(group: model.activeGroup)
+    }
+
+    /// Route an "add this call to a note" gesture: existing note → open it with the link
+    /// pending; nil → create-note flow (the link is carried once the note exists).
+    private func addToNote(_ note: KnowledgeNote?, from call: URL) {
+        pendingLink = call
+        if let note {
+            openNote = note
+        } else {
+            creatingNote = true
+        }
+    }
+
+    // MARK: - Notes shelf (the living documents you work out of)
+
+    private var notesShelf: some View {
+        VStack(alignment: .leading, spacing: Space.x3) {
+            HStack {
+                SectionHeader(title: "Your notes")
+                Spacer()
+                CarbonButton(title: "New note", icon: "edit", kind: .secondary) {
+                    newNoteTitle = ""
+                    creatingNote = true
+                }
+            }
+            if notes.isEmpty {
+                Text("Standing notes you keep adding to — a deal, a project, a person. Create one, or add a call to a note from the digest below.")
+                    .font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                let columns = [GridItem(.adaptive(minimum: 240), spacing: Space.x4)]
+                LazyVGrid(columns: columns, alignment: .leading, spacing: Space.x4) {
+                    ForEach(notes) { note in
+                        NoteShelfCard(note: note) { openNote = note }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Header
@@ -75,7 +144,11 @@ struct KnowledgeView: View {
                 VStack(alignment: .leading, spacing: Space.x3) {
                     SectionHeader(title: day.day)
                     VStack(spacing: Space.x3) {
-                        ForEach(day.rows, id: \.path) { NoteCard(row: $0) }
+                        ForEach(day.rows, id: \.path) { row in
+                            DigestCard(row: row, notes: notes) { note in
+                                addToNote(note, from: URL(fileURLWithPath: row.path))
+                            }
+                        }
                     }
                 }
             }
@@ -158,9 +231,11 @@ struct KnowledgeView: View {
     }
 }
 
-/// One call's generated note in the digest.
-private struct NoteCard: View {
+/// One call's generated note in the digest, with the "add on" hook into your standing notes.
+private struct DigestCard: View {
     let row: IndexStore.DigestRow
+    let notes: [KnowledgeNote]
+    let addToNote: (KnowledgeNote?) -> Void
     @ObservedObject var model = AppModel.shared
 
     var body: some View {
@@ -168,6 +243,24 @@ private struct NoteCard: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(title).font(CarbonFont.medium(15)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
                 Spacer()
+                Menu {
+                    ForEach(notes) { note in
+                        Button(note.title) { addToNote(note) }
+                    }
+                    if !notes.isEmpty { Divider() }
+                    Button("New note…") { addToNote(nil) }
+                } label: {
+                    HStack(spacing: Space.x2) {
+                        Image(systemName: "text.append").font(.system(size: 10, weight: .semibold))
+                        Text("Add to note").font(CarbonFont.label(12))
+                    }
+                    .foregroundStyle(Carbon.textSecondary)
+                    .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Append what this call taught you to a standing note")
                 Button {
                     model.route = .call(URL(fileURLWithPath: row.path))
                 } label: {
@@ -212,6 +305,138 @@ private struct NoteCard: View {
                 .joined(separator: ", "))
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// A standing note on the shelf: title, freshness, last entry.
+private struct NoteShelfCard: View {
+    let note: KnowledgeNote
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            VStack(alignment: .leading, spacing: Space.x2) {
+                HStack {
+                    CarbonIcon(name: "book", size: 14, color: Carbon.interactive)
+                    Text(note.title).font(CarbonFont.medium(14)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
+                    Spacer()
+                }
+                if let last = note.entries.last {
+                    Text(last.text).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary).lineLimit(2)
+                }
+                Text("\(note.entries.count) entr\(note.entries.count == 1 ? "y" : "ies") · updated \(note.updated)")
+                    .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+            }
+            .padding(Space.x4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                    .strokeBorder(Carbon.borderSubtle, lineWidth: 1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// The note itself: the accumulated entries, and the composer that appends the next one.
+/// Presented as a sheet; `pendingLink` carries "this came from that call" when the flow
+/// started on a digest card.
+private struct NoteDetailView: View {
+    let note: KnowledgeNote
+    let pendingLink: URL?
+    let onChanged: (KnowledgeNote) -> Void
+    let onClose: () -> Void
+
+    @ObservedObject var model = AppModel.shared
+    @State private var draft = ""
+    @FocusState private var composerFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: Space.x1) {
+                    Text(note.title).font(CarbonFont.semibold(18)).foregroundStyle(Carbon.textPrimary)
+                    Text("Started \(note.created) · Notes/\(note.url.lastPathComponent)")
+                        .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                }
+                Spacer()
+                CarbonButton(title: "Done", kind: .secondary, action: onClose)
+            }
+            .padding(Space.x6)
+
+            Divider().overlay(Carbon.borderSubtle)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.x4) {
+                    if note.entries.isEmpty {
+                        Text("Nothing here yet — add the first entry below.")
+                            .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
+                    }
+                    ForEach(Array(note.entries.enumerated()), id: \.offset) { _, entry in
+                        VStack(alignment: .leading, spacing: Space.x1) {
+                            HStack(spacing: Space.x3) {
+                                Text(entry.stamp).font(CarbonFont.monospace(11)).foregroundStyle(Carbon.textHelper)
+                                if let call = entry.linkedCall {
+                                    Button {
+                                        let url = AppSettings.outputFolder.appendingPathComponent("\(call).md")
+                                        onClose()
+                                        model.route = .call(url)
+                                    } label: {
+                                        HStack(spacing: 2) {
+                                            CarbonIcon(name: "document", size: 10, color: Carbon.interactive)
+                                            Text(call).font(CarbonFont.label(11)).foregroundStyle(Carbon.interactive).lineLimit(1)
+                                        }
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            Text(entry.text).font(CarbonFont.body(14)).foregroundStyle(Carbon.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(Space.x6)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            Divider().overlay(Carbon.borderSubtle)
+
+            VStack(alignment: .leading, spacing: Space.x2) {
+                if let pendingLink {
+                    HStack(spacing: Space.x2) {
+                        CarbonIcon(name: "document", size: 11, color: Carbon.interactive)
+                        Text("Will link to \(pendingLink.deletingPathExtension().lastPathComponent)")
+                            .font(CarbonFont.label(11)).foregroundStyle(Carbon.textSecondary).lineLimit(1)
+                    }
+                }
+                HStack(spacing: Space.x3) {
+                    TextField("Add to this note…", text: $draft, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(CarbonFont.body(14))
+                        .foregroundStyle(Carbon.textPrimary)
+                        .lineLimit(1...4)
+                        .focused($composerFocused)
+                        .onSubmit(submit)
+                    CarbonButton(title: "Add", kind: .primary, action: submit)
+                }
+            }
+            .padding(Space.x5)
+            .background(Carbon.layer)
+        }
+        .frame(width: 560, height: 520)
+        .background(Carbon.background)
+        .onAppear { composerFocused = true }
+    }
+
+    private func submit() {
+        guard let refreshed = NoteStore.append(draft, linkedCall: pendingLink, to: note) else { return }
+        draft = ""
+        onChanged(refreshed)
     }
 }
 
