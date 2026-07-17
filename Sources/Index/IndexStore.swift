@@ -62,12 +62,9 @@ final class IndexStore {
     static let shared = try? IndexStore()
 
     /// Fixed location, independent of the (user-configurable) transcript output folder.
-    static var defaultURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("CallTranscriber", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base.appendingPathComponent("index.db")
-    }
+    /// Lives in the App Group container so the MCP server can read it across the sandbox
+    /// boundary; a location change just means a rebuild — this is a declared cache.
+    static var defaultURL: URL { SharedLocations.indexDB }
 
     /// How `search`/`context` build their MATCH expression. Production is `.andFirst`; the eval
     /// harness flips to `.legacyOr` to measure the before/after of the stopword + AND-first change.

@@ -11,6 +11,7 @@ BIN="$(mktemp -d)/eval"
 swiftc -Onone -o "$BIN" \
   Sources/Shared/OwnerMarker.swift \
   Sources/Shared/FTSQuery.swift \
+  Sources/Shared/SharedLocations.swift \
   Sources/Viewer/TranscriptParser.swift \
   Sources/Support/Frontmatter.swift \
   Sources/Index/IndexStore.swift \
