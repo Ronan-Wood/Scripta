@@ -14,6 +14,7 @@ struct HubView: View {
     @State private var creatingWorkspace = false
     @State private var newWorkspaceName = ""
     @State private var workspaceHovering = false
+    @State private var clovisDrawerOpen = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,6 +25,10 @@ struct HubView: View {
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Carbon.background)
+                if clovisDrawerOpen {
+                    ClovisDrawerView { withAnimation(.easeInOut(duration: 0.22)) { clovisDrawerOpen = false } }
+                        .transition(.move(edge: .trailing))
+                }
             }
         }
         .ignoresSafeArea(.container, edges: .top)   // extend under the transparent system titlebar
@@ -61,10 +66,11 @@ struct HubView: View {
             Text("Scripta").font(CarbonFont.semibold(13)).foregroundStyle(Carbon.textPrimary)
             HStack(spacing: 6) {
                 Spacer()
-                TitleBarPill(icon: "chat", label: "Clovis", tint: Carbon.textSecondary) {
-                    model.route = .section(.ask)
+                TitleBarPill(icon: "chat", label: "Clovis", tint: Carbon.textSecondary,
+                             active: clovisDrawerOpen) {
+                    withAnimation(.easeInOut(duration: 0.22)) { clovisDrawerOpen.toggle() }
                 }
-                .help("Ask Clovis about your calls")
+                .help("Ask Clovis — slides out the assistant")
                 Button {
                     let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
                     AppSettings.appearance = dark ? .light : .dark
@@ -200,6 +206,26 @@ struct HubView: View {
                 ForEach(model.availableGroups(), id: \.self) { Text($0).tag($0) }
             }
             Button { newWorkspaceName = ""; creatingWorkspace = true } label: { Label("New workspace…", systemImage: "plus") }
+            // Calendars recorded while this workspace's meetings are live land here automatically.
+            if !model.activeGroup.isEmpty, AppSettings.calendarEnabled, CalendarWatcher.shared.isAuthorized {
+                Divider()
+                Menu("Assign calendars to “\(model.activeGroup)”") {
+                    ForEach(CalendarWatcher.shared.calendars(), id: \.calendarIdentifier) { cal in
+                        let mapped = AppSettings.calendarGroups[cal.calendarIdentifier] == model.activeGroup
+                        Button {
+                            var groups = AppSettings.calendarGroups
+                            groups[cal.calendarIdentifier] = mapped ? nil : model.activeGroup
+                            AppSettings.calendarGroups = groups
+                        } label: {
+                            if mapped {
+                                Label(cal.title, systemImage: "checkmark")
+                            } else {
+                                Text(cal.title)
+                            }
+                        }
+                    }
+                }
+            }
             // Destructive: wipe every call in a named workspace (the "before I lend the laptop" case).
             if !model.activeGroup.isEmpty {
                 Divider()
@@ -216,9 +242,10 @@ struct HubView: View {
                 if expanded {
                     Text(model.activeGroup.isEmpty ? "Ungrouped" : model.activeGroup)
                         .font(CarbonFont.medium(13)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 7.5, weight: .semibold)).foregroundStyle(Carbon.textHelper)
                     Spacer(minLength: 0)
+                    // The click affordance: a selector glyph pinned to the row's right edge.
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Carbon.textHelper)
                 }
             }
             .padding(.horizontal, 10)
@@ -230,6 +257,7 @@ struct HubView: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+        .frame(maxWidth: .infinity)   // stretch the Menu control itself, so collapsed centering works
         .onHover { workspaceHovering = $0 }
         .help("Active workspace — search and Ask are scoped to it")
     }
