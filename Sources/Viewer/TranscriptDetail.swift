@@ -77,15 +77,7 @@ struct TranscriptDetail: View {
                         panel.message = "The file's text is analyzed on-device and linked to this call."
                         guard panel.runModal() == .OK else { return }
                         for url in panel.urls {
-                            Task {
-                                do {
-                                    let imported = try await DocumentImporter.importFile(
-                                        url, group: meta.group, linkedCall: meta.url)
-                                    if let store = IndexStore.shared {
-                                        IndexBuilder.indexDoc(imported.mdURL, into: store)
-                                    }
-                                } catch { exportError = error.localizedDescription }
-                            }
+                            Task { await AppModel.shared.importDocument(url, linkedCall: meta.url) }
                         }
                     }
                 } label: { Label("Share", systemImage: "square.and.arrow.up") }

@@ -26,9 +26,19 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func notifyTranscriptReady(url: URL) {
+        post(title: "Transcript ready", body: url.deletingPathExtension().lastPathComponent, revealing: url)
+    }
+
+    /// Fired when an imported document finishes extracting + indexing. Tapping reveals the
+    /// original file in Finder (same action machinery as transcripts).
+    func notifyDocumentReady(title: String, revealing url: URL) {
+        post(title: "Document added", body: title, revealing: url)
+    }
+
+    private func post(title: String, body: String, revealing url: URL) {
         let content = UNMutableNotificationContent()
-        content.title = "Transcript ready"
-        content.body = url.deletingPathExtension().lastPathComponent
+        content.title = title
+        content.body = body
         content.categoryIdentifier = categoryID
         content.userInfo = [pathKey: url.path]
         content.sound = .default
