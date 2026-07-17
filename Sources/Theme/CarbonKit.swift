@@ -126,21 +126,25 @@ struct TitleBarPill: View {
     var sfIcon: String? = nil     // or an SF Symbol
     let label: String
     var tint: Color = Carbon.textSecondary
+    /// Render's open-drawer state: blue-tinted pill with blue content.
+    var active: Bool = false
     let action: () -> Void
 
     var body: some View {
+        let fg = active ? Carbon.interactive : tint
         Button(action: action) {
             HStack(spacing: 6) {
-                if let icon { CarbonIcon(name: icon, size: 13, color: tint) }
-                if let sfIcon { Image(systemName: sfIcon).font(.system(size: 12)).foregroundStyle(tint) }
-                Text(label).font(CarbonFont.medium(12.5)).foregroundStyle(tint).lineLimit(1)
+                if let icon { CarbonIcon(name: icon, size: 13, color: fg) }
+                if let sfIcon { Image(systemName: sfIcon).font(.system(size: 12)).foregroundStyle(fg) }
+                Text(label).font(CarbonFont.medium(12.5)).foregroundStyle(fg).lineLimit(1)
             }
             .padding(.horizontal, 11)
             .frame(height: 26)
-            .background(Carbon.background, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background(active ? Carbon.blueSoft : Carbon.background,
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(Carbon.borderSubtle, lineWidth: 0.5)
+                    .strokeBorder(active ? Color.clear : Carbon.borderSubtle, lineWidth: 0.5)
             }
             .contentShape(Rectangle())
         }
