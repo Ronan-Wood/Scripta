@@ -19,6 +19,9 @@ struct KnowledgeView: View {
     @State private var termGloss = ""
     @State private var suggestions: [String] = []
     @State private var collisions: [(a: EntityRegistry.Entity, b: EntityRegistry.Entity)] = []
+    @State private var docs: [(mdURL: URL, title: String, created: String, file: String)] = []
+    @State private var importing = false
+    @State private var importError: String?
 
     var body: some View {
         ScrollView {
@@ -41,6 +44,21 @@ struct KnowledgeView: View {
         .onAppear(perform: reload)
         .onChange(of: model.activeGroup) { _, _ in reload() }
         .onChange(of: model.calls) { _, _ in reload() }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            for provider in providers {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { await importDocument(url) }
+                }
+            }
+            return true
+        }
+        .alert("Couldn't import", isPresented: Binding(
+            get: { importError != nil }, set: { if !$0 { importError = nil } })) {
+            Button("OK") { importError = nil }
+        } message: {
+            Text(importError ?? "")
+        }
         .sheet(item: $openNote) { note in
             NoteDetailView(note: note, pendingLink: pendingLink) { refreshed in
                 openNote = refreshed
@@ -82,7 +100,35 @@ struct KnowledgeView: View {
         notes = NoteStore.list(group: model.activeGroup)
         vocabTerms = EntityRegistry.shared.terms(group: model.activeGroup)
         collisions = EntityRegistry.shared.collisionCandidates(group: model.activeGroup)
+        docs = DocumentImporter.list(group: model.activeGroup)
         mineSuggestions()
+    }
+
+    /// Import via drop or the panel: copy in, extract on-device, index as kind='doc'.
+    private func importDocument(_ url: URL, linkedCall: URL? = nil) async {
+        importing = true
+        defer { importing = false }
+        do {
+            let imported = try await DocumentImporter.importFile(url, group: model.activeGroup,
+                                                                 linkedCall: linkedCall)
+            if let store = model.index { IndexBuilder.indexDoc(imported.mdURL, into: store) }
+            reload()
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
+    private func importFromPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Import"
+        panel.message = "PDF, PowerPoint, Word, images, and plain text — analyzed on-device, searchable everywhere."
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            Task { await importDocument(url) }
+        }
     }
 
     /// Deterministic acronym mining over this workspace's spoken text: frequent ALL-CAPS tokens
@@ -129,6 +175,9 @@ struct KnowledgeView: View {
             HStack {
                 SectionHeader(title: "Your notes")
                 Spacer()
+                CarbonButton(title: importing ? "Importing…" : "Import file", icon: "document", kind: .secondary,
+                             action: importFromPanel)
+                    .help("PDF, PowerPoint, Word, images — analyzed on-device, searchable everywhere. Or just drop files anywhere on this pane.")
                 CarbonButton(title: "New note", icon: "edit", kind: .secondary) {
                     newNoteTitle = ""
                     creatingNote = true
@@ -268,7 +317,42 @@ struct KnowledgeView: View {
                     }
                 }
             }
+            documentsSection
             vocabularySection
+        }
+    }
+
+    /// Imported files, newest first — click opens the original.
+    @ViewBuilder private var documentsSection: some View {
+        if !docs.isEmpty {
+            VStack(alignment: .leading, spacing: Space.x3) {
+                SectionHeader(title: "Documents")
+                VStack(spacing: 1) {
+                    ForEach(docs.prefix(6), id: \.mdURL) { doc in
+                        Button {
+                            NSWorkspace.shared.open(DocumentImporter.folder.appendingPathComponent(doc.file))
+                        } label: {
+                            HStack(spacing: Space.x3) {
+                                CarbonIcon(name: "document", size: 14, color: Carbon.iconSecondary)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(doc.title).font(CarbonFont.medium(13))
+                                        .foregroundStyle(Carbon.textPrimary).lineLimit(1)
+                                    Text(doc.created).font(CarbonFont.label(11))
+                                        .foregroundStyle(Carbon.textHelper)
+                                }
+                                Spacer()
+                            }
+                            .padding(Space.x4)
+                            .background(Carbon.layer)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open the original — its text is already searchable in Calls, Clovis, and the MCP")
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
+            }
         }
     }
 
