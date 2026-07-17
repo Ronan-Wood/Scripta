@@ -6,7 +6,7 @@ import SQLite3
 // It initiates nothing — it only answers requests. Bundled inside the .app; spawned per client.
 
 let ownerMarker = OwnerMarker.value
-let serverName = "calltranscriber"
+let serverName = "scripta"
 let serverVersion = "1.0.0"
 
 // MARK: - Output folder (published by the app in the shared state file)
@@ -23,7 +23,7 @@ func outputFolder() -> URL {
         return URL(fileURLWithPath: path)
     }
     return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("CallTranscriber", isDirectory: true)
+        .appendingPathComponent("Scripta", isDirectory: true)
 }
 
 // MARK: - Transcript model + reading
@@ -121,10 +121,10 @@ func parseMeta(_ url: URL) -> Meta? {
 func activeGroupScope() -> (group: String, refusal: String?) {
     guard let obj = stateFileObject(),
           let beat = obj["heartbeat"] as? Double else {
-        return ("", "Open CallTranscriber and pick a workspace — the assistant won't query your calls without a live scope.")
+        return ("", "Open Scripta and pick a workspace — the assistant won't query your calls without a live scope.")
     }
     if Date().timeIntervalSince1970 - beat > 60 {
-        return ("", "CallTranscriber isn't running. Open it (and choose the workspace you mean) before I query your calls — I won't answer against a stale scope.")
+        return ("", "Scripta isn't running. Open it (and choose the workspace you mean) before I query your calls — I won't answer against a stale scope.")
     }
     return ((obj["activeGroup"] as? String) ?? "", nil)
 }
@@ -550,7 +550,7 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         guard let hits = retrieve(query, participant: args["participant"] as? String,
                                   tag: args["tag"] as? String, since: args["since"] as? String,
                                   speaker: args["speaker"] as? String, group: group, limit: limit) else {
-            return textResult("The retrieval index isn't built yet. Open Call Transcriber once to build it.", isError: true)
+            return textResult("The retrieval index isn't built yet. Open Scripta once to build it.", isError: true)
         }
         if hits.isEmpty { return textResult("No relevant passages for \"\(query)\".") }
         let blocks = hits.map { h -> String in
@@ -567,14 +567,14 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
 
     case "people":
         guard let entries = indexAggregate(column: "participants", group: group) else {
-            return textResult("The retrieval index isn't built yet. Open Call Transcriber once to build it.", isError: true)
+            return textResult("The retrieval index isn't built yet. Open Scripta once to build it.", isError: true)
         }
         if entries.isEmpty { return textResult("No participants named yet. Name calls in the app to populate this.") }
         return textResult(entries.map { "• \($0.name) — \($0.count) call\($0.count == 1 ? "" : "s")" }.joined(separator: "\n"))
 
     case "tags":
         guard let entries = indexAggregate(column: "tags", group: group) else {
-            return textResult("The retrieval index isn't built yet. Open Call Transcriber once to build it.", isError: true)
+            return textResult("The retrieval index isn't built yet. Open Scripta once to build it.", isError: true)
         }
         if entries.isEmpty { return textResult("No topic tags yet.") }
         return textResult(entries.map { "• \($0.name) — \($0.count) call\($0.count == 1 ? "" : "s")" }.joined(separator: "\n"))

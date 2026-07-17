@@ -1,4 +1,4 @@
-# Call Transcriber
+# Scripta
 
 > Private, on-device transcription for your calls and meetings. A macOS menu-bar app — no account, no cloud, nothing ever leaves your Mac.
 
@@ -61,21 +61,21 @@ In parallel during recording: live transcription (SpeechAnalyzer volatile result
 | Settings | `Settings/` — `AppSettings` (incl. security-scoped folder bookmark), `SettingsView` |
 | Viewer | `Viewer/` — `TranscriptStore`, `TranscriptParser`, `TranscriptDetail`, details/metadata editors, `TranscriptExporter` |
 | Shared (app + MCP) | `Shared/` — `OwnerMarker`, `FTSQuery`, `SharedLocations` (App Group paths) |
-| MCP server | `SourcesMCP/main.swift` — separate `calltranscriber-mcp` tool target, embedded in the app |
-| Skill / Eval | `Skill/call-transcriber/SKILL.md` (bundled) · `Eval/` — retrieval eval harness + privacy-wall leak check (`./Eval/run.sh`) |
+| MCP server | `SourcesMCP/main.swift` — separate `scripta-mcp` tool target, embedded in the app |
+| Skill / Eval | `Skill/scripta/SKILL.md` (bundled) · `Eval/` — retrieval eval harness + privacy-wall leak check (`./Eval/run.sh`) |
 
-Two build targets (via `project.yml` / XcodeGen): the **app** (macOS 26, **sandboxed in every configuration**) and **`calltranscriber-mcp`** (macOS 14, pure Foundation, unsandboxed — LLM clients spawn it), the latter copied into `Contents/MacOS/`. Shared state (`index.db`, `mcp-state.json`) lives in the team App Group container so both processes can reach it across the sandbox boundary; the transcripts folder is accessed through a security-scoped bookmark granted once in Settings.
+Two build targets (via `project.yml` / XcodeGen): the **app** (macOS 26, **sandboxed in every configuration**) and **`scripta-mcp`** (macOS 14, pure Foundation, unsandboxed — LLM clients spawn it), the latter copied into `Contents/MacOS/`. Shared state (`index.db`, `mcp-state.json`) lives in the team App Group container so both processes can reach it across the sandbox boundary; the transcripts folder is accessed through a security-scoped bookmark granted once in Settings.
 
 ## Claude integration (MCP + skill)
 
-The app bundles a dependency-free **MCP server** (`calltranscriber-mcp`, JSON-RPC over stdio) that exposes transcripts read-only to Claude Code / Desktop / Cowork:
+The app bundles a dependency-free **MCP server** (`scripta-mcp`, JSON-RPC over stdio) that exposes transcripts read-only to Claude Code / Desktop / Cowork:
 
 - `overview` — every call's title + summary + path (bounded pages, `since`/`limit`)
 - `list_transcripts(limit, since, participant, tag)`, `get_transcript(path)`, `get_section(path, from, to)`, `search_transcripts(query)`
 - `retrieve(query, participant?, tag?, speaker?, since?, limit?)` — BM25-ranked passages with call/timestamp/speaker provenance; `people` and `tags` aggregates.
 - Scoped + guarded: every tool honors the app's active workspace and refuses on a stale heartbeat; path-guarded to app-authored transcripts inside the output folder (symlinks resolved).
 
-Register it: `claude mcp add calltranscriber -- "/Applications/CallTranscriber.app/Contents/MacOS/calltranscriber-mcp"` (the Docs pane shows the exact path for your machine and installs the skill with a one-time `.claude` folder grant). Then the skill teaches Claude the playbooks ("summarize my week", "action items across calls", "what did X say about Y").
+Register it: `claude mcp add scripta -- "/Applications/Scripta.app/Contents/MacOS/scripta-mcp"` (the Docs pane shows the exact path for your machine and installs the skill with a one-time `.claude` folder grant). Then the skill teaches Claude the playbooks ("summarize my week", "action items across calls", "what did X say about Y").
 
 **Why this design:** the on-device 3B model can't do reliable semantic retrieval over a call history, but Claude can. So the app doesn't try — it exposes the content well via MCP and lets Claude (a frontier model) do the reasoning. That's the app's whole "capture locally, hand off to Claude" philosophy.
 
@@ -83,20 +83,20 @@ Register it: `claude mcp add calltranscriber -- "/Applications/CallTranscriber.a
 
 ```sh
 brew install xcodegen                       # once
-cd CallTranscriber
+cd Scripta
 xcodegen generate                           # after any project.yml change
-xcodebuild -project CallTranscriber.xcodeproj -target CallTranscriber -configuration Debug -allowProvisioningUpdates build
-open build/Debug/CallTranscriber.app
+xcodebuild -project Scripta.xcodeproj -target Scripta -configuration Debug -allowProvisioningUpdates build
+open build/Debug/Scripta.app
 ```
 
-Signing uses an Apple Development cert (team `6CTH5M9UWZ`) via automatic signing. Entitlements: `Sources/App/CallTranscriber.entitlements` (sandbox + mic + calendars + user-selected files + network client) and `SourcesMCP/calltranscriber-mcp.entitlements` (App Group only). Run `./Eval/run.sh` before shipping retrieval changes — it gates recall/MRR and the workspace privacy wall.
+Signing uses an Apple Development cert (team `6CTH5M9UWZ`) via automatic signing. Entitlements: `Sources/App/Scripta.entitlements` (sandbox + mic + calendars + user-selected files + network client) and `SourcesMCP/scripta-mcp.entitlements` (App Group only). Run `./Eval/run.sh` before shipping retrieval changes — it gates recall/MRR and the workspace privacy wall.
 
 ## Distribution
 
 **Dual-channel, in progress (2026-07-16):**
 
 - **Mac App Store** — the app is sandboxed and passed a real sandboxed recording (system audio + screen context confirmed). The bundled MCP helper cannot ship in a MAS bundle (embedded executables must inherit the app's sandbox, which breaks external spawning), so the store build will offer it as a separate Developer ID download — packaged as a Claude Code plugin + `.mcpb` bundle that also carries the skill.
-- **Direct `.dmg`** — bundles the helper exactly as today; notarization (Developer ID) once the Apple Developer Program enrollment lands. `dist/CallTranscriber.dmg` is a stale pre-hub build; rebuild before sharing.
+- **Direct `.dmg`** — bundles the helper exactly as today; notarization (Developer ID) once the Apple Developer Program enrollment lands. `dist/Scripta.dmg` is a stale pre-hub build; rebuild before sharing.
 
 Both channels remain blocked on the $99 Apple Developer Program membership (store record, Distribution/Developer ID certs, TestFlight).
 

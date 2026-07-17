@@ -31,7 +31,7 @@ final class LiveTranscriber {
             try await request.downloadAndInstall()
         }
         guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
-            throw NSError(domain: "CallTranscriber", code: 203,
+            throw NSError(domain: "Scripta", code: 203,
                           userInfo: [NSLocalizedDescriptionKey: "No compatible audio format for live transcription."])
         }
 

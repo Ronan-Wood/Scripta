@@ -1,4 +1,4 @@
-# Privacy Policy — Call Transcriber
+# Privacy Policy — Scripta
 
 **Effective date:** July 16, 2026
 **Contact:** ronan.wood@outlook.com
@@ -8,7 +8,7 @@
 
 ## The short version
 
-Call Transcriber collects no data. Everything the app does — recording, transcription,
+Scripta collects no data. Everything the app does — recording, transcription,
 search, and AI features — happens on your Mac. There are no accounts, no analytics, no
 tracking, no crash reporting, and no servers of ours. The app makes no internet connections.
 

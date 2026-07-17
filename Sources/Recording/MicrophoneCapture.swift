@@ -8,7 +8,7 @@ import os
 final class MicrophoneCapture {
     private let outputURL: URL
     private let engine = AVAudioEngine()
-    private let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "Microphone")
+    private let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Microphone")
 
     private var audioFile: AVAudioFile?
 
@@ -40,7 +40,7 @@ final class MicrophoneCapture {
         let input = engine.inputNode
         let format = input.inputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
-            throw NSError(domain: "CallTranscriber", code: 101,
+            throw NSError(domain: "Scripta", code: 101,
                           userInfo: [NSLocalizedDescriptionKey: "No microphone input is available."])
         }
 

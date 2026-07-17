@@ -101,7 +101,7 @@ enum TranscriptExporter {
         op.showsPrintPanel = false
         op.showsProgressPanel = false
         guard op.run() else {
-            throw NSError(domain: "CallTranscriber", code: 400,
+            throw NSError(domain: "Scripta", code: 400,
                           userInfo: [NSLocalizedDescriptionKey: "The PDF could not be written to \(url.lastPathComponent)."])
         }
     }

@@ -1,13 +1,13 @@
 # App Store listing draft
 
-<!-- Everything here is copy-paste-ready for App Store Connect except the name (pending
-     Ronan's rename — find/replace throughout) and screenshots (pending the UI/UX redo). -->
+<!-- Copy-paste-ready for App Store Connect except screenshots (pending the UI/UX redo).
+     Name decided 2026-07-16: Scripta (verba volant, scripta manent). -->
 
 ## Identity
 
-- **Name** (30 chars max): `Call Transcriber` ← RENAME PENDING; check availability in ASC early
+- **Name** (30 chars max): `Scripta` — confirm exact-name availability when creating the ASC record
 - **Subtitle** (30 chars max): `Private, on-device call notes`
-- **Bundle ID:** `com.ronanwood.CallTranscriber` ← LOCKED FOREVER at first upload; decide with the rename
+- **Bundle ID:** `com.ronanwood.Scripta` ← LOCKED FOREVER at first upload
 - **Category:** Productivity (secondary: Business)
 - **Price:** Free
 - **EU trader status:** Non-trader (free app, no monetization → no address/phone published)
@@ -22,7 +22,7 @@
 
 ## Description
 
-> Call Transcriber records and transcribes your calls and meetings entirely on your Mac.
+> Scripta records and transcribes your calls and meetings entirely on your Mac.
 > No account, no cloud, no meeting bots — nothing ever leaves your machine.
 >
 > Press record during any call (Zoom, Teams, Meet, phone audio through your Mac — anything
@@ -71,7 +71,7 @@ keyword budget on them.)
 
 ## Review notes (Notes for App Review box)
 
-> Call Transcriber is a fully on-device call transcription tool — no account or server;
+> Scripta is a fully on-device call transcription tool — no account or server;
 > the privacy label is "Data Not Collected".
 >
 > To test: launch the app (menu-bar waveform icon), click the icon → Start Recording.
@@ -101,10 +101,10 @@ Need 1280×800 or 2560×1600 (or 2880×1800). Suggested set:
 
 ## Submission-day checklist (ASC side)
 
-1. App Store Connect → New App → name / bundle ID / SKU (SKU: `calltranscriber-mac-001`)
+1. App Store Connect → New App → name / bundle ID / SKU (SKU: `scripta-mac-001`)
 2. Paste description, subtitle, keywords, review notes from this file
 3. Privacy: questionnaire → Data Not Collected; paste policy URL
 4. EU DSA: declare non-trader
 5. Upload screenshots + 1024 icon (already in the app; ASC pulls from the build)
-6. Archive `CallTranscriber-MAS` (Release) in Xcode → Distribute → App Store Connect
+6. Archive `Scripta-MAS` (Release) in Xcode → Distribute → App Store Connect
 7. TestFlight it yourself first, then Submit for Review

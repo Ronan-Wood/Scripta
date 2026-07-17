@@ -47,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !AppSettings.firstRunNoticeShown else { return }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "Welcome to Call Transcriber"
+        alert.messageText = "Welcome to Scripta"
         alert.informativeText = """
         Recordings are transcribed on your Mac and never leave it. The menu bar icon shows \
         when recording is active.

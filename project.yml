@@ -1,21 +1,21 @@
-name: CallTranscriber
+name: Scripta
 options:
   bundleIdPrefix: com.ronanwood
   deploymentTarget:
     macOS: "26.0"
   createIntermediateGroups: true
 
-# One app, two flavors sharing this template. `CallTranscriber` (direct .dmg) bundles the MCP
-# helper; `CallTranscriber-MAS` (App Store) must not — embedded executables have to inherit the
+# One app, two flavors sharing this template. `Scripta` (direct .dmg) bundles the MCP
+# helper; `Scripta-MAS` (App Store) must not — embedded executables have to inherit the
 # app's sandbox, which breaks external spawning by LLM clients, so the store flavor offers the
 # helper as a separate download instead. Same bundle ID: they are the same app to macOS/TCC.
 targetTemplates:
-  CallTranscriberApp:
+  ScriptaApp:
     type: application
     platform: macOS
     sources:
       - Sources
-      - path: Skill/call-transcriber/SKILL.md
+      - path: Skill/scripta/SKILL.md
         buildPhase: resources
       - path: Resources/Fonts
         buildPhase: resources
@@ -26,21 +26,21 @@ targetTemplates:
     info:
       path: Sources/App/Info.plist
       properties:
-        CFBundleDisplayName: Call Transcriber
+        CFBundleDisplayName: Scripta
         CFBundleIconFile: AppIcon
         LSUIElement: true
         LSMinimumSystemVersion: "26.0"
         NSHumanReadableCopyright: "© 2026 Ronan Wood"
-        NSMicrophoneUsageDescription: "Call Transcriber records your microphone alongside call audio so your side of the conversation is transcribed. Audio is processed on-device and deleted after transcription."
-        NSCalendarsFullAccessUsageDescription: "Call Transcriber reads your upcoming events to show which calls have Zoom/Teams/Meet links. It never modifies your calendar and never auto-starts recording."
-        NSSpeechRecognitionUsageDescription: "Call Transcriber transcribes your recordings on-device using Apple's speech recognition. Audio is processed locally and never sent anywhere."
+        NSMicrophoneUsageDescription: "Scripta records your microphone alongside call audio so your side of the conversation is transcribed. Audio is processed on-device and deleted after transcription."
+        NSCalendarsFullAccessUsageDescription: "Scripta reads your upcoming events to show which calls have Zoom/Teams/Meet links. It never modifies your calendar and never auto-starts recording."
+        NSSpeechRecognitionUsageDescription: "Scripta transcribes your recordings on-device using Apple's speech recognition. Audio is processed locally and never sent anywhere."
         NSLocalNetworkUsageDescription: "Only used if you connect a local AI server on your own network (e.g. Ollama). The app never talks to the internet."
         LSApplicationCategoryType: public.app-category.productivity
         ITSAppUsesNonExemptEncryption: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.ronanwood.CallTranscriber
-        PRODUCT_NAME: CallTranscriber
+        PRODUCT_BUNDLE_IDENTIFIER: com.ronanwood.Scripta
+        PRODUCT_NAME: Scripta
         SWIFT_VERSION: "5.0"
         MACOSX_DEPLOYMENT_TARGET: "26.0"
         CODE_SIGN_STYLE: Automatic
@@ -50,27 +50,27 @@ targetTemplates:
         COMBINE_HIDPI_IMAGES: YES
         # Sandboxed in every configuration: the App Store requires it, and the direct build
         # ships the same way so both channels behave identically.
-        CODE_SIGN_ENTITLEMENTS: Sources/App/CallTranscriber.entitlements
+        CODE_SIGN_ENTITLEMENTS: Sources/App/Scripta.entitlements
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
 
 targets:
-  CallTranscriber:
-    templates: [CallTranscriberApp]
+  Scripta:
+    templates: [ScriptaApp]
     dependencies:
-      - target: calltranscriber-mcp
+      - target: scripta-mcp
         copy:
           destination: executables
 
-  CallTranscriber-MAS:
-    templates: [CallTranscriberApp]
+  Scripta-MAS:
+    templates: [ScriptaApp]
     settings:
       base:
         # Builds to build/<config>-mas/ so the two flavors never overwrite each other.
         CONFIGURATION_BUILD_DIR: $(SYMROOT)/$(CONFIGURATION)-mas
 
-  calltranscriber-mcp:
+  scripta-mcp:
     type: tool
     platform: macOS
     sources:
@@ -78,7 +78,7 @@ targets:
       - Sources/Shared
     settings:
       base:
-        PRODUCT_NAME: calltranscriber-mcp
+        PRODUCT_NAME: scripta-mcp
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         SWIFT_VERSION: "5.0"
         CODE_SIGN_STYLE: Automatic
@@ -86,4 +86,4 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         # Unsandboxed (LLM clients spawn it, so it can't inherit a sandbox), but entitled to
         # the shared App Group so it reads the index + state file without container prompts.
-        CODE_SIGN_ENTITLEMENTS: SourcesMCP/calltranscriber-mcp.entitlements
+        CODE_SIGN_ENTITLEMENTS: SourcesMCP/scripta-mcp.entitlements

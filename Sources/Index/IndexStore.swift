@@ -81,13 +81,13 @@ final class IndexStore {
 
     private let db: OpaquePointer
     private let lock = NSLock()
-    private let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "Index")
+    private let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Index")
     private static let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     init(url: URL = IndexStore.defaultURL) throws {
         var handle: OpaquePointer?
         guard sqlite3_open(url.path, &handle) == SQLITE_OK, let handle else {
-            throw NSError(domain: "CallTranscriber.Index", code: 1,
+            throw NSError(domain: "Scripta.Index", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "Could not open the index database."])
         }
         db = handle

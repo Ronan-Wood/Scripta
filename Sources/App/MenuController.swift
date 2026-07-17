@@ -102,11 +102,11 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             if let proximity = nextCallProximity() {
                 // Tint the base to the menu bar color, then badge it with the proximity dot.
                 let tint: NSColor = menuBarIsDark(button) ? .white : .black
-                let base = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Call Transcriber")?
+                let base = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Scripta")?
                     .withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [tint]))
                 button.image = badged(base, dotColor: proximity.color)
             } else {
-                let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Call Transcriber")
+                let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Scripta")
                 image?.isTemplate = true   // template = adapts to menu bar light/dark
                 button.image = image
             }
@@ -214,7 +214,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(title: "Quit Call Transcriber",
+        let quit = NSMenuItem(title: "Quit Scripta",
                               action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
     }
@@ -264,7 +264,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             guard await Permissions.requestMicrophone() else {
                 presentAlert(
                     title: "Microphone Access Needed",
-                    message: "Enable Call Transcriber under System Settings › Privacy & Security › Microphone, then try again."
+                    message: "Enable Scripta under System Settings › Privacy & Security › Microphone, then try again."
                 )
                 return
             }
@@ -311,7 +311,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 newSession.cleanup()
                 presentAlert(
                     title: "Couldn't Start Recording",
-                    message: "\(error.localizedDescription)\n\nIf this is about screen recording, enable Call Transcriber under System Settings › Privacy & Security › Screen Recording, then try again."
+                    message: "\(error.localizedDescription)\n\nIf this is about screen recording, enable Scripta under System Settings › Privacy & Security › Screen Recording, then try again."
                 )
             }
         }
@@ -444,7 +444,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
     @objc private func openHub() {
         if hubWindow == nil {
             let window = NSWindow(contentViewController: NSHostingController(rootView: HubView()))
-            window.title = "Call Transcriber"
+            window.title = "Scripta"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.toolbarStyle = .unified   // consistent "thick" top across every section
             window.setContentSize(NSSize(width: 1100, height: 720))

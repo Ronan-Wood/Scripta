@@ -8,17 +8,17 @@ struct HelpView: View {
     @State private var desktopStatus: String?
 
     private var mcpBinaryPath: String {
-        "\(Bundle.main.bundlePath)/Contents/MacOS/calltranscriber-mcp"
+        "\(Bundle.main.bundlePath)/Contents/MacOS/scripta-mcp"
     }
 
     /// The App Store flavor ships without the bundled server (store rules forbid an
     /// externally-spawnable embedded executable) — its Docs point at the separate download.
     private var helperIsBundled: Bool {
-        Bundle.main.url(forAuxiliaryExecutable: "calltranscriber-mcp") != nil
+        Bundle.main.url(forAuxiliaryExecutable: "scripta-mcp") != nil
     }
 
     private var mcpCommand: String {
-        "claude mcp add -s user calltranscriber -- \"\(mcpBinaryPath)\""
+        "claude mcp add -s user scripta -- \"\(mcpBinaryPath)\""
     }
 
     var body: some View {
@@ -158,7 +158,7 @@ struct HelpView: View {
                 root = existing
             }
             var servers = (root["mcpServers"] as? [String: Any]) ?? [:]
-            servers["calltranscriber"] = ["command": mcpBinaryPath]
+            servers["scripta"] = ["command": mcpBinaryPath]
             root["mcpServers"] = servers
             let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: configURL, options: .atomic)
@@ -187,7 +187,7 @@ struct HelpView: View {
         panel.directoryURL = realHome.appendingPathComponent(".claude", isDirectory: true)
         guard panel.runModal() == .OK, let dotClaude = panel.url else { return }
         do {
-            let destDir = dotClaude.appendingPathComponent("skills/call-transcriber", isDirectory: true)
+            let destDir = dotClaude.appendingPathComponent("skills/scripta", isDirectory: true)
             try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
             let destFile = destDir.appendingPathComponent("SKILL.md")
             try? FileManager.default.removeItem(at: destFile)

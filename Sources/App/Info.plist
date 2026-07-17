@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Call Transcriber</string>
+	<string>Scripta</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconFile</key>
@@ -22,17 +22,23 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Call Transcriber reads your upcoming events to show which calls have Zoom/Teams/Meet links. It never modifies your calendar and never auto-starts recording.</string>
+	<string>Scripta reads your upcoming events to show which calls have Zoom/Teams/Meet links. It never modifies your calendar and never auto-starts recording.</string>
 	<key>NSHumanReadableCopyright</key>
-	<string></string>
+	<string>© 2026 Ronan Wood</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Only used if you connect a local AI server on your own network (e.g. Ollama). The app never talks to the internet.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Call Transcriber records your microphone alongside call audio so your side of the conversation is transcribed. Audio is processed on-device and deleted after transcription.</string>
+	<string>Scripta records your microphone alongside call audio so your side of the conversation is transcribed. Audio is processed on-device and deleted after transcription.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Call Transcriber transcribes your recordings on-device using Apple's speech recognition. Audio is processed locally and never sent anywhere.</string>
+	<string>Scripta transcribes your recordings on-device using Apple's speech recognition. Audio is processed locally and never sent anywhere.</string>
 </dict>
 </plist>

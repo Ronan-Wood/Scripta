@@ -1,4 +1,8 @@
-# Call Transcriber — Spec (living document)
+# Scripta — Spec (living document)
+
+> Renamed from "Call Transcriber" 2026-07-16 (*verba volant, scripta manent*). Historical
+> milestone entries below keep the old name verbatim. On-disk identifiers deliberately kept:
+> the `app: call-transcriber` marker, registry filename, entity-mirror markers, App Group ID.
 
 macOS menu bar app for local, private capture + transcription of video calls and in-person
 conversations. No login, no cloud, no bots. Transcripts are Markdown files with Obsidian

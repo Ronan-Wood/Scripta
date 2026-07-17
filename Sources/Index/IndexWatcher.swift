@@ -11,8 +11,8 @@ final class IndexWatcher {
     static let shared: IndexWatcher? = IndexStore.shared.map { IndexWatcher(store: $0) }
 
     private let store: IndexStore
-    private let queue = DispatchQueue(label: "com.ronanwood.CallTranscriber.indexWatcher", qos: .utility)
-    private let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "Index")
+    private let queue = DispatchQueue(label: "com.ronanwood.Scripta.indexWatcher", qos: .utility)
+    private let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Index")
     private var stream: FSEventStreamRef?
     private var debounce: DispatchWorkItem?
 
