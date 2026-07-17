@@ -81,7 +81,7 @@ struct HelpView: View {
                     }
                 }
 
-                Text("2. Install the Claude skill (the playbook that teaches Claude how to use it):")
+                Text("2. Install the Claude skill (the playbook that teaches Claude how to use it). You'll pick your .claude folder once so the app is allowed to write there:")
                     .font(CarbonFont.label(13)).foregroundStyle(Carbon.textPrimary)
                 HStack(spacing: Space.x4) {
                     CarbonButton(title: "Install Claude skill", kind: .primary, action: installSkill)
@@ -98,16 +98,37 @@ struct HelpView: View {
             skillStatus = "Skill file not found in app."
             return
         }
-        let destDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/skills/call-transcriber", isDirectory: true)
+        // Sandboxed, the app can't write into ~/.claude on its own — a one-time folder pick
+        // grants it. The panel opens at the REAL home's .claude (homeDirectoryForCurrentUser
+        // points inside the app container under the sandbox).
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.showsHiddenFiles = true
+        panel.prompt = "Install"
+        panel.message = "Select your .claude folder to install the skill into (usually hidden in your home folder)."
+        panel.directoryURL = realHome.appendingPathComponent(".claude", isDirectory: true)
+        guard panel.runModal() == .OK, let dotClaude = panel.url else { return }
         do {
+            let destDir = dotClaude.appendingPathComponent("skills/call-transcriber", isDirectory: true)
             try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
             let destFile = destDir.appendingPathComponent("SKILL.md")
             try? FileManager.default.removeItem(at: destFile)
             try FileManager.default.copyItem(at: source, to: destFile)
-            skillStatus = "Installed to ~/.claude/skills"
+            skillStatus = "Installed to \(destDir.path.replacingOccurrences(of: realHome.path, with: "~"))"
         } catch {
             skillStatus = "Couldn't install: \(error.localizedDescription)"
         }
+    }
+
+    /// The user's actual home directory — under the sandbox, `homeDirectoryForCurrentUser`
+    /// resolves inside the app container instead.
+    private var realHome: URL {
+        if let pw = getpwuid(getuid()), pw.pointee.pw_dir != nil {
+            return URL(fileURLWithPath: String(cString: pw.pointee.pw_dir), isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
     }
 }

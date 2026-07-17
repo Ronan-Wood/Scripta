@@ -24,7 +24,7 @@ targets:
         CFBundleIconFile: AppIcon
         LSUIElement: true
         LSMinimumSystemVersion: "26.0"
-        NSHumanReadableCopyright: ""
+        NSHumanReadableCopyright: "© 2026 Ronan Wood"
         NSMicrophoneUsageDescription: "Call Transcriber records your microphone alongside call audio so your side of the conversation is transcribed. Audio is processed on-device and deleted after transcription."
         NSCalendarsFullAccessUsageDescription: "Call Transcriber reads your upcoming events to show which calls have Zoom/Teams/Meet links. It never modifies your calendar and never auto-starts recording."
         NSSpeechRecognitionUsageDescription: "Call Transcriber transcribes your recordings on-device using Apple's speech recognition. Audio is processed locally and never sent anywhere."
