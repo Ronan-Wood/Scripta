@@ -25,6 +25,7 @@ struct HubView: View {
                     .background(Carbon.background)
             }
         }
+        .ignoresSafeArea(.container, edges: .top)   // extend under the transparent system titlebar
         .frame(minWidth: 940, minHeight: 640)
         .onChange(of: model.route) { _, route in handle(route) }
         .confirmationDialog("Delete the “\(model.activeGroup)” workspace?",
