@@ -47,18 +47,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !AppSettings.firstRunNoticeShown else { return }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "Before your first recording"
+        alert.messageText = "Welcome to Call Transcriber"
         alert.informativeText = """
-        Call Transcriber records your microphone and your calls' audio entirely on this Mac — \
-        nothing is ever sent anywhere. Depending on where you live, recording a conversation may \
-        require the other participants' consent; that part is your responsibility. The menu-bar \
-        icon always shows when recording is active.
+        Recordings are transcribed right on your Mac and never leave it. The menu-bar icon \
+        shows whenever recording is on.
 
-        Transcripts are Markdown files saved to a folder you choose — an Obsidian vault or any \
-        synced folder works. You can change it any time in Settings.
+        One heads-up: in some places, everyone on a call must agree to being recorded. \
+        Getting that OK is up to you.
+
+        Where should your transcripts be saved?
         """
-        alert.addButton(withTitle: "Choose Transcripts Folder…")
-        alert.addButton(withTitle: "Use Default Folder")
+        alert.addButton(withTitle: "Choose Folder…")
+        alert.addButton(withTitle: "Use Default")
         let response = alert.runModal()
         AppSettings.firstRunNoticeShown = true
         guard response == .alertFirstButtonReturn else { return }
@@ -81,9 +81,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "Transcripts folder unavailable"
         alert.informativeText = """
-        Your transcripts folder could not be opened — it may have been moved, deleted, or live \
-        on a disconnected volume. New transcripts go to the default folder until you pick a \
-        folder again in Settings.
+        Your transcripts folder couldn't be found — it may have been moved or deleted. New \
+        transcripts will go to the default folder until you pick one again in Settings.
         """
         alert.addButton(withTitle: "OK")
         alert.runModal()
