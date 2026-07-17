@@ -26,6 +26,7 @@ struct KnowledgeView: View {
             VStack(alignment: .leading, spacing: Space.x6) {
                 header
                 notesShelf
+                documentsSection      // jobs + imported files — visible with or without calls
                 if rows.isEmpty && notes.isEmpty {
                     emptyState
                 } else if !rows.isEmpty {
@@ -34,6 +35,7 @@ struct KnowledgeView: View {
                         rail.frame(width: 300)
                     }
                 }
+                vocabularySection     // the correction loop — never gated on having calls
             }
             .padding(Space.x7)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -298,8 +300,6 @@ struct KnowledgeView: View {
                     }
                 }
             }
-            documentsSection
-            vocabularySection
         }
     }
 
