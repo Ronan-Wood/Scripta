@@ -45,6 +45,11 @@ enum NoteStore {
             .sorted { $0.updated > $1.updated }
     }
 
+    /// Deletes a note file. The index row is cleared by the caller (needs the store).
+    static func delete(_ note: KnowledgeNote) {
+        try? FileManager.default.removeItem(at: note.url)
+    }
+
     /// Creates an empty note in the workspace and returns it.
     static func create(title: String, group: String) -> KnowledgeNote? {
         let trimmed = title.trimmingCharacters(in: .whitespaces)

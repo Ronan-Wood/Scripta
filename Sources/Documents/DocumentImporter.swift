@@ -46,13 +46,20 @@ enum DocumentImporter {
         guard supportedExtensions.contains(ext) else { throw ImportError.unsupportedType(ext) }
 
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let copied = uniqueURL(for: source.lastPathComponent)
         // A dropped or panel-selected file is security-scoped under the sandbox: open access
         // before reading, or the copy fails silently. Harmless (returns false) for files we
         // already own, e.g. an in-vault path.
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
-        try FileManager.default.copyItem(at: source, to: copied)
+
+        // If the file already lives inside our Files/ folder, index it in place — no redundant copy.
+        let copied: URL
+        if source.standardizedFileURL.deletingLastPathComponent().path == folder.standardizedFileURL.path {
+            copied = source
+        } else {
+            copied = uniqueURL(for: source.lastPathComponent)
+            try FileManager.default.copyItem(at: source, to: copied)
+        }
 
         let text = try await extractText(copied)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -80,6 +87,16 @@ enum DocumentImporter {
         let mdURL = uniqueURL(for: "\(title) — extracted.md")
         try frontmatter.write(to: mdURL, atomically: true, encoding: .utf8)
         return Imported(mdURL: mdURL, title: title, fileName: copied.lastPathComponent)
+    }
+
+    /// Deletes an imported document: the copied original in Files/ AND its companion note. The
+    /// user's own original (wherever they imported it from) is never touched — we only copied it.
+    /// The index row is cleared by the caller.
+    static func delete(mdURL: URL) {
+        if let meta = parse(mdURL), !meta.file.isEmpty {
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(meta.file))
+        }
+        try? FileManager.default.removeItem(at: mdURL)
     }
 
     /// Doc notes in one workspace, newest first — for the Documents shelf.
