@@ -168,31 +168,51 @@ enum DocumentImporter {
         }
     }
 
-    /// PDF: the text layer via PDFKit; pages with (near-)empty layers fall back to a render +
-    /// the Screen Context document recognizer — which also rescues fully scanned PDFs.
+    /// PDF: prefer the text layer (fast, accurate for dense tables), but OCR any page whose layer
+    /// is empty/sparse (scanned) OR damaged — a broken glyph/ligature mapping (control chars, or a
+    /// low letter-to-character ratio) garbles words like "Marke·ting". Clean text-layer PDFs never
+    /// OCR, so they stay instant; only the pages that need it pay the OCR cost.
     private static func pdfText(_ url: URL) async throws -> String {
         guard let doc = PDFDocument(url: url) else { throw ImportError.emptyExtraction }
         var pages: [String] = []
         for i in 0..<min(doc.pageCount, 200) {
             guard let page = doc.page(at: i) else { continue }
             let layer = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if layer.count >= 40 {
+
+            if layer.count >= 40 && !isLayerDamaged(layer) {
                 pages.append(layer)
                 continue
             }
-            // Thin/no text layer → OCR the render.
+            // Sparse or damaged → OCR the rendered page (the Screen Context document recognizer,
+            // which also returns tables as Markdown). Keep whichever text is richer.
             let image = page.thumbnail(of: CGSize(width: 1600, height: 2070), for: .mediaBox)
+            var recognized = ""
             if let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
-               let ocr = await DocumentReader.read(cg, focus: .everything),
-               !ocr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                pages.append(ocr)
-            } else if !layer.isEmpty {
-                pages.append(layer)
+               let text = await DocumentReader.read(cg, focus: .everything) {
+                recognized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            // Prefer OCR when it produced meaningfully more clean text than the (damaged) layer.
+            let cleanLayer = stripControlChars(layer)
+            if recognized.count > cleanLayer.count / 2, !recognized.isEmpty {
+                pages.append(recognized)
+            } else if !cleanLayer.isEmpty {
+                pages.append(cleanLayer)
             }
         }
         return pages.enumerated()
             .map { "## Page \($0.offset + 1)\n\n\($0.element)" }
             .joined(separator: "\n\n")
+    }
+
+    /// A text layer is "damaged" when a broken font/ligature mapping corrupts it: NUL/control
+    /// chars present, or an implausibly low ratio of letters to total characters (garbled glyphs
+    /// decode to symbols/spaces). Both are signals to OCR the page instead of trusting the layer.
+    private static func isLayerDamaged(_ layer: String) -> Bool {
+        if layer.unicodeScalars.contains(where: { $0.value < 0x20 && $0 != "\n" && $0 != "\t" }) {
+            return true
+        }
+        let letters = layer.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
+        return Double(letters) / Double(max(1, layer.unicodeScalars.count)) < 0.45
     }
 
     /// PPTX: slides are `ppt/slides/slideN.xml`; visible text lives in `<a:t>` runs.
