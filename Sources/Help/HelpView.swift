@@ -11,6 +11,12 @@ struct HelpView: View {
         "\(Bundle.main.bundlePath)/Contents/MacOS/calltranscriber-mcp"
     }
 
+    /// The App Store flavor ships without the bundled server (store rules forbid an
+    /// externally-spawnable embedded executable) — its Docs point at the separate download.
+    private var helperIsBundled: Bool {
+        Bundle.main.url(forAuxiliaryExecutable: "calltranscriber-mcp") != nil
+    }
+
     private var mcpCommand: String {
         "claude mcp add -s user calltranscriber -- \"\(mcpBinaryPath)\""
     }
@@ -44,6 +50,12 @@ struct HelpView: View {
                 On-device only: no login, no cloud, no servers. Raw audio and screenshots are deleted right \
                 after processing — only text is kept. Nothing is ever sent anywhere.
                 """)
+
+                doc("Acknowledgements", """
+                Typefaces: IBM Plex Sans and IBM Plex Mono © IBM Corp., under the SIL Open Font \
+                License 1.1. Icons: IBM Carbon, under the Apache License 2.0. Both license texts \
+                are included in the app bundle (Contents/Resources).
+                """)
             }
             .padding(Space.x7)
             .frame(maxWidth: 720, alignment: .leading)
@@ -65,7 +77,12 @@ struct HelpView: View {
         CarbonCard {
             VStack(alignment: .leading, spacing: Space.x4) {
                 Text("Connect to Claude").font(CarbonFont.medium(16)).foregroundStyle(Carbon.textPrimary)
-                Text("A built-in server lets Claude read, search, and reason over your calls. Move the app to Applications first — both setups point to where the app currently sits, so they break if it moves later.")
+                if !helperIsBundled {
+                    Text("This App Store edition connects to Claude through a small free companion (App Store rules keep it out of this bundle). Download it, then return here — these instructions activate once it's installed. Download link coming with release.")
+                        .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text("A local server lets Claude read, search, and reason over your calls. Move the app to Applications first — both setups point to where the app currently sits, so they break if it moves later.")
                     .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
