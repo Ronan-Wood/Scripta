@@ -724,6 +724,38 @@ final class IndexStore {
         return out
     }
 
+    /// One call's card for the Home dashboard and Knowledge digest — everything the index
+    /// already holds about a call, so those surfaces never re-read transcript files.
+    struct DigestRow {
+        let path: String
+        let title: String
+        let date: String
+        let time: String
+        let duration: String
+        let summary: String
+        let participants: [String]
+        let tags: [String]
+    }
+
+    /// Recent calls in one workspace, newest first — the dashboard/digest feed. Scoped to the
+    /// group like every other read surface (the privacy wall applies to dashboards too).
+    func digest(group: String, limit: Int = 400) -> [DigestRow] {
+        lock.lock(); defer { lock.unlock() }
+        var rows: [DigestRow] = []
+        query("""
+            SELECT path, title, date, time, duration, participants, tags, summary FROM transcripts
+            WHERE "group" = ? ORDER BY date DESC, time DESC LIMIT ?
+            """,
+              bind: { Self.bindStatic($0, 1, group); sqlite3_bind_int($0, 2, Int32(limit)) }) { stmt in
+            rows.append(DigestRow(
+                path: text(stmt, 0), title: text(stmt, 1), date: text(stmt, 2), time: text(stmt, 3),
+                duration: text(stmt, 4), summary: text(stmt, 7),
+                participants: text(stmt, 5).split(separator: "\n").map(String.init),
+                tags: text(stmt, 6).split(separator: "\n").map(String.init).filter { $0 != OwnerMarker.value }))
+        }
+        return rows
+    }
+
     /// Distinct non-empty groups (workspaces) with call counts, most-populated first.
     func groups() -> [(name: String, count: Int)] {
         lock.lock(); defer { lock.unlock() }
