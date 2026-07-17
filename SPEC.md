@@ -45,8 +45,11 @@ frontmatter, written to a user-configured folder (typically inside an Obsidian v
 - **Living notes (the vault model):** standing documents in `Notes/` you work out of —
   timestamped entries accumulated across calls, each optionally wikilinked to its source
   transcript. Marker `app: call-transcriber-note` (pruner-proof, transcript-surface-invisible).
-  v1 is append-only ("comments mostly"); `Notes/` is excluded from the index by construction —
-  indexing notes for Ask/MCP is a later, deliberate schema step.
+  v1 is append-only ("comments mostly"). **Indexed since schema v8** (same day): a note's
+  entries index as its searchable text with `kind='note'` — Clovis's Ask context and MCP
+  `retrieve` surface them labeled as the user's own words; every call-listing surface
+  (digest, counts, aggregates, in-app search topic hits) filters `kind='call'`; the privacy
+  wall applies to notes identically (9-check probe).
 - **Knowledge pane:** notes shelf + day-grouped cross-call digest (index-served, no file reads)
   + workspace-scoped people/topics rail. "Add to note" on every digest card.
 - **Clovis** is the Ask assistant's name. Conversations persist per workspace — the privacy
