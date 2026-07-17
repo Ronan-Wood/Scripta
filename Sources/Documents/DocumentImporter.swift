@@ -11,6 +11,16 @@ import ImageIO
 enum DocumentImporter {
     static let marker = "call-transcriber-doc"
 
+    /// Removes NUL and other C0/DEL control characters (keeping tab + newline). Broken PDF glyph
+    /// or ligature mappings emit NUL bytes; `sqlite3_bind_text(…, -1, …)` uses strlen and would
+    /// truncate the indexed text at the first NUL — silently indexing only a fragment. Stripping
+    /// them also keeps FTS tokenization clean.
+    static func stripControlChars(_ s: String) -> String {
+        String(s.unicodeScalars.filter { scalar in
+            scalar == "\n" || scalar == "\t" || (scalar.value >= 0x20 && scalar.value != 0x7F)
+        })
+    }
+
     static var folder: URL {
         AppSettings.outputFolder.appendingPathComponent("Files", isDirectory: true)
     }
@@ -61,7 +71,7 @@ enum DocumentImporter {
             try FileManager.default.copyItem(at: source, to: copied)
         }
 
-        let text = try await extractText(copied)
+        let text = stripControlChars(try await extractText(copied))
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             try? FileManager.default.removeItem(at: copied)

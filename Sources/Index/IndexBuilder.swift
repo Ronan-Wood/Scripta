@@ -107,9 +107,9 @@ enum IndexBuilder {
             store.remove(path: url.path)
             return
         }
-        let entriesText = note.entries
+        let entriesText = DocumentImporter.stripControlChars(note.entries
             .map { entry in entry.linkedCall.map { "[\(entry.stamp), re: \($0)] \(entry.text)" } ?? "[\(entry.stamp)] \(entry.text)" }
-            .joined(separator: "\n")
+            .joined(separator: "\n"))
         store.upsert(IndexedTranscript(
             path: url.path, title: note.title, date: String(note.updated.prefix(10)), time: "",
             duration: "", participants: [], tags: [], summary: entriesText, mtime: mtime,
@@ -125,9 +125,11 @@ enum IndexBuilder {
             store.remove(path: url.path)
             return
         }
+        // Strip control chars (a NUL from a broken PDF glyph would truncate the FTS bind at strlen).
+        let cleanBody = DocumentImporter.stripControlChars(doc.body)
         store.upsert(IndexedTranscript(
             path: url.path, title: doc.title, date: String(doc.created.prefix(10)), time: "",
-            duration: "", participants: [], tags: [], summary: String(doc.body.prefix(60_000)),
+            duration: "", participants: [], tags: [], summary: String(cleanBody.prefix(60_000)),
             mtime: mtime, mode: "", group: doc.group, kind: "doc"), chunks: [])
     }
 

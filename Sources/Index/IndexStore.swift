@@ -82,9 +82,11 @@ final class IndexStore {
     /// graph (entities cache + mentions + action items); v7 chunks on-screen text too; v8 added
     /// the `kind` column and indexes knowledge notes (retrievable by Ask/MCP, hidden from call
     /// lists); v9 added the vocabulary `terms` cache (registry → DB) powering alias expansion;
-    /// v10 forces a one-time rebuild so documents indexed by an intermediate build during
-    /// development (some with truncated bodies) re-index from their full companion notes.
-    private static let schemaVersion: Int32 = 10
+    /// v10 forced a one-time rebuild so documents indexed by an intermediate build during
+    /// development re-index from their full companion notes; v11 forces another after fixing the
+    /// NUL-byte truncation (a NUL from a broken PDF glyph truncated the FTS bind at strlen, so
+    /// documents indexed as a fragment) — control chars are now stripped before indexing.
+    private static let schemaVersion: Int32 = 11
 
     private let db: OpaquePointer
     private let lock = NSLock()
