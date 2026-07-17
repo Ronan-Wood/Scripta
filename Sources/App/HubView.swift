@@ -19,14 +19,22 @@ struct HubView: View {
     var body: some View {
         VStack(spacing: 0) {
             topBar
-            HStack(spacing: 0) {
-                sidebar
-                Rectangle().fill(Carbon.borderSubtle).frame(width: 1)
-                content
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Carbon.background)
+            ZStack(alignment: .trailing) {
+                HStack(spacing: 0) {
+                    sidebar
+                    Rectangle().fill(Carbon.borderSubtle).frame(width: 1)
+                    content
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Carbon.background)
+                }
+                // The assistant floats over the content (render behavior) instead of squeezing it:
+                // scrim behind, drawer sliding from the trailing edge, tap-out or ✕ to dismiss.
                 if clovisDrawerOpen {
-                    ClovisDrawerView { withAnimation(.easeInOut(duration: 0.22)) { clovisDrawerOpen = false } }
+                    Carbon.scrim
+                        .transition(.opacity)
+                        .onTapGesture { closeClovisDrawer() }
+                    ClovisDrawerView(close: closeClovisDrawer)
+                        .shadow(color: .black.opacity(0.28), radius: 36, x: -8, y: 12)
                         .transition(.move(edge: .trailing))
                 }
             }
@@ -57,6 +65,10 @@ struct HubView: View {
         } message: {
             Text("Switches you into the new workspace. Calls you record while it's active are captured into it.")
         }
+    }
+
+    private func closeClovisDrawer() {
+        withAnimation(.easeInOut(duration: 0.22)) { clovisDrawerOpen = false }
     }
 
     // MARK: - Title bar (drawn in-window, per the render: centered title, pills on the right)

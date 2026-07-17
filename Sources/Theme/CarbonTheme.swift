@@ -44,6 +44,7 @@ enum Carbon {
     /// Translucent chrome tints, layered over window vibrancy.
     static let sidebarTint  = dynA(0xF7F7F9, 0.72, 0x222226, 0.66)   // --c-sidebar
     static let titlebarTint = dynA(0xF7F7F9, 0.80, 0x1E1E22, 0.74)   // --c-titlebar
+    static let scrim        = dynA(0x141E37, 0.32, 0x000000, 0.50)   // --c-scrim (drawer backdrop)
 
     private static func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
