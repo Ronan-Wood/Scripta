@@ -197,7 +197,11 @@ final class AskModel: ObservableObject {
         let grounding: Grounding = (usedFallback || passages == 0) ? .thin
                                  : passages >= 3 ? .strong : .moderate
         let context = chunks.map(Self.label).joined(separator: "\n\n")
-        let prompt = "Context:\n\(context)\n\nQuestion: \(question)"
+        // Vocabulary glosses ride along when their term appears in the question or the retrieved
+        // text — the user's own definitions, so the model stops fumbling domain jargon.
+        let glossary = Self.glossary(question: question, chunks: chunks, group: group)
+        let prompt = (glossary.isEmpty ? "" : "Glossary (the user's own definitions):\n\(glossary)\n\n")
+            + "Context:\n\(context)\n\nQuestion: \(question)"
 
         thinking = true
         let firstAnswer = !messages.contains { !$0.fromUser && !$0.text.isEmpty }
@@ -274,6 +278,19 @@ final class AskModel: ObservableObject {
     private static func clock(_ ms: Int) -> String {
         let t = ms / 1000
         return String(format: "%d:%02d", t / 60, t % 60)
+    }
+
+    /// Gloss lines for vocabulary terms present in the question or retrieved text (capped at 6).
+    private static func glossary(question: String, chunks: [ContextChunk], group: String) -> String {
+        guard let store = IndexStore.shared else { return "" }
+        let glosses = store.termGlosses(group: group)
+        guard !glosses.isEmpty else { return "" }
+        let haystack = (question + " " + chunks.map(\.text).joined(separator: " ")).lowercased()
+        return glosses
+            .filter { haystack.contains($0.term.lowercased()) }
+            .prefix(6)
+            .map { "\($0.term) — \($0.gloss)" }
+            .joined(separator: "\n")
     }
 
     private func distinctSources(_ chunks: [ContextChunk]) -> [Source] {
