@@ -19,9 +19,16 @@ enum Retriever {
             let fts = store.ftsCandidates(query, group: group, limit: 40)
             let vec = store.vectorCandidates(vector: qvec, group: group, model: AppSettings.embedModel, limit: 40)
             let fused = RRF.fuse([fts, vec], limit: (reranker != nil ? 40 : k))
-            candidates = store.contextForChunkIDs(fused, limit: reranker != nil ? 40 : k)
+            var hybrid = store.contextForChunkIDs(fused, limit: reranker != nil ? 40 : k)
+            // The chunk/vector path can't see topic-only matches (documents, notes, concept-tag
+            // calls) — they have no chunks or vectors. Fold them in, or embeddings silently hide
+            // every imported document and every knowledge note from Ask.
+            let topics = store.topicMatches(for: query, group: group, limit: 3)
+            hybrid += topics.filter { t in !hybrid.contains { $0.path == t.path } }
+            candidates = hybrid
         } else {
-            // Widen the candidate pool only when we're going to rerank it.
+            // Widen the candidate pool only when we're going to rerank it. Pure FTS already folds
+            // in topic matches via IndexStore.context.
             candidates = store.context(for: query, group: group, limit: reranker != nil ? 40 : k)
         }
         guard let reranker, candidates.count > k else { return Array(candidates.prefix(k)) }

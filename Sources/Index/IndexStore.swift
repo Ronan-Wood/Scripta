@@ -639,6 +639,18 @@ final class IndexStore {
     /// ≤2 per call for source diversity, expands each hit to its neighbour turns so the model sees
     /// the answer around the question, and appends up to 2 topic passages (title/summary/tags) so
     /// concept-tag matches — the "baseball" ↔ "home runs" layer — reach Ask too, not just search.
+    /// Topic-only matches (documents, notes, and concept/title/tag call matches) for a query —
+    /// the layer that has no spoken chunks or vectors. The hybrid (embeddings) retrieval path is
+    /// chunk/vector-only, so it must call this too or docs and notes become invisible once a
+    /// corpus is embedded.
+    func topicMatches(for rawQuery: String, group: String? = nil, limit: Int = 3) -> [ContextChunk] {
+        lock.lock(); defer { lock.unlock() }
+        let aliases = aliasGroupsLocked(group: group)
+        return topicContext(FTSQuery.andExpression(rawQuery, aliasGroups: aliases)
+                            ?? FTSQuery.orExpression(rawQuery, aliasGroups: aliases),
+                            group: group, limit: limit)
+    }
+
     func context(for rawQuery: String, group: String? = nil, limit: Int = 6) -> [ContextChunk] {
         lock.lock(); defer { lock.unlock() }
         let aliases = aliasGroupsLocked(group: group)
