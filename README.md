@@ -6,24 +6,25 @@ Built to replace tools like Granola / Jamie / Fathom without the account-gating,
 
 ## What it does
 
-- **Menu-bar app** — a waveform icon; no Dock icon, no login. Start/Stop is fully manual by design.
-- **Captures both sides** — system audio (the other participants) via ScreenCaptureKit + your microphone via AVAudioEngine, as **separate tracks**.
-- **Transcribes on-device** — Apple's `SpeechTranscriber` (macOS 26). No model download, no bundled binary.
-- **Speaker labels (You / Them)** — the two tracks are transcribed *separately* and interleaved by timestamp, so attribution is physical (mic = You, system = Them), not an ML guess. When only one side has audio (in-person recording), labels are omitted rather than guessed.
-- **Cleans + enriches** — deterministic filler-word removal ("um"/"uh"); optional on-device **title + summary + topic tags** via Apple Foundation Models (topics power concept search).
-- **Screen context** — periodically OCRs your frontmost window (tables → Markdown via `RecognizeDocumentsRequest`) and interleaves it into the transcript, timestamped. Screenshots are discarded immediately.
-- **Markdown output** — YAML frontmatter (date, time, duration, participants, tags, title) + timestamped body, written to a user-chosen folder.
-- **Name your calls** — an optional post-record prompt (and an "Edit Details" action in the viewer) sets the title + participants in frontmatter; participants power the MCP's "calls with …" search. When Calendar is enabled, the prompt **pre-fills participants (and the call name) from the meeting you were in** — matched by overlapping time.
-- **Calendar visibility** — EventKit shows upcoming Zoom/Teams/Meet events in the menu (informational only, never auto-records), with a proximity badge on the icon (white ≤30 min → yellow ≤15 → green ≤5).
-- **In-app viewer** — searchable browser with a purpose-built renderer for the transcript format.
-- **Retrieval backend** — a local SQLite/FTS5 index over all transcripts (built behind the scenes, `.md` stays source of truth). Search is **holistic**: one query matches spoken passages *and* transcript topic (title, summary, participants, and Foundation-Models-extracted concept tags), so searching `baseball` finds a call that only ever said "home runs." An in-app **Search** window (⌘F) ranks results with People/Tags index sidebars; the MCP exposes the same index to Claude (`retrieve`, `people`, `tags`). Semantic vectors are a pluggable, deferred slot (on-device embedders measured too weak — the concept-tag path fills the gap instead).
+- **Menu-bar app** — a waveform icon plus a full hub window (Home / Calls / Meetings / Ask / Settings / Docs). Start/Stop is fully manual by design (⌥⌘R global hotkey, pause/resume supported).
+- **Captures both sides** — system audio (the other participants) via ScreenCaptureKit + your microphone via AVAudioEngine, as **separate tracks**. A **conference mode** captures a single source unlabeled for hybrid in-room/online meetings where both tracks would hear the same speech.
+- **Transcribes on-device** — Apple's `SpeechTranscriber` (macOS 26). No model download, no bundled binary. A **live transcript** streams while you record, with a related-past-calls panel beside it.
+- **Speaker labels (You / Them)** — the two tracks are transcribed *separately* and interleaved by timestamp, so attribution is physical (mic = You, system = Them), not an ML guess. When only one side has audio, labels are omitted rather than guessed.
+- **Cleans + enriches** — deterministic filler-word removal; optional on-device **title + summary + topic tags** via Apple Foundation Models (topics power concept search).
+- **Screen context** — periodically OCRs a window or display you choose at record time (tables → Markdown via `RecognizeDocumentsRequest`) and interleaves it into the transcript, timestamped. Screenshots are discarded immediately; an optional local vision model can caption charts OCR can't read (post-call only).
+- **Markdown output** — YAML frontmatter (date, time, duration, participants, tags, group, title) + timestamped body, written to a user-chosen folder. Post-record prompt names the call, pre-filled from the overlapping calendar event.
+- **Workspaces (groups)** — calendars can map to groups (work / personal / a client); retrieval, Ask, and the MCP are **hard-scoped** to the active workspace. Cross-workspace search is an explicit, non-sticky action. The MCP refuses queries when the app isn't running rather than trust a stale scope.
+- **Retrieval backend** — SQLite/FTS5 index over all transcripts (`.md` stays source of truth; the DB is a rebuildable cache). Search is **holistic**: one query matches spoken passages *and* call topics, so searching `baseball` finds a call that only ever said "home runs." An entity graph (people, companies, places extracted on-device) powers entity-anchored browsing; an FSEvents watcher keeps the index fresh against external edits.
+- **Ask** — on-device Q&A over your calls (retrieve → grounded Foundation Models answer with cited sources). Claude via MCP remains the deep-reasoning tier.
+- **Local model endpoint (advanced, opt-in)** — an OpenAI-format server on loopback/LAN (Ollama / LM Studio) can take over Ask, enrichment, reranking, or embeddings per task. Public hosts are refused with no override; Apple FM is always the default and fallback.
+- **Calendar visibility** — EventKit shows upcoming Zoom/Teams/Meet events (informational only, never auto-records), with a proximity badge on the icon and a full Meetings calendar (month/week/day) unifying past calls + upcoming meetings.
 - **Claude integration** — a bundled MCP server + a skill let Claude read, search, and reason over your transcripts (see below).
-- **Retention** — optional auto-delete of old transcripts, gated so it only ever touches files this app created.
+- **Retention** — optional auto-delete of old transcripts, gated by marker AND filename shape so it only ever touches files this app created. Export to PDF/text; optional entity-stub mirror into the vault.
 
 ## Requirements
 
-- **macOS 26** or later, Apple Silicon. (The floor is 26 for the document/table recognizer and Foundation Models — kept deliberately for quality.)
-- **Apple Intelligence** enabled is optional — only the title/summary feature needs it; without it, that feature quietly switches off.
+- **macOS 26** or later, Apple Silicon. (The floor is 26 for the document/table recognizer, Foundation Models, and `SpeechTranscriber`.)
+- **Apple Intelligence** enabled is optional — only the title/summary/topics feature needs it; without it, that feature quietly switches off.
 
 ## Architecture
 
@@ -38,44 +39,43 @@ system (SCStream) ────→ AudioConverter → them.wav ─→ SpeechEngin
                               ▼
                      FillerCleaner (deterministic um/uh removal)
                               │
-                     TranscriptEnricher (Foundation Models: title + summary, optional)
+                     TranscriptEnricher (title + summary + topics; Apple FM or local endpoint)
                               │
-                     TranscriptWriter → Markdown + frontmatter → output folder
+                     TranscriptWriter → Markdown + frontmatter → output folder → index
                               │
                      raw audio deleted (ephemeral, always)
 ```
 
-In parallel during recording: `ScreenContextCapturer` ticks every N seconds → resolves the frontmost window → `SCScreenshotManager` → `DocumentReader` (`RecognizeDocumentsRequest`) → `SnippetDeduplicator` (Jaccard similarity) → timestamped snippets, folded into the transcript. Images are discarded after OCR.
+In parallel during recording: live transcription (SpeechAnalyzer volatile results) and `ScreenContextCapturer` ticks every N seconds → chosen window/display → `SCScreenshotManager` → `DocumentReader` → `SnippetDeduplicator` → timestamped snippets. Images are discarded after OCR.
 
 ### Source layout
 
 | Area | Files |
 |---|---|
-| App shell | `App/` — `main.swift`, `AppDelegate.swift`, `MenuController.swift` (3-state icon + proximity badge) |
-| Capture | `Recording/` — `SystemAudioCapture` (SCStream), `MicrophoneCapture` (AVAudioEngine), `AudioConverter` (per-track → 16 kHz mono WAV), `RecordingSession` (orchestration + ephemeral temp) |
-| Transcription | `Transcription/` — `SpeechEngine` (SpeechTranscriber), `FillerCleaner`, `TranscriptEnricher` (Foundation Models), `TranscriptWriter` |
+| App shell | `App/` — `main.swift`, `AppDelegate` (first-run, folder grant, orphan recovery), `MenuController`, `HubView` + panes, `MCPStateFile` |
+| Capture | `Recording/` — `SystemAudioCapture` (SCStream), `MicrophoneCapture` (AVAudioEngine), `AudioConverter`, `RecordingSession`, `RecordingMode` (call/conference) |
+| Transcription | `Transcription/` — `SpeechEngine`, `LiveTranscriber`, `FillerCleaner`, `TranscriptEnricher`, `TranscriptWriter`, `ConceptBackfill` |
 | Screen context | `ScreenContext/` — `ScreenContextCapturer`, `FrontmostWindowResolver`, `DocumentReader`, `SnippetDeduplicator` |
-| Settings | `Settings/` — `AppSettings` (UserDefaults), `SettingsView` |
-| Viewer | `Viewer/` — `TranscriptStore`, `TranscriptParser`, `TranscriptViewer`, `TranscriptDetailsEditor` + `TranscriptMetadataEditor` (edit title/participants in frontmatter) |
-| Retrieval | `Index/` — `IndexStore` (SQLite + FTS5, search/people/tags), `IndexBuilder` (parse `.md` → speaker-turn chunks; reconcile), `SearchView` (in-app search + index sidebars) |
-| Calendar | `Calendar/` — `CalendarWatcher` (EventKit) |
-| Help | `Help/` — `HelpView` (setup docs, one-click MCP command + skill install) |
-| Support | `Support/` — `RetentionPruner`, `NotificationManager`, `Permissions` |
+| Model engine | `Engine/` — engine protocols, `AppleFMEngine` (default), `EndpointEngine` + `OpenAIWire` (opt-in local server), `EngineRouter`, `Locality`, `Retriever`, `VLMCaptioner` |
+| Retrieval + knowledge | `Index/` — `IndexStore` (SQLite/FTS5), `IndexBuilder`, `IndexWatcher`, entity registry/extractor/mirror, `CallsView`, `CalendarView` |
+| Settings | `Settings/` — `AppSettings` (incl. security-scoped folder bookmark), `SettingsView` |
+| Viewer | `Viewer/` — `TranscriptStore`, `TranscriptParser`, `TranscriptDetail`, details/metadata editors, `TranscriptExporter` |
+| Shared (app + MCP) | `Shared/` — `OwnerMarker`, `FTSQuery`, `SharedLocations` (App Group paths) |
 | MCP server | `SourcesMCP/main.swift` — separate `calltranscriber-mcp` tool target, embedded in the app |
-| Skill | `Skill/call-transcriber/SKILL.md` — bundled + installable to `~/.claude/skills` |
+| Skill / Eval | `Skill/call-transcriber/SKILL.md` (bundled) · `Eval/` — retrieval eval harness + privacy-wall leak check (`./Eval/run.sh`) |
 
-Two build targets (via `project.yml` / XcodeGen): the **app** (macOS 26) and **`calltranscriber-mcp`** (macOS 14, pure Foundation), the latter copied into `Contents/MacOS/`.
+Two build targets (via `project.yml` / XcodeGen): the **app** (macOS 26, **sandboxed in every configuration**) and **`calltranscriber-mcp`** (macOS 14, pure Foundation, unsandboxed — LLM clients spawn it), the latter copied into `Contents/MacOS/`. Shared state (`index.db`, `mcp-state.json`) lives in the team App Group container so both processes can reach it across the sandbox boundary; the transcripts folder is accessed through a security-scoped bookmark granted once in Settings.
 
 ## Claude integration (MCP + skill)
 
 The app bundles a dependency-free **MCP server** (`calltranscriber-mcp`, JSON-RPC over stdio) that exposes transcripts read-only to Claude Code / Desktop / Cowork:
 
-- `overview` — every call's title + summary + path (a compact map for Claude to find the right call semantically)
-- `list_transcripts(limit, since, participant, tag)`, `get_transcript(path)`, `search_transcripts(query)`
-- `retrieve(query, participant?, tag?, since?, limit?)` — BM25-ranked passages from the SQLite index, with call/timestamp/speaker; `people` and `tags` — aggregate indexes (name → call count).
-- Path-guarded: it can only read app-authored transcripts inside the output folder, never arbitrary files. The index tools read the app's SQLite index read-only.
+- `overview` — every call's title + summary + path (bounded pages, `since`/`limit`)
+- `list_transcripts(limit, since, participant, tag)`, `get_transcript(path)`, `get_section(path, from, to)`, `search_transcripts(query)`
+- `retrieve(query, participant?, tag?, speaker?, since?, limit?)` — BM25-ranked passages with call/timestamp/speaker provenance; `people` and `tags` aggregates.
+- Scoped + guarded: every tool honors the app's active workspace and refuses on a stale heartbeat; path-guarded to app-authored transcripts inside the output folder (symlinks resolved).
 
-Register it: `claude mcp add calltranscriber -- "/Applications/CallTranscriber.app/Contents/MacOS/calltranscriber-mcp"` (the Help window shows the exact path for your machine). Then the bundled skill teaches Claude the playbooks ("summarize my week", "action items across calls", "what did X say about Y").
+Register it: `claude mcp add calltranscriber -- "/Applications/CallTranscriber.app/Contents/MacOS/calltranscriber-mcp"` (the Docs pane shows the exact path for your machine and installs the skill with a one-time `.claude` folder grant). Then the skill teaches Claude the playbooks ("summarize my week", "action items across calls", "what did X say about Y").
 
 **Why this design:** the on-device 3B model can't do reliable semantic retrieval over a call history, but Claude can. So the app doesn't try — it exposes the content well via MCP and lets Claude (a frontier model) do the reasoning. That's the app's whole "capture locally, hand off to Claude" philosophy.
 
@@ -89,31 +89,35 @@ xcodebuild -project CallTranscriber.xcodeproj -target CallTranscriber -configura
 open build/Debug/CallTranscriber.app
 ```
 
-Signing uses an Apple Development cert (team `6CTH5M9UWZ`) via automatic signing.
+Signing uses an Apple Development cert (team `6CTH5M9UWZ`) via automatic signing. Entitlements: `Sources/App/CallTranscriber.entitlements` (sandbox + mic + calendars + user-selected files + network client) and `SourcesMCP/calltranscriber-mcp.entitlements` (App Group only). Run `./Eval/run.sh` before shipping retrieval changes — it gates recall/MRR and the workspace privacy wall.
 
 ## Distribution
 
-Free route (personal cert, not notarized): build Release, stage app + an `/Applications` symlink + `README.txt`, package with `hdiutil` → `dist/CallTranscriber.dmg`. Recipients drag to Applications and **right-click → Open** once (Gatekeeper, since it's not notarized). See `dist/` for the current build.
+**Dual-channel, in progress (2026-07-16):**
 
-Optional maturity: notarization ($99 Developer ID → clean double-click) and Sparkle auto-update. **Not** TestFlight — it requires the App Sandbox, which breaks screen capture and the arbitrary output folder.
+- **Mac App Store** — the app is sandboxed and passed a real sandboxed recording (system audio + screen context confirmed). The bundled MCP helper cannot ship in a MAS bundle (embedded executables must inherit the app's sandbox, which breaks external spawning), so the store build will offer it as a separate Developer ID download — packaged as a Claude Code plugin + `.mcpb` bundle that also carries the skill.
+- **Direct `.dmg`** — bundles the helper exactly as today; notarization (Developer ID) once the Apple Developer Program enrollment lands. `dist/CallTranscriber.dmg` is a stale pre-hub build; rebuild before sharing.
+
+Both channels remain blocked on the $99 Apple Developer Program membership (store record, Distribution/Developer ID certs, TestFlight).
 
 ## Design principles
 
-- **Everything local.** No login, no cloud, no servers. Raw audio and screenshots are always ephemeral (deleted right after processing); only text is kept.
+- **Everything local.** No login, no cloud, no servers. Raw audio and screenshots are always ephemeral; only text is kept. The opt-in model endpoint is loopback/LAN only — public hosts are refused with no override, and the app never downloads model weights.
 - **Manual trigger only.** No auto-record. Calendar is informational; recording is always a deliberate click.
-- **Hand off to Claude, don't reinvent it.** No heavy in-app LLM reasoning — the app captures and structures; Claude (via MCP) does semantic search, synthesis, and Q&A.
-- **Never touch files we didn't create.** The output folder may live inside a real Obsidian vault, so retention/listing key on an `app: call-transcriber` frontmatter marker.
-- **Quality over reach** on the OS floor: macOS 26 unlocks the table recognizer + Foundation Models + `SpeechTranscriber`; we kept the floor there rather than water the features down.
+- **Hand off to Claude, don't reinvent it.** The app captures and structures; Claude (via MCP) does semantic search, synthesis, and Q&A. On-device models get bounded jobs (topics, grounded Ask), never open-ended reasoning.
+- **Never touch files we didn't create.** The output folder may live inside a real Obsidian vault, so retention keys on the `app: call-transcriber` marker AND the app's filename pattern.
+- **The privacy wall is total.** Workspace scoping applies inside every query — app, Ask, and MCP alike — and the eval's leak check enforces it.
+- **Quality over reach** on the OS floor: macOS 26 unlocks the table recognizer + Foundation Models + `SpeechTranscriber`.
 
 ## Roadmap
 
-See `SPEC.md` for the full log. Next candidates:
+See `SPEC.md` for the full log. Next:
 
-- **Semantic retrieval (Phase B)** — the vector slot in the index, once an on-device embedder (or local reranker) beats keyword on a real eval. Today's `NLContextualEmbedding` measured too weak to trust; the hybrid pipeline is ready for a drop-in.
-- **Live transcription** — SpeechAnalyzer streams volatile results, so a live transcript view during recording is now possible (whisper couldn't).
-- **Richer AI** — auto action-items / topics / tags via Foundation Models.
-- Menu-bar UX (timer, level meter, hotkey), transcript export, notarization + auto-update.
+- **App Store submission** — enrollment, store collateral, MAS build config (helper excluded), review.
+- **Claude plugin + `.mcpb` packaging** — one-command install for the MCP server + skill, replacing manual registration.
+- **Semantic retrieval (Phase B)** — vector slot + fusion are built and gated; enable only when a local embedder beats keyword on the eval (`NLContextualEmbedding` measured too weak; `nomic-embed-text` untested end-to-end).
+- **iPad/iPhone companion (exploratory)** — same Markdown corpus via a synced folder; in-person recording + viewer/Ask; each device rebuilds its own index.
 
 ## Status
 
-v1.0 built and packaged (`dist/CallTranscriber.dmg`). Transcription engine switched from bundled whisper.cpp to Apple `SpeechTranscriber` — **confirmed working in a real in-app recording (2026-07-14)**, including a locale-resolution fix (`SpeechEngine.resolvedLocale()`; supported locales are region-qualified BCP-47, so bare `en` had to be matched to `en-US`). **Speaker labels (You/Them)**, **call details (M10)** with calendar pre-fill, and a **local retrieval backend** (SQLite/FTS5 index + in-app Search + MCP `retrieve`/`people`/`tags`) all implemented and verified over real transcripts; the details/label features are pending confirmation on a fresh recording. Semantic vectors deferred (on-device embedders measured too weak).
+All planned milestones through the knowledge layer are built: two-track You/Them transcription (Apple `SpeechTranscriber`), live transcription, conference mode, hub UI, holistic retrieval + entity graph, workspaces with a hard privacy wall, model-engine layer (Apple FM default, opt-in local endpoint), eval harness (retrieval gates + leak check). **App Store prep phase 1 landed 2026-07-16**: sandboxed in all configs, security-scoped folder bookmark, first-launch consent notice + folder choice, App Group for shared index/state, grant-based skill install. Pending a runtime pass on a fresh recording: first-run flow, bookmark persistence across relaunch, MCP against the group container with the app running.

@@ -8,18 +8,17 @@ frontmatter, written to a user-configured folder (typically inside an Obsidian v
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Deployment floor | macOS 14 | `SCScreenshotManager` + `requestFullAccessToEvents()` are 14+; removes two fallback paths |
+| Deployment floor | macOS 26 (raised from 14, 2026-07-13) | `RecognizeDocumentsRequest` tables + Foundation Models + `SpeechTranscriber`; quality over reach |
 | Language / UI | Swift; AppKit menu bar + SwiftUI Settings/Viewer windows | `NSStatusItem`/`NSMenu` battle-tested for dynamic menus; SwiftUI for forms/content |
 | Project | XcodeGen (`project.yml` is source of truth, `.xcodeproj` disposable) | Readable diffs, reproducible |
 | Mic capture | AVAudioEngine (NOT ScreenCaptureKit) | SCK native mic capture is macOS 15+ |
 | System audio | SCStream audio-only, `excludesCurrentProcessAudio = true` | 13+, no virtual driver |
-| Audio mixing | Two separate files during session; offline mix to 16 kHz mono after stop | Avoids live two-clock drift/glitch problem |
-| Whisper model | `ggml-large-v3-turbo` (~1.6 GB) | Same footprint as medium.en, large-class accuracy, ~5× faster on Apple Silicon |
-| Model storage | `~/Library/Application Support/CallTranscriber/models/`, NOT bundled | Keeps .app small, signing fast |
+| Audio mixing | Two separate files during session; per-track 16 kHz mono WAV after stop (mixdown dropped with You/Them labels, M9) | Avoids live two-clock drift; physical speaker attribution |
+| Transcription engine | Apple `SpeechTranscriber` (superseded whisper.cpp + ggml-large-v3-turbo, 2026-07-14) | Parity accuracy, ~3× faster, OS-managed model — no 1.6 GB download, no bundled binary |
 | Raw audio deletion | Only after transcript verified written + non-empty; failures left for launch-time temp sweep | Spec says delete after *successful* transcription |
 | OCR dedup | Line-level similarity (Jaccard over normalized lines, ~0.85 threshold), persist changed lines | Exact hash too brittle (live clocks/tickers) |
 | Signing | **Apple Development cert** (chosen 2026-07-13; free, via Xcode → Accounts; also enables later notarization) | Stable identity so TCC grants survive rebuilds |
-| Sandbox | Off | Screen recording + arbitrary output folder + spawning whisper binary |
+| Sandbox | **On, all configs** (flipped 2026-07-16 for App Store; original "Off" rationale obsolete — whisper subprocess gone, SCK capture + screenshots proven sandboxed in a real recording) | Folder via security-scoped bookmark; shared index/state via App Group; MCP helper stays unsandboxed (external spawn) and leaves the MAS bundle at submission |
 | Known cost (accepted) | macOS 15+ re-prompts monthly for screen-recording permission; cannot be disabled | One click/month |
 
 ## Non-negotiable invariants
