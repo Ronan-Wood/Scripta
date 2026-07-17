@@ -456,6 +456,30 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         hubWindow?.makeKeyAndOrderFront(nil)
+        if let hubWindow { centerTrafficLights(hubWindow) }
+    }
+
+    /// The render puts close/minimize/zoom on the SAME line as the title and pills — vertically
+    /// centered in the 40pt in-window bar. The system lays them out for a 28pt titlebar, so nudge
+    /// them down; reapplied after resizes/fullscreen because AppKit re-lays them out.
+    private func centerTrafficLights(_ window: NSWindow) {
+        let barHeight: CGFloat = 40
+        for (i, type) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
+            guard let button = window.standardWindowButton(type),
+                  let container = button.superview else { continue }
+            let y = container.frame.height - (barHeight - button.frame.height) / 2 - button.frame.height
+            button.setFrameOrigin(NSPoint(x: 13 + CGFloat(i) * 20, y: y))   // absolute = idempotent
+        }
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === hubWindow else { return }
+        centerTrafficLights(window)
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === hubWindow else { return }
+        centerTrafficLights(window)
     }
 
     func windowWillClose(_ notification: Notification) {
