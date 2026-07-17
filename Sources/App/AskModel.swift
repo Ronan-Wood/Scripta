@@ -1,24 +1,45 @@
 import Foundation
 import FoundationModels
 
-/// The on-device "Ask your calls" chat: retrieves relevant passages from the index, then answers
-/// over them with Apple's Foundation Models — fully local. Uses the grounding prompt validated to
-/// connect related facts while refusing what isn't in the retrieved context (no hallucination).
+/// Clovis — the on-device assistant over your calls: retrieves relevant passages from the index,
+/// then answers over them with Apple's Foundation Models (or the opt-in local endpoint) — fully
+/// local. Uses the grounding prompt validated to connect related facts while refusing what isn't
+/// in the retrieved context. Conversations persist per workspace (the privacy wall applies to
+/// chat history too: a workspace's conversations are invisible from any other).
 @MainActor
 final class AskModel: ObservableObject {
-    struct Source: Identifiable, Hashable { let id = UUID(); let title: String; let url: URL; let startMs: Int }
-    struct Message: Identifiable {
-        let id = UUID()
+    struct Source: Identifiable, Hashable, Codable {
+        var id = UUID()
+        let title: String
+        let url: URL
+        let startMs: Int
+    }
+    struct Message: Identifiable, Codable {
+        var id = UUID()
         let fromUser: Bool
         var text: String
         var sources: [Source] = []
         /// The engine that produced this answer (badge under the bubble); nil for user messages.
         var engineLabel: String? = nil
     }
+    struct Conversation: Identifiable, Codable {
+        var id = UUID()
+        var title = "New conversation"
+        var created = Date()
+        /// The workspace this conversation happened in — listed only there.
+        var group = ""
+        var messages: [Message] = []
+    }
 
+    @Published var conversations: [Conversation] = []
+    @Published var currentID: UUID?
     @Published var messages: [Message] = []
     @Published var input = ""
     @Published var thinking = false
+
+    init() {
+        conversations = Self.load()
+    }
 
     /// Answering is available if the endpoint is assigned for Ask, or Apple Intelligence is on.
     var available: Bool { EngineRouter.usesEndpoint(for: .ask) || TranscriptEnricher.isAvailable }
@@ -27,6 +48,91 @@ final class AskModel: ObservableObject {
     private var sizeClass: SizeClass = .compact
     private var engineLabel: String?
     private var usingEndpoint = false
+
+    // MARK: - Conversations (persisted, workspace-scoped)
+
+    /// Conversations belonging to one workspace, newest first.
+    func conversations(in group: String) -> [Conversation] {
+        conversations.filter { $0.group == group }.sorted { $0.created > $1.created }
+    }
+
+    /// Entering a workspace (or first showing the pane): resume its latest conversation.
+    func activate(group: String) {
+        if let current = conversations.first(where: { $0.id == currentID }), current.group == group { return }
+        syncCurrent(into: AppSettings.activeGroup)
+        if let latest = conversations(in: group).first {
+            currentID = latest.id
+            messages = latest.messages
+        } else {
+            currentID = nil
+            messages = []
+        }
+        chat = nil   // fresh model session; the transcript above is display history
+    }
+
+    func select(_ id: UUID, group: String) {
+        guard id != currentID else { return }
+        syncCurrent(into: group)
+        guard let conversation = conversations.first(where: { $0.id == id }) else { return }
+        currentID = conversation.id
+        messages = conversation.messages
+        chat = nil
+    }
+
+    func newConversation(group: String) {
+        syncCurrent(into: group)
+        currentID = nil
+        messages = []
+        input = ""
+        chat = nil
+    }
+
+    func delete(_ id: UUID, group: String) {
+        conversations.removeAll { $0.id == id }
+        if currentID == id {
+            currentID = conversations(in: group).first?.id
+            messages = conversations.first(where: { $0.id == currentID })?.messages ?? []
+            chat = nil
+        }
+        Self.save(conversations)
+    }
+
+    /// Writes the working transcript back into its conversation (creating one on first use)
+    /// and persists. Cheap: called on send completion and conversation switches.
+    private func syncCurrent(into group: String) {
+        defer { Self.save(conversations) }
+        guard !messages.isEmpty else { return }
+        if let idx = conversations.firstIndex(where: { $0.id == currentID }) {
+            conversations[idx].messages = messages
+            return
+        }
+        var conversation = Conversation(group: group, messages: messages)
+        if let first = messages.first(where: { $0.fromUser })?.text {
+            conversation.title = String(first.prefix(44))
+        }
+        conversations.insert(conversation, at: 0)
+        currentID = conversation.id
+    }
+
+    private static var storeURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Scripta", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("conversations.json")
+    }
+
+    private static func load() -> [Conversation] {
+        guard let data = try? Data(contentsOf: storeURL) else { return [] }
+        return (try? JSONDecoder().decode([Conversation].self, from: data)) ?? []
+    }
+
+    private static func save(_ conversations: [Conversation]) {
+        if let data = try? JSONEncoder().encode(conversations) {
+            try? data.write(to: storeURL, options: .atomic)
+        }
+    }
+
+    // MARK: - Asking
 
     func send() async {
         let question = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -38,6 +144,7 @@ final class AskModel: ObservableObject {
         // Only require Apple Intelligence when we're not using the local endpoint.
         if !EngineRouter.usesEndpoint(for: .ask), let unavailable = TranscriptEnricher.availabilityMessage {
             messages.append(Message(fromUser: false, text: unavailable))
+            syncCurrent(into: AppSettings.activeGroup)
             return
         }
 
@@ -63,6 +170,7 @@ final class AskModel: ObservableObject {
                 text += " You can switch workspaces, or use Calls → “Search all workspaces” to look across them."
             }
             messages.append(Message(fromUser: false, text: text))
+            syncCurrent(into: group)
             return
         }
 
@@ -93,6 +201,7 @@ final class AskModel: ObservableObject {
             }
         }
         thinking = false
+        syncCurrent(into: group)
     }
 
     /// Resolves the Ask engine once per conversation (multi-turn history lives inside the chat).
