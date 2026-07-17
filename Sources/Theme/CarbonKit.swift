@@ -120,6 +120,33 @@ struct LevelMeter: View {
     }
 }
 
+/// Dashboard stat tile: uppercase label over a large numeral (+ optional unit).
+struct StatTile: View {
+    let label: String
+    let value: String
+    var unit: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.x3) {
+            Text(label.uppercased()).font(CarbonFont.label(11)).tracking(0.4)
+                .foregroundStyle(Carbon.textSecondary)
+            HStack(alignment: .firstTextBaseline, spacing: Space.x2) {
+                Text(value).font(CarbonFont.semibold(28)).foregroundStyle(Carbon.textPrimary)
+                if let unit {
+                    Text(unit).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
+                }
+            }
+        }
+        .padding(Space.x5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .strokeBorder(Carbon.borderSubtle, lineWidth: 1)
+        }
+    }
+}
+
 /// A tag / topic chip. Selected state uses the interactive token.
 struct CarbonChip: View {
     let text: String

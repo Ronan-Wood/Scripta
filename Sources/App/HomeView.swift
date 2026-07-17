@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// The hub's Home dashboard: record, what's coming up, what's recent, and the topic index —
-/// everything at a glance. Purpose-built Carbon, driven by the shared AppModel.
+/// The hub's Home dashboard: greeting + the week at a glance, record, what's recent, and
+/// what's coming up. Purpose-built Carbon, driven by the shared AppModel; all call data
+/// comes from the index digest so nothing here re-reads transcript files.
 struct HomeView: View {
     @ObservedObject var model = AppModel.shared
-    @State private var topics: [(name: String, count: Int)] = []
+    @State private var rows: [IndexStore.DigestRow] = []
 
     var body: some View {
         Group {
@@ -15,28 +16,98 @@ struct HomeView: View {
             }
         }
         .background(Carbon.background)
-        .onAppear {
-            model.reloadCalls()
-            topics = Array((model.index?.tags() ?? []).prefix(12))
-        }
+        .onAppear(perform: reload)
+        .onChange(of: model.activeGroup) { _, _ in reload() }
+        .onChange(of: model.calls) { _, _ in reload() }
+    }
+
+    private func reload() {
+        model.reloadCalls()
+        rows = model.index?.digest(group: model.activeGroup) ?? []
     }
 
     private var dashboard: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.x6) {
-                Text("Home").font(CarbonFont.headingLg).foregroundStyle(Carbon.textPrimary)
+                greetingHeader
+                statTiles
 
-                recordCard
-                if !model.upcomingMeetings.isEmpty { meetingsSection }
+                HStack(alignment: .top, spacing: Space.x6) {
+                    VStack(alignment: .leading, spacing: Space.x6) {
+                        recordCard
+                        recentCallsSection
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(alignment: .top, spacing: Space.x5) {
-                    recentCallsSection.frame(maxWidth: .infinity, alignment: .leading)
-                    topicsSection.frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: Space.x6) {
+                        if !model.upcomingMeetings.isEmpty { upNextSection }
+                        topicsSection
+                    }
+                    .frame(width: 300)
                 }
             }
             .padding(Space.x7)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    // MARK: - Greeting + stats
+
+    private var greetingHeader: some View {
+        VStack(alignment: .leading, spacing: Space.x2) {
+            Text(greeting).font(CarbonFont.semibold(26)).foregroundStyle(Carbon.textPrimary)
+            Text(greetingSubtitle).font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
+        }
+    }
+
+    private var greeting: String {
+        switch Calendar.current.component(.hour, from: Date()) {
+        case 5..<12: return "Good morning"
+        case 12..<17: return "Good afternoon"
+        default: return "Good evening"
+        }
+    }
+
+    private var greetingSubtitle: String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "EEEE, MMMM d"
+        let day = fmt.string(from: Date())
+        let workspace = model.activeGroup.isEmpty ? "Ungrouped" : model.activeGroup
+        return "\(day) · \(workspace) workspace"
+    }
+
+    private var statTiles: some View {
+        HStack(spacing: Space.x5) {
+            StatTile(label: "Calls this week", value: "\(callsThisWeek)")
+            StatTile(label: "Hours transcribed", value: hoursTranscribed, unit: "hrs")
+            StatTile(label: "People tracked", value: "\(peopleTracked)")
+        }
+    }
+
+    private var callsThisWeek: Int {
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.dateFormat = "yyyy-MM-dd"
+        guard let weekStart = Calendar.current.dateInterval(of: .weekOfYear, for: Date())?.start
+        else { return 0 }
+        return rows.filter { parser.date(from: $0.date).map { $0 >= weekStart } ?? false }.count
+    }
+
+    /// Total recorded time across the workspace, from the frontmatter durations ("M:SS" / "H:MM:SS").
+    private var hoursTranscribed: String {
+        let seconds = rows.reduce(0) { total, row -> Int in
+            let parts = row.duration.split(separator: ":").compactMap { Int($0) }
+            switch parts.count {
+            case 3: return total + parts[0] * 3600 + parts[1] * 60 + parts[2]
+            case 2: return total + parts[0] * 60 + parts[1]
+            default: return total
+            }
+        }
+        return String(format: "%.1f", Double(seconds) / 3600)
+    }
+
+    private var peopleTracked: Int {
+        Set(rows.flatMap(\.participants).map { $0.lowercased() }).count
     }
 
     // MARK: - Recording screen
@@ -63,57 +134,78 @@ struct HomeView: View {
     // MARK: - Record
 
     private var recordCard: some View {
-        CarbonCard {
-            HStack(spacing: Space.x5) {
-                statusDot
-                VStack(alignment: .leading, spacing: Space.x2) {
-                    HStack(spacing: Space.x3) {
-                        Text(statusTitle).font(CarbonFont.medium(16)).foregroundStyle(Carbon.textPrimary)
-                        if model.recordingState == .recording {
-                            Text(model.elapsedLabel).font(CarbonFont.monospace(15)).foregroundStyle(Carbon.danger)
-                        }
-                        if let modeName = model.recordingModeName {
-                            Text(modeName)
-                                .font(CarbonFont.label(11))
-                                .padding(.horizontal, 6).padding(.vertical, 1)
-                                .background(Carbon.warning.opacity(0.16), in: Capsule())
-                                .foregroundStyle(Carbon.warning)
-                        }
-                    }
+        HStack(spacing: Space.x5) {
+            micBadge
+            VStack(alignment: .leading, spacing: Space.x2) {
+                HStack(spacing: Space.x3) {
+                    Text(statusTitle).font(CarbonFont.medium(16)).foregroundStyle(Carbon.textPrimary)
                     if model.recordingState == .recording {
-                        LevelPane()
-                    } else {
-                        Text(statusSubtitle).font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
+                        Text(model.elapsedLabel).font(CarbonFont.monospace(15)).foregroundStyle(Carbon.danger)
+                    }
+                    if let modeName = model.recordingModeName {
+                        Text(modeName)
+                            .font(CarbonFont.label(11))
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(Carbon.warning.opacity(0.16), in: Capsule())
+                            .foregroundStyle(Carbon.warning)
                     }
                 }
-                Spacer()
-                switch model.recordingState {
-                case .idle:
-                    CarbonButton(title: "Start recording", icon: "recording-filled", kind: .danger) {
-                        model.toggleRecording?()
-                    }
-                case .recording:
-                    CarbonButton(title: model.isPaused ? "Resume" : "Pause",
-                                 icon: model.isPaused ? "play-filled" : "pause-filled", kind: .secondary) {
-                        model.togglePause?()
-                    }
-                    CarbonButton(title: "Stop recording", icon: "stop-filled-alt", kind: .danger) {
-                        model.toggleRecording?()
-                    }
-                case .processing:
-                    CarbonButton(title: "Processing…", kind: .secondary) {}
+                if model.recordingState == .recording {
+                    LevelPane()
+                } else {
+                    Text(statusSubtitle).font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
                 }
+            }
+            Spacer()
+            switch model.recordingState {
+            case .idle:
+                CarbonButton(title: "Start recording", icon: "recording-filled", kind: .danger) {
+                    model.toggleRecording?()
+                }
+            case .recording:
+                CarbonButton(title: model.isPaused ? "Resume" : "Pause",
+                             icon: model.isPaused ? "play-filled" : "pause-filled", kind: .secondary) {
+                    model.togglePause?()
+                }
+                CarbonButton(title: "Stop recording", icon: "stop-filled-alt", kind: .danger) {
+                    model.toggleRecording?()
+                }
+            case .processing:
+                CarbonButton(title: "Processing…", kind: .secondary) {}
+            }
+        }
+        .padding(Space.x5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(recordCardBackground, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .strokeBorder(model.recordingState == .idle ? Carbon.interactive.opacity(0.25) : Carbon.borderSubtle,
+                              lineWidth: 1)
+        }
+    }
+
+    /// Idle = the render's tinted "ready" card; recording/processing keep a neutral surface.
+    private var recordCardBackground: Color {
+        model.recordingState == .idle ? Carbon.interactive.opacity(0.07) : Carbon.layer
+    }
+
+    private var micBadge: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                .fill(Carbon.background)
+                .frame(width: 40, height: 40)
+                .overlay {
+                    RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                        .strokeBorder(Carbon.borderSubtle, lineWidth: 1)
+                }
+            if model.recordingState == .recording {
+                Circle().fill(Carbon.danger).frame(width: 10, height: 10)
+            } else {
+                CarbonIcon(name: "microphone", size: 18, color: Carbon.interactive)
             }
         }
     }
 
-    private var statusDot: some View {
-        Circle()
-            .fill(model.isPaused ? Carbon.warning :
-                    model.recordingState == .recording ? Carbon.danger :
-                    model.recordingState == .processing ? Carbon.warning : Carbon.borderStrong)
-            .frame(width: 10, height: 10)
-    }
     private var statusTitle: String {
         switch model.recordingState {
         case .idle: return "Ready to record"
@@ -122,40 +214,18 @@ struct HomeView: View {
         }
     }
     private var statusSubtitle: String {
+        var parts = [modeLabel, "captures on-device"]
+        if AppSettings.globalHotkeyEnabled { parts.append("⌥⌘R") }
         switch model.recordingState {
-        case .idle: return "Captures both sides on-device. Nothing leaves your Mac."
+        case .idle: return parts.joined(separator: " · ")
         case .recording: return "Mic and system audio are being captured."
         case .processing: return "Transcribing and writing the note."
         }
     }
-
-    // MARK: - Meetings
-
-    private var meetingsSection: some View {
-        VStack(alignment: .leading, spacing: Space.x3) {
-            SectionHeader(title: "Upcoming meetings")
-            VStack(spacing: 1) {
-                ForEach(model.upcomingMeetings.prefix(3)) { meeting in
-                    HStack(spacing: Space.x4) {
-                        CarbonIcon(name: "calendar", size: 16, color: Carbon.iconSecondary)
-                        VStack(alignment: .leading, spacing: Space.x1) {
-                            Text(meeting.title).font(CarbonFont.medium(14)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                            Text("\(relative(meeting.start)) · \(meeting.service)")
-                                .font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
-                        }
-                        Spacer()
-                        if model.recordingState == .idle {
-                            CarbonButton(title: "Record this", icon: "recording", kind: .secondary) {
-                                model.recordMeeting?(meeting)
-                            }
-                        }
-                    }
-                    .padding(Space.x4)
-                    .background(Carbon.layer)
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
+    private var modeLabel: String {
+        switch AppSettings.defaultRecordingMode {
+        case .call: return "Call mode"
+        case .conference: return "Conference mode"
         }
     }
 
@@ -163,26 +233,25 @@ struct HomeView: View {
 
     private var recentCallsSection: some View {
         VStack(alignment: .leading, spacing: Space.x3) {
-            SectionHeader(title: "Recent calls")
-            if model.calls.isEmpty {
+            HStack {
+                SectionHeader(title: "Recent calls")
+                Spacer()
+                Button {
+                    model.route = .section(.calls)
+                } label: {
+                    Text("View all").font(CarbonFont.label(12)).foregroundStyle(Carbon.interactive)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            if rows.isEmpty {
                 Text("No calls yet.").font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
             } else {
                 VStack(spacing: 1) {
-                    ForEach(model.calls.prefix(6)) { meta in
-                        Button { model.route = .call(meta.url) } label: {
-                            VStack(alignment: .leading, spacing: Space.x1) {
-                                Text(meta.displayTitle).font(CarbonFont.medium(14))
-                                    .foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                                if !meta.subtitle.isEmpty {
-                                    Text(meta.subtitle).font(CarbonFont.label(12))
-                                        .foregroundStyle(Carbon.textSecondary).lineLimit(1)
-                                }
-                            }
-                            .padding(Space.x4)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Carbon.layer)
-                            .contentShape(Rectangle())
-                        }.buttonStyle(.plain)
+                    ForEach(rows.prefix(5), id: \.path) { row in
+                        RecentCallRow(row: row) {
+                            model.route = .call(URL(fileURLWithPath: row.path))
+                        }
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
@@ -191,17 +260,62 @@ struct HomeView: View {
         }
     }
 
-    // MARK: - Topics
+    // MARK: - Up next + topics
+
+    private var upNextSection: some View {
+        VStack(alignment: .leading, spacing: Space.x3) {
+            SectionHeader(title: "Up next")
+            VStack(spacing: Space.x3) {
+                ForEach(model.upcomingMeetings.prefix(3)) { meeting in
+                    HStack(spacing: Space.x4) {
+                        CarbonIcon(name: "calendar", size: 16, color: Carbon.interactive)
+                        VStack(alignment: .leading, spacing: Space.x1) {
+                            Text(meeting.title).font(CarbonFont.medium(13)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
+                            Text("\(relative(meeting.start)) · \(meeting.service)")
+                                .font(CarbonFont.label(11)).foregroundStyle(Carbon.textSecondary)
+                        }
+                        Spacer()
+                        if model.recordingState == .idle {
+                            Button {
+                                model.recordMeeting?(meeting)
+                            } label: {
+                                CarbonIcon(name: "recording", size: 15, color: Carbon.danger)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Record this meeting")
+                        }
+                    }
+                    .padding(Space.x4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                    .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
+                }
+            }
+        }
+    }
 
     private var topicsSection: some View {
         VStack(alignment: .leading, spacing: Space.x3) {
-            SectionHeader(title: "Recent topics")
+            SectionHeader(title: "Topics")
+            let topics = scopedTopics
             if topics.isEmpty {
                 Text("Topics appear as calls are tagged.").font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
             } else {
-                FlowChips(topics: topics) { model.route = .tag($0) }
+                FlexWrap(spacing: Space.x2) {
+                    ForEach(topics.prefix(12), id: \.self) { topic in
+                        CarbonChip(text: topic) { model.route = .tag(topic) }
+                    }
+                }
             }
         }
+    }
+
+    /// Workspace-scoped topics by frequency, from the digest already in hand.
+    private var scopedTopics: [String] {
+        var counts: [String: Int] = [:]
+        for row in rows { for tag in Set(row.tags) { counts[tag, default: 0] += 1 } }
+        return counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.map(\.key)
     }
 
     private func relative(_ date: Date) -> String {
@@ -209,6 +323,56 @@ struct HomeView: View {
         if mins <= 0 { return "now" }
         if mins < 60 { return "in \(mins) min" }
         let fmt = DateFormatter(); fmt.dateFormat = "h:mm a"
+        return fmt.string(from: date)
+    }
+}
+
+/// One row in Recent calls: title, one-line summary, meta line — the render's list style.
+private struct RecentCallRow: View {
+    let row: IndexStore.DigestRow
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            HStack(alignment: .center, spacing: Space.x4) {
+                VStack(alignment: .leading, spacing: Space.x1) {
+                    Text(row.title.isEmpty ? "\(row.date) \(row.time)" : row.title)
+                        .font(CarbonFont.medium(14)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
+                    if !row.summary.isEmpty {
+                        Text(row.summary).font(CarbonFont.label(12))
+                            .foregroundStyle(Carbon.textSecondary).lineLimit(1)
+                    }
+                    Text(metaLine).font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(Carbon.textHelper)
+            }
+            .padding(Space.x4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Carbon.layer)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var metaLine: String {
+        var parts: [String] = []
+        if !row.date.isEmpty { parts.append(shortDate) }
+        if !row.duration.isEmpty { parts.append(row.duration) }
+        if !row.participants.isEmpty {
+            parts.append(row.participants.prefix(2).map { $0.components(separatedBy: " @ ").first ?? $0 }
+                .joined(separator: ", "))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var shortDate: String {
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.dateFormat = "yyyy-MM-dd"
+        guard let date = parser.date(from: row.date) else { return row.date }
+        let fmt = DateFormatter(); fmt.dateFormat = "MMM d"
         return fmt.string(from: date)
     }
 }
@@ -290,20 +454,6 @@ private struct LiveTranscriptPane: View {
             .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
         }
         .frame(maxHeight: .infinity)
-    }
-}
-
-/// Simple wrapping chip layout.
-private struct FlowChips: View {
-    let topics: [(name: String, count: Int)]
-    let onTap: (String) -> Void
-
-    var body: some View {
-        FlexWrap(spacing: Space.x2) {
-            ForEach(topics, id: \.name) { t in
-                CarbonChip(text: t.name) { onTap(t.name) }
-            }
-        }
     }
 }
 

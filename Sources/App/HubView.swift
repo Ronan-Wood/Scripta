@@ -24,7 +24,13 @@ struct HubView: View {
         }
         .frame(minWidth: 940, minHeight: 640)
         .onChange(of: model.route) { _, route in handle(route) }
-        .toolbar { ToolbarItem(placement: .primaryAction) { recordToolbarButton } }
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                clovisToolbarButton
+                appearanceToolbarButton
+                recordToolbarButton
+            }
+        }
         .confirmationDialog("Delete the “\(model.activeGroup)” workspace?",
                             isPresented: $confirmingWorkspaceDelete, titleVisibility: .visible) {
             Button("Delete \(deleteCandidateCount) call\(deleteCandidateCount == 1 ? "" : "s")", role: .destructive) {
@@ -50,6 +56,26 @@ struct HubView: View {
         }
     }
 
+    /// Jump to Clovis (the Ask assistant) from anywhere.
+    private var clovisToolbarButton: some View {
+        Button { model.route = .section(.ask) } label: {
+            Label("Clovis", systemImage: "sparkles")
+        }
+        .help("Ask Clovis about your calls")
+    }
+
+    /// Quick light/dark flip; the full 3-way (incl. System) picker stays in Settings.
+    private var appearanceToolbarButton: some View {
+        Button {
+            let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            AppSettings.appearance = dark ? .light : .dark
+            model.applyAppearance()
+        } label: {
+            Label("Appearance", systemImage: "circle.lefthalf.filled")
+        }
+        .help("Toggle light/dark appearance")
+    }
+
     /// Global record control in the window toolbar — present on every section, which also keeps
     /// the titlebar a consistent height everywhere.
     @ViewBuilder private var recordToolbarButton: some View {
@@ -73,7 +99,15 @@ struct HubView: View {
 
     private var sidebar: some View {
         VStack(spacing: Space.x1) {
-            HStack {
+            HStack(alignment: .top) {
+                if expanded {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Scripta").font(CarbonFont.semibold(15)).foregroundStyle(Carbon.textPrimary)
+                        Text("verba volant, scripta manent")
+                            .font(CarbonFont.label(9)).italic().foregroundStyle(Carbon.textHelper)
+                    }
+                    Spacer()
+                }
                 Button {
                     withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
                     AppSettings.sidebarExpanded = expanded
@@ -84,10 +118,10 @@ struct HubView: View {
                 }
                 .buttonStyle(.plain)
                 .help(expanded ? "Collapse sidebar" : "Expand sidebar")
-                if expanded { Spacer() }
             }
-            .padding(.horizontal, Space.x3)
-            .padding(.top, Space.x2)
+            .padding(.horizontal, Space.x4)
+            .padding(.top, Space.x3)
+            .padding(.bottom, Space.x2)
 
             groupSwitcher
             Rectangle().fill(Carbon.borderSubtle).frame(height: 1).padding(.horizontal, Space.x3).padding(.vertical, Space.x1)
@@ -120,7 +154,7 @@ struct HubView: View {
             }
         } label: {
             HStack(spacing: Space.x2) {
-                Image(systemName: "square.stack.3d.up.fill")
+                Image(systemName: "folder")
                     .font(.system(size: 13)).foregroundStyle(Carbon.interactive)
                 if expanded {
                     Text(model.activeGroup.isEmpty ? "Ungrouped" : model.activeGroup)
@@ -186,6 +220,8 @@ struct HubView: View {
             MeetingsView()
         case .ask:
             AskView()
+        case .knowledge:
+            KnowledgeView()
         case .settings:
             SettingsView()
         case .docs:
@@ -205,9 +241,9 @@ struct HubView: View {
 }
 
 enum HubSection: String, CaseIterable {
-    case home, calls, meetings, ask, settings, docs
+    case home, calls, meetings, ask, knowledge, settings, docs
 
-    static let primary: [HubSection] = [.home, .calls, .meetings, .ask]
+    static let primary: [HubSection] = [.home, .calls, .meetings, .ask, .knowledge]
     static let secondary: [HubSection] = [.settings, .docs]
 
     var title: String {
@@ -215,7 +251,8 @@ enum HubSection: String, CaseIterable {
         case .home: return "Home"
         case .calls: return "Calls"
         case .meetings: return "Meetings"
-        case .ask: return "Ask your calls"
+        case .ask: return "Ask"
+        case .knowledge: return "Knowledge"
         case .settings: return "Settings"
         case .docs: return "Docs"
         }
@@ -227,6 +264,7 @@ enum HubSection: String, CaseIterable {
         case .calls: return "doc.text"
         case .meetings: return "calendar"
         case .ask: return "bubble.left.and.bubble.right"
+        case .knowledge: return "list.bullet.rectangle"
         case .settings: return "gearshape"
         case .docs: return "book"
         }
