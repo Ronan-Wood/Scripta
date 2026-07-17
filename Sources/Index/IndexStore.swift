@@ -18,6 +18,9 @@ struct IndexedTranscript {
     var mode: String = ""
     /// The privacy/workspace partition. "" = ungrouped.
     var group: String = ""
+    /// "call" for transcripts, "note" for knowledge notes. Call-listing surfaces filter on it;
+    /// retrieval surfaces (Ask context, MCP retrieve) deliberately include both.
+    var kind: String = "call"
 }
 
 /// One retrievable chunk of a transcript (a speaker turn).
@@ -76,8 +79,9 @@ final class IndexStore {
     /// then reconcile at launch repopulates it. v2 added the transcript `mode` column; v3 versioned
     /// `chunk_vectors` (embed model + dimension) so Phase B can't silently mix vector spaces;
     /// v4 added the `group` partition column; v5 added the enrichment ledger; v6 added the entity
-    /// graph (entities cache + mentions + action items); v7 chunks on-screen text too.
-    private static let schemaVersion: Int32 = 7
+    /// graph (entities cache + mentions + action items); v7 chunks on-screen text too; v8 added
+    /// the `kind` column and indexes knowledge notes (retrievable by Ask/MCP, hidden from call lists).
+    private static let schemaVersion: Int32 = 8
 
     private let db: OpaquePointer
     private let lock = NSLock()
@@ -130,7 +134,8 @@ final class IndexStore {
         CREATE TABLE IF NOT EXISTS transcripts(
             path TEXT PRIMARY KEY,
             title TEXT, date TEXT, time TEXT, duration TEXT,
-            participants TEXT, tags TEXT, summary TEXT, mtime REAL, mode TEXT, "group" TEXT
+            participants TEXT, tags TEXT, summary TEXT, mtime REAL, mode TEXT, "group" TEXT,
+            kind TEXT NOT NULL DEFAULT 'call'
         );
         CREATE INDEX IF NOT EXISTS idx_transcripts_group ON transcripts("group");
         CREATE TABLE IF NOT EXISTS chunks(
@@ -187,13 +192,13 @@ final class IndexStore {
         guard exec("BEGIN;") else { return }
         var ok = removeRows(path: t.path)
         if ok {
-            ok = run("INSERT INTO transcripts(path,title,date,time,duration,participants,tags,summary,mtime,mode,\"group\") VALUES(?,?,?,?,?,?,?,?,?,?,?)") { stmt in
+            ok = run("INSERT INTO transcripts(path,title,date,time,duration,participants,tags,summary,mtime,mode,\"group\",kind) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)") { stmt in
                 bind(stmt, 1, t.path); bind(stmt, 2, t.title); bind(stmt, 3, t.date)
                 bind(stmt, 4, t.time); bind(stmt, 5, t.duration)
                 bind(stmt, 6, t.participants.joined(separator: "\n"))
                 bind(stmt, 7, t.tags.joined(separator: "\n"))
                 bind(stmt, 8, t.summary); sqlite3_bind_double(stmt, 9, t.mtime)
-                bind(stmt, 10, t.mode); bind(stmt, 11, t.group)
+                bind(stmt, 10, t.mode); bind(stmt, 11, t.group); bind(stmt, 12, t.kind)
             }
         }
         if ok {
@@ -591,7 +596,7 @@ final class IndexStore {
                bm25(transcripts_fts, 0.0, 4.0, 1.0, 3.0, 0.5) AS score
         FROM transcripts_fts f
         JOIN transcripts t ON t.path = f.path
-        WHERE transcripts_fts MATCH ?
+        WHERE transcripts_fts MATCH ? AND t.kind = 'call'
         """
         var binds: [(OpaquePointer?) -> Void] = [{ Self.bindStatic($0, 1, match) }]
         var n: Int32 = 2
@@ -704,7 +709,7 @@ final class IndexStore {
         guard let match else { return [] }
         var out: [ContextChunk] = []
         var sql = """
-        SELECT f.path, f.title, t.date, f.summary, f.tags
+        SELECT f.path, f.title, t.date, f.summary, f.tags, t.kind
         FROM transcripts_fts f JOIN transcripts t ON t.path = f.path
         WHERE transcripts_fts MATCH ?
         """
@@ -715,8 +720,12 @@ final class IndexStore {
             if let group { Self.bindStatic(stmt, 2, group) }
         }) { stmt in
             let title = text(stmt, 1), summary = text(stmt, 3), tags = text(stmt, 4)
-            var parts = ["Call: \(title.isEmpty ? "Untitled" : title)"]
-            if !summary.isEmpty { parts.append("Summary: \(summary)") }
+            let isNote = text(stmt, 5) == "note"
+            // A knowledge note IS its entries (indexed as summary): the user's own accumulated
+            // judgment, labeled so the model treats it as their words, not something spoken.
+            var parts = [isNote ? "The user's note: \(title.isEmpty ? "Untitled" : title)"
+                                : "Call: \(title.isEmpty ? "Untitled" : title)"]
+            if !summary.isEmpty { parts.append(isNote ? summary : "Summary: \(summary)") }
             if !tags.isEmpty { parts.append("Topics: \(tags.replacingOccurrences(of: " ", with: ", "))") }
             out.append(ContextChunk(path: text(stmt, 0), title: title, date: text(stmt, 2),
                                     startMs: 0, speaker: "", text: parts.joined(separator: ". "), isTopic: true))
@@ -744,7 +753,7 @@ final class IndexStore {
         var rows: [DigestRow] = []
         query("""
             SELECT path, title, date, time, duration, participants, tags, summary FROM transcripts
-            WHERE "group" = ? ORDER BY date DESC, time DESC LIMIT ?
+            WHERE "group" = ? AND kind = 'call' ORDER BY date DESC, time DESC LIMIT ?
             """,
               bind: { Self.bindStatic($0, 1, group); sqlite3_bind_int($0, 2, Int32(limit)) }) { stmt in
             rows.append(DigestRow(
@@ -760,7 +769,7 @@ final class IndexStore {
     func groups() -> [(name: String, count: Int)] {
         lock.lock(); defer { lock.unlock() }
         var counts: [String: Int] = [:]
-        query("SELECT \"group\", COUNT(*) FROM transcripts GROUP BY \"group\"") { stmt in
+        query("SELECT \"group\", COUNT(*) FROM transcripts WHERE kind = 'call' GROUP BY \"group\"") { stmt in
             let g = text(stmt, 0)
             if !g.isEmpty { counts[g] = Int(sqlite3_column_int(stmt, 1)) }
         }
@@ -772,7 +781,7 @@ final class IndexStore {
     func count(group: String) -> Int {
         lock.lock(); defer { lock.unlock() }
         var n = 0
-        query("SELECT COUNT(*) FROM transcripts WHERE \"group\" = ?",
+        query("SELECT COUNT(*) FROM transcripts WHERE \"group\" = ? AND kind = 'call'",
               bind: { Self.bindStatic($0, 1, group) }) { n = Int(sqlite3_column_int($0, 0)) }
         return n
     }
@@ -793,7 +802,7 @@ final class IndexStore {
     private func aggregateList(column: String) -> [(name: String, count: Int)] {
         lock.lock(); defer { lock.unlock() }
         var spellings: [String: [String: Int]] = [:]   // lowercased key -> [original spelling: count]
-        query("SELECT \(column) FROM transcripts") { stmt in
+        query("SELECT \(column) FROM transcripts WHERE kind = 'call'") { stmt in
             for value in text(stmt, 0).split(separator: "\n") {
                 let v = value.trimmingCharacters(in: .whitespaces)
                 if !v.isEmpty { spellings[v.lowercased(), default: [:]][v, default: 0] += 1 }

@@ -39,6 +39,7 @@ struct KnowledgeView: View {
                 openNote = refreshed
                 pendingLink = nil
                 notes = NoteStore.list(group: model.activeGroup)
+                reindex(refreshed)
             } onClose: {
                 openNote = nil
                 pendingLink = nil
@@ -51,6 +52,7 @@ struct KnowledgeView: View {
                 if let note = NoteStore.create(title: newNoteTitle, group: model.activeGroup) {
                     notes = NoteStore.list(group: model.activeGroup)
                     openNote = note
+                    reindex(note)
                 }
                 newNoteTitle = ""
             }
@@ -58,6 +60,14 @@ struct KnowledgeView: View {
         } message: {
             Text("A standing note you keep adding to — it lives in Notes/ inside your transcripts folder.")
         }
+    }
+
+    /// Notes are retrievable (Clovis, search fusion, MCP) — index immediately on every change
+    /// rather than waiting for the next reconcile.
+    private func reindex(_ note: KnowledgeNote) {
+        guard let store = model.index else { return }
+        let url = note.url
+        Task.detached(priority: .utility) { IndexBuilder.indexNote(url, into: store) }
     }
 
     private func reload() {
