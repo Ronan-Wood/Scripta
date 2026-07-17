@@ -16,10 +16,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Prune old transcripts if the user enabled auto-delete.
         RetentionPruner.pruneIfNeeded()
         NotificationManager.shared.configure()
+        MainMenu.install(settingsTarget: self, settingsAction: #selector(openSettings))
         menuController = MenuController()
 
         presentFirstRunIfNeeded()
         if !folderRestored { presentFolderLostAlert() }
+
+        // Normal-app mode (the default): show the hub like any app shows its window.
+        // Menu-bar-only mode (Settings) launches quietly into the status item instead.
+        if AppSettings.showInDock {
+            menuController?.showHub()
+        }
 
         RecordingSession.sweepPendingCaptions()   // clear screenshots a crash may have orphaned
         // Recover any recordings a crash/forced-logout orphaned, then reconcile the retrieval
@@ -86,6 +93,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         """
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    /// ⌘, from the main menu: the hub with Settings selected.
+    @MainActor @objc private func openSettings() {
+        AppModel.shared.route = .section(.settings)
+        menuController?.showHub()
+    }
+
+    /// Clicking the Dock icon with no window open reopens the hub — normal-app behavior.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows { menuController?.showHub() }
+        return true
     }
 
     /// Quit (menu item, logout, shutdown) must not kill the process mid-recording: the raw
