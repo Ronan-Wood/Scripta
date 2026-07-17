@@ -1,11 +1,14 @@
 import SwiftUI
 import AppKit
 
-/// Docs pane: how the app works and how to connect it to Claude. Carbon-styled to match the hub.
+/// Docs — the render's documentation page: title + sectioned content with an "On this page"
+/// rail, the functional Connect-Claude controls embedded in their section, acknowledgements
+/// at the end. Copy is verbatim from Ronan's Scripta.dc.html.
 struct HelpView: View {
     @State private var mcpCopied = false
     @State private var skillStatus: String?
     @State private var desktopStatus: String?
+    @State private var activeSection = "getting-started"
 
     private var mcpBinaryPath: String {
         "\(Bundle.main.bundlePath)/Contents/MacOS/scripta-mcp"
@@ -21,115 +24,197 @@ struct HelpView: View {
         "claude mcp add -s user scripta -- \"\(mcpBinaryPath)\""
     }
 
+    private struct TOCEntry: Identifiable {
+        let id: String
+        let title: String
+        let indented: Bool
+    }
+
+    private let toc: [TOCEntry] = [
+        .init(id: "getting-started", title: "Getting started", indented: false),
+        .init(id: "install", title: "Install Scripta", indented: true),
+        .init(id: "first-recording", title: "Your first recording", indented: true),
+        .init(id: "recording-calls", title: "Recording calls", indented: false),
+        .init(id: "call-vs-conference", title: "Call vs. conference", indented: true),
+        .init(id: "screen-context", title: "Screen context", indented: true),
+        .init(id: "notes-hotkeys", title: "Notes & hotkeys", indented: true),
+        .init(id: "organizing", title: "Organizing", indented: false),
+        .init(id: "workspaces", title: "Workspaces", indented: true),
+        .init(id: "search-topics", title: "Search & topics", indented: true),
+        .init(id: "claude-mcp", title: "Claude & MCP", indented: false),
+        .init(id: "connect-claude", title: "Connect Claude", indented: true),
+        .init(id: "what-claude-can-do", title: "What Claude can do", indented: true),
+        .init(id: "privacy", title: "Privacy", indented: false),
+        .init(id: "on-device", title: "Everything on-device", indented: true),
+        .init(id: "retention", title: "Retention", indented: true),
+    ]
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Space.x6) {
-                Text("Docs").font(CarbonFont.semibold(20)).foregroundStyle(Carbon.textPrimary)
+        HStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Scripta documentation")
+                            .font(CarbonFont.semibold(26)).foregroundStyle(Carbon.textPrimary)
+                            .padding(.bottom, Space.x3)
+                        body14("Private, on-device transcription for your calls and meetings. Every transcript is plain Markdown you own — nothing leaves your Mac.")
 
-                doc("Getting started", """
-                Press Record on Home (or Start Recording in the menu bar) to capture a call. The first \
-                time, macOS asks for Microphone and Screen Recording access — both are needed to capture \
-                your side and the other participants. Grant them and record again.
-                """)
+                        h2("Getting started", id: "getting-started")
+                        h3("Install Scripta", id: "install")
+                        body14("Scripta runs on macOS 26 or later on Apple Silicon. Download the app, drag it to Applications, and grant microphone and screen-recording access on first launch. No account, no sign-in.")
+                        h3("Your first recording", id: "first-recording")
+                        body14("Press ⌥⌘R from any app, or click Start recording on the Home screen. Scripta captures your microphone and system audio as separate tracks and labels them You and Them. Recording is always a manual choice.")
 
-                doc("Recording", """
-                Everything runs locally: audio is transcribed on-device with Apple's Speech engine, your \
-                mic and the system audio are transcribed separately for You/Them labels, then the raw \
-                audio is deleted. When it finishes you can name the call and its participants.
-                """)
+                        h2("Recording calls", id: "recording-calls")
+                        h3("Call vs. conference", id: "call-vs-conference")
+                        body14("Call mode records both sides and attributes each line to a speaker. Conference mode records a single source, unlabeled — use it for hybrid meetings where you are in the room and joined online, so speech is not transcribed twice.")
+                        h3("Screen context", id: "screen-context")
+                        body14("Scripta can periodically read text from your frontmost window and fold meaningfully-changed content into the transcript, timestamped. Screenshots are discarded immediately — only text is kept.")
+                        h3("Notes & hotkeys", id: "notes-hotkeys")
+                        body14("Add a timestamped note at any point with ⌥⌘N. Notes are anchored to the moment in the call and written into the Markdown alongside the transcript.")
 
-                doc("Your calls", """
-                Transcripts are Markdown files written to the folder you pick in Settings (point it at an \
-                Obsidian vault to sync for free). Browse, search, and read them under Calls; ask questions \
-                across them under Ask. Each note has a title, summary, topic tags, and timestamped text.
-                """)
+                        h2("Organizing", id: "organizing")
+                        h3("Workspaces", id: "workspaces")
+                        body14("Calendars map to workspaces such as Deals or Personal. Search, Ask, and the MCP server are hard-scoped to the active workspace; cross-workspace search is an explicit, non-sticky action.")
+                        h3("Search & topics", id: "search-topics")
+                        body14("Search is holistic — one query matches spoken passages and call topics, so searching “baseball” finds a call that only ever said “home runs.” Topics are generated on-device and power concept browsing. Vocabulary terms you teach in Knowledge expand searches too: “TIM” also matches “tenants in the market.”")
 
-                claudeCard
+                        h2("Claude & MCP", id: "claude-mcp")
+                        h3("Connect Claude", id: "connect-claude")
+                        connectClaude
+                        h3("What Claude can do", id: "what-claude-can-do")
+                        body14("Through the MCP, Claude can list and read transcripts, search across your history, and retrieve ranked passages with call, timestamp, and speaker provenance — all scoped to the active workspace and refused on a stale heartbeat.")
 
-                doc("Privacy", """
-                On-device only: no login, no cloud, no servers. Raw audio and screenshots are deleted right \
-                after processing — only text is kept. Nothing is ever sent anywhere.
-                """)
+                        h2("Privacy", id: "privacy")
+                        h3("Everything on-device", id: "on-device")
+                        body14("Transcription, enrichment, and Ask all run locally with Apple’s models. Raw audio and screenshots are always ephemeral; only text is kept. An optional local model endpoint is loopback or LAN only — public hosts are refused with no override.")
+                        h3("Retention", id: "retention")
+                        body14("Optional auto-delete removes only transcripts Scripta created, identified by a marker inside each file and its filename shape — never other files in your folder, even inside an Obsidian vault.")
 
-                doc("Acknowledgements", """
-                Typefaces: IBM Plex Sans and IBM Plex Mono © IBM Corp., under the SIL Open Font \
-                License 1.1. Icons: IBM Carbon, under the Apache License 2.0. Both license texts \
-                are included in the app bundle (Contents/Resources).
-                """)
+                        acknowledgements
+                    }
+                    .padding(.horizontal, Space.x8)
+                    .padding(.vertical, Space.x7)
+                    .frame(maxWidth: 800, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                }
+                .onChange(of: activeSection) { _, id in
+                    withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .top) }
+                }
             }
-            .padding(Space.x7)
-            .frame(maxWidth: 720, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .textSelection(.enabled)
+
+            Rectangle().fill(Carbon.borderSubtle).frame(width: 1)
+            tocRail
         }
         .background(Carbon.background)
     }
 
-    private func doc(_ title: String, _ body: String) -> some View {
-        VStack(alignment: .leading, spacing: Space.x2) {
-            SectionHeader(title: title)
-            Text(body).font(CarbonFont.body(14)).foregroundStyle(Carbon.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+    // MARK: - Content helpers
+
+    private func h2(_ title: String, id: String) -> some View {
+        Text(title).font(CarbonFont.semibold(19)).foregroundStyle(Carbon.textPrimary)
+            .padding(.top, Space.x7).padding(.bottom, Space.x3)
+            .id(id)
     }
 
-    private var claudeCard: some View {
-        CarbonCard {
-            VStack(alignment: .leading, spacing: Space.x4) {
-                Text("Connect to Claude").font(CarbonFont.medium(16)).foregroundStyle(Carbon.textPrimary)
-                if !helperIsBundled {
-                    Text("This App Store edition connects to Claude through a small free companion (App Store rules keep it out of this bundle). Download it, then return here — these instructions activate once it's installed. Download link coming with release.")
-                        .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Text("A local server lets Claude read, search, and reason over your calls. Move the app to Applications first — both setups point to where the app currently sits, so they break if it moves later.")
-                    .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    private func h3(_ title: String, id: String) -> some View {
+        Text(title).font(CarbonFont.semibold(15)).foregroundStyle(Carbon.textPrimary)
+            .padding(.top, Space.x5).padding(.bottom, Space.x2)
+            .id(id)
+    }
 
-                Text("Claude Desktop and Cowork").font(CarbonFont.label(13)).foregroundStyle(Carbon.textPrimary)
-                HStack(spacing: Space.x4) {
-                    CarbonButton(title: "Add to Claude Desktop", kind: .primary, action: addToClaudeDesktop)
-                    if let desktopStatus {
-                        Text(desktopStatus).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
-                    }
-                }
-                Text("You'll pick Claude's settings folder once to allow the change. Then quit Claude Desktop (⌘Q) and reopen it.")
-                    .font(CarbonFont.body(12)).foregroundStyle(Carbon.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    private func body14(_ text: String) -> some View {
+        Text(text).font(CarbonFont.body(14)).foregroundStyle(Carbon.textSecondary)
+            .lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
+    }
 
-                Text("Claude Code (terminal)").font(CarbonFont.label(13)).foregroundStyle(Carbon.textPrimary)
-                Text("Paste this once — it registers the server for every project:")
-                    .font(CarbonFont.body(12)).foregroundStyle(Carbon.textSecondary)
-                HStack(alignment: .top, spacing: Space.x3) {
-                    Text(mcpCommand)
-                        .font(CarbonFont.monospace(12)).foregroundStyle(Carbon.textPrimary)
-                        .textSelection(.enabled)
-                        .padding(Space.x3)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Carbon.background, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
-                        .overlay { RoundedRectangle(cornerRadius: Radius.control, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
-                    CarbonButton(title: mcpCopied ? "Copied" : "Copy", kind: .secondary) {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(mcpCommand, forType: .string)
-                        mcpCopied = true
-                    }
-                }
-                HStack(spacing: Space.x4) {
-                    CarbonButton(title: "Install Claude skill", kind: .secondary, action: installSkill)
-                    if let skillStatus {
-                        Text(skillStatus).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
-                    }
-                }
-                Text("The skill (Claude Code only) teaches Claude the playbooks — \"summarize my week\", \"action items across calls\". You'll pick your .claude folder once.")
-                    .font(CarbonFont.body(12)).foregroundStyle(Carbon.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    // MARK: - "On this page" rail
 
-                Text("Good to know: Claude can read your calls only while this app is running, and only the workspace you're in — switch workspaces (or use Search All) in the sidebar.")
-                    .font(CarbonFont.body(12)).foregroundStyle(Carbon.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    private var tocRail: some View {
+        VStack(alignment: .leading, spacing: Space.x3) {
+            HStack(spacing: Space.x3) {
+                Image(systemName: "list.bullet")
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(Carbon.iconSecondary)
+                Text("On this page").font(CarbonFont.semibold(13)).foregroundStyle(Carbon.textPrimary)
             }
+            .padding(.bottom, Space.x2)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(toc) { entry in
+                    Button {
+                        activeSection = entry.id
+                    } label: {
+                        Text(entry.title)
+                            .font(activeSection == entry.id ? CarbonFont.medium(12.5) : CarbonFont.body(12.5))
+                            .foregroundStyle(activeSection == entry.id ? Carbon.interactive
+                                             : entry.indented ? Carbon.textSecondary : Carbon.textPrimary)
+                            .padding(.leading, entry.indented ? Space.x4 : 0)
+                            .padding(.vertical, 4)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.leading, Space.x3)
+            .overlay(alignment: .leading) { Rectangle().fill(Carbon.borderSubtle).frame(width: 2) }
+            Spacer()
+        }
+        .padding(Space.x6)
+        .frame(width: 240, alignment: .leading)
+    }
+
+    // MARK: - Connect Claude (the functional block, embedded in its docs section)
+
+    @ViewBuilder private var connectClaude: some View {
+        VStack(alignment: .leading, spacing: Space.x4) {
+            if !helperIsBundled {
+                body14("This App Store edition connects to Claude through a small free companion (App Store rules keep it out of this bundle). Download it, then return here — download link coming with release.")
+            }
+            body14("Scripta bundles a read-only MCP server so Claude can search and reason over your transcripts. Move the app to Applications first, then register it once:")
+
+            HStack(alignment: .top, spacing: Space.x3) {
+                Text(mcpCommand)
+                    .font(CarbonFont.monospace(12)).foregroundStyle(Carbon.textPrimary)
+                    .textSelection(.enabled)
+                    .padding(Space.x4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+                    .overlay { RoundedRectangle(cornerRadius: Radius.control, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
+                CarbonButton(title: mcpCopied ? "Copied" : "Copy", kind: .secondary) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(mcpCommand, forType: .string)
+                    mcpCopied = true
+                }
+            }
+
+            HStack(spacing: Space.x4) {
+                CarbonButton(title: "Add to Claude Desktop", kind: .primary, action: addToClaudeDesktop)
+                if let desktopStatus {
+                    Text(desktopStatus).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
+                }
+            }
+            body14("Covers Claude Desktop and Cowork — you'll pick Claude's settings folder once, then quit Claude Desktop (⌘Q) and reopen it.")
+
+            HStack(spacing: Space.x4) {
+                CarbonButton(title: "Install Claude skill", kind: .secondary, action: installSkill)
+                if let skillStatus {
+                    Text(skillStatus).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
+                }
+            }
+            body14("The skill (Claude Code only) teaches Claude the playbooks — “summarize my week”, “action items across calls”. You'll pick your .claude folder once. Claude can read your calls only while Scripta is running, and only the active workspace.")
+        }
+        .padding(.vertical, Space.x2)
+    }
+
+    private var acknowledgements: some View {
+        VStack(alignment: .leading, spacing: Space.x2) {
+            h2("Acknowledgements", id: "acknowledgements")
+            body14("Typefaces: IBM Plex Sans and IBM Plex Mono © IBM Corp., under the SIL Open Font License 1.1. Icons: IBM Carbon, under the Apache License 2.0. Both license texts are included in the app bundle (Contents/Resources).")
         }
     }
+
+    // MARK: - Actions (unchanged mechanics)
 
     /// Registers the MCP server in Claude Desktop's config (also covers Cowork). The config
     /// lives in the real ~/Library — outside our sandbox — so a one-time folder grant is
