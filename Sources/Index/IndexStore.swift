@@ -824,6 +824,20 @@ final class IndexStore {
         return out
     }
 
+    /// A sample of spoken text for deterministic vocabulary suggestion (acronym mining).
+    func sampleChunkTexts(group: String, limit: Int = 400) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        var out: [String] = []
+        query("""
+            SELECT c.text FROM chunks c JOIN transcripts t ON t.path = c.path
+            WHERE t."group" = ? AND t.kind = 'call' LIMIT ?
+            """,
+              bind: { Self.bindStatic($0, 1, group); sqlite3_bind_int($0, 2, Int32(limit)) }) { stmt in
+            out.append(text(stmt, 0))
+        }
+        return out
+    }
+
     /// Terms with a non-empty meaning, for gloss injection into Clovis context.
     func termGlosses(group: String) -> [(term: String, gloss: String)] {
         lock.lock(); defer { lock.unlock() }

@@ -136,6 +136,32 @@ final class EntityRegistry {
         save()
     }
 
+    /// Deterministic identity-review pairs: same-kind entities in a workspace where one's
+    /// normalized name is a token-subset of the other's ("dana" ⊂ "dana whitfield") with no
+    /// recorded verdict. The clarifying question generated from DATA, not model judgment —
+    /// and because the verdict persists, each pair is asked once, ever.
+    func collisionCandidates(group: String, limit: Int = 3) -> [(a: Entity, b: Entity)] {
+        let scoped = entities.filter { $0.kind != "term" && $0.groups.contains(group) }
+        var out: [(Entity, Entity)] = []
+        for i in scoped.indices {
+            for j in scoped.indices where j > i {
+                let a = scoped[i], b = scoped[j]
+                guard a.kind == b.kind else { continue }
+                guard !verdicts.contains(where: { v in
+                    (v.a == a.id && v.b == b.id) || (v.a == b.id && v.b == a.id)
+                }) else { continue }
+                let ta = Set(Self.normalize(a.name).split(separator: " ").map(String.init))
+                let tb = Set(Self.normalize(b.name).split(separator: " ").map(String.init))
+                guard !ta.isEmpty, !tb.isEmpty, ta != tb else { continue }
+                if ta.isSubset(of: tb) || tb.isSubset(of: ta) {
+                    out.append((a, b))
+                    if out.count >= limit { return out }
+                }
+            }
+        }
+        return out
+    }
+
     // MARK: - Vocabulary (kind "term" — the correction loop's write target)
 
     /// Vocabulary terms visible in a workspace: its own plus global ("") entries.

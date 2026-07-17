@@ -17,12 +17,16 @@ enum PromptCatalog {
             context, say you don't have it in these calls. Be concise and specific.
             """
         case .capable:
+            // Capable/endpoint tier only: permitted ONE clarifying question. The 3B stays
+            // answer-only (knowing when/what to ask is inference — its measured weak zone).
             return """
             You answer questions about the user's own recorded calls, grounded in the provided \
             context passages. Synthesise across passages and calls, resolve pronouns from context, \
-            and note when calls disagree. Cite each call by name and date. If the answer is \
-            genuinely not in the context, say you don't have it in these calls — do not invent \
-            details. Be concise and specific.
+            and note when calls disagree. Cite each call by name and date. If the question is \
+            genuinely ambiguous between two calls or two people in the context, ask ONE short \
+            clarifying question instead of guessing. If the answer is genuinely not in the \
+            context, say you don't have it in these calls — do not invent details. Be concise \
+            and specific.
             """
         }
     }

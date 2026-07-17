@@ -17,6 +17,8 @@ struct KnowledgeView: View {
     @State private var termCanonical = ""
     @State private var termAliases = ""
     @State private var termGloss = ""
+    @State private var suggestions: [String] = []
+    @State private var collisions: [(a: EntityRegistry.Entity, b: EntityRegistry.Entity)] = []
 
     var body: some View {
         ScrollView {
@@ -79,6 +81,34 @@ struct KnowledgeView: View {
         rows = model.index?.digest(group: model.activeGroup) ?? []
         notes = NoteStore.list(group: model.activeGroup)
         vocabTerms = EntityRegistry.shared.terms(group: model.activeGroup)
+        collisions = EntityRegistry.shared.collisionCandidates(group: model.activeGroup)
+        mineSuggestions()
+    }
+
+    /// Deterministic acronym mining over this workspace's spoken text: frequent ALL-CAPS tokens
+    /// not already known to the registry become suggested vocabulary — you confirm, it learns.
+    private func mineSuggestions() {
+        guard let store = model.index else { return }
+        let group = model.activeGroup
+        let known = Set(EntityRegistry.shared.entities.flatMap { [EntityRegistry.normalize($0.name)] + $0.aliases })
+        Task.detached(priority: .utility) {
+            let blocklist: Set<String> = ["ok", "am", "pm", "tv", "us", "uk", "id", "ai", "iou"]
+            var counts: [String: Int] = [:]
+            for text in store.sampleChunkTexts(group: group) {
+                for raw in text.split(separator: " ") {
+                    let word = raw.trimmingCharacters(in: .punctuationCharacters)
+                    guard word.count >= 2, word.count <= 5,
+                          word == word.uppercased(), word.allSatisfy(\.isLetter) else { continue }
+                    let norm = word.lowercased()
+                    guard !known.contains(norm), !blocklist.contains(norm) else { continue }
+                    counts[word, default: 0] += 1
+                }
+            }
+            let top = counts.filter { $0.value >= 2 }
+                .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+                .prefix(5).map(\.key)
+            await MainActor.run { suggestions = top }
+        }
     }
 
     /// Route an "add this call to a note" gesture: existing note → open it with the link
@@ -271,6 +301,29 @@ struct KnowledgeView: View {
                     }
                 }
             }
+            if !suggestions.isEmpty {
+                Text("Suggested from your calls — tap to teach:")
+                    .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                FlexWrap(spacing: Space.x2) {
+                    ForEach(suggestions, id: \.self) { word in
+                        Button {
+                            termCanonical = word; termAliases = ""; termGloss = ""
+                            addingTerm = true
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "plus").font(.system(size: 8, weight: .bold))
+                                Text(word).font(CarbonFont.label(12))
+                            }
+                            .foregroundStyle(Carbon.interactive)
+                            .padding(.horizontal, Space.x4).padding(.vertical, Space.x2)
+                            .background(Carbon.blueSoft, in: Capsule())
+                            .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            identityCheck
         }
         .alert("Add vocabulary term", isPresented: $addingTerm) {
             TextField("Term (e.g. TIM)", text: $termCanonical)
@@ -288,6 +341,50 @@ struct KnowledgeView: View {
         } message: {
             Text("Feeds transcription biasing and search — a search for the term also matches its aliases, everywhere.")
         }
+    }
+
+    /// Deterministic identity clarifiers: pairs the registry itself flags as possibly the same
+    /// person/org. Your verdict persists as a rule, so each pair is asked exactly once.
+    @ViewBuilder private var identityCheck: some View {
+        if !collisions.isEmpty {
+            VStack(alignment: .leading, spacing: Space.x3) {
+                SectionHeader(title: "Identity check")
+                ForEach(Array(collisions.enumerated()), id: \.offset) { _, pair in
+                    VStack(alignment: .leading, spacing: Space.x2) {
+                        Text("Same \(pair.a.kind == "org" ? "company" : "person")?")
+                            .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                        Text("\(pair.a.name)  ·  \(pair.b.name)")
+                            .font(CarbonFont.medium(13)).foregroundStyle(Carbon.textPrimary)
+                            .lineLimit(2)
+                        HStack(spacing: Space.x3) {
+                            Button("Same") { verdict(pair, same: true) }
+                                .buttonStyle(.plain)
+                                .font(CarbonFont.medium(12)).foregroundStyle(Carbon.interactive)
+                            Button("Different") { verdict(pair, same: false) }
+                                .buttonStyle(.plain)
+                                .font(CarbonFont.medium(12)).foregroundStyle(Carbon.textSecondary)
+                        }
+                    }
+                    .padding(Space.x4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                            .strokeBorder(Carbon.borderSubtle, lineWidth: 1)
+                    }
+                }
+            }
+        }
+    }
+
+    private func verdict(_ pair: (a: EntityRegistry.Entity, b: EntityRegistry.Entity), same: Bool) {
+        // On merge, the more specific name (more tokens) becomes canonical.
+        let aTokens = pair.a.name.split(separator: " ").count
+        let keep = aTokens >= pair.b.name.split(separator: " ").count ? pair.a : pair.b
+        let other = keep.id == pair.a.id ? pair.b : pair.a
+        EntityRegistry.shared.recordVerdict(keep.id, other.id, same: same)
+        EntityRegistry.shared.save()
+        collisions = EntityRegistry.shared.collisionCandidates(group: model.activeGroup)
     }
 
     /// "Wertz, Lalita @ Harrisburg" → "Wertz, Lalita" for the rail; full name in the tooltip.

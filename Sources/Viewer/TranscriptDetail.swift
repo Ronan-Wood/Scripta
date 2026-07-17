@@ -13,6 +13,10 @@ struct TranscriptDetail: View {
     @State private var showingEditor = false
     @State private var confirmingDelete = false
     @State private var exportError: String?
+    @State private var addingTerm = false
+    @State private var termCanonical = ""
+    @State private var termAliases = ""
+    @State private var termGloss = ""
     @State private var flashIndex: Int?
     // Parsed once per transcript (off the main thread) and cached — re-reading + re-parsing the
     // whole file inside `body` on every invalidation was a large part of the long-transcript lag.
@@ -65,10 +69,30 @@ struct TranscriptDetail: View {
                         }
                     }
                 } label: { Label("Share", systemImage: "square.and.arrow.up") }
+                Button {
+                    termCanonical = ""; termAliases = ""; termGloss = ""
+                    addingTerm = true
+                } label: { Label("Add to Vocabulary", systemImage: "character.book.closed") }
+                    .help("Spotted mangled jargon? Teach it once — transcription and search learn it everywhere.")
                 Button(role: .destructive) {
                     confirmingDelete = true
                 } label: { Label("Delete", systemImage: "trash") }
             }
+        }
+        .alert("Add vocabulary term", isPresented: $addingTerm) {
+            TextField("Term (e.g. TIM)", text: $termCanonical)
+            TextField("Aliases, comma-separated", text: $termAliases)
+            TextField("Meaning (optional)", text: $termGloss)
+            Button("Add") {
+                let aliases = termAliases.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                EntityRegistry.shared.addTerm(canonical: termCanonical, aliases: aliases,
+                                              gloss: termGloss.isEmpty ? nil : termGloss,
+                                              group: AppModel.shared.activeGroup)
+                if let store = IndexStore.shared { IndexBuilder.syncTerms(store: store) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Feeds transcription biasing and search — the term and its aliases match each other everywhere.")
         }
         .sheet(isPresented: $showingEditor) {
             TranscriptDetailsEditor(url: meta.url, title: meta.title, participants: meta.participants, tags: meta.tags) { saved in
