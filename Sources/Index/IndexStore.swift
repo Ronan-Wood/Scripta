@@ -80,8 +80,9 @@ final class IndexStore {
     /// `chunk_vectors` (embed model + dimension) so Phase B can't silently mix vector spaces;
     /// v4 added the `group` partition column; v5 added the enrichment ledger; v6 added the entity
     /// graph (entities cache + mentions + action items); v7 chunks on-screen text too; v8 added
-    /// the `kind` column and indexes knowledge notes (retrievable by Ask/MCP, hidden from call lists).
-    private static let schemaVersion: Int32 = 8
+    /// the `kind` column and indexes knowledge notes (retrievable by Ask/MCP, hidden from call
+    /// lists); v9 added the vocabulary `terms` cache (registry → DB) powering alias expansion.
+    private static let schemaVersion: Int32 = 9
 
     private let db: OpaquePointer
     private let lock = NSLock()
@@ -180,6 +181,12 @@ final class IndexStore {
             path TEXT, owner_id TEXT, text TEXT, status TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_actions_path ON action_items(path);
+        -- Vocabulary cache (the EntityRegistry's kind="term" entries; registry is the system of
+        -- record). One row per (term, group); "" group = global. Read by alias expansion here
+        -- and by the MCP server, which cannot see the registry file.
+        CREATE TABLE IF NOT EXISTS terms(
+            id TEXT, canonical TEXT, aliases TEXT, gloss TEXT, "group" TEXT
+        );
         """)
     }
 
@@ -321,8 +328,9 @@ final class IndexStore {
     /// FTS spoken-passage candidate chunk ids (group-scoped) — the lexical half of hybrid fusion.
     func ftsCandidates(_ rawQuery: String, group: String?, limit: Int) -> [Int64] {
         lock.lock(); defer { lock.unlock() }
-        var ids = rankedChunkIDs(FTSQuery.andExpression(rawQuery), group: group, limit: limit)
-        if ids.isEmpty { ids = rankedChunkIDs(FTSQuery.orExpression(rawQuery), group: group, limit: limit) }
+        let aliases = aliasGroupsLocked(group: group)
+        var ids = rankedChunkIDs(FTSQuery.andExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit)
+        if ids.isEmpty { ids = rankedChunkIDs(FTSQuery.orExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit) }
         return ids.map(\.id)
     }
 
@@ -489,11 +497,12 @@ final class IndexStore {
                                    since: since, speaker: speaker, group: group, limit: limit).prefix(limit))
         }
         // AND is near-precise for multi-word queries; fall back to OR (the recall floor) only when
-        // AND finds nothing across both passages and topics.
-        var hits = fusedHits(FTSQuery.andExpression(rawQuery), participant: participant, tag: tag,
+        // AND finds nothing across both passages and topics. Vocabulary aliases expand both.
+        let aliases = aliasGroupsLocked(group: group)
+        var hits = fusedHits(FTSQuery.andExpression(rawQuery, aliasGroups: aliases), participant: participant, tag: tag,
                              since: since, speaker: speaker, group: group, limit: limit)
         if hits.isEmpty {
-            hits = fusedHits(FTSQuery.orExpression(rawQuery), participant: participant, tag: tag,
+            hits = fusedHits(FTSQuery.orExpression(rawQuery, aliasGroups: aliases), participant: participant, tag: tag,
                              since: since, speaker: speaker, group: group, limit: limit)
         }
         return Array(hits.prefix(limit))
@@ -628,8 +637,9 @@ final class IndexStore {
     /// concept-tag matches — the "baseball" ↔ "home runs" layer — reach Ask too, not just search.
     func context(for rawQuery: String, group: String? = nil, limit: Int = 6) -> [ContextChunk] {
         lock.lock(); defer { lock.unlock() }
-        var hits = rankedChunkIDs(FTSQuery.andExpression(rawQuery), group: group, limit: limit * 3)
-        if hits.isEmpty { hits = rankedChunkIDs(FTSQuery.orExpression(rawQuery), group: group, limit: limit * 3) }
+        let aliases = aliasGroupsLocked(group: group)
+        var hits = rankedChunkIDs(FTSQuery.andExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit * 3)
+        if hits.isEmpty { hits = rankedChunkIDs(FTSQuery.orExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit * 3) }
 
         // Per-call diversity: at most 2 chunks per path, keeping best-ranked.
         var perPath: [String: Int] = [:]
@@ -654,7 +664,8 @@ final class IndexStore {
 
         // Topic fusion: append summary passages for concept/title/tag matches not already present.
         let seenPath = Set(out.map(\.path))
-        for topic in topicContext(FTSQuery.andExpression(rawQuery) ?? FTSQuery.orExpression(rawQuery), group: group, limit: 2)
+        for topic in topicContext(FTSQuery.andExpression(rawQuery, aliasGroups: aliases)
+                                    ?? FTSQuery.orExpression(rawQuery, aliasGroups: aliases), group: group, limit: 2)
         where !seenPath.contains(topic.path) {
             out.append(topic)
         }
@@ -763,6 +774,65 @@ final class IndexStore {
                 tags: text(stmt, 6).split(separator: "\n").map(String.init).filter { $0 != OwnerMarker.value }))
         }
         return rows
+    }
+
+    // MARK: - Vocabulary (terms cache)
+
+    struct TermRow {
+        let id: String
+        let canonical: String
+        let aliases: [String]
+        let gloss: String
+        let group: String
+    }
+
+    /// Replaces the vocabulary cache wholesale (mirrors the registry's kind="term" entries).
+    func setTerms(_ rows: [TermRow]) {
+        lock.lock(); defer { lock.unlock() }
+        guard exec("BEGIN;") else { return }
+        var ok = run("DELETE FROM terms;") { _ in }
+        for row in rows where ok {
+            ok = run("INSERT INTO terms(id,canonical,aliases,gloss,\"group\") VALUES(?,?,?,?,?)") { stmt in
+                bind(stmt, 1, row.id); bind(stmt, 2, row.canonical)
+                bind(stmt, 3, row.aliases.joined(separator: "\n"))
+                bind(stmt, 4, row.gloss); bind(stmt, 5, row.group)
+            }
+        }
+        if ok && exec("COMMIT;") { return }
+        exec("ROLLBACK;")
+    }
+
+    /// Alias groups for query expansion: [canonical + aliases], scoped to a workspace plus
+    /// globals (nil group = everything, for the blind cross-workspace search).
+    func aliasGroups(group: String?) -> [[String]] {
+        lock.lock(); defer { lock.unlock() }
+        return aliasGroupsLocked(group: group)
+    }
+
+    /// Lock-free variant for callers already inside the store's lock (NSLock is non-reentrant).
+    private func aliasGroupsLocked(group: String?) -> [[String]] {
+        var out: [[String]] = []
+        var sql = "SELECT canonical, aliases FROM terms"
+        if group != nil { sql += " WHERE \"group\" = ? OR \"group\" = ''" }
+        query(sql, bind: { stmt in if let group { Self.bindStatic(stmt, 1, group) } }) { stmt in
+            var members = [text(stmt, 0).lowercased()]
+            for alias in text(stmt, 1).split(separator: "\n").map(String.init) where !members.contains(alias) {
+                members.append(alias)
+            }
+            if members.count > 1 { out.append(members) }
+        }
+        return out
+    }
+
+    /// Terms with a non-empty meaning, for gloss injection into Clovis context.
+    func termGlosses(group: String) -> [(term: String, gloss: String)] {
+        lock.lock(); defer { lock.unlock() }
+        var out: [(String, String)] = []
+        query("SELECT canonical, gloss FROM terms WHERE (\"group\" = ? OR \"group\" = '') AND gloss != ''",
+              bind: { Self.bindStatic($0, 1, group) }) { stmt in
+            out.append((text(stmt, 0), text(stmt, 1)))
+        }
+        return out
     }
 
     /// Distinct non-empty groups (workspaces) with call counts, most-populated first.

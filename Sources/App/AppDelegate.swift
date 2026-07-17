@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task.detached(priority: .utility) {
             await RecordingSession.recoverOrphans()
             if let store = IndexStore.shared {
+                IndexBuilder.syncTerms(store: store)   // vocabulary cache before anything queries
                 IndexBuilder.reconcile(store: store)
                 await IndexBuilder.embedPending(store: store)   // best-effort; no-op without an embedder
                 EntityMirror.sync(store: store)                 // opt-in; no-op unless enabled

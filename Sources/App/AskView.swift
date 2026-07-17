@@ -181,10 +181,10 @@ struct AskView: View {
                     .padding(.leading, 34)
                     .frame(maxWidth: 460, alignment: .leading)
                 }
-                if let engine = message.engineLabel, !message.text.isEmpty {
-                    Text(engine)
-                        .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                if !message.text.isEmpty {
+                    ClovisAnswerFooter(message: message)
                         .padding(.leading, 34)
+                        .frame(maxWidth: 560, alignment: .leading)
                 }
             }
         }

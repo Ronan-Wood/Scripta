@@ -12,6 +12,11 @@ struct KnowledgeView: View {
     @State private var pendingLink: URL?
     @State private var creatingNote = false
     @State private var newNoteTitle = ""
+    @State private var vocabTerms: [EntityRegistry.Entity] = []
+    @State private var addingTerm = false
+    @State private var termCanonical = ""
+    @State private var termAliases = ""
+    @State private var termGloss = ""
 
     var body: some View {
         ScrollView {
@@ -73,6 +78,7 @@ struct KnowledgeView: View {
     private func reload() {
         rows = model.index?.digest(group: model.activeGroup) ?? []
         notes = NoteStore.list(group: model.activeGroup)
+        vocabTerms = EntityRegistry.shared.terms(group: model.activeGroup)
     }
 
     /// Route an "add this call to a note" gesture: existing note → open it with the link
@@ -232,6 +238,55 @@ struct KnowledgeView: View {
                     }
                 }
             }
+            vocabularySection
+        }
+    }
+
+    // MARK: - Vocabulary (the correction loop's front door)
+
+    private var vocabularySection: some View {
+        VStack(alignment: .leading, spacing: Space.x3) {
+            HStack {
+                SectionHeader(title: "Vocabulary")
+                Spacer()
+                Button {
+                    termCanonical = ""; termAliases = ""; termGloss = ""
+                    addingTerm = true
+                } label: {
+                    Text("Add term").font(CarbonFont.label(12)).foregroundStyle(Carbon.interactive)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            if vocabTerms.isEmpty {
+                Text("Teach Scripta your jargon once — it biases transcription, and searching a term finds its expansions too (\"TIM\" finds \"tenants in the market\").")
+                    .font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                FlexWrap(spacing: Space.x2) {
+                    ForEach(vocabTerms, id: \.id) { term in
+                        CarbonChip(text: term.name)
+                            .help(term.gloss?.isEmpty == false ? term.gloss!
+                                  : term.aliases.joined(separator: ", "))
+                    }
+                }
+            }
+        }
+        .alert("Add vocabulary term", isPresented: $addingTerm) {
+            TextField("Term (e.g. TIM)", text: $termCanonical)
+            TextField("Aliases, comma-separated (e.g. tenants in the market)", text: $termAliases)
+            TextField("Meaning (optional)", text: $termGloss)
+            Button("Add") {
+                let aliases = termAliases.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                EntityRegistry.shared.addTerm(canonical: termCanonical, aliases: aliases,
+                                              gloss: termGloss.isEmpty ? nil : termGloss,
+                                              group: model.activeGroup)
+                if let store = model.index { IndexBuilder.syncTerms(store: store) }
+                reload()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Feeds transcription biasing and search — a search for the term also matches its aliases, everywhere.")
         }
     }
 

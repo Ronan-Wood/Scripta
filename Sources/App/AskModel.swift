@@ -14,6 +14,21 @@ final class AskModel: ObservableObject {
         let url: URL
         let startMs: Int
     }
+    /// Deterministic answer-support rating, derived from retrieval — NOT model self-report
+    /// (a 3B's stated confidence is theater). Measures how well-grounded the answer is:
+    /// spoken-passage count, call spread, and whether fallback retrieval was needed.
+    enum Grounding: String, Codable {
+        case strong, moderate, thin
+
+        var label: String {
+            switch self {
+            case .strong: return "Well grounded"
+            case .moderate: return "Partly grounded"
+            case .thin: return "Thin grounding — check the sources"
+            }
+        }
+    }
+
     struct Message: Identifiable, Codable {
         var id = UUID()
         let fromUser: Bool
@@ -21,6 +36,7 @@ final class AskModel: ObservableObject {
         var sources: [Source] = []
         /// The engine that produced this answer (badge under the bubble); nil for user messages.
         var engineLabel: String? = nil
+        var grounding: Grounding? = nil
     }
     struct Conversation: Identifiable, Codable {
         var id = UUID()
@@ -154,9 +170,11 @@ final class AskModel: ObservableObject {
         // else did she say about it?" — fall back to including the previous turn's terms.
         let limit = PromptCatalog.askContextChunks(sizeClass)
         let group = AppSettings.activeGroup   // hard-scoped to the active workspace (the privacy wall)
+        var usedFallback = false
         var chunks = await Retriever.context(for: question, group: group, limit: limit)
         if chunks.isEmpty, let previousUser {
             chunks = await Retriever.context(for: previousUser + " " + question, group: group, limit: limit)
+            usedFallback = true
         }
 
         // Short-circuit empty retrieval: answer deterministically instead of spending an inference
@@ -175,6 +193,9 @@ final class AskModel: ObservableObject {
         }
 
         let sources = distinctSources(chunks)
+        let passages = chunks.filter { !$0.isTopic }.count
+        let grounding: Grounding = (usedFallback || passages == 0) ? .thin
+                                 : passages >= 3 ? .strong : .moderate
         let context = chunks.map(Self.label).joined(separator: "\n\n")
         let prompt = "Context:\n\(context)\n\nQuestion: \(question)"
 
@@ -185,6 +206,7 @@ final class AskModel: ObservableObject {
         do {
             try await run(prompt, into: index)
             messages[index].sources = sources
+            messages[index].grounding = grounding
         } catch {
             // Ask, first message → auto-fall back to Apple FM with a notice, and the answer still
             // arrives. Mid-conversation → no silent swap: keep the partial text, hint at retry.
@@ -192,7 +214,11 @@ final class AskModel: ObservableObject {
                 resetToAppleFM()
                 messages[index].text = ""
                 messages[index].engineLabel = engineLabel
-                do { try await run(prompt, into: index); messages[index].sources = sources }
+                do {
+                    try await run(prompt, into: index)
+                    messages[index].sources = sources
+                    messages[index].grounding = grounding
+                }
                 catch { messages[index].text = Self.errorText(error) }
             } else if messages[index].text.isEmpty {
                 messages[index].text = Self.errorText(error)

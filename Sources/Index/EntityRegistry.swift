@@ -13,10 +13,13 @@ final class EntityRegistry {
     struct Entity: Codable {
         var id: String
         var name: String          // display (most frequent original spelling)
-        var kind: String          // "person" | "org"
+        var kind: String          // "person" | "org" | "term" (vocabulary)
         var aliases: [String]     // normalized surface forms that resolve to this id
-        var groups: [String]      // workspaces this identity has appeared in (provenance)
+        var groups: [String]      // workspaces this identity has appeared in ("" = global)
         var confirmed: Bool       // user-confirmed (only confirmed aliases seed ASR — Fable F)
+        /// One-line meaning, for vocabulary terms ("TIM — tenants in the market"). Optional and
+        /// additive, so registries written before it decode unchanged.
+        var gloss: String? = nil
     }
     struct Verdict: Codable { var a: String; var b: String; var same: Bool; var by: String }
 
@@ -131,6 +134,44 @@ final class EntityRegistry {
         }
         dirty = true
         save()
+    }
+
+    // MARK: - Vocabulary (kind "term" — the correction loop's write target)
+
+    /// Vocabulary terms visible in a workspace: its own plus global ("") entries.
+    func terms(group: String) -> [Entity] {
+        entities.filter { $0.kind == "term" && ($0.groups.contains(group) || $0.groups.contains("")) }
+    }
+
+    /// Adds (or extends) a vocabulary term. User-initiated, so confirmed by definition — every
+    /// consumer (ASR bias, alias expansion, gloss injection) may trust it immediately.
+    @discardableResult
+    func addTerm(canonical: String, aliases: [String], gloss: String?, group: String) -> String {
+        let trimmed = canonical.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return "" }
+        let norm = Self.normalize(trimmed)
+        let normAliases = ([trimmed] + aliases).map(Self.normalize).filter { !$0.isEmpty }
+        if let i = entities.firstIndex(where: { e in
+            e.kind == "term" && (e.aliases.contains(norm) || Self.normalize(e.name) == norm)
+        }) {
+            for a in normAliases where !entities[i].aliases.contains(a) { entities[i].aliases.append(a) }
+            if let gloss, !gloss.isEmpty { entities[i].gloss = gloss }
+            if !entities[i].groups.contains(group) { entities[i].groups.append(group) }
+            entities[i].confirmed = true
+            dirty = true; save()
+            return entities[i].id
+        }
+        let id = Self.newID()
+        entities.append(Entity(id: id, name: trimmed, kind: "term", aliases: normAliases,
+                               groups: [group], confirmed: true, gloss: gloss))
+        dirty = true; save()
+        return id
+    }
+
+    /// ASR bias strings from the vocabulary: canonical spellings plus multi-word aliases
+    /// (single-word normalized aliases add nothing the canonical doesn't).
+    func termVocab(group: String) -> [String] {
+        terms(group: group).flatMap { [$0.name] + $0.aliases.filter { $0.contains(" ") } }
     }
 
     /// Time-ordered unique id (ULID-ish: millisecond timestamp prefix + random) so ids sort by

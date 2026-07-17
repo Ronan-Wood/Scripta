@@ -45,18 +45,37 @@ enum FTSQuery {
         return unique
     }
 
+    /// Vocabulary alias expansion — deterministic query rewriting from the registry's terms, not
+    /// LLM expansion. A content term matching any single-word member of an alias group becomes an
+    /// OR across the whole group ("tim" → ("tim"* OR "tenants in the market")), so jargon and its
+    /// expansion retrieve identically everywhere this helper is compiled (app, MCP, eval).
+    /// Multi-word members match as exact phrases; group members are pre-normalized (lowercased).
+    private static func expanded(_ term: String, groups: [[String]]) -> String {
+        let plain = "\"\(term)\"*"
+        for group in groups {
+            guard group.contains(where: { !$0.contains(" ") && $0 == term }) else { continue }
+            var members = [plain]
+            for m in group {
+                let quoted = m.contains(" ") ? "\"\(m)\"" : "\"\(m)\"*"
+                if !members.contains(quoted) { members.append(quoted) }
+            }
+            return "(" + members.joined(separator: " OR ") + ")"
+        }
+        return plain
+    }
+
     /// Implicit-AND of quoted prefix terms — `"budget"* "review"* "sarah"*`. Precise. nil if empty.
-    static func andExpression(_ raw: String) -> String? {
+    static func andExpression(_ raw: String, aliasGroups: [[String]] = []) -> String? {
         let t = terms(raw)
         guard !t.isEmpty else { return nil }
-        return t.map { "\"\($0)\"*" }.joined(separator: " ")
+        return t.map { expanded($0, groups: aliasGroups) }.joined(separator: " ")
     }
 
     /// OR of quoted prefix terms — the recall floor. nil if empty.
-    static func orExpression(_ raw: String) -> String? {
+    static func orExpression(_ raw: String, aliasGroups: [[String]] = []) -> String? {
         let t = terms(raw)
         guard !t.isEmpty else { return nil }
-        return t.map { "\"\($0)\"*" }.joined(separator: " OR ")
+        return t.map { expanded($0, groups: aliasGroups) }.joined(separator: " OR ")
     }
 
     /// The pre-overhaul behaviour: OR over every ≥2-char term with no stopword filtering. Kept
