@@ -21,9 +21,20 @@ struct AskView: View {
 
     private var conversationSidebar: some View {
         VStack(alignment: .leading, spacing: Space.x3) {
-            CarbonButton(title: "New conversation", icon: "chat", kind: .primary, fill: true) {
+            Button {
                 ask.newConversation(group: app.activeGroup)
+            } label: {
+                HStack(spacing: 8) {
+                    CarbonIcon(name: "edit", size: 14, color: Carbon.textOnColor)
+                    Text("New conversation")
+                        .font(CarbonFont.medium(13)).foregroundStyle(Carbon.textOnColor).lineLimit(1)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+                .background(Carbon.interactive, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             ScrollView {
                 VStack(spacing: Space.x2) {
                     ForEach(ask.conversations(in: app.activeGroup)) { conversation in

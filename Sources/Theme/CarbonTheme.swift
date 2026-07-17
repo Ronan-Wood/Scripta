@@ -8,15 +8,24 @@ import CoreText
 
 // MARK: - Colors (Carbon tokens, light = White theme / dark = Gray 100 theme)
 
+/// Values are copied VERBATIM from the design source of truth — the `.scripta` / `.scripta.dark`
+/// variable blocks in Ronan's Scripta.dc.html render. Do not eyeball-adjust; re-extract instead.
 enum Carbon {
-    static let interactive   = dyn(0x0F62FE, 0x4589FF)   // Blue 60 / Blue 50 — primary action
-    static let interactiveHover = dyn(0x0353E9, 0x4589FF)
-    static let danger        = dyn(0xDA1E28, 0xFA4D56)   // support-error (Record)
-    static let success       = dyn(0x24A148, 0x42BE65)
-    static let warning       = dyn(0xF1C21B, 0xF1C21B)
+    static let interactive      = dyn(0x0F62FE, 0x4589FF)          // --c-blue
+    static let interactiveHover = dyn(0x0353E9, 0x78A9FF)          // --c-blue-hover
+    static let blueSoft         = dynA(0x0F62FE, 0.14, 0x4589FF, 0.20)   // --c-blue-soft / --c-nav-sel
+    static let blueSoft2        = dynA(0xEDF5FF, 1.0, 0x4589FF, 0.13)    // --c-blue-soft2
+    static let danger           = dyn(0xDA1E28, 0xFA4D56)          // --c-danger (Record)
+    static let success          = dyn(0x24A148, 0x42BE65)          // --c-success
+    static let warning          = dyn(0xF1C21B, 0xF1C21B)          // --c-warning
+    static let warningSoft      = dynA(0xF1C21B, 0.18, 0xF1C21B, 0.16)
+    static let orange           = dyn(0xEA580C, 0xFF8B4D)          // --c-orange ("Them")
+    static let orangeSoft       = dynA(0xEA580C, 0.14, 0xFF8B4D, 0.16)
+    static let purple           = dyn(0x7C3AED, 0xA56EFF)          // --c-purple
+    static let purpleSoft       = dynA(0x7C3AED, 0.14, 0xA56EFF, 0.16)
 
-    static let background    = dyn(0xFFFFFF, 0x161616)   // page canvas
-    static let layer         = dyn(0xF4F4F4, 0x262626)   // cards / sidebar
+    static let background    = dyn(0xFFFFFF, 0x161616)   // --c-bg
+    static let layer         = dyn(0xF4F4F4, 0x262626)   // --c-layer
     static let layerHover    = dyn(0xE8E8E8, 0x333333)
     static let layerSelected = dyn(0xE0E0E0, 0x393939)
     static let field         = dyn(0xF4F4F4, 0x262626)
@@ -32,10 +41,23 @@ enum Carbon {
     static let iconPrimary   = dyn(0x161616, 0xF4F4F4)
     static let iconSecondary = dyn(0x525252, 0xC6C6C6)
 
+    /// Translucent chrome tints, layered over window vibrancy.
+    static let sidebarTint  = dynA(0xF7F7F9, 0.72, 0x222226, 0.66)   // --c-sidebar
+    static let titlebarTint = dynA(0xF7F7F9, 0.80, 0x1E1E22, 0.74)   // --c-titlebar
+
     private static func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
             let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             return NSColor(hex: isDark ? dark : light)
+        })
+    }
+
+    private static func dynA(_ light: UInt32, _ lightAlpha: CGFloat,
+                             _ dark: UInt32, _ darkAlpha: CGFloat) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSColor(hex: isDark ? dark : light)
+                .withAlphaComponent(isDark ? darkAlpha : lightAlpha)
         })
     }
 }

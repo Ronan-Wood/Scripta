@@ -120,6 +120,34 @@ struct LevelMeter: View {
     }
 }
 
+/// A title-bar pill button (render spec: h26, pad 0/11, radius 7, 12.5/500, 0.5pt border).
+struct TitleBarPill: View {
+    var icon: String? = nil       // Carbon icon name
+    var sfIcon: String? = nil     // or an SF Symbol
+    let label: String
+    var tint: Color = Carbon.textSecondary
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let icon { CarbonIcon(name: icon, size: 13, color: tint) }
+                if let sfIcon { Image(systemName: sfIcon).font(.system(size: 12)).foregroundStyle(tint) }
+                Text(label).font(CarbonFont.medium(12.5)).foregroundStyle(tint).lineLimit(1)
+            }
+            .padding(.horizontal, 11)
+            .frame(height: 26)
+            .background(Carbon.background, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Carbon.borderSubtle, lineWidth: 0.5)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// Dashboard stat tile: uppercase label over a large numeral (+ optional unit).
 struct StatTile: View {
     let label: String

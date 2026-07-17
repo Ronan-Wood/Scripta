@@ -15,22 +15,18 @@ struct HubView: View {
     @State private var newWorkspaceName = ""
 
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar
-            Rectangle().fill(Carbon.borderSubtle).frame(width: 1)
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Carbon.background)
+        VStack(spacing: 0) {
+            topBar
+            HStack(spacing: 0) {
+                sidebar
+                Rectangle().fill(Carbon.borderSubtle).frame(width: 1)
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Carbon.background)
+            }
         }
         .frame(minWidth: 940, minHeight: 640)
         .onChange(of: model.route) { _, route in handle(route) }
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                clovisToolbarButton
-                appearanceToolbarButton
-                recordToolbarButton
-            }
-        }
         .confirmationDialog("Delete the “\(model.activeGroup)” workspace?",
                             isPresented: $confirmingWorkspaceDelete, titleVisibility: .visible) {
             Button("Delete \(deleteCandidateCount) call\(deleteCandidateCount == 1 ? "" : "s")", role: .destructive) {
@@ -56,90 +52,135 @@ struct HubView: View {
         }
     }
 
-    /// Jump to Clovis (the Ask assistant) from anywhere.
-    private var clovisToolbarButton: some View {
-        Button { model.route = .section(.ask) } label: {
-            Label("Clovis", systemImage: "sparkles")
-        }
-        .help("Ask Clovis about your calls")
-    }
+    // MARK: - Title bar (drawn in-window, per the render: centered title, pills on the right)
 
-    /// Quick light/dark flip; the full 3-way (incl. System) picker stays in Settings.
-    private var appearanceToolbarButton: some View {
-        Button {
-            let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            AppSettings.appearance = dark ? .light : .dark
-            model.applyAppearance()
-        } label: {
-            Label("Appearance", systemImage: "circle.lefthalf.filled")
-        }
-        .help("Toggle light/dark appearance")
-    }
-
-    /// Global record control in the window toolbar — present on every section, which also keeps
-    /// the titlebar a consistent height everywhere.
-    @ViewBuilder private var recordToolbarButton: some View {
-        Button {
-            if model.recordingState != .processing { model.toggleRecording?() }
-        } label: {
-            switch model.recordingState {
-            case .idle:
-                Label("Record", systemImage: "record.circle").foregroundStyle(Carbon.danger)
-            case .recording:
-                Label("Stop", systemImage: "stop.circle.fill").foregroundStyle(Carbon.danger)
-            case .processing:
-                Label("Processing", systemImage: "ellipsis.circle").foregroundStyle(Carbon.warning)
-            }
-        }
-        .help(model.recordingState == .recording ? "Stop recording" : "Start recording")
-        .disabled(model.recordingState == .processing)
-    }
-
-    // MARK: - Sidebar (collapses to an icon rail — never fully hidden)
-
-    private var sidebar: some View {
-        VStack(spacing: Space.x1) {
-            HStack(alignment: .top) {
-                if expanded {
-                    VStack(alignment: .leading, spacing: 1) {
-                        // Wordmark A1: opening quote (spoken) · Scripta · square end-mark (written).
-                        HStack(alignment: .firstTextBaseline, spacing: 3) {
-                            Text("“").font(CarbonFont.semibold(17)).foregroundStyle(Carbon.interactive)
-                            Text("Scripta").font(CarbonFont.semibold(15)).foregroundStyle(Carbon.textPrimary)
-                            RoundedRectangle(cornerRadius: 1, style: .continuous)
-                                .fill(Carbon.interactive)
-                                .frame(width: 5, height: 5)
-                        }
-                        Text("verba volant, scripta manent")
-                            .font(CarbonFont.label(9)).italic().foregroundStyle(Carbon.textHelper)
-                    }
-                    Spacer()
+    private var topBar: some View {
+        ZStack {
+            Text("Scripta").font(CarbonFont.semibold(13)).foregroundStyle(Carbon.textPrimary)
+            HStack(spacing: 6) {
+                Spacer()
+                TitleBarPill(icon: "chat", label: "Clovis", tint: Carbon.textSecondary) {
+                    model.route = .section(.ask)
                 }
+                .help("Ask Clovis about your calls")
                 Button {
-                    withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
-                    AppSettings.sidebarExpanded = expanded
+                    let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                    AppSettings.appearance = dark ? .light : .dark
+                    model.applyAppearance()
                 } label: {
-                    Image(systemName: "sidebar.leading")
-                        .font(.system(size: 15)).foregroundStyle(Carbon.iconSecondary)
-                        .frame(width: 24, height: 32)
+                    Image(systemName: "circle.lefthalf.filled")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Carbon.iconSecondary)
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(expanded ? "Collapse sidebar" : "Expand sidebar")
+                .help("Toggle light/dark appearance")
+                recordPill
             }
-            .padding(.horizontal, Space.x4)
-            .padding(.top, Space.x3)
-            .padding(.bottom, Space.x2)
+            .padding(.trailing, 12)
+        }
+        .frame(height: 40)
+        .frame(maxWidth: .infinity)
+        .background {
+            ZStack {
+                VisualEffectView(material: .headerView)
+                Carbon.titlebarTint
+            }
+        }
+        .overlay(alignment: .bottom) { Rectangle().fill(Carbon.borderSubtle).frame(height: 1) }
+        .gesture(WindowDragGesture())
+    }
 
+    @ViewBuilder private var recordPill: some View {
+        switch model.recordingState {
+        case .idle:
+            TitleBarPill(sfIcon: "record.circle", label: "Record", tint: Carbon.danger) {
+                model.toggleRecording?()
+            }
+            .help("Start recording")
+        case .recording:
+            TitleBarPill(sfIcon: "stop.circle.fill", label: model.elapsedLabel, tint: Carbon.danger) {
+                model.toggleRecording?()
+            }
+            .help("Stop recording")
+        case .processing:
+            TitleBarPill(sfIcon: "ellipsis.circle", label: "Processing", tint: Carbon.warning) {}
+        }
+    }
+
+    // MARK: - Sidebar (render spec: 220pt, pad 10/10/12, 34pt rows, rgba sidebar tint;
+    // collapses to a 64pt rail showing the colophon mark; collapse control lives at the bottom)
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            logoHeader
             groupSwitcher
-            Rectangle().fill(Carbon.borderSubtle).frame(height: 1).padding(.horizontal, Space.x3).padding(.vertical, Space.x1)
+            Rectangle().fill(Carbon.borderSubtle).frame(height: 1)
+                .padding(.horizontal, 2).padding(.vertical, 6)
 
             ForEach(HubSection.primary, id: \.self) { navItem($0) }
             Spacer()
             ForEach(HubSection.secondary, id: \.self) { navItem($0) }
+            collapseRow
         }
-        .padding(.bottom, Space.x3)
-        .frame(width: expanded ? 216 : 60)
-        .background(VisualEffectView())
+        .padding(.top, 10)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 12)
+        .frame(width: expanded ? 220 : 64)
+        .background {
+            ZStack {
+                VisualEffectView()
+                Carbon.sidebarTint
+            }
+        }
+    }
+
+    @ViewBuilder private var logoHeader: some View {
+        if expanded {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Scripta").font(CarbonFont.semibold(15)).foregroundStyle(Carbon.textPrimary)
+                Text("verba volant, scripta manent")
+                    .font(CarbonFont.label(10.5)).italic().foregroundStyle(Carbon.textHelper)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 4)
+            .padding(.bottom, 10)
+        } else {
+            // The colophon mark stands in for the wordmark on the collapsed rail.
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text("S").font(CarbonFont.semibold(16)).foregroundStyle(Carbon.textPrimary)
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(Carbon.interactive).frame(width: 5, height: 5)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
+            .padding(.bottom, 10)
+        }
+    }
+
+    private var collapseRow: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
+            AppSettings.sidebarExpanded = expanded
+        } label: {
+            HStack(spacing: 11) {
+                Image(systemName: "sidebar.leading")
+                    .font(.system(size: 14)).foregroundStyle(Carbon.iconSecondary)
+                    .frame(width: 18)
+                if expanded {
+                    Text("Collapse").font(CarbonFont.body(13.5)).foregroundStyle(Carbon.textSecondary)
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .frame(maxWidth: .infinity, alignment: expanded ? .leading : .center)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 2)
+        .help(expanded ? "Collapse sidebar" : "Expand sidebar")
     }
 
     /// The active-workspace picker. Search and Ask are hard-scoped to the selection; changing it
@@ -160,24 +201,25 @@ struct HubView: View {
                 } label: { Label("Delete “\(model.activeGroup)” workspace…", systemImage: "trash") }
             }
         } label: {
-            HStack(spacing: Space.x2) {
+            HStack(spacing: 8) {
                 Image(systemName: "folder")
                     .font(.system(size: 13)).foregroundStyle(Carbon.interactive)
+                    .frame(width: 18)
                 if expanded {
                     Text(model.activeGroup.isEmpty ? "Ungrouped" : model.activeGroup)
                         .font(CarbonFont.medium(13)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                    Spacer()
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9)).foregroundStyle(Carbon.iconSecondary)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold)).foregroundStyle(Carbon.iconSecondary)
                 }
             }
-            .padding(.horizontal, Space.x3).padding(.vertical, Space.x2)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .frame(maxWidth: .infinity, alignment: expanded ? .leading : .center)
             .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .padding(.horizontal, Space.x3)
         .help("Active workspace — search and Ask are scoped to it")
     }
 
@@ -191,28 +233,27 @@ struct HubView: View {
             focusTag = nil
             section = item
         } label: {
-            HStack(spacing: Space.x3) {
+            HStack(spacing: 11) {
                 Image(systemName: item.sfIcon)
-                    .font(.system(size: 16))
+                    .font(.system(size: 15))
                     .foregroundStyle(selected ? Carbon.interactive : Carbon.iconSecondary)
-                    .frame(width: 24)
+                    .frame(width: 18)
                 if expanded {
                     Text(item.title)
-                        .font(CarbonFont.body(14))
+                        .font(selected ? CarbonFont.semibold(13.5) : CarbonFont.body(13.5))
                         .foregroundStyle(selected ? Carbon.textPrimary : Carbon.textSecondary)
                         .lineLimit(1)
                     Spacer(minLength: 0)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: expanded ? .leading : .center)
-            .padding(.horizontal, Space.x3)
+            .padding(.horizontal, 10)
             .frame(height: 34)
-            .background(selected ? Carbon.interactive.opacity(0.16) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+            .frame(maxWidth: .infinity, alignment: expanded ? .leading : .center)
+            .background(selected ? Carbon.blueSoft : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, Space.x3)
         .help(item.title)
     }
 

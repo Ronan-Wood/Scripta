@@ -102,13 +102,9 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             if let proximity = nextCallProximity() {
                 // Tint the base to the menu bar color, then badge it with the proximity dot.
                 let tint: NSColor = menuBarIsDark(button) ? .white : .black
-                let base = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Scripta")?
-                    .withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [tint]))
-                button.image = badged(base, dotColor: proximity.color)
+                button.image = badged(ScriptaMark.statusIcon(tint: tint), dotColor: proximity.color)
             } else {
-                let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Scripta")
-                image?.isTemplate = true   // template = adapts to menu bar light/dark
-                button.image = image
+                button.image = ScriptaMark.statusIcon()   // template = adapts to menu bar light/dark
             }
         }
     }
@@ -445,8 +441,11 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         if hubWindow == nil {
             let window = NSWindow(contentViewController: NSHostingController(rootView: HubView()))
             window.title = "Scripta"
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            window.toolbarStyle = .unified   // consistent "thick" top across every section
+            // The title bar is drawn inside HubView (per the render) — the system chrome is
+            // transparent and full-size so only the traffic lights remain, over our bar.
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
             window.setContentSize(NSSize(width: 1100, height: 720))
             window.isReleasedWhenClosed = false
             window.delegate = self

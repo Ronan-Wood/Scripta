@@ -1,6 +1,32 @@
 import SwiftUI
 import AppKit
 
+/// The colophon "S." as a status-bar mark. Template by default (the menu bar recolors it);
+/// pass a tint for a flat-colored variant used by the proximity-badge compositing path.
+enum ScriptaMark {
+    static func statusIcon(tint: NSColor? = nil) -> NSImage {
+        let font = NSFont(name: "IBMPlexSans-SemiBold", size: 13) ?? .systemFont(ofSize: 13, weight: .semibold)
+        let color = tint ?? .black
+        let str = NSAttributedString(string: "S", attributes: [.font: font, .foregroundColor: color])
+        let sSize = str.size()
+        let square: CGFloat = 4, gap: CGFloat = 1.5
+        let size = NSSize(width: ceil(sSize.width + gap + square), height: 14)
+        let image = NSImage(size: size, flipped: false) { rect in
+            let textY = (rect.height - sSize.height) / 2
+            str.draw(at: NSPoint(x: 0, y: textY))
+            let dot = NSBezierPath(roundedRect: NSRect(x: sSize.width + gap,
+                                                       y: textY + abs(font.descender),
+                                                       width: square, height: square),
+                                   xRadius: 1, yRadius: 1)
+            color.setFill(); dot.fill()
+            return true
+        }
+        image.isTemplate = (tint == nil)
+        image.accessibilityDescription = "Scripta"
+        return image
+    }
+}
+
 /// Renders a bundled IBM Carbon SVG icon as a template image, tinted with a Carbon token color.
 /// Carbon icons are single-path monochrome, so template rendering + foreground tint is exact.
 struct CarbonIcon: View {
