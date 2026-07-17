@@ -40,6 +40,20 @@ frontmatter, written to a user-configured folder (typically inside an Obsidian v
   2026-07-16 (App Store prep): a one-time first-launch notice states this and the menu-bar
   indicator always shows recording state — but there is still no per-recording consent UI.
 
+## Knowledge center + Clovis (2026-07-16, from Ronan's Scripta.dc.html render)
+
+- **Living notes (the vault model):** standing documents in `Notes/` you work out of —
+  timestamped entries accumulated across calls, each optionally wikilinked to its source
+  transcript. Marker `app: call-transcriber-note` (pruner-proof, transcript-surface-invisible).
+  v1 is append-only ("comments mostly"); `Notes/` is excluded from the index by construction —
+  indexing notes for Ask/MCP is a later, deliberate schema step.
+- **Knowledge pane:** notes shelf + day-grouped cross-call digest (index-served, no file reads)
+  + workspace-scoped people/topics rail. "Add to note" on every digest card.
+- **Clovis** is the Ask assistant's name. Conversations persist per workspace — the privacy
+  wall covers chat history: a workspace's conversations are never listed from another.
+- Visual language: the app's Carbon tokens as matured in the Prism DS render (wordmark sidebar,
+  stat tiles, tinted record card, toolbar: Clovis · appearance · Record).
+
 ## Milestones
 
 1. ✅ **Menu bar shell** — LSUIElement, NSStatusItem, start/stop icon state (template mic /
