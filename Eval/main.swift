@@ -234,6 +234,22 @@ let leakPass = leaks == 0 && overrideReaches
 print("  \(checks) scoped results checked across Alpha/Beta/ungrouped · all-groups override reaches both: \(overrideReaches)")
 print("  → \(leakPass ? "PASS — the wall holds" : "FAIL — cross-group leak")")
 
-let pass = retrievalPass && leakPass
+// Vocabulary alias expansion: a synthetic call says the expansion, never the acronym; seeding
+// the term must make the acronym query find it, scoped like everything else.
+print("\nVocabulary alias expansion")
+store.upsert(IndexedTranscript(
+    path: "/fx-alias-1.md", title: "Parts delivery", date: "2026-07-17", time: "09:00",
+    duration: "1:00", participants: [], tags: [], summary: "", mtime: 0, mode: "", group: "AliasG"),
+    chunks: [IndexedChunk(startMs: 0, endMs: 1000, speaker: nil,
+                          text: "the courier sent an estimated time of arrival for the parts")])
+let beforeTerm = store.search("ETA", group: "AliasG", limit: 10)
+store.setTerms([IndexStore.TermRow(id: "t-eval", canonical: "ETA",
+                                   aliases: ["estimated time of arrival"], gloss: "", group: "")])
+let afterTerm = store.search("ETA", group: "AliasG", limit: 10)
+let aliasPass = beforeTerm.isEmpty && afterTerm.contains { $0.path == "/fx-alias-1.md" }
+print("  acronym query without term: \(beforeTerm.count) hits · with term seeded: \(afterTerm.count) hits")
+print("  → \(aliasPass ? "PASS — \"ETA\" reaches \"estimated time of arrival\"" : "FAIL — expansion did not fire")")
+
+let pass = retrievalPass && leakPass && aliasPass
 print("\nOVERALL: \(pass ? "PASS" : "FAIL")")
 exit(pass ? 0 : 1)

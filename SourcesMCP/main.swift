@@ -283,12 +283,35 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
         return Array(hits.prefix(max(1, limit)))
     }
 
-    // AND-first (precise), OR fallback (recall floor) — same two-pass as the app.
-    guard let andMatch = FTSQuery.andExpression(query) else { return [] }
+    // AND-first (precise), OR fallback (recall floor) — same two-pass as the app, with the same
+    // vocabulary alias expansion (terms cache in the DB; the registry file isn't visible here).
+    let aliases = aliasGroups(db: db, group: group)
+    guard let andMatch = FTSQuery.andExpression(query, aliasGroups: aliases) else { return [] }
     let hits = fused(andMatch)
     if !hits.isEmpty { return hits }
-    guard let orMatch = FTSQuery.orExpression(query) else { return [] }
+    guard let orMatch = FTSQuery.orExpression(query, aliasGroups: aliases) else { return [] }
     return fused(orMatch)
+}
+
+/// Vocabulary alias groups from the index's terms cache — workspace-scoped plus globals.
+/// Returns [] when the table doesn't exist yet (index from a pre-v9 app build).
+func aliasGroups(db: OpaquePointer, group: String) -> [[String]] {
+    var out: [[String]] = []
+    var stmt: OpaquePointer?
+    let sql = "SELECT canonical, aliases FROM terms WHERE \"group\" = ? OR \"group\" = ''"
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, group, -1, SQLITE_TRANSIENT_MCP)
+    while sqlite3_step(stmt) == SQLITE_ROW {
+        let canonical = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+        let aliases = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+        var members = [canonical.lowercased()]
+        for alias in aliases.split(separator: "\n").map(String.init) where !members.contains(alias) {
+            members.append(alias)
+        }
+        if members.count > 1 { out.append(members) }
+    }
+    return out
 }
 
 /// Spoken lines of one transcript within [start, end] ms (from the chunk index — Screen Context is

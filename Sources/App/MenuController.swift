@@ -293,9 +293,10 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 // workspace) — a stable string, per the partition's record-time-capture rule.
                 let group = AppSettings.recordingGroup(forCalendarID: meeting?.calendarID)
                 // Bias ASR toward names known for this workspace (the contextualStrings loop —
-                // free, source-level fix for mangled names). Confirmed-only, so unreviewed junk
-                // never steers future transcription.
+                // free, source-level fix for mangled names) plus the vocabulary's jargon.
+                // Confirmed-only, so unreviewed junk never steers future transcription.
                 let vocab = EntityRegistry.shared.confirmedAliases(group: group)
+                    + EntityRegistry.shared.termVocab(group: group)
                 try await newSession.start(mode: mode, screenSource: screenSource, group: group, extraVocab: vocab)
                 session = newSession
                 tiedMeeting = meeting

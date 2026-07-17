@@ -82,6 +82,21 @@ enum IndexBuilder {
 
     /// Reconciles the whole output folder against the index: indexes new/changed files, drops
     /// entries whose files are gone. Safe to run on launch.
+    /// Mirrors vocabulary terms from the registry (system of record) into the index DB — the
+    /// cache the retrieval layer and the MCP server read for alias expansion and glosses.
+    /// One row per (term, group membership).
+    static func syncTerms(store: IndexStore) {
+        let rows = EntityRegistry.shared.entities
+            .filter { $0.kind == "term" }
+            .flatMap { entity in
+                entity.groups.map { group in
+                    IndexStore.TermRow(id: entity.id, canonical: entity.name,
+                                       aliases: entity.aliases, gloss: entity.gloss ?? "", group: group)
+                }
+            }
+        store.setTerms(rows)
+    }
+
     /// Indexes one knowledge note (schema v8): the note's entries become its searchable
     /// "summary", so topic fusion surfaces it in Ask context and MCP retrieve. No chunks, no
     /// ledger, no entity pass — notes are the user's own words, already curated.
