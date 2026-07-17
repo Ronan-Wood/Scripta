@@ -248,7 +248,7 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
         guard !speakerSet else { return Array(hits.prefix(max(1, limit))) }
         let seen = Set(hits.map(\.path))
         var tsql = """
-        SELECT f.title, t.date, f.path, f.summary
+        SELECT f.title, t.date, f.path, f.summary, t.kind
         FROM transcripts_fts f JOIN transcripts t ON t.path = f.path
         WHERE transcripts_fts MATCH ?
         """
@@ -270,9 +270,13 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
                 let path = tcol(2)
                 if seen.contains(path) { continue }
                 let summary = tcol(3)
+                let isNote = tcol(4) == "note"
+                // Notes get a longer window: their "summary" IS the content, not a teaser.
+                var snippet = summary.isEmpty ? "matched on topic" : String(summary.prefix(isNote ? 400 : 160))
+                // The user's own knowledge notes retrieve alongside calls — labeled as theirs.
+                if isNote { snippet = "the user's note — " + snippet }
                 hits.append(RetrieveHit(title: tcol(0), date: tcol(1), path: path, speaker: "",
-                                        snippet: summary.isEmpty ? "matched on topic" : String(summary.prefix(160)),
-                                        startMs: 0, score: 0, isTopic: true))
+                                        snippet: snippet, startMs: 0, score: 0, isTopic: true))
             }
             sqlite3_finalize(stmt); stmt = nil
         }

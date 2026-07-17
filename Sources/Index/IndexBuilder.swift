@@ -82,16 +82,37 @@ enum IndexBuilder {
 
     /// Reconciles the whole output folder against the index: indexes new/changed files, drops
     /// entries whose files are gone. Safe to run on launch.
+    /// Indexes one knowledge note (schema v8): the note's entries become its searchable
+    /// "summary", so topic fusion surfaces it in Ask context and MCP retrieve. No chunks, no
+    /// ledger, no entity pass — notes are the user's own words, already curated.
+    static func indexNote(_ url: URL, into store: IndexStore) {
+        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate?.timeIntervalSince1970 ?? 0
+        guard let note = NoteStore.parse(url) else {
+            store.remove(path: url.path)
+            return
+        }
+        let entriesText = note.entries
+            .map { entry in entry.linkedCall.map { "[\(entry.stamp), re: \($0)] \(entry.text)" } ?? "[\(entry.stamp)] \(entry.text)" }
+            .joined(separator: "\n")
+        store.upsert(IndexedTranscript(
+            path: url.path, title: note.title, date: String(note.updated.prefix(10)), time: "",
+            duration: "", participants: [], tags: [], summary: entriesText, mtime: mtime,
+            mode: "", group: note.group, kind: "note"), chunks: [])
+    }
+
     static func reconcile(store: IndexStore) {
-        let folder = AppSettings.outputFolder
-        let onDisk = (try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
-        )) ?? []
-        let mdFiles = onDisk.filter { $0.pathExtension == "md" }
+        func mdFiles(in folder: URL) -> [URL] {
+            ((try? FileManager.default.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
+            )) ?? []).filter { $0.pathExtension == "md" }
+        }
+        let transcripts = mdFiles(in: AppSettings.outputFolder)
+        let notes = mdFiles(in: NoteStore.folder)
 
         let start = Date()
         let indexed = store.indexedPaths()
-        let livePaths = Set(mdFiles.map(\.path))
+        let livePaths = Set((transcripts + notes).map(\.path))
 
         // Remove entries whose files no longer exist.
         var removed = 0
@@ -100,13 +121,17 @@ enum IndexBuilder {
         }
         // Index anything new or modified since it was last indexed.
         var reindexed = 0, unchanged = 0
-        for url in mdFiles {
-            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
-                .contentModificationDate?.timeIntervalSince1970 ?? 0
-            if let known = indexed[url.path], abs(known - mtime) < 0.01 { unchanged += 1; continue }
-            index(url, into: store); reindexed += 1
+        func sweep(_ urls: [URL], _ indexOne: (URL, IndexStore) -> Void) {
+            for url in urls {
+                let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate?.timeIntervalSince1970 ?? 0
+                if let known = indexed[url.path], abs(known - mtime) < 0.01 { unchanged += 1; continue }
+                indexOne(url, store); reindexed += 1
+            }
         }
+        sweep(transcripts, index)
+        sweep(notes, indexNote)
         let ms = Int(Date().timeIntervalSince(start) * 1000)
-        log.info("reconcile: \(mdFiles.count) on disk, \(reindexed) indexed, \(removed) removed, \(unchanged) unchanged, \(ms)ms")
+        log.info("reconcile: \(transcripts.count)+\(notes.count) on disk, \(reindexed) indexed, \(removed) removed, \(unchanged) unchanged, \(ms)ms")
     }
 }
