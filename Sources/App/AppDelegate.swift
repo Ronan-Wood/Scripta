@@ -49,11 +49,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "Welcome to Call Transcriber"
         alert.informativeText = """
-        Recordings are transcribed right on your Mac and never leave it. The menu-bar icon \
-        shows whenever recording is on.
+        Recordings are transcribed on your Mac and never leave it. The menu bar icon shows \
+        when recording is active.
 
-        One heads-up: in some places, everyone on a call must agree to being recorded. \
-        Getting that OK is up to you.
+        Recording laws vary by location — some require consent from everyone on the call. \
+        Obtaining consent is your responsibility.
 
         Where should your transcripts be saved?
         """
