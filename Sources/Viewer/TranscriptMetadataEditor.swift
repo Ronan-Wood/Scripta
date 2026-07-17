@@ -19,7 +19,7 @@ enum TranscriptMetadataEditor {
                        tags rawTags: [String]) throws {
         let content = try String(contentsOf: url, encoding: .utf8)
         guard let split = Frontmatter.split(content), Frontmatter.hasOwnerMarker(split.frontmatter) else {
-            throw EditError(message: "This isn’t a Call Transcriber transcript.")
+            throw EditError(message: "This isn’t a Scripta transcript.")
         }
 
         let title = TranscriptWriter.sanitizeScalar(rawTitle)

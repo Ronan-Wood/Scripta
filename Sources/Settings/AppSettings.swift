@@ -67,7 +67,7 @@ enum AppSettings {
         set { defaults.set(newValue.rawValue, forKey: Keys.appearance) }
     }
 
-    /// Folder transcripts are written to. Defaults to ~/Documents/CallTranscriber.
+    /// Folder transcripts are written to. Defaults to ~/Documents/Scripta.
     /// Milestone 5 lets the user point this at an Obsidian vault / synced folder.
     static var outputFolder: URL {
         get {
@@ -75,7 +75,7 @@ enum AppSettings {
                 return URL(fileURLWithPath: path)
             }
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            return documents.appendingPathComponent("CallTranscriber", isDirectory: true)
+            return documents.appendingPathComponent("Scripta", isDirectory: true)
         }
         set { defaults.set(newValue.path, forKey: Keys.outputFolder) }
     }

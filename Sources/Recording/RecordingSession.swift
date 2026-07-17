@@ -20,7 +20,7 @@ struct CallNote: Sendable {
 final class RecordingSession {
     enum State { case idle, starting, recording, processing }
 
-    static let sessionPrefix = "CallTranscriber-session-"
+    static let sessionPrefix = "Scripta-session-"
 
     private(set) var state: State = .idle
 
@@ -50,7 +50,7 @@ final class RecordingSession {
     /// Root for ephemeral caption dirs — swept at launch so a crash can't leave screenshots behind.
     static var pendingCaptionsRoot: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("CallTranscriber", isDirectory: true)
+            .appendingPathComponent("Scripta", isDirectory: true)
             .appendingPathComponent("pending-captions", isDirectory: true)
         return base
     }
@@ -74,7 +74,7 @@ final class RecordingSession {
     /// The owner should stop the session so the mic track (and partial system track) survive.
     var onSystemAudioFailure: ((Error) -> Void)?
 
-    private let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "Session")
+    private let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Session")
 
     init() {
         sessionDir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -90,7 +90,7 @@ final class RecordingSession {
     /// is removed. Empty/silent orphans are just deleted. A transient failure leaves the audio in
     /// place to retry next launch, so a real call is never lost to a one-off error. Call on launch.
     static func recoverOrphans() async {
-        let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "Recovery")
+        let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Recovery")
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: tmp, includingPropertiesForKeys: [.creationDateKey]
@@ -120,7 +120,7 @@ final class RecordingSession {
                     extraTags: ["recovered"], isConference: wasConference)
                 log.notice("recovered orphaned recording → \(url.lastPathComponent, privacy: .public)")
                 try? FileManager.default.removeItem(at: dir)
-            } catch let error as NSError where error.domain == "CallTranscriber"
+            } catch let error as NSError where error.domain == "Scripta"
                 && (error.code == noAudioCode || error.code == noSpeechCode) {
                 try? FileManager.default.removeItem(at: dir)   // genuinely nothing spoken
             } catch {
@@ -300,7 +300,7 @@ final class RecordingSession {
     /// launch-time sweep so nothing persists indefinitely.
     func stop() async throws -> URL {
         guard state == .recording else {
-            throw NSError(domain: "CallTranscriber", code: 300,
+            throw NSError(domain: "Scripta", code: 300,
                           userInfo: [NSLocalizedDescriptionKey: "No recording is in progress."])
         }
         state = .processing
@@ -373,7 +373,7 @@ final class RecordingSession {
         let systemPeak = try AudioConverter.prepareTrack(inputURL: systemURL, outputURL: themWavURL)
 
         guard micPeak > 0 || systemPeak > 0 else {
-            throw NSError(domain: "CallTranscriber", code: noAudioCode,
+            throw NSError(domain: "Scripta", code: noAudioCode,
                           userInfo: [NSLocalizedDescriptionKey: "Recording produced no audio to transcribe."])
         }
 
@@ -399,7 +399,7 @@ final class RecordingSession {
         // transcript would count as "success" and delete the only copy of the audio. But a call
         // the user annotated with notes is worth keeping even if no speech was recognized.
         guard !segments.isEmpty || !notes.isEmpty else {
-            throw NSError(domain: "CallTranscriber", code: noSpeechCode,
+            throw NSError(domain: "Scripta", code: noSpeechCode,
                           userInfo: [NSLocalizedDescriptionKey: "No speech was recognized in the recording."])
         }
 

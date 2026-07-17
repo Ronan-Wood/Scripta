@@ -25,7 +25,7 @@ enum AudioConverter {
     @discardableResult
     static func prepareTrack(inputURL: URL, outputURL: URL) throws -> Float {
         guard let target = AVAudioFormat(standardFormatWithSampleRate: targetSampleRate, channels: 1) else {
-            throw NSError(domain: "CallTranscriber", code: 200,
+            throw NSError(domain: "Scripta", code: 200,
                           userInfo: [NSLocalizedDescriptionKey: "Could not create the target audio format."])
         }
 

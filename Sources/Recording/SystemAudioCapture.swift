@@ -8,8 +8,8 @@ import os
 /// never consumed — this is an audio-only use of SCStream.
 final class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
     private let outputURL: URL
-    private let queue = DispatchQueue(label: "com.ronanwood.CallTranscriber.systemAudio")
-    private let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "SystemAudio")
+    private let queue = DispatchQueue(label: "com.ronanwood.Scripta.systemAudio")
+    private let log = Logger(subsystem: "com.ronanwood.Scripta", category: "SystemAudio")
 
     private var stream: SCStream?
     private var audioFile: AVAudioFile?
@@ -47,7 +47,7 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
     func start() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         guard let display = content.displays.first else {
-            throw NSError(domain: "CallTranscriber", code: 100,
+            throw NSError(domain: "Scripta", code: 100,
                           userInfo: [NSLocalizedDescriptionKey: "No display is available to capture system audio from."])
         }
 

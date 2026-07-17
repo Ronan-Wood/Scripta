@@ -30,7 +30,7 @@ actor ScreenContextCapturer {
     private let focus: ScreenFocus
     private let source: ScreenSource
     private let deduplicator = SnippetDeduplicator()
-    private let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "ScreenContext")
+    private let log = Logger(subsystem: "com.ronanwood.Scripta", category: "ScreenContext")
 
     /// When set, retained frame PNGs are written here (ephemeral, deleted after the post-call
     /// caption pass). nil = OCR-text only. The cap bounds the post-call VLM time (~20s/image), not

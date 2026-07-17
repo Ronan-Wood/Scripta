@@ -91,7 +91,7 @@ func list(_ fm: String, _ key: String) -> [String] {
 // MARK: - Build a fresh index
 
 let tmpDB = URL(fileURLWithPath: NSTemporaryDirectory())
-    .appendingPathComponent("calltranscriber-eval-\(UUID().uuidString).db")
+    .appendingPathComponent("scripta-eval-\(UUID().uuidString).db")
 defer { try? FileManager.default.removeItem(at: tmpDB) }
 
 guard let store = try? IndexStore(url: tmpDB) else { die("Could not open temp index") }

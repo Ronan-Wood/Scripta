@@ -5,7 +5,7 @@ import OSLog
 /// retrievable unit is a coherent stretch of one voice. The Markdown stays the source of truth;
 /// this only writes into the derived SQLite index.
 enum IndexBuilder {
-    private static let log = Logger(subsystem: "com.ronanwood.CallTranscriber", category: "Index")
+    private static let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Index")
 
     /// Parses one transcript file and upserts it into the index. For files that no longer parse
     /// as app transcripts (de-marked, malformed frontmatter), any existing rows are purged —
