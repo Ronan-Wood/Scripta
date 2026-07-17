@@ -102,7 +102,14 @@ struct HubView: View {
             HStack(alignment: .top) {
                 if expanded {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Scripta").font(CarbonFont.semibold(15)).foregroundStyle(Carbon.textPrimary)
+                        // Wordmark A1: opening quote (spoken) · Scripta · square end-mark (written).
+                        HStack(alignment: .firstTextBaseline, spacing: 3) {
+                            Text("“").font(CarbonFont.semibold(17)).foregroundStyle(Carbon.interactive)
+                            Text("Scripta").font(CarbonFont.semibold(15)).foregroundStyle(Carbon.textPrimary)
+                            RoundedRectangle(cornerRadius: 1, style: .continuous)
+                                .fill(Carbon.interactive)
+                                .frame(width: 5, height: 5)
+                        }
                         Text("verba volant, scripta manent")
                             .font(CarbonFont.label(9)).italic().foregroundStyle(Carbon.textHelper)
                     }
