@@ -152,10 +152,16 @@ struct CallsView: View {
                 Text("No people, tags, or entities yet")
             }
         } label: {
-            CarbonIcon(name: "list", size: 16, color: Carbon.iconSecondary)
+            Image(systemName: "list.bullet")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Carbon.iconSecondary)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
-        .frame(width: 20)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Filter by person, tag, or entity")
     }
 
     private func callRow(_ row: CallRow) -> some View {
