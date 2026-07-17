@@ -81,8 +81,10 @@ final class IndexStore {
     /// v4 added the `group` partition column; v5 added the enrichment ledger; v6 added the entity
     /// graph (entities cache + mentions + action items); v7 chunks on-screen text too; v8 added
     /// the `kind` column and indexes knowledge notes (retrievable by Ask/MCP, hidden from call
-    /// lists); v9 added the vocabulary `terms` cache (registry → DB) powering alias expansion.
-    private static let schemaVersion: Int32 = 9
+    /// lists); v9 added the vocabulary `terms` cache (registry → DB) powering alias expansion;
+    /// v10 forces a one-time rebuild so documents indexed by an intermediate build during
+    /// development (some with truncated bodies) re-index from their full companion notes.
+    private static let schemaVersion: Int32 = 10
 
     private let db: OpaquePointer
     private let lock = NSLock()

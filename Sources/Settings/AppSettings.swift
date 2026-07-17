@@ -41,6 +41,13 @@ enum AppSettings {
         static let sidebarExpanded = "sidebarExpanded"
         static let globalHotkey = "globalHotkey"
         static let liveTranscription = "liveTranscription"
+        static let conversationRetentionDays = "conversationRetentionDays"
+    }
+
+    /// Auto-delete Clovis conversations older than this many days. 0 = keep forever (default).
+    static var conversationRetentionDays: Int {
+        get { defaults.integer(forKey: Keys.conversationRetentionDays) }
+        set { defaults.set(max(0, newValue), forKey: Keys.conversationRetentionDays) }
     }
 
     /// Show a live transcript (and related-calls) while recording. On by default.

@@ -55,6 +55,21 @@ final class AskModel: ObservableObject {
 
     init() {
         conversations = Self.load()
+        pruneExpiredConversations()
+    }
+
+    /// Drops conversations older than the user's retention window (Settings). 0 = keep forever.
+    /// `nowProvider` is injectable for tests; the app passes the real clock.
+    func pruneExpiredConversations(now: Date = Date()) {
+        let days = AppSettings.conversationRetentionDays
+        guard days > 0 else { return }
+        let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
+        let before = conversations.count
+        conversations.removeAll { $0.created < cutoff }
+        if conversations.count != before {
+            if !conversations.contains(where: { $0.id == currentID }) { currentID = nil; messages = [] }
+            Self.save(conversations)
+        }
     }
 
     /// Answering is available if the endpoint is assigned for Ask, or Apple Intelligence is on.
