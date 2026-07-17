@@ -37,8 +37,13 @@ targets:
         DEVELOPMENT_TEAM: 6CTH5M9UWZ
         ENABLE_HARDENED_RUNTIME: NO
         GENERATE_INFOPLIST_FILE: NO
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
         COMBINE_HIDPI_IMAGES: YES
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+          # Sandbox spike (App Store feasibility): Debug runs sandboxed so a real recording
+          # can prove SCK system audio + screenshots survive it. Release/dmg untouched.
+          CODE_SIGN_ENTITLEMENTS: Sources/App/CallTranscriber.entitlements
     dependencies:
       - target: calltranscriber-mcp
         copy:

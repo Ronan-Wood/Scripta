@@ -7,6 +7,8 @@ enum AppSettings {
 
     private enum Keys {
         static let outputFolder = "outputFolderPath"
+        static let outputFolderBookmark = "outputFolderBookmark"
+        static let firstRunNoticeShown = "firstRunNoticeShown"
         static let domainVocab = "domainVocabulary"
         static let language = "transcriptionLanguage"
         static let retentionEnabled = "retentionEnabled"
@@ -76,6 +78,52 @@ enum AppSettings {
             return documents.appendingPathComponent("CallTranscriber", isDirectory: true)
         }
         set { defaults.set(newValue.path, forKey: Keys.outputFolder) }
+    }
+
+    /// Security-scoped bookmark for the output folder. Under the App Sandbox a stored path grants
+    /// nothing across launches — the bookmark carries the user's folder grant instead.
+    static var outputFolderBookmark: Data? {
+        get { defaults.data(forKey: Keys.outputFolderBookmark) }
+        set { defaults.set(newValue, forKey: Keys.outputFolderBookmark) }
+    }
+
+    /// Points the app at a user-chosen folder: stores the path plus a security-scoped bookmark.
+    /// The open panel's own grant covers the current session; the bookmark covers every later one.
+    static func setOutputFolder(_ url: URL) {
+        outputFolder = url
+        outputFolderBookmark = try? url.bookmarkData(options: .withSecurityScope,
+                                                     includingResourceValuesForKeys: nil,
+                                                     relativeTo: nil)
+    }
+
+    /// Resolves and activates the stored folder grant. Must run at launch before anything touches
+    /// the output folder. The scoped access is held for the app's lifetime — every subsystem
+    /// (writer, watcher, pruner, registry, mirror, orphan recovery) rides this one grant.
+    /// Returns false when a bookmark existed but no longer resolves (folder deleted/detached);
+    /// the bookmark is cleared so the app falls back to the default folder instead of failing forever.
+    @discardableResult
+    static func restoreOutputFolderAccess() -> Bool {
+        guard let data = outputFolderBookmark else { return true }   // default folder — no grant needed
+        var stale = false
+        guard let url = try? URL(resolvingBookmarkData: data, options: .withSecurityScope,
+                                 relativeTo: nil, bookmarkDataIsStale: &stale) else {
+            outputFolderBookmark = nil
+            return false
+        }
+        _ = url.startAccessingSecurityScopedResource()
+        if stale {
+            outputFolderBookmark = try? url.bookmarkData(options: .withSecurityScope,
+                                                         includingResourceValuesForKeys: nil,
+                                                         relativeTo: nil)
+        }
+        outputFolder = url   // the folder may have moved; keep the stored path honest
+        return true
+    }
+
+    /// One-time first-launch notice (recording-consent reminder + transcripts-folder choice).
+    static var firstRunNoticeShown: Bool {
+        get { defaults.bool(forKey: Keys.firstRunNoticeShown) }
+        set { defaults.set(newValue, forKey: Keys.firstRunNoticeShown) }
     }
 
     /// Domain vocabulary (CRE terms, submarkets, deal jargon) fed to whisper's

@@ -33,7 +33,9 @@ frontmatter, written to a user-configured folder (typically inside an Obsidian v
   app via the bundled MCP server (M8) — the app stays a passive local data provider there.
 - Recording start/stop is fully manual. Calendar visibility (M6) is informational only.
 - Retention pruner deletes ONLY app-authored files (frontmatter marker `app: call-transcriber` AND filename pattern match), never recurses — output folder may live inside a real vault.
-- No in-app consent/disclosure feature; user discloses verbally.
+- Consent stays the user's responsibility; the app discloses nothing to other parties. Amended
+  2026-07-16 (App Store prep): a one-time first-launch notice states this and the menu-bar
+  indicator always shows recording state — but there is still no per-recording consent UI.
 
 ## Milestones
 
