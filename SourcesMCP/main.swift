@@ -270,11 +270,12 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
                 let path = tcol(2)
                 if seen.contains(path) { continue }
                 let summary = tcol(3)
-                let isNote = tcol(4) == "note"
-                // Notes get a longer window: their "summary" IS the content, not a teaser.
-                var snippet = summary.isEmpty ? "matched on topic" : String(summary.prefix(isNote ? 400 : 160))
-                // The user's own knowledge notes retrieve alongside calls — labeled as theirs.
-                if isNote { snippet = "the user's note — " + snippet }
+                let kind = tcol(4)
+                // Notes/documents get a longer window: their "summary" IS the content, not a teaser.
+                var snippet = summary.isEmpty ? "matched on topic" : String(summary.prefix(kind == "call" ? 160 : 400))
+                // The user's own notes and files retrieve alongside calls — labeled as theirs.
+                if kind == "note" { snippet = "the user's note — " + snippet }
+                if kind == "doc" { snippet = "the user's document — " + snippet }
                 hits.append(RetrieveHit(title: tcol(0), date: tcol(1), path: path, speaker: "",
                                         snippet: snippet, startMs: 0, score: 0, isTopic: true))
             }

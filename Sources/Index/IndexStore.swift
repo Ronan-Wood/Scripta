@@ -731,12 +731,17 @@ final class IndexStore {
             if let group { Self.bindStatic(stmt, 2, group) }
         }) { stmt in
             let title = text(stmt, 1), summary = text(stmt, 3), tags = text(stmt, 4)
-            let isNote = text(stmt, 5) == "note"
-            // A knowledge note IS its entries (indexed as summary): the user's own accumulated
-            // judgment, labeled so the model treats it as their words, not something spoken.
-            var parts = [isNote ? "The user's note: \(title.isEmpty ? "Untitled" : title)"
-                                : "Call: \(title.isEmpty ? "Untitled" : title)"]
-            if !summary.isEmpty { parts.append(isNote ? summary : "Summary: \(summary)") }
+            let kind = text(stmt, 5)
+            let name = title.isEmpty ? "Untitled" : title
+            // Notes and documents ARE their body (indexed as summary): the user's own words and
+            // files, labeled so the model treats them as theirs, not something spoken on a call.
+            var parts: [String]
+            switch kind {
+            case "note": parts = ["The user's note: \(name)"]
+            case "doc": parts = ["From the user's document “\(name)”:"]
+            default: parts = ["Call: \(name)"]
+            }
+            if !summary.isEmpty { parts.append(kind == "call" ? "Summary: \(summary)" : summary) }
             if !tags.isEmpty { parts.append("Topics: \(tags.replacingOccurrences(of: " ", with: ", "))") }
             out.append(ContextChunk(path: text(stmt, 0), title: title, date: text(stmt, 2),
                                     startMs: 0, speaker: "", text: parts.joined(separator: ". "), isTopic: true))

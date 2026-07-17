@@ -68,6 +68,26 @@ struct TranscriptDetail: View {
                             catch { exportError = error.localizedDescription }
                         }
                     }
+                    Divider()
+                    Button("Attach document to this call…") {
+                        let panel = NSOpenPanel()
+                        panel.canChooseFiles = true
+                        panel.allowsMultipleSelection = true
+                        panel.prompt = "Attach"
+                        panel.message = "The file's text is analyzed on-device and linked to this call."
+                        guard panel.runModal() == .OK else { return }
+                        for url in panel.urls {
+                            Task {
+                                do {
+                                    let imported = try await DocumentImporter.importFile(
+                                        url, group: meta.group, linkedCall: meta.url)
+                                    if let store = IndexStore.shared {
+                                        IndexBuilder.indexDoc(imported.mdURL, into: store)
+                                    }
+                                } catch { exportError = error.localizedDescription }
+                            }
+                        }
+                    }
                 } label: { Label("Share", systemImage: "square.and.arrow.up") }
                 Button {
                     termCanonical = ""; termAliases = ""; termGloss = ""

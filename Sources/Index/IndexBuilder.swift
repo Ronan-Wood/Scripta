@@ -116,6 +116,21 @@ enum IndexBuilder {
             mode: "", group: note.group, kind: "note"), chunks: [])
     }
 
+    /// Indexes one imported document's companion note as `kind: 'doc'` — retrievable by search,
+    /// Clovis, and the MCP; invisible to every call surface. Extracted text is the searchable body.
+    static func indexDoc(_ url: URL, into store: IndexStore) {
+        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate?.timeIntervalSince1970 ?? 0
+        guard let doc = DocumentImporter.parse(url) else {
+            store.remove(path: url.path)
+            return
+        }
+        store.upsert(IndexedTranscript(
+            path: url.path, title: doc.title, date: String(doc.created.prefix(10)), time: "",
+            duration: "", participants: [], tags: [], summary: String(doc.body.prefix(60_000)),
+            mtime: mtime, mode: "", group: doc.group, kind: "doc"), chunks: [])
+    }
+
     static func reconcile(store: IndexStore) {
         func mdFiles(in folder: URL) -> [URL] {
             ((try? FileManager.default.contentsOfDirectory(
@@ -124,10 +139,11 @@ enum IndexBuilder {
         }
         let transcripts = mdFiles(in: AppSettings.outputFolder)
         let notes = mdFiles(in: NoteStore.folder)
+        let docs = mdFiles(in: DocumentImporter.folder)
 
         let start = Date()
         let indexed = store.indexedPaths()
-        let livePaths = Set((transcripts + notes).map(\.path))
+        let livePaths = Set((transcripts + notes + docs).map(\.path))
 
         // Remove entries whose files no longer exist.
         var removed = 0
@@ -146,7 +162,8 @@ enum IndexBuilder {
         }
         sweep(transcripts, index)
         sweep(notes, indexNote)
+        sweep(docs, indexDoc)
         let ms = Int(Date().timeIntervalSince(start) * 1000)
-        log.info("reconcile: \(transcripts.count)+\(notes.count) on disk, \(reindexed) indexed, \(removed) removed, \(unchanged) unchanged, \(ms)ms")
+        log.info("reconcile: \(transcripts.count)+\(notes.count)+\(docs.count) on disk, \(reindexed) indexed, \(removed) removed, \(unchanged) unchanged, \(ms)ms")
     }
 }
