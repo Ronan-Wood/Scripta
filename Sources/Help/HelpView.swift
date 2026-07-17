@@ -5,9 +5,14 @@ import AppKit
 struct HelpView: View {
     @State private var mcpCopied = false
     @State private var skillStatus: String?
+    @State private var desktopStatus: String?
+
+    private var mcpBinaryPath: String {
+        "\(Bundle.main.bundlePath)/Contents/MacOS/calltranscriber-mcp"
+    }
 
     private var mcpCommand: String {
-        "claude mcp add calltranscriber -- \"\(Bundle.main.bundlePath)/Contents/MacOS/calltranscriber-mcp\""
+        "claude mcp add -s user calltranscriber -- \"\(mcpBinaryPath)\""
     }
 
     var body: some View {
@@ -60,12 +65,24 @@ struct HelpView: View {
         CarbonCard {
             VStack(alignment: .leading, spacing: Space.x4) {
                 Text("Connect to Claude").font(CarbonFont.medium(16)).foregroundStyle(Carbon.textPrimary)
-                Text("A built-in MCP server lets Claude (Code, Desktop, or Cowork) read, search, and reason over your calls. Move the app to Applications first — the command points to where the app currently sits.")
+                Text("A built-in server lets Claude read, search, and reason over your calls. Move the app to Applications first — both setups point to where the app currently sits, so they break if it moves later.")
                     .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("1. Register the MCP server — paste this in your terminal:")
-                    .font(CarbonFont.label(13)).foregroundStyle(Carbon.textPrimary)
+                Text("Claude Desktop and Cowork").font(CarbonFont.label(13)).foregroundStyle(Carbon.textPrimary)
+                HStack(spacing: Space.x4) {
+                    CarbonButton(title: "Add to Claude Desktop", kind: .primary, action: addToClaudeDesktop)
+                    if let desktopStatus {
+                        Text(desktopStatus).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
+                    }
+                }
+                Text("You'll pick Claude's settings folder once to allow the change. Then quit Claude Desktop (⌘Q) and reopen it.")
+                    .font(CarbonFont.body(12)).foregroundStyle(Carbon.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("Claude Code (terminal)").font(CarbonFont.label(13)).foregroundStyle(Carbon.textPrimary)
+                Text("Paste this once — it registers the server for every project:")
+                    .font(CarbonFont.body(12)).foregroundStyle(Carbon.textSecondary)
                 HStack(alignment: .top, spacing: Space.x3) {
                     Text(mcpCommand)
                         .font(CarbonFont.monospace(12)).foregroundStyle(Carbon.textPrimary)
@@ -80,16 +97,57 @@ struct HelpView: View {
                         mcpCopied = true
                     }
                 }
-
-                Text("2. Install the Claude skill (the playbook that teaches Claude how to use it). You'll pick your .claude folder once so the app is allowed to write there:")
-                    .font(CarbonFont.label(13)).foregroundStyle(Carbon.textPrimary)
                 HStack(spacing: Space.x4) {
-                    CarbonButton(title: "Install Claude skill", kind: .primary, action: installSkill)
+                    CarbonButton(title: "Install Claude skill", kind: .secondary, action: installSkill)
                     if let skillStatus {
                         Text(skillStatus).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
                     }
                 }
+                Text("The skill (Claude Code only) teaches Claude the playbooks — \"summarize my week\", \"action items across calls\". You'll pick your .claude folder once.")
+                    .font(CarbonFont.body(12)).foregroundStyle(Carbon.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("Good to know: Claude can read your calls only while this app is running, and only the workspace you're in — switch workspaces (or use Search All) in the sidebar.")
+                    .font(CarbonFont.body(12)).foregroundStyle(Carbon.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    /// Registers the MCP server in Claude Desktop's config (also covers Cowork). The config
+    /// lives in the real ~/Library — outside our sandbox — so a one-time folder grant is
+    /// needed; the existing file is backed up, then merged, never replaced.
+    private func addToClaudeDesktop() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Add"
+        panel.message = "Select Claude's settings folder so the app can register itself."
+        panel.directoryURL = realHome.appendingPathComponent("Library/Application Support/Claude",
+                                                             isDirectory: true)
+        guard panel.runModal() == .OK, let dir = panel.url else { return }
+        let configURL = dir.appendingPathComponent("claude_desktop_config.json")
+        do {
+            var root: [String: Any] = [:]
+            if let data = try? Data(contentsOf: configURL) {
+                guard let existing = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                    desktopStatus = "That folder has a config file the app can't read safely."
+                    return
+                }
+                try? FileManager.default.removeItem(at: configURL.appendingPathExtension("bak"))
+                try? FileManager.default.copyItem(at: configURL, to: configURL.appendingPathExtension("bak"))
+                root = existing
+            }
+            var servers = (root["mcpServers"] as? [String: Any]) ?? [:]
+            servers["calltranscriber"] = ["command": mcpBinaryPath]
+            root["mcpServers"] = servers
+            let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: configURL, options: .atomic)
+            desktopStatus = "Added. Quit Claude Desktop (⌘Q) and reopen it."
+        } catch {
+            desktopStatus = "Couldn't update the config: \(error.localizedDescription)"
         }
     }
 
