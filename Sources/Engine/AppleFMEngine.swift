@@ -36,7 +36,7 @@ private final class AppleFMChat: ChatConversing {
 
     func stream(_ prompt: String) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 if session == nil { session = LanguageModelSession(instructions: instructions) }
                 do {
                     try await run(prompt, into: continuation)
@@ -53,6 +53,7 @@ private final class AppleFMChat: ChatConversing {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { @Sendable _ in task.cancel() }   // cancel FM gen on stop (audit L10)
         }
     }
 
