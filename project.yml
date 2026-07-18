@@ -96,11 +96,14 @@ targets:
     sources:
       - Tests
       - Sources/Support/RetentionGate.swift
+      - Sources/Support/RetentionPruner.swift
       - Sources/Shared/Frontmatter.swift
       - Sources/Shared/OwnerMarker.swift
       - Sources/Shared/FTSQuery.swift
+      - Sources/Shared/SharedLocations.swift
       - Sources/Documents/MiniZip.swift
       - Sources/Viewer/TranscriptParser.swift
+      - Sources/Index/IndexStore.swift
     settings:
       base:
         PRODUCT_NAME: ScriptaTests

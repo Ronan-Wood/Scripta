@@ -23,72 +23,29 @@ struct TranscriptDetail: View {
     @State private var blocks: [TranscriptBlock] = []
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                // Lazy: only on-screen blocks are realized/laid out. A non-lazy VStack built every
-                // block of an hour-long call up front (and re-laid them on each scroll tick).
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    header
-                    Divider()
-                    ForEach(Array(blocks.enumerated()), id: \.offset) { offset, block in
-                        BlockView(block: block, highlighted: offset == flashIndex).id(offset)
+        // In-pane action row (not a native `.toolbar`): the hub draws its own in-window title bar
+        // and suppresses the system titlebar, so a native toolbar here would hoist these buttons
+        // into that suppressed bar and break the top-bar layout only on this pane. Carbon-styled
+        // row keeps Calls consistent with every other section.
+        VStack(spacing: 0) {
+            actionBar
+            ScrollViewReader { proxy in
+                ScrollView {
+                    // Lazy: only on-screen blocks are realized/laid out. A non-lazy VStack built every
+                    // block of an hour-long call up front (and re-laid them on each scroll tick).
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        header
+                        Divider()
+                        ForEach(Array(blocks.enumerated()), id: \.offset) { offset, block in
+                            BlockView(block: block, highlighted: offset == flashIndex).id(offset)
+                        }
                     }
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
                 }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-            }
-            .task(id: meta.url) { await loadBlocks(); scrollToTarget(proxy) }
-            .onChange(of: scrollToMs) { _, _ in scrollToTarget(proxy) }
-        }
-        .toolbar {
-            ToolbarItemGroup {
-                Button {
-                    showingEditor = true
-                } label: { Label("Edit Details", systemImage: "pencil") }
-                Button {
-                    NSWorkspace.shared.open(meta.url)
-                } label: { Label("Open in Editor", systemImage: "square.and.pencil") }
-                Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([meta.url])
-                } label: { Label("Reveal in Finder", systemImage: "folder") }
-                Menu {
-                    Button("Copy summary") { copy(TranscriptExporter.summary(of: meta.url)) }
-                    Button("Copy transcript") { copy(TranscriptExporter.plainText(of: meta.url)) }
-                    Divider()
-                    Button("Export as PDF…") {
-                        TranscriptExporter.savePanel(suggestedName: fileName, ext: "pdf") { url in
-                            do { try TranscriptExporter.exportPDF(meta, to: url) }
-                            catch { exportError = error.localizedDescription }
-                        }
-                    }
-                    Button("Export as text…") {
-                        TranscriptExporter.savePanel(suggestedName: fileName, ext: "txt") { url in
-                            do { try TranscriptExporter.exportText(meta, to: url) }
-                            catch { exportError = error.localizedDescription }
-                        }
-                    }
-                    Divider()
-                    Button("Attach document to this call…") {
-                        let panel = NSOpenPanel()
-                        panel.canChooseFiles = true
-                        panel.allowsMultipleSelection = true
-                        panel.prompt = "Attach"
-                        panel.message = "The file's text is analyzed on-device and linked to this call."
-                        guard panel.runModal() == .OK else { return }
-                        for url in panel.urls {
-                            Task { await AppModel.shared.importDocument(url, linkedCall: meta.url) }
-                        }
-                    }
-                } label: { Label("Share", systemImage: "square.and.arrow.up") }
-                Button {
-                    termCanonical = ""; termAliases = ""; termGloss = ""
-                    addingTerm = true
-                } label: { Label("Add to Vocabulary", systemImage: "character.book.closed") }
-                    .help("Spotted mangled jargon? Teach it once — transcription and search learn it everywhere.")
-                Button(role: .destructive) {
-                    confirmingDelete = true
-                } label: { Label("Delete", systemImage: "trash") }
+                .task(id: meta.url) { await loadBlocks(); scrollToTarget(proxy) }
+                .onChange(of: scrollToMs) { _, _ in scrollToTarget(proxy) }
             }
         }
         .alert("Add vocabulary term", isPresented: $addingTerm) {
@@ -206,6 +163,100 @@ struct TranscriptDetail: View {
 
     private func label(_ symbol: String, _ text: String) -> some View {
         Label(text, systemImage: symbol).font(.caption).foregroundStyle(.secondary)
+    }
+
+    // MARK: - Action row (matches the hub's 40pt in-window bar treatment)
+
+    private var actionBar: some View {
+        HStack(spacing: Space.x1) {
+            Spacer()
+            ReaderBarButton(systemImage: "pencil", help: "Edit details") { showingEditor = true }
+            ReaderBarButton(systemImage: "square.and.pencil", help: "Open in external editor") {
+                NSWorkspace.shared.open(meta.url)
+            }
+            ReaderBarButton(systemImage: "folder", help: "Reveal in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([meta.url])
+            }
+            shareMenu
+            ReaderBarButton(systemImage: "character.book.closed",
+                            help: "Add to vocabulary — teach a term once; transcription and search learn it everywhere") {
+                termCanonical = ""; termAliases = ""; termGloss = ""
+                addingTerm = true
+            }
+            ReaderBarButton(systemImage: "trash", help: "Delete transcript", tint: Carbon.danger) {
+                confirmingDelete = true
+            }
+        }
+        .padding(.horizontal, Space.x4)
+        .frame(height: 40)
+        .background(Carbon.background)
+        .overlay(alignment: .bottom) { Rectangle().fill(Carbon.borderSubtle).frame(height: 1) }
+    }
+
+    private var shareMenu: some View {
+        Menu {
+            Button("Copy summary") { copy(TranscriptExporter.summary(of: meta.url)) }
+            Button("Copy transcript") { copy(TranscriptExporter.plainText(of: meta.url)) }
+            Divider()
+            Button("Export as PDF…") {
+                TranscriptExporter.savePanel(suggestedName: fileName, ext: "pdf") { url in
+                    do { try TranscriptExporter.exportPDF(meta, to: url) }
+                    catch { exportError = error.localizedDescription }
+                }
+            }
+            Button("Export as text…") {
+                TranscriptExporter.savePanel(suggestedName: fileName, ext: "txt") { url in
+                    do { try TranscriptExporter.exportText(meta, to: url) }
+                    catch { exportError = error.localizedDescription }
+                }
+            }
+            Divider()
+            Button("Attach document to this call…") {
+                let panel = NSOpenPanel()
+                panel.canChooseFiles = true
+                panel.allowsMultipleSelection = true
+                panel.prompt = "Attach"
+                panel.message = "The file's text is analyzed on-device and linked to this call."
+                guard panel.runModal() == .OK else { return }
+                for url in panel.urls {
+                    Task { await AppModel.shared.importDocument(url, linkedCall: meta.url) }
+                }
+            }
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+                .font(.system(size: 14))
+                .foregroundStyle(Carbon.iconSecondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Share, export, or attach a document")
+    }
+}
+
+/// An icon button for the reader's action row — matches the hub's plain, hover-tinted controls.
+private struct ReaderBarButton: View {
+    let systemImage: String
+    let help: String
+    var tint: Color = Carbon.iconSecondary
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14))
+                .foregroundStyle(tint)
+                .frame(width: 28, height: 28)
+                .background(hovering ? Carbon.layerHover : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
     }
 }
 
