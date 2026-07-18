@@ -16,17 +16,33 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
     }
 
     private func endpoint(_ path: String) throws -> URL {
+        let host = baseURL.host ?? "?"
         guard Locality.isAllowedForRequest(baseURL, lanConfirmed: lanConfirmed) else {
-            throw EngineError.refusedHost(baseURL.host ?? "?")
+            throw EngineError.refusedHost(host)
+        }
+        // Resolve-and-verify: a hostname (localhost, *.local) must resolve ONLY to local addresses,
+        // so a name pointed at a public IP (static /etc/hosts, misconfig, naive spoof) is refused.
+        // IP literals short-circuit (no DNS). Runs off the main actor inside the request Task.
+        // (Residual: URLSession re-resolves at connect, so a name rebound between here and connect
+        // isn't fully closed — see Locality; IP-literal and https configs are unaffected.)
+        guard Locality.resolvedIsLocal(host: host) else {
+            throw EngineError.refusedHost(host)
         }
         return baseURL.appendingPathComponent(path)
     }
 
-    /// Drop any redirect that changes host — a local server must never bounce us off-box.
+    /// Drop any redirect that would leave the box. Re-applies the full locality gate to the redirect
+    /// target — same string + resolved-address checks as the initial request — and keeps it pinned
+    /// to the configured host, so a local server can't 302 us onto a public address.
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
                     completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(request.url?.host == baseURL.host ? request : nil)
+        guard let url = request.url, let host = url.host, host == baseURL.host,
+              Locality.isAllowedForRequest(url, lanConfirmed: lanConfirmed),
+              Locality.resolvedIsLocal(host: host) else {
+            completionHandler(nil); return
+        }
+        completionHandler(request)
     }
 
     // MARK: - Models (health)
