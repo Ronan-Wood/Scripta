@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import OSLog
+import os
 
 /// A manual note the user typed during a recording, timestamped against the session start
 /// (paused intervals spliced out, exactly like the audio tracks) so it interleaves into the
@@ -35,6 +36,10 @@ final class RecordingSession {
     private var screenCapturer: ScreenContextCapturer?
     private var liveTranscriber: LiveTranscriber?
     private var liveStartTask: Task<Void, Never>?
+    /// Set (under `lock`) when stop() begins teardown, so the live-transcription start task — which
+    /// may still be inside a first-use model download stop() must not block on — won't resurrect the
+    /// transcriber after teardown (audit L6).
+    private var isStopping = false
     private var activityToken: NSObjectProtocol?
     private var startedAt = Date()
     private var mode: RecordingMode = .call
@@ -151,6 +156,7 @@ final class RecordingSession {
         lock.lock()
         guard state == .idle else { lock.unlock(); return }
         state = .starting
+        isStopping = false
         lock.unlock()
         self.mode = mode
         self.group = group
@@ -189,8 +195,22 @@ final class RecordingSession {
 
         // The level meter (and, below, the live transcript) follow the mic when it's captured,
         // otherwise the system track — so a system-audio conference still shows a live meter.
+        // Coalesce meter updates: keep the latest peak and keep at most ONE pending main-actor update
+        // in flight, so the audio callback thread doesn't allocate a Task per buffer and can't back up
+        // the main actor under load (audit L7).
+        let meterState = OSAllocatedUnfairLock<(peak: Float, pending: Bool)>(initialState: (0, false))
         let meterSink: (Float) -> Void = { level in
-            Task { @MainActor in AppModel.shared.meter.level = min(1, level) }
+            let schedule = meterState.withLock { s -> Bool in
+                s.peak = min(1, level)
+                if s.pending { return false }
+                s.pending = true
+                return true
+            }
+            guard schedule else { return }
+            Task { @MainActor in
+                let peak = meterState.withLock { s -> Float in s.pending = false; return s.peak }
+                AppModel.shared.meter.level = peak
+            }
         }
         if mode.capturesMic { mic?.onLevel = meterSink } else { system?.onLevel = meterSink }
 
@@ -250,7 +270,13 @@ final class RecordingSession {
                     await live.stop()
                     return
                 }
-                self.liveTranscriber = live
+                // If stop() already began teardown, don't resurrect the transcriber — stop this
+                // instance ourselves so it can't outlive the session (audit L6).
+                self.lock.lock()
+                let claimed = !self.isStopping
+                if claimed { self.liveTranscriber = live }
+                self.lock.unlock()
+                guard claimed else { await live.stop(); return }
                 if feedsMic { self.micCapture?.onBuffer = feed } else { self.systemCapture?.onBuffer = feed }
             }
         }
@@ -318,13 +344,16 @@ final class RecordingSession {
                           userInfo: [NSLocalizedDescriptionKey: "No recording is in progress."])
         }
         state = .processing
+        isStopping = true
         lock.unlock()
 
         micCapture?.stop()
         await systemCapture?.stop()
         let snippets = await screenCapturer?.stop() ?? []
         liveStartTask?.cancel()
-        await liveStartTask?.value   // no assignment can land after this point
+        // Don't await .value — a first-use model download inside live.start() may not cancel promptly
+        // and would block stop()/quit. The isStopping flag stops any live instance the task assigns,
+        // and this stops one already assigned; so the transcriber is torn down exactly once (audit L6).
         liveStartTask = nil
         await liveTranscriber?.stop()
         micCapture = nil
