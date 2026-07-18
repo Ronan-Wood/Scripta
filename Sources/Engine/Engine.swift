@@ -72,6 +72,7 @@ enum EngineError: LocalizedError {
     case modelNotFound(String)
     case badResponse
     case timedOut
+    case responseTooLarge
     case http(Int)
 
     var errorDescription: String? {
@@ -82,6 +83,7 @@ enum EngineError: LocalizedError {
         case .modelNotFound(let m): return "The assigned model “\(m)” isn’t on the server anymore."
         case .badResponse: return "The local model server returned an unexpected response."
         case .timedOut: return "The local model server timed out."
+        case .responseTooLarge: return "The local model server sent an unexpectedly large response."
         case .http(let code): return "The local model server returned HTTP \(code)."
         }
     }
