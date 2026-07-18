@@ -556,9 +556,17 @@ final class IndexStore {
     /// match "training"/"email". The stored blob is wrapped in newlines and the value is matched
     /// as `%\nvalue\n%`.
     private static func delimitedClause(_ column: String) -> String {
-        " AND (char(10)||lower(\(column))||char(10)) LIKE ?"
+        " AND (char(10)||lower(\(column))||char(10)) LIKE ? ESCAPE '\\'"
     }
-    private static func delimitedValue(_ value: String) -> String { "%\n\(value.lowercased())\n%" }
+    private static func delimitedValue(_ value: String) -> String {
+        // Escape the LIKE metacharacters so a participant/tag literally containing % or _ matches
+        // exactly, not as a wildcard (audit L3). Escape the escape char first.
+        let escaped = value.lowercased()
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+        return "%\n\(escaped)\n%"
+    }
 
     private func passageHits(_ match: String, participant: String?, tag: String?,
                              since: String?, speaker: String?, group: String?, limit: Int) -> [SearchHit] {
