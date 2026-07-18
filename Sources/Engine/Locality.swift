@@ -51,6 +51,9 @@ enum Locality {
             if host == "::1" { return .loopback }
             let head = host.prefix(2).lowercased()
             if head == "fc" || head == "fd" { return .lan }   // fc00::/7 unique-local
+            // fe80::/10 link-local — the address a *.local name commonly resolves to on a dual-stack
+            // LAN (mirrors the IPv4 169.254 case). Second byte 0x80–0xbf ⇒ 3rd hex nibble 8/9/a/b.
+            if ["fe8", "fe9", "fea", "feb"].contains(host.prefix(3).lowercased()) { return .lan }
             return .refused
         }
 
