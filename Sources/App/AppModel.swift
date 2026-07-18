@@ -144,7 +144,13 @@ final class AppModel: ObservableObject {
     private init() {}
 
     func reloadCalls() {
-        calls = TranscriptStore.list()
+        // TranscriptStore.list() scans the output folder and head-reads every file. Run it off the
+        // main actor so the many callers (recording-complete, delete, index change, view appear)
+        // don't block the UI (audit M7); the @Published assignment lands back on the main actor.
+        Task.detached(priority: .userInitiated) {
+            let loaded = TranscriptStore.list()
+            await MainActor.run { AppModel.shared.calls = loaded }
+        }
     }
 
     // MARK: - Document import (lives here, not in a view, so it survives navigating away and
