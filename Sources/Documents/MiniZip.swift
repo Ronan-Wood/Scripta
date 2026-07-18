@@ -5,26 +5,42 @@ import Compression
 /// deflate entries). Written in-repo to keep the app dependency-free; no zip64, no encryption,
 /// graceful errors on anything exotic. Apple's `COMPRESSION_ZLIB` is raw DEFLATE, which is
 /// exactly what zip entries use.
+///
+/// Input is attacker-influenced (users import arbitrary documents), so every offset/length read
+/// from the archive is bounds-checked before use and the decompression buffer is sized from the
+/// compressed payload — never from the archive's self-declared uncompressed size.
 enum MiniZip {
     enum ZipError: Error { case notAZip, entryNotFound, unsupported, corrupt }
 
-    /// All entry names in the archive.
-    static func entries(of url: URL) throws -> [String] {
-        try centralDirectory(of: try Data(contentsOf: url)).map(\.name)
+    /// An opened archive. The file bytes are read and the central directory parsed ONCE; reuse the
+    /// returned value to extract many entries without re-reading/re-parsing the whole file per entry.
+    struct Archive {
+        fileprivate let data: Data
+        fileprivate let entries: [Entry]
+        fileprivate let index: [String: Int]   // name → entries index (first occurrence wins), O(1) lookup
+
+        /// All entry names in the archive.
+        var names: [String] { entries.map(\.name) }
+
+        /// Decompressed contents of one entry.
+        func read(_ name: String) throws -> Data {
+            guard let i = index[name] else { throw ZipError.entryNotFound }
+            return try MiniZip.extract(entries[i], from: data)
+        }
     }
 
-    /// Decompressed contents of one entry.
-    static func read(_ name: String, from url: URL) throws -> Data {
+    /// Reads + parses the archive once. Reuse the returned `Archive` to extract several entries.
+    static func open(_ url: URL) throws -> Archive {
         let data = try Data(contentsOf: url)
-        guard let entry = try centralDirectory(of: data).first(where: { $0.name == name }) else {
-            throw ZipError.entryNotFound
-        }
-        return try extract(entry, from: data)
+        let entries = try centralDirectory(of: data)
+        var index = [String: Int](minimumCapacity: entries.count)
+        for (i, e) in entries.enumerated() where index[e.name] == nil { index[e.name] = i }
+        return Archive(data: data, entries: entries, index: index)
     }
 
     // MARK: - Internals
 
-    private struct Entry {
+    fileprivate struct Entry {
         let name: String
         let method: UInt16          // 0 = stored, 8 = deflate
         let compressedSize: Int
@@ -56,7 +72,7 @@ enum MiniZip {
         var offset = u32(data, eocd + 16)
         var out: [Entry] = []
         for _ in 0..<count {
-            guard offset + 46 <= data.count,
+            guard offset >= 0, offset + 46 <= data.count,
                   data[offset] == 0x50, data[offset + 1] == 0x4b,
                   data[offset + 2] == 0x01, data[offset + 3] == 0x02 else { throw ZipError.corrupt }
             let method = UInt16(u16(data, offset + 10))
@@ -66,18 +82,22 @@ enum MiniZip {
             let extraLen = u16(data, offset + 30)
             let commentLen = u16(data, offset + 32)
             let localOffset = u32(data, offset + 42)
+            // The variable-length name/extra/comment are attacker-controlled: confirm the whole
+            // record lies within the buffer before slicing the name or advancing to the next record.
+            let recordEnd = offset + 46 + nameLen + extraLen + commentLen
+            guard recordEnd <= data.count else { throw ZipError.corrupt }
             let nameData = data.subdata(in: (offset + 46)..<(offset + 46 + nameLen))
             let name = String(data: nameData, encoding: .utf8) ?? ""
             out.append(Entry(name: name, method: method, compressedSize: compressed,
                              uncompressedSize: uncompressed, localHeaderOffset: localOffset))
-            offset += 46 + nameLen + extraLen + commentLen
+            offset = recordEnd
         }
         return out
     }
 
-    private static func extract(_ entry: Entry, from data: Data) throws -> Data {
+    fileprivate static func extract(_ entry: Entry, from data: Data) throws -> Data {
         let lo = entry.localHeaderOffset
-        guard lo + 30 <= data.count,
+        guard lo >= 0, lo + 30 <= data.count,
               data[lo] == 0x50, data[lo + 1] == 0x4b,
               data[lo + 2] == 0x03, data[lo + 3] == 0x04 else { throw ZipError.corrupt }
         // Sizes come from the CENTRAL entry (the local header may defer to a data descriptor);
@@ -85,7 +105,9 @@ enum MiniZip {
         let nameLen = u16(data, lo + 26)
         let extraLen = u16(data, lo + 28)
         let start = lo + 30 + nameLen + extraLen
-        guard start + entry.compressedSize <= data.count else { throw ZipError.corrupt }
+        guard entry.compressedSize >= 0, start >= 0, start + entry.compressedSize <= data.count else {
+            throw ZipError.corrupt
+        }
         let payload = data.subdata(in: start..<(start + entry.compressedSize))
 
         switch entry.method {
@@ -99,7 +121,15 @@ enum MiniZip {
     }
 
     private static func inflate(_ payload: Data, expected: Int) throws -> Data {
-        let capacity = max(expected, 64)
+        guard !payload.isEmpty else { throw ZipError.corrupt }
+        // `expected` (the entry's declared uncompressed size) is attacker-controlled — never let it
+        // size the buffer directly (a tiny entry could declare ~4 GB and exhaust memory). DEFLATE
+        // tops out around 1032:1, so bound the allocation by what THIS payload could plausibly
+        // inflate to, plus an absolute ceiling.
+        let maxInflate = 512 * 1024 * 1024   // no OOXML text part is remotely this large
+        let ratio = payload.count.multipliedReportingOverflow(by: 1100)
+        let ratioCap = ratio.overflow ? Int.max : ratio.partialValue &+ 4096
+        let capacity = max(64, min(expected, ratioCap, maxInflate))
         var out = Data(count: capacity)
         let written = out.withUnsafeMutableBytes { dst in
             payload.withUnsafeBytes { src in
@@ -110,6 +140,10 @@ enum MiniZip {
             }
         }
         guard written > 0 else { throw ZipError.corrupt }
+        // compression_decode_buffer can't signal "output too small": a full buffer at the absolute
+        // ceiling means we clamped below the true size, so fail loud instead of returning a silently
+        // truncated document. (A normal entry fills exactly `expected`, which is < maxInflate.)
+        if written == capacity, capacity == maxInflate { throw ZipError.corrupt }
         out.removeSubrange(written..<out.count)
         return out
     }

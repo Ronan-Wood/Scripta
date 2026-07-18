@@ -217,12 +217,13 @@ enum DocumentImporter {
 
     /// PPTX: slides are `ppt/slides/slideN.xml`; visible text lives in `<a:t>` runs.
     private static func pptxText(_ url: URL) throws -> String {
-        let slides = try MiniZip.entries(of: url)
+        let archive = try MiniZip.open(url)   // read + parse once; extract each slide from memory
+        let slides = archive.names
             .filter { $0.hasPrefix("ppt/slides/slide") && $0.hasSuffix(".xml") }
             .sorted { slideNumber($0) < slideNumber($1) }
         var out: [String] = []
         for (i, name) in slides.enumerated() {
-            let xml = try MiniZip.read(name, from: url)
+            let xml = try archive.read(name)
             let runs = textRuns(in: xml, elements: ["a:t"])
             if !runs.isEmpty {
                 out.append("## Slide \(i + 1)\n\n\(runs.joined(separator: "\n"))")
@@ -237,7 +238,7 @@ enum DocumentImporter {
 
     /// DOCX: `word/document.xml`; text in `<w:t>` runs, paragraphs on `</w:p>`.
     private static func docxText(_ url: URL) throws -> String {
-        let xml = try MiniZip.read("word/document.xml", from: url)
+        let xml = try MiniZip.open(url).read("word/document.xml")
         return textRuns(in: xml, elements: ["w:t"], paragraphElement: "w:p")
             .joined(separator: "\n")
     }
