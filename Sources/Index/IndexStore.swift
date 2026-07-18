@@ -2,6 +2,7 @@ import Foundation
 import SQLite3
 import OSLog
 import Accelerate
+import os
 
 /// Transcript-level metadata as stored in the index.
 struct IndexedTranscript {
@@ -90,6 +91,33 @@ final class IndexStore {
 
     private let db: OpaquePointer
     private let lock = NSLock()
+    #if DEBUG
+    /// DEBUG-only owner tracking so a re-entrant acquire — a locked public method calling ANOTHER
+    /// locked/public method — traps with a clear message instead of silently deadlocking on the
+    /// non-reentrant NSLock. From inside the lock, call the `*Locked` helper variant (audit L13).
+    private let lockOwner = OSAllocatedUnfairLock<ObjectIdentifier?>(initialState: nil)
+    #endif
+
+    /// Acquires `lock` and returns its release closure: `let unlock = acquireLock(); defer { unlock() }`.
+    /// The single choke point for the store lock, so the re-entrancy check has one place to live.
+    private func acquireLock() -> () -> Void {
+        #if DEBUG
+        let me = ObjectIdentifier(Thread.current)
+        lockOwner.withLock { owner in
+            precondition(owner != me, "IndexStore: re-entrant lock — call the *Locked helper from inside the store lock, not a public locking method.")
+        }
+        #endif
+        lock.lock()
+        #if DEBUG
+        lockOwner.withLock { $0 = me }
+        #endif
+        return { [self] in
+            #if DEBUG
+            lockOwner.withLock { $0 = nil }
+            #endif
+            lock.unlock()
+        }
+    }
     private let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Index")
     private static let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -199,7 +227,7 @@ final class IndexStore {
     /// Replaces a transcript's row + chunks wholesale (delete then insert), keeping FTS in sync
     /// via the triggers. Called on write and on any metadata edit.
     func upsert(_ t: IndexedTranscript, chunks: [IndexedChunk]) {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         guard exec("BEGIN;") else { return }
         var ok = removeRows(path: t.path)
         if ok {
@@ -237,7 +265,7 @@ final class IndexStore {
 
     /// Removes a transcript from the index (e.g. after retention prunes the file).
     func remove(path: String) {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         guard exec("BEGIN;") else { return }
         if removeRows(path: path) && exec("COMMIT;") { return }
         exec("ROLLBACK;")
@@ -261,7 +289,7 @@ final class IndexStore {
     /// Stores a chunk embedding, tagged with its embed model + dimension so vector spaces can never
     /// silently mix (Fable: a model change means a full re-embed, never mixed-space fusion).
     func storeVector(chunkID: Int64, vector: [Float], model: String) {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         let data = vector.withUnsafeBytes { Data($0) }
         run("INSERT OR REPLACE INTO chunk_vectors(chunk_id,vector,embed_model,dim) VALUES(?,?,?,?)") { stmt in
             sqlite3_bind_int64(stmt, 1, chunkID)
@@ -272,7 +300,7 @@ final class IndexStore {
 
     /// (chunk id, text) for a transcript — the embed pipeline's input.
     func chunkRows(path: String) -> [(id: Int64, text: String)] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var out: [(Int64, String)] = []
         query("SELECT id, text FROM chunks WHERE path = ? ORDER BY id",
               bind: { Self.bindStatic($0, 1, path) }) { out.append((sqlite3_column_int64($0, 0), text($0, 1))) }
@@ -281,7 +309,7 @@ final class IndexStore {
 
     /// True once any chunk is embedded with `model` (so the retriever knows to go hybrid).
     func hasVectors(model: String) -> Bool {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var n = 0
         query("SELECT 1 FROM chunk_vectors WHERE embed_model = ? LIMIT 1",
               bind: { Self.bindStatic($0, 1, model) }) { _ in n = 1 }
@@ -291,14 +319,14 @@ final class IndexStore {
     /// Embed-version discipline: drop every vector NOT from the current model (a model change
     /// invalidates the whole space; cheap to re-embed at personal scale).
     func dropVectors(keepingModel model: String) {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         run("DELETE FROM chunk_vectors WHERE embed_model <> ?") { bind($0, 1, model) }
     }
 
     /// Cosine top-k over in-group chunk vectors (brute-force vDSP — instant at personal scale, and
     /// no ANN index to maintain). Group-scoped inside the query, before ranking.
     func vectorCandidates(vector queryVec: [Float], group: String?, model: String, limit: Int) -> [Int64] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var qnorm = queryVec
         var qmag: Float = 0; vDSP_svesq(queryVec, 1, &qmag, vDSP_Length(queryVec.count)); qmag = sqrt(qmag)
         if qmag > 0 { var inv = 1 / qmag; vDSP_vsmul(queryVec, 1, &inv, &qnorm, 1, vDSP_Length(queryVec.count)) }
@@ -331,7 +359,7 @@ final class IndexStore {
 
     /// FTS spoken-passage candidate chunk ids (group-scoped) — the lexical half of hybrid fusion.
     func ftsCandidates(_ rawQuery: String, group: String?, limit: Int) -> [Int64] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         let aliases = aliasGroupsLocked(group: group)
         var ids = rankedChunkIDs(FTSQuery.andExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit)
         if ids.isEmpty { ids = rankedChunkIDs(FTSQuery.orExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit) }
@@ -341,7 +369,7 @@ final class IndexStore {
     /// Materialises chunk ids into context passages (neighbour-expanded), preserving the given
     /// order — used by the hybrid retriever after RRF fusion.
     func contextForChunkIDs(_ ids: [Int64], limit: Int) -> [ContextChunk] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var out: [ContextChunk] = []
         var seenID = Set<Int64>()
         for id in ids.prefix(limit) {
@@ -360,7 +388,7 @@ final class IndexStore {
     /// Upserts entity cache rows (from the registry) and replaces a transcript's mentions wholesale.
     func setEntities(_ ents: [(id: String, name: String, kind: String)],
                      mentions path: String, _ mentions: [(entityID: String, startMs: Int, surface: String)]) {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         guard exec("BEGIN;") else { return }
         for e in ents {
             run("INSERT OR REPLACE INTO entities(id,name,kind) VALUES(?,?,?)") { stmt in
@@ -380,7 +408,7 @@ final class IndexStore {
     /// Calls that mention an entity, newest first — the entity-anchored retrieval rail (mode 3).
     /// Group-scoped by joining transcripts (a mention's group IS its call's group).
     func callsMentioning(entityID: String, group: String?, limit: Int = 50) -> [SearchHit] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var sql = """
         SELECT DISTINCT t.path, t.title, t.date, MIN(m.start_ms)
         FROM entity_mentions m JOIN transcripts t ON t.path = m.path
@@ -403,7 +431,7 @@ final class IndexStore {
     /// Entities appearing in a workspace, with call counts — the "People & Orgs" browse. Group-
     /// scoped by joining each mention's call to the active workspace (mentions carry no group).
     func entities(group: String, limit: Int = 200) -> [(id: String, name: String, kind: String, count: Int)] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var out: [(String, String, String, Int)] = []
         let sql = """
         SELECT e.id, e.name, e.kind, COUNT(DISTINCT m.path) AS n
@@ -420,7 +448,7 @@ final class IndexStore {
 
     /// Distinct entity ids mentioned in a transcript (for its reader / entity chips).
     func entityIDs(forPath path: String) -> [String] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var ids: [String] = []
         query("SELECT DISTINCT entity_id FROM entity_mentions WHERE path = ?",
               bind: { Self.bindStatic($0, 1, path) }) { ids.append(text($0, 0)) }
@@ -432,7 +460,7 @@ final class IndexStore {
     /// Records that `stage` completed for `path` at content `hash` with `model`. A later reconcile
     /// treats a stage whose stored hash differs from the current content hash as stale.
     func recordStage(path: String, stage: String, hash: String, model: String) {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         run("INSERT OR REPLACE INTO enrichment_ledger(path,stage,content_hash,model_version) VALUES(?,?,?,?)") { stmt in
             bind(stmt, 1, path); bind(stmt, 2, stage); bind(stmt, 3, hash); bind(stmt, 4, model)
         }
@@ -441,7 +469,7 @@ final class IndexStore {
     /// The content hash recorded for a completed stage, or nil if it never ran — so a caller can
     /// decide whether to (re)run embed/extract/summarize for a transcript at its current hash.
     func stageHash(path: String, stage: String) -> String? {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var h: String?
         query("SELECT content_hash FROM enrichment_ledger WHERE path = ? AND stage = ?",
               bind: { stmt in Self.bindStatic(stmt, 1, path); Self.bindStatic(stmt, 2, stage) }) { h = text($0, 0) }
@@ -451,7 +479,7 @@ final class IndexStore {
     /// Empties every table (keeping the schema) so a caller can reindex from disk — the "Rebuild
     /// Index" escape hatch for corruption, chunking changes, or "search seems wrong".
     func clear() {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         guard exec("BEGIN;") else { return }
         exec("DELETE FROM chunks;")            // triggers keep chunks_fts in sync
         exec("DELETE FROM transcripts;")
@@ -470,7 +498,7 @@ final class IndexStore {
 
     /// Row counts + on-disk size for the Settings "Index" section.
     func stats() -> (calls: Int, passages: Int, bytes: Int) {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var calls = 0, passages = 0
         query("SELECT (SELECT COUNT(*) FROM transcripts), (SELECT COUNT(*) FROM chunks);") { stmt in
             calls = Int(sqlite3_column_int(stmt, 0)); passages = Int(sqlite3_column_int(stmt, 1))
@@ -484,7 +512,7 @@ final class IndexStore {
 
     /// path -> mtime for every indexed transcript, used to reconcile against the folder.
     func indexedPaths() -> [String: Double] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var result: [String: Double] = [:]
         query("SELECT path, mtime FROM transcripts") { stmt in
             result[text(stmt, 0)] = sqlite3_column_double(stmt, 1)
@@ -503,7 +531,7 @@ final class IndexStore {
     /// query, before LIMIT.
     func search(_ rawQuery: String, participant: String? = nil, tag: String? = nil,
                 since: String? = nil, speaker: String? = nil, group: String? = nil, limit: Int = 30) -> [SearchHit] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         if queryMode == .legacyOr {
             return Array(fusedHits(FTSQuery.legacyOr(rawQuery), participant: participant, tag: tag,
                                    since: since, speaker: speaker, group: group, limit: limit).prefix(limit))
@@ -660,7 +688,7 @@ final class IndexStore {
     /// chunk/vector-only, so it must call this too or docs and notes become invisible once a
     /// corpus is embedded.
     func topicMatches(for rawQuery: String, group: String? = nil, limit: Int = 3) -> [ContextChunk] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         let aliases = aliasGroupsLocked(group: group)
         return topicContext(FTSQuery.andExpression(rawQuery, aliasGroups: aliases)
                             ?? FTSQuery.orExpression(rawQuery, aliasGroups: aliases),
@@ -668,7 +696,7 @@ final class IndexStore {
     }
 
     func context(for rawQuery: String, group: String? = nil, limit: Int = 6) -> [ContextChunk] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         let aliases = aliasGroupsLocked(group: group)
         var hits = rankedChunkIDs(FTSQuery.andExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit * 3)
         if hits.isEmpty { hits = rankedChunkIDs(FTSQuery.orExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit * 3) }
@@ -797,7 +825,7 @@ final class IndexStore {
     /// Recent calls in one workspace, newest first — the dashboard/digest feed. Scoped to the
     /// group like every other read surface (the privacy wall applies to dashboards too).
     func digest(group: String, limit: Int = 400) -> [DigestRow] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var rows: [DigestRow] = []
         query("""
             SELECT path, title, date, time, duration, participants, tags, summary FROM transcripts
@@ -825,7 +853,7 @@ final class IndexStore {
 
     /// Replaces the vocabulary cache wholesale (mirrors the registry's kind="term" entries).
     func setTerms(_ rows: [TermRow]) {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         guard exec("BEGIN;") else { return }
         var ok = run("DELETE FROM terms;") { _ in }
         for row in rows where ok {
@@ -842,7 +870,7 @@ final class IndexStore {
     /// Alias groups for query expansion: [canonical + aliases], scoped to a workspace plus
     /// globals (nil group = everything, for the blind cross-workspace search).
     func aliasGroups(group: String?) -> [[String]] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         return aliasGroupsLocked(group: group)
     }
 
@@ -863,7 +891,7 @@ final class IndexStore {
 
     /// A sample of spoken text for deterministic vocabulary suggestion (acronym mining).
     func sampleChunkTexts(group: String, limit: Int = 400) -> [String] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var out: [String] = []
         query("""
             SELECT c.text FROM chunks c JOIN transcripts t ON t.path = c.path
@@ -877,7 +905,7 @@ final class IndexStore {
 
     /// Terms with a non-empty meaning, for gloss injection into Clovis context.
     func termGlosses(group: String) -> [(term: String, gloss: String)] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var out: [(String, String)] = []
         query("SELECT canonical, gloss FROM terms WHERE (\"group\" = ? OR \"group\" = '') AND gloss != ''",
               bind: { Self.bindStatic($0, 1, group) }) { stmt in
@@ -888,7 +916,7 @@ final class IndexStore {
 
     /// Distinct non-empty groups (workspaces) with call counts, most-populated first.
     func groups() -> [(name: String, count: Int)] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var counts: [String: Int] = [:]
         query("SELECT \"group\", COUNT(*) FROM transcripts WHERE kind = 'call' GROUP BY \"group\"") { stmt in
             let g = text(stmt, 0)
@@ -900,7 +928,7 @@ final class IndexStore {
 
     /// Call count in one workspace ("" = ungrouped) — for the scope indicator.
     func count(group: String) -> Int {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var n = 0
         query("SELECT COUNT(*) FROM transcripts WHERE \"group\" = ? AND kind = 'call'",
               bind: { Self.bindStatic($0, 1, group) }) { n = Int(sqlite3_column_int($0, 0)) }
@@ -921,7 +949,7 @@ final class IndexStore {
     /// case-insensitively so "Planning" and "planning" are one entry (displayed with the most
     /// frequent spelling) instead of two sidebar rows with split counts.
     private func aggregateList(column: String) -> [(name: String, count: Int)] {
-        lock.lock(); defer { lock.unlock() }
+        let unlock = acquireLock(); defer { unlock() }
         var spellings: [String: [String: Int]] = [:]   // lowercased key -> [original spelling: count]
         query("SELECT \(column) FROM transcripts WHERE kind = 'call'") { stmt in
             for value in text(stmt, 0).split(separator: "\n") {
