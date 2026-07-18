@@ -56,7 +56,14 @@ enum FTSQuery {
             guard group.contains(where: { !$0.contains(" ") && $0 == term }) else { continue }
             var members = [plain]
             for m in group {
-                let quoted = m.contains(" ") ? "\"\(m)\"" : "\"\(m)\"*"
+                // Alias members come from the user's vocabulary and may contain a double-quote
+                // (e.g. a 6" measurement). A `"` is the one character that can terminate an FTS5
+                // phrase — an unescaped one makes a malformed MATCH that fails at step time and
+                // silently zeroes the query. Sanitize it out (it's a token separator in the index
+                // anyway); skip a member that reduces to nothing.
+                let e = ftsPhraseSanitize(m)
+                guard !e.isEmpty else { continue }
+                let quoted = e.contains(" ") ? "\"\(e)\"" : "\"\(e)\"*"
                 if !members.contains(quoted) { members.append(quoted) }
             }
             return "(" + members.joined(separator: " OR ") + ")"
@@ -64,11 +71,23 @@ enum FTSQuery {
         return plain
     }
 
-    /// Implicit-AND of quoted prefix terms — `"budget"* "review"* "sarah"*`. Precise. nil if empty.
+    /// Sanitizes an alias member for use inside an FTS5 double-quoted phrase: replace the only
+    /// phrase-terminating character (`"`) with a space (which separates tokens in the index too),
+    /// then collapse and trim whitespace. Everything else is literal inside the phrase.
+    private static func ftsPhraseSanitize(_ s: String) -> String {
+        s.replacingOccurrences(of: "\"", with: " ")
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .joined(separator: " ")
+    }
+
+    /// AND of quoted prefix terms — `"budget"* AND "review"* AND "sarah"*`. Precise. nil if empty.
+    /// Joined with an explicit `AND`, not juxtaposition: FTS5 rejects a parenthesized group next to
+    /// another term with implicit AND (`(a OR b) "c"` is a syntax error), which an alias expansion
+    /// introduces — so implicit-AND silently zeroed every alias-touching query.
     static func andExpression(_ raw: String, aliasGroups: [[String]] = []) -> String? {
         let t = terms(raw)
         guard !t.isEmpty else { return nil }
-        return t.map { expanded($0, groups: aliasGroups) }.joined(separator: " ")
+        return t.map { expanded($0, groups: aliasGroups) }.joined(separator: " AND ")
     }
 
     /// OR of quoted prefix terms — the recall floor. nil if empty.
