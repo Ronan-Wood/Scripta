@@ -271,13 +271,18 @@ final class RecordingSession {
                     return
                 }
                 // If stop() already began teardown, don't resurrect the transcriber — stop this
-                // instance ourselves so it can't outlive the session (audit L6).
+                // instance ourselves so it can't outlive the session (audit L6). Wire onBuffer INSIDE
+                // the lock too: the lock handshake then orders this write before stop()'s (also
+                // lock-guarded) isStopping=true, hence before its capture teardown, so the onBuffer
+                // assignment can't race stop() niling micCapture/systemCapture.
                 self.lock.lock()
                 let claimed = !self.isStopping
-                if claimed { self.liveTranscriber = live }
+                if claimed {
+                    self.liveTranscriber = live
+                    if feedsMic { self.micCapture?.onBuffer = feed } else { self.systemCapture?.onBuffer = feed }
+                }
                 self.lock.unlock()
                 guard claimed else { await live.stop(); return }
-                if feedsMic { self.micCapture?.onBuffer = feed } else { self.systemCapture?.onBuffer = feed }
             }
         }
     }

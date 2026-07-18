@@ -86,8 +86,11 @@ final class IndexStore {
     /// v10 forced a one-time rebuild so documents indexed by an intermediate build during
     /// development re-index from their full companion notes; v11 forces another after fixing the
     /// NUL-byte truncation (a NUL from a broken PDF glyph truncated the FTS bind at strlen, so
-    /// documents indexed as a fragment) — control chars are now stripped before indexing.
-    private static let schemaVersion: Int32 = 11
+    /// documents indexed as a fragment) — control chars are now stripped before indexing;
+    /// v12 forces a rebuild so the transcript/summary path also gets that NUL stripping (audit L2)
+    /// and so frontmatter scalars no longer lose surrounding brackets (audit L4) — reconcile skips
+    /// unchanged files by mtime, so a version bump is the only way to re-index existing rows.
+    private static let schemaVersion: Int32 = 12
 
     private let db: OpaquePointer
     private let lock = NSLock()
