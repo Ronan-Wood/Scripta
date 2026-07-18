@@ -87,3 +87,23 @@ targets:
         # Unsandboxed (LLM clients spawn it, so it can't inherit a sandbox), but entitled to
         # the shared App Group so it reads the index + state file without container prompts.
         CODE_SIGN_ENTITLEMENTS: SourcesMCP/scripta-mcp.entitlements
+
+  # Logic-test bundle for the dependency-free correctness-critical predicates. Compiles just the
+  # pure sources it exercises (no app host), so it runs headless: `xcodebuild test -scheme ScriptaTests`.
+  ScriptaTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests
+      - Sources/Support/RetentionGate.swift
+      - Sources/Shared/Frontmatter.swift
+      - Sources/Shared/OwnerMarker.swift
+    settings:
+      base:
+        PRODUCT_NAME: ScriptaTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.ronanwood.ScriptaTests
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 6CTH5M9UWZ
