@@ -23,6 +23,8 @@ targetTemplates:
         buildPhase: resources
       - path: Resources/Licenses
         buildPhase: resources
+      - path: Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
     info:
       path: Sources/App/Info.plist
       properties:
