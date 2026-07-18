@@ -34,6 +34,8 @@ struct Meta {
     let participants, tags: [String]
     let isConference: Bool
     let group: String
+    var summary: String = ""   // populated from the index (empty when built by parseMeta from a file)
+    var body: String = ""      // the verbatim transcript, stored in the index (empty from parseMeta)
 }
 
 // Frontmatter parsing (split, owner-marker check, scalar field, flow list) is shared with the app
@@ -73,24 +75,17 @@ func activeGroupScope() -> (group: String, refusal: String?) {
     return ((obj["activeGroup"] as? String) ?? "", nil)
 }
 
-func bodyText(_ content: String) -> String {
-    Frontmatter.split(content)?.body ?? content
-}
-
-/// Extracts the "## Summary" section, if present.
-func summaryOf(_ content: String) -> String {
-    let body = bodyText(content)
-    guard let start = body.range(of: "## Summary") else { return "" }
-    var section = String(body[start.upperBound...])
-    var cut = section.endIndex
-    for stop in ["\n**[", "\n## ", "\n# "] {
-        if let r = section.range(of: stop), r.lowerBound < cut { cut = r.lowerBound }
-    }
-    section = String(section[..<cut])
-    return section.trimmingCharacters(in: .whitespacesAndNewlines)
-}
-
+/// Calls, newest first. DB-first: the output folder may be a TCC-protected cloud vault (iCloud /
+/// OneDrive / Dropbox) that this unsandboxed server can't scan, whereas the group-container index
+/// is always readable across the sandbox boundary — and it holds only app-authored, group-scoped
+/// rows, so it doubles as the authorship gate. Falls back to a folder scan only when the index
+/// isn't built yet (openIndex → nil).
 func allTranscripts() -> [Meta] {
+    if let rows = dbCalls() { return rows }
+    return folderTranscripts()
+}
+
+func folderTranscripts() -> [Meta] {
     let folder = outputFolder()
     guard let entries = try? FileManager.default.contentsOfDirectory(
         at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
@@ -99,17 +94,6 @@ func allTranscripts() -> [Meta] {
         .filter { $0.pathExtension == "md" }
         .compactMap(parseMeta)
         .sorted { ($0.date, $0.time) > ($1.date, $1.time) }
-}
-
-/// Resolves a client-provided path, but only if it's an app-authored transcript inside the
-/// output folder — so the tool can never be used to read arbitrary files.
-func safeTranscript(at path: String) -> Meta? {
-    // Resolve symlinks on BOTH sides: a symlinked .md dropped inside the output folder must
-    // not read through to a file elsewhere (SPEC containment invariant).
-    let folder = outputFolder().standardizedFileURL.resolvingSymlinksInPath()
-    let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
-    guard url.deletingLastPathComponent().path == folder.path else { return nil }
-    return parseMeta(url)
 }
 
 func displayTitle(_ m: Meta) -> String {
@@ -305,10 +289,10 @@ func aliasGroups(db: OpaquePointer, group: String) -> [[String]] {
 /// naturally excluded since chunks are built only from audio lines). nil for an unknown/guarded
 /// path or an empty window.
 func getSection(path: String, start: Int, end: Int) -> String? {
-    // safeTranscript validates containment + app-authorship; the chunk query then binds the path AS
-    // PROVIDED (it came from retrieve/list = the index's stored key), not the symlink-resolved
-    // meta.url.path, which wouldn't match when the output folder sits under a symlink (audit L5).
-    guard safeTranscript(at: path) != nil, let db = openIndex() else { return nil }
+    // dbMeta confirms the path is an indexed (app-authored, in-folder) transcript; the chunk query
+    // then binds the path AS PROVIDED (it came from retrieve/list = the index's stored key), not a
+    // symlink-resolved path, which wouldn't match when the output folder sits under a symlink (audit L5).
+    guard dbMeta(path: path) != nil, let db = openIndex() else { return nil }
     defer { sqlite3_close(db) }
     let sql = "SELECT start_ms, IFNULL(speaker,''), text FROM chunks WHERE path = ? AND start_ms >= ? AND start_ms <= ? ORDER BY start_ms;"
     var stmt: OpaquePointer?
@@ -355,6 +339,136 @@ func clockStamp(_ ms: Int) -> String {
     return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
 }
 
+// MARK: - DB-backed transcript reads (never touch the output folder)
+
+/// The columns `metaFromRow` expects, in order — shared by the list and single-row lookups.
+private let metaColumns = #"path, title, date, time, duration, participants, tags, summary, mode, "group", body"#
+
+/// Builds a Meta from a `transcripts` row selected via `metaColumns`. participants/tags are stored
+/// newline-joined (mirrors `indexAggregate`), with the owner marker filtered back out.
+func metaFromRow(_ stmt: OpaquePointer?) -> Meta {
+    func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
+    func list(_ n: Int32) -> [String] {
+        col(n).split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && $0 != ownerMarker }
+    }
+    return Meta(url: URL(fileURLWithPath: col(0)), title: col(1), date: col(2), time: col(3),
+                duration: col(4), participants: list(5), tags: list(6),
+                isConference: col(8) == "conference", group: col(9), summary: col(7), body: col(10))
+}
+
+/// Every indexed call (kind='call'), newest first — or nil when the index isn't built yet.
+func dbCalls() -> [Meta]? {
+    guard let db = openIndex() else { return nil }
+    defer { sqlite3_close(db) }
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, "SELECT \(metaColumns) FROM transcripts WHERE IFNULL(kind,'call') = 'call';", -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(stmt) }
+    var out: [Meta] = []
+    while sqlite3_step(stmt) == SQLITE_ROW { out.append(metaFromRow(stmt)) }
+    return out.sorted { ($0.date, $0.time) > ($1.date, $1.time) }
+}
+
+/// One indexed transcript by its stored path, or nil. Membership in the index IS the authorship +
+/// containment gate (the app only ever indexes files it authored inside the output folder), so this
+/// replaces the old file-reading `safeTranscript` guard.
+func dbMeta(path: String) -> Meta? {
+    guard let db = openIndex() else { return nil }
+    defer { sqlite3_close(db) }
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, "SELECT \(metaColumns) FROM transcripts WHERE path = ? LIMIT 1;", -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT_MCP)
+    return sqlite3_step(stmt) == SQLITE_ROW ? metaFromRow(stmt) : nil
+}
+
+/// Reassembles a readable transcript from the indexed chunks — spoken (You/Them) and screen-context
+/// ("Screen") rows interleaved by timestamp — plus the stored summary. The .md may live in a cloud
+/// vault this server can't open, so the index is the source. Coarser than the file (chunk-level
+/// timestamps), but preserves speaker, timing, screen context, and summary.
+func reconstructTranscript(_ meta: Meta) -> String? {
+    guard let db = openIndex() else { return nil }
+    defer { sqlite3_close(db) }
+    var out = "# \(displayTitle(meta))\n"
+    let head = [[meta.date, meta.time].joined(separator: " "), meta.duration]
+        .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.joined(separator: " · ")
+    if !head.isEmpty { out += "\(head)\(meta.isConference ? " · conference (unlabeled)" : "")\n" }
+    if !meta.participants.isEmpty { out += "Participants: \(meta.participants.joined(separator: ", "))\n" }
+    if !meta.tags.isEmpty { out += "Tags: \(meta.tags.joined(separator: ", "))\n" }
+    if !meta.summary.isEmpty { out += "\n## Summary\n\(meta.summary)\n" }
+
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, "SELECT start_ms, IFNULL(speaker,''), text FROM chunks WHERE path = ? ORDER BY start_ms;", -1, &stmt, nil) == SQLITE_OK else { return out }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, meta.url.path, -1, SQLITE_TRANSIENT_MCP)
+    func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
+    var body: [String] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+        let who = col(1).isEmpty ? "" : " \(col(1)):"
+        body.append("[\(clockStamp(Int(sqlite3_column_int64(stmt, 0))))]\(who) \(col(2))")
+    }
+    if !body.isEmpty { out += "\n## Transcript\n" + body.joined(separator: "\n") + "\n" }
+    return out
+}
+
+/// Exact-substring search over the index (chunk text + title/participants), group-scoped — the
+/// DB-backed replacement for the old file-scanning search. One hit per call, spoken and screen
+/// context distinguished, mirroring the previous output shape.
+func dbSearch(_ query: String, group: String, limit: Int = 15) -> [String] {
+    guard let db = openIndex() else { return [] }
+    defer { sqlite3_close(db) }
+    let like = "%" + query.lowercased()
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "%", with: "\\%")
+        .replacingOccurrences(of: "_", with: "\\_") + "%"
+    func col(_ s: OpaquePointer?, _ n: Int32) -> String { sqlite3_column_text(s, n).map { String(cString: $0) } ?? "" }
+    var hits: [String] = []
+    var seen = Set<String>()
+
+    // Body / screen-context matches (keep only the first, earliest hit per call).
+    var stmt: OpaquePointer?
+    let bodySQL = "SELECT t.title, t.date, c.text, IFNULL(c.speaker,''), c.path FROM chunks c JOIN transcripts t ON t.path = c.path WHERE t.\"group\" = ? AND lower(c.text) LIKE ? ESCAPE '\\' ORDER BY c.start_ms;"
+    if sqlite3_prepare_v2(db, bodySQL, -1, &stmt, nil) == SQLITE_OK {
+        sqlite3_bind_text(stmt, 1, group, -1, SQLITE_TRANSIENT_MCP)
+        sqlite3_bind_text(stmt, 2, like, -1, SQLITE_TRANSIENT_MCP)
+        while hits.count < limit, sqlite3_step(stmt) == SQLITE_ROW {
+            let path = col(stmt, 4)
+            guard seen.insert(path).inserted else { continue }
+            let title = col(stmt, 0).isEmpty ? col(stmt, 1) : col(stmt, 0)
+            let section = col(stmt, 3) == "Screen" ? "screen" : "transcript"
+            hits.append("• \(title) [\(section)] — …\(snippetAround(col(stmt, 2), needle: query))…\n  path: \(path)")
+        }
+    }
+    sqlite3_finalize(stmt); stmt = nil
+
+    // Title / participant matches for calls not already surfaced by a body hit.
+    let metaSQL = "SELECT title, date, participants, summary, path FROM transcripts WHERE \"group\" = ? AND IFNULL(kind,'call')='call' AND (lower(title) LIKE ? ESCAPE '\\' OR lower(participants) LIKE ? ESCAPE '\\');"
+    if sqlite3_prepare_v2(db, metaSQL, -1, &stmt, nil) == SQLITE_OK {
+        sqlite3_bind_text(stmt, 1, group, -1, SQLITE_TRANSIENT_MCP)
+        sqlite3_bind_text(stmt, 2, like, -1, SQLITE_TRANSIENT_MCP)
+        sqlite3_bind_text(stmt, 3, like, -1, SQLITE_TRANSIENT_MCP)
+        while hits.count < limit, sqlite3_step(stmt) == SQLITE_ROW {
+            let path = col(stmt, 4)
+            guard seen.insert(path).inserted else { continue }
+            let title = col(stmt, 0).isEmpty ? col(stmt, 1) : col(stmt, 0)
+            let where_ = col(stmt, 0).lowercased().contains(query.lowercased()) ? "title" : "participant"
+            let summary = col(stmt, 3)
+            hits.append("• \(title) [\(where_)] — \(summary.isEmpty ? "(metadata match)" : summary)\n  path: \(path)")
+        }
+    }
+    sqlite3_finalize(stmt)
+    return hits
+}
+
+/// A ±70-char window around the first case-insensitive match, for search snippets.
+func snippetAround(_ text: String, needle: String) -> String {
+    let flat = text.replacingOccurrences(of: "\n", with: " ")
+    guard let r = flat.range(of: needle, options: .caseInsensitive) else { return String(flat.prefix(140)).trimmingCharacters(in: .whitespaces) }
+    let start = flat.index(r.lowerBound, offsetBy: -70, limitedBy: flat.startIndex) ?? flat.startIndex
+    let end = flat.index(r.upperBound, offsetBy: 70, limitedBy: flat.endIndex) ?? flat.endIndex
+    return flat[start..<end].trimmingCharacters(in: .whitespaces)
+}
+
 // MARK: - Tools
 
 func toolDefinitions() -> [[String: Any]] {
@@ -386,7 +500,7 @@ func toolDefinitions() -> [[String: Any]] {
         ],
         [
             "name": "get_transcript",
-            "description": "Return the full Markdown of one transcript by its file path (from list_transcripts).",
+            "description": "Return the full Markdown of one transcript by its file path (from list_transcripts). Very long transcripts are truncated at ~24k characters with a pointer to `retrieve`/`get_section` for the rest — prefer those to reading a whole call unless you genuinely need it verbatim.",
             "inputSchema": [
                 "type": "object",
                 "properties": ["path": ["type": "string", "description": "The transcript's file path."]],
@@ -448,6 +562,19 @@ func textResult(_ text: String, isError: Bool = false) -> [String: Any] {
     ["content": [["type": "text", "text": text]], "isError": isError]
 }
 
+// A whole transcript can run to tens of thousands of tokens; dumping all of it on every get_transcript
+// is a latency/token liability as calls (and the corpus) grow. Cap the text, and when we cut, steer the
+// model to the bounded, retrieve-first tools for the rest. At or below the cap the text is byte-exact.
+let transcriptCharCap = 24_000
+
+func cappedTranscript(_ text: String, path: String) -> String {
+    if text.count <= transcriptCharCap { return text }
+    // Snap the cut back to the last line break inside the cap so we never emit half a speaker turn.
+    var head = String(text.prefix(transcriptCharCap))
+    if let lastBreak = head.lastIndex(of: "\n") { head = String(head[..<lastBreak]) }
+    return head + "\n\n— Truncated: this transcript is \(text.count) characters and only the first ~\(transcriptCharCap) are shown. To read the rest without pulling the whole call, use `retrieve` for keyword-ranked passages, or `get_section` with a start time (ms from call start) to read a specific stretch.\n  path: \(path)"
+}
+
 func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
     // Every tool is hard-scoped to the app's active workspace; refuse entirely on a stale scope.
     let scope = activeGroupScope()
@@ -470,8 +597,7 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
             if !meta.isEmpty { block += "  (\(meta))" }
             if !m.participants.isEmpty { block += "\nParticipants: \(m.participants.joined(separator: ", "))" }
             if !compact {
-                let summary = summaryOf((try? String(contentsOf: m.url, encoding: .utf8)) ?? "")
-                block += "\n\(summary.isEmpty ? "(no summary)" : summary)"
+                block += "\n\(m.summary.isEmpty ? "(no summary)" : m.summary)"
             }
             block += "\npath: \(m.url.path)"
             return block
@@ -513,7 +639,7 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
             return textResult("Provide `path` and `start` (milliseconds).", isError: true)
         }
         // Refuse a path outside the active workspace (the wall applies to direct reads too).
-        guard let meta = safeTranscript(at: path), meta.group == group else {
+        guard let meta = dbMeta(path: path), meta.group == group else {
             return textResult("That call isn't in the active workspace.", isError: true)
         }
         let end = (args["end"] as? Int) ?? (start + 120_000)
@@ -523,40 +649,25 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         return textResult(section)
 
     case "get_transcript":
-        guard let path = args["path"] as? String, let meta = safeTranscript(at: path) else {
+        guard let path = args["path"] as? String, let meta = dbMeta(path: path) else {
             return textResult("No transcript found at that path (or it isn't an app transcript).", isError: true)
         }
         guard meta.group == group else {
             return textResult("That call isn't in the active workspace.", isError: true)
         }
-        return textResult((try? String(contentsOf: meta.url, encoding: .utf8)) ?? "")
+        // The verbatim body stored in the index — byte-exact, never the .md (which may be in a cloud
+        // vault this server can't read). Chunk reconstruction is the fallback for rows indexed before
+        // the body column existed (superseded on the next reconcile), then the raw file as a last resort.
+        let full = meta.body.isEmpty
+            ? (reconstructTranscript(meta) ?? (try? String(contentsOf: meta.url, encoding: .utf8)) ?? "")
+            : meta.body
+        return textResult(cappedTranscript(full, path: path))
 
     case "search_transcripts":
         guard let query = (args["query"] as? String)?.trimmingCharacters(in: .whitespaces), !query.isEmpty else {
             return textResult("Provide a non-empty query.", isError: true)
         }
-        let needle = query.lowercased()
-        var hits: [String] = []
-        for m in allTranscripts() where m.group == group {
-            guard let content = try? String(contentsOf: m.url, encoding: .utf8) else { continue }
-            let body = bodyText(content)   // exclude YAML frontmatter from snippets
-            let title = displayTitle(m)
-
-            if let range = body.range(of: query, options: [.caseInsensitive]) {
-                let start = body.index(range.lowerBound, offsetBy: -70, limitedBy: body.startIndex) ?? body.startIndex
-                let end = body.index(range.upperBound, offsetBy: 70, limitedBy: body.endIndex) ?? body.endIndex
-                let matchAt = body.distance(from: body.startIndex, to: range.lowerBound)
-                let screenAt = body.range(of: "## Screen Context").map { body.distance(from: body.startIndex, to: $0.lowerBound) }
-                let section = (screenAt.map { matchAt >= $0 } ?? false) ? "screen" : "transcript"
-                let snippet = body[start..<end].replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
-                hits.append("• \(title) [\(section)] — …\(snippet)…\n  path: \(m.url.path)")
-            } else if title.lowercased().contains(needle) || m.participants.contains(where: { $0.lowercased().contains(needle) }) {
-                let where_ = title.lowercased().contains(needle) ? "title" : "participant"
-                let summary = summaryOf(content)
-                hits.append("• \(title) [\(where_)] — \(summary.isEmpty ? "(metadata match)" : summary)\n  path: \(m.url.path)")
-            }
-            if hits.count >= 15 { break }
-        }
+        let hits = dbSearch(query, group: group)
         return textResult(hits.isEmpty ? "No matches for \"\(query)\"." : hits.joined(separator: "\n\n"))
 
     case "retrieve":

@@ -22,6 +22,10 @@ struct IndexedTranscript {
     /// "call" for transcripts, "note" for knowledge notes. Call-listing surfaces filter on it;
     /// retrieval surfaces (Ask context, MCP retrieve) deliberately include both.
     var kind: String = "call"
+    /// The verbatim transcript body, stored so the MCP can serve get_transcript faithfully without
+    /// reading the .md — which may live in a TCC-protected cloud vault the unsandboxed server can't
+    /// open. A derived copy of the source (rebuilt on reconcile), distinct from the coarser `chunks`.
+    var body: String = ""
 }
 
 /// One retrievable chunk of a transcript (a speaker turn).
@@ -90,7 +94,7 @@ final class IndexStore {
     /// v12 forces a rebuild so the transcript/summary path also gets that NUL stripping (audit L2)
     /// and so frontmatter scalars no longer lose surrounding brackets (audit L4) — reconcile skips
     /// unchanged files by mtime, so a version bump is the only way to re-index existing rows.
-    private static let schemaVersion: Int32 = 12
+    private static let schemaVersion: Int32 = 13
 
     private let db: OpaquePointer
     private let lock = NSLock()
@@ -133,6 +137,11 @@ final class IndexStore {
         db = handle
         sqlite3_busy_timeout(db, 3000)
         exec("PRAGMA journal_mode=WAL;")
+        // Bound the on-disk WAL. The app is the sole writer and TRUNCATE-checkpoints at the end of each
+        // indexing pass (see `checkpoint()`), but a passive auto-checkpoint that fires mid-pass leaves the
+        // -wal file at its high-water mark; journal_size_limit makes SQLite hand that space back so the
+        // file can't sit multi-MB and slow the read-only opener the bundled MCP mmaps it through.
+        exec("PRAGMA journal_size_limit=\(4 * 1024 * 1024);")
         exec("PRAGMA foreign_keys=ON;")
         migrateIfNeeded()
         createSchema()
@@ -154,6 +163,14 @@ final class IndexStore {
     }
 
     private func dropAll() {
+        // A schema/chunking bump is a full rebuild: drop EVERY derived table so createSchema recreates
+        // each at the new schema and reconcile/syncTerms/embedPending repopulate from source (the .md
+        // files + the EntityRegistry). DROP (not DELETE) is what lets a table's columns change across a
+        // bump — createSchema is all IF NOT EXISTS, so any surviving table silently keeps its old schema.
+        // This MUST cover the enrichment_ledger + entity graph: a ledger row that outlives its dropped
+        // output table gates that output's regeneration off (stale hash == current ⇒ skip), e.g. leaving
+        // chunk_vectors empty after the bump — the invariant clear() enforces (M2). clear() keeps `terms`
+        // (a live rebuild at an unchanged schema); a migration drops it too, and syncTerms refills it.
         exec("""
         DROP TRIGGER IF EXISTS chunks_ai;
         DROP TRIGGER IF EXISTS chunks_ad;
@@ -162,6 +179,11 @@ final class IndexStore {
         DROP TABLE IF EXISTS chunk_vectors;
         DROP TABLE IF EXISTS chunks;
         DROP TABLE IF EXISTS transcripts;
+        DROP TABLE IF EXISTS enrichment_ledger;
+        DROP TABLE IF EXISTS entities;
+        DROP TABLE IF EXISTS entity_mentions;
+        DROP TABLE IF EXISTS action_items;
+        DROP TABLE IF EXISTS terms;
         """)
     }
 
@@ -171,7 +193,8 @@ final class IndexStore {
             path TEXT PRIMARY KEY,
             title TEXT, date TEXT, time TEXT, duration TEXT,
             participants TEXT, tags TEXT, summary TEXT, mtime REAL, mode TEXT, "group" TEXT,
-            kind TEXT NOT NULL DEFAULT 'call'
+            kind TEXT NOT NULL DEFAULT 'call',
+            body TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_transcripts_group ON transcripts("group");
         CREATE TABLE IF NOT EXISTS chunks(
@@ -234,13 +257,14 @@ final class IndexStore {
         guard exec("BEGIN;") else { return }
         var ok = removeRows(path: t.path)
         if ok {
-            ok = run("INSERT INTO transcripts(path,title,date,time,duration,participants,tags,summary,mtime,mode,\"group\",kind) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)") { stmt in
+            ok = run("INSERT INTO transcripts(path,title,date,time,duration,participants,tags,summary,mtime,mode,\"group\",kind,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)") { stmt in
                 bind(stmt, 1, t.path); bind(stmt, 2, t.title); bind(stmt, 3, t.date)
                 bind(stmt, 4, t.time); bind(stmt, 5, t.duration)
                 bind(stmt, 6, t.participants.joined(separator: "\n"))
                 bind(stmt, 7, t.tags.joined(separator: "\n"))
                 bind(stmt, 8, t.summary); sqlite3_bind_double(stmt, 9, t.mtime)
                 bind(stmt, 10, t.mode); bind(stmt, 11, t.group); bind(stmt, 12, t.kind)
+                bind(stmt, 13, t.body)
             }
         }
         if ok {
@@ -497,6 +521,29 @@ final class IndexStore {
         exec("DELETE FROM entity_mentions;")
         exec("DELETE FROM action_items;")
         if !exec("COMMIT;") { exec("ROLLBACK;") }
+    }
+
+    // MARK: - Maintenance
+
+    /// Folds the WAL back into `index.db` and truncates the -wal file to zero (`wal_checkpoint(TRUNCATE)`).
+    /// Call at the end of a write pass (reconcile / embed), never per-upsert. WAL mode defers every write
+    /// into the -wal file; with no checkpoint it grows unbounded — bloating on disk and slowing the
+    /// read-only opener the MCP uses. The app is the only writer, so this never fights another writer; it
+    /// waits up to the busy timeout for any in-flight MCP reader (whose reads are per-request, never a
+    /// long-lived snapshot) and, if one is mid-query, reports busy and leaves the WAL for the next pass.
+    func checkpoint() {
+        let unlock = acquireLock(); defer { unlock() }
+        // PRAGMA wal_checkpoint returns one row: (busy, walPages, checkpointedPages).
+        var busy: Int32 = -1, moved: Int32 = 0
+        query("PRAGMA wal_checkpoint(TRUNCATE);") { stmt in
+            busy = sqlite3_column_int(stmt, 0)
+            moved = sqlite3_column_int(stmt, 2)
+        }
+        if busy != 0 {
+            log.notice("wal_checkpoint(TRUNCATE) busy — a reader was in flight; WAL kept, retrying next pass")
+        } else {
+            log.debug("wal_checkpoint(TRUNCATE): folded \(moved) frames back, WAL truncated")
+        }
     }
 
     /// Row counts + on-disk size for the Settings "Index" section.

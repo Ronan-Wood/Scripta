@@ -29,7 +29,9 @@ enum IndexBuilder {
             path: url.path, title: meta.title, date: meta.date, time: meta.time,
             duration: meta.duration, participants: meta.participants, tags: meta.tags,
             summary: DocumentImporter.stripControlChars(Indexing.summary(from: content)), mtime: mtime,
-            mode: meta.isConference ? "conference" : "", group: meta.group)
+            mode: meta.isConference ? "conference" : "", group: meta.group,
+            // The full file, verbatim, so the MCP serves get_transcript byte-exact off the index.
+            body: DocumentImporter.stripControlChars(content))
 
         // Spoken chunks + on-screen text (marked "Screen") — both searchable + embeddable now.
         let chunks = (Indexing.chunks(from: content) + Indexing.screenChunks(from: content)).map {
@@ -56,6 +58,7 @@ enum IndexBuilder {
         guard Embedder.isConfigured else { return }
         let model = Embedder.model
         store.dropVectors(keepingModel: model)   // a model change invalidates the whole space
+        var wrote = false
         for path in store.indexedPaths().keys {
             guard let current = store.stageHash(path: path, stage: "chunk"),
                   store.stageHash(path: path, stage: "embed") != current else { continue }
@@ -64,7 +67,10 @@ enum IndexBuilder {
                   vectors.count == rows.count else { continue }
             for (row, vec) in zip(rows, vectors) { store.storeVector(chunkID: row.id, vector: vec, model: model) }
             store.recordStage(path: path, stage: "embed", hash: current, model: model)
+            wrote = true
         }
+        // Vectors are large (a Float array per chunk); truncate the WAL once the batch settles.
+        if wrote { store.checkpoint() }
     }
 
     private static func extractEntities(url: URL, group: String, attendees: [String],
@@ -80,8 +86,9 @@ enum IndexBuilder {
         for name in attendees where !name.isEmpty { registry.confirm(surface: name, group: group) }
         registry.save()
         var ents: [(id: String, name: String, kind: String)] = []
+        let all = registry.allEntities()   // one locked snapshot, then scan it lock-free
         for id in Set(resolved.map(\.entityID)) {
-            if let e = registry.entities.first(where: { $0.id == id }) { ents.append((e.id, e.name, e.kind)) }
+            if let e = all.first(where: { $0.id == id }) { ents.append((e.id, e.name, e.kind)) }
         }
         store.setEntities(ents, mentions: url.path, resolved)
     }
@@ -92,7 +99,7 @@ enum IndexBuilder {
     /// cache the retrieval layer and the MCP server read for alias expansion and glosses.
     /// One row per (term, group membership).
     static func syncTerms(store: IndexStore) {
-        let rows = EntityRegistry.shared.entities
+        let rows = EntityRegistry.shared.allEntities()
             .filter { $0.kind == "term" }
             .flatMap { entity in
                 entity.groups.map { group in
@@ -173,5 +180,9 @@ enum IndexBuilder {
         sweep(docs, indexDoc)
         let ms = Int(Date().timeIntervalSince(start) * 1000)
         log.info("reconcile: \(transcripts.count)+\(notes.count)+\(docs.count) on disk, \(reindexed) indexed, \(removed) removed, \(unchanged) unchanged, \(ms)ms")
+
+        // End of the write pass: fold this pass's writes out of the WAL and truncate it, so the -wal file
+        // can't grow across passes and slow the read-only MCP opener. Only when the pass actually wrote.
+        if reindexed > 0 || removed > 0 { store.checkpoint() }
     }
 }
