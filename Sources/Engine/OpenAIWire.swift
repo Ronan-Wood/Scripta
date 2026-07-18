@@ -8,7 +8,21 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
 
     let baseURL: URL
     let lanConfirmed: Bool
-    private lazy var session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
+    private lazy var session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        // Hard wall-clock cap for a whole request/response — a connection-level backstop against a
+        // server that stays alive but trickles forever. `req.timeoutInterval` only bounds IDLE time
+        // between bytes (which a keepalive resets), so that alone can never terminate such a stream.
+        // Generous, because memory is bounded independently below; this only kills stalled sockets.
+        config.timeoutIntervalForResource = 900
+        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
+    }()
+
+    /// Streaming safety caps: a hostile/buggy local server could stream forever. A real chat answer
+    /// is far smaller than either; hitting one aborts the stream rather than growing memory unbounded.
+    /// `maxStreamBytes` bounds BOTH a single SSE line and the accumulated answer.
+    private static let maxStreamBytes = 4 * 1024 * 1024
+    private static let maxStreamChunks = 200_000
 
     init(baseURL: URL, lanConfirmed: Bool) {
         self.baseURL = baseURL
@@ -106,12 +120,32 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
                     let (bytes, resp) = try await session.bytes(for: req)
                     guard let http = resp as? HTTPURLResponse else { throw EngineError.badResponse }
                     guard http.statusCode == 200 else { throw EngineError.http(http.statusCode) }
+                    // Parse SSE from the RAW byte stream (not bytes.lines): a single un-terminated
+                    // line can't then buffer without bound — each line and the running answer are
+                    // both capped, so a hostile/slow server can't grow memory even within the 900s.
                     var accumulated = ""
-                    for try await line in bytes.lines {
-                        guard line.hasPrefix("data:") else { continue }
+                    var accumBytes = 0
+                    var chunks = 0
+                    var lineBuf = [UInt8]()
+                    loop: for try await byte in bytes {
+                        if byte != 0x0A {                              // not "\n": keep buffering the line
+                            if byte != 0x0D { lineBuf.append(byte) }   // ignore "\r"
+                            guard lineBuf.count <= Self.maxStreamBytes else { throw EngineError.responseTooLarge }
+                            continue
+                        }
+                        defer { lineBuf.removeAll(keepingCapacity: true) }
+                        guard let line = String(bytes: lineBuf, encoding: .utf8), line.hasPrefix("data:") else { continue }
                         let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        if payload == "[DONE]" { break }
-                        if let delta = Self.delta(payload) { accumulated += delta; continuation.yield(accumulated) }
+                        if payload == "[DONE]" { break loop }
+                        if let delta = Self.delta(String(payload)) {
+                            accumulated += delta
+                            accumBytes += delta.utf8.count
+                            chunks += 1
+                            guard accumBytes <= Self.maxStreamBytes, chunks <= Self.maxStreamChunks else {
+                                throw EngineError.responseTooLarge
+                            }
+                            continuation.yield(accumulated)
+                        }
                     }
                     continuation.finish()
                 } catch {
