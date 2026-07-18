@@ -24,9 +24,11 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
     private static let maxStreamBytes = 4 * 1024 * 1024
     private static let maxStreamChunks = 200_000
     /// Cap for a non-streaming response body. `data(for:)` buffers the whole body unbounded, so a
-    /// hostile/buggy local server could OOM the app; embeddings batches are the largest legit case,
-    /// so keep it generous (audit L9).
+    /// hostile/buggy local server could OOM the app (audit L9).
     private static let maxResponseBytes = 32 * 1024 * 1024
+    /// Embeddings responses are legitimately the largest (every chunk of a transcript, high-dim
+    /// vectors as JSON), so they get a bigger ceiling so a real batch isn't rejected — still bounded.
+    private static let maxEmbeddingsBytes = 128 * 1024 * 1024
 
     init(baseURL: URL, lanConfirmed: Bool) {
         self.baseURL = baseURL
@@ -51,16 +53,16 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
 
     /// Reads a non-streaming response with a hard size cap so a hostile/buggy local server can't OOM
     /// the app — `session.data(for:)` buffers the whole body with no limit (audit L9).
-    private func dataCapped(for req: URLRequest) async throws -> (Data, URLResponse) {
+    private func dataCapped(for req: URLRequest, max: Int = maxResponseBytes) async throws -> (Data, URLResponse) {
         let (bytes, resp) = try await session.bytes(for: req)
         // Reject a declared-oversized body up front; otherwise read into Data with a running cap so
         // a chunked/lying server can't push us past the ceiling either.
-        if resp.expectedContentLength > Int64(Self.maxResponseBytes) { throw EngineError.responseTooLarge }
+        if resp.expectedContentLength > Int64(max) { throw EngineError.responseTooLarge }
         var data = Data()
         data.reserveCapacity(64 * 1024)
         for try await b in bytes {
             data.append(b)
-            if data.count > Self.maxResponseBytes { throw EngineError.responseTooLarge }
+            if data.count > max { throw EngineError.responseTooLarge }
         }
         return (data, resp)
     }
@@ -220,7 +222,7 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
         req.timeoutInterval = timeout
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["model": model, "input": input])
-        let (data, resp) = try await dataCapped(for: req)
+        let (data, resp) = try await dataCapped(for: req, max: Self.maxEmbeddingsBytes)
         guard let http = resp as? HTTPURLResponse else { throw EngineError.badResponse }
         guard http.statusCode == 200 else { throw EngineError.http(http.statusCode) }
         struct Resp: Decodable { struct E: Decodable { let embedding: [Float] }; let data: [E] }
