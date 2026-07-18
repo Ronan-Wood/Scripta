@@ -72,10 +72,12 @@ final class RecordingSession {
 
     // Session mutable state is touched from the main actor (addNote) and off-main (start/pause/
     // resume/stop are nonisolated async and hop off the caller's actor per SE-0338). `lock`
-    // serializes the timing fields (startedAt/pausedAccum/pauseBegan), the lifecycle `state`, and
-    // the notes hand-off, so a note's timestamp can't tear against a concurrent pause/resume —
-    // without pinning the whole session to an actor. Held only around synchronous field access,
-    // never across an `await`.
+    // serializes the timing fields (startedAt/pausedAccum/pauseBegan), the lifecycle `state`, the
+    // notes hand-off, and the capture reference slots (micCapture/systemCapture/screenCapturer/
+    // liveTranscriber/liveStartTask) — the latter so pause/resume/stop can't race the ARC
+    // retain/release on those shared vars (memory-unsafe, distinct from the capture objects' own
+    // thread-safety). Readers copy a reference out under the lock, then act on the local, so the
+    // lock is never held across an `await` — without pinning the whole session to an actor.
     private let lock = NSLock()
     private var notes: [CallNote] = []
 
@@ -223,8 +225,10 @@ final class RecordingSession {
             lock.lock(); state = .idle; lock.unlock()
             throw error
         }
+        lock.lock()
         micCapture = mic
         systemCapture = system
+        lock.unlock()
 
         if screenSource != .off {
             // If a vision model is assigned, retain frame PNGs to an ephemeral caption dir OUTSIDE
@@ -243,7 +247,7 @@ final class RecordingSession {
                 imageDir: captionDir
             )
             await capturer.start()
-            screenCapturer = capturer
+            lock.lock(); screenCapturer = capturer; lock.unlock()
         }
 
         lock.lock(); state = .recording; lock.unlock()
@@ -259,7 +263,7 @@ final class RecordingSession {
                 AppModel.shared.live.partial = partial
             }
             let feedsMic = mode.capturesMic
-            liveStartTask = Task { [weak self] in
+            let startTask = Task { [weak self] in
                 do {
                     try await live.start()
                 } catch {
@@ -284,15 +288,22 @@ final class RecordingSession {
                 self.lock.unlock()
                 guard claimed else { await live.stop(); return }
             }
+            // Publish the task under the lock so stop()'s read/cancel/nil can't race this assignment.
+            lock.lock(); liveStartTask = startTask; lock.unlock()
         }
     }
 
     /// Pauses/resumes capture. Paused intervals are simply omitted from both tracks, so they stay
     /// aligned and the transcript has no silent gap.
     func pause() async {
-        micCapture?.isPaused = true
-        systemCapture?.setPaused(true)
-        await screenCapturer?.setPaused(true)
+        lock.lock()
+        let mic = micCapture
+        let system = systemCapture
+        let screen = screenCapturer
+        lock.unlock()
+        mic?.isPaused = true
+        system?.setPaused(true)
+        await screen?.setPaused(true)
         lock.lock()
         if pauseBegan == nil { pauseBegan = Date() }
         lock.unlock()
@@ -303,10 +314,13 @@ final class RecordingSession {
             pausedAccum += Date().timeIntervalSince(began)
             pauseBegan = nil
         }
+        let mic = micCapture
+        let system = systemCapture
+        let screen = screenCapturer
         lock.unlock()
-        micCapture?.isPaused = false
-        systemCapture?.setPaused(false)
-        await screenCapturer?.setPaused(false)
+        mic?.isPaused = false
+        system?.setPaused(false)
+        await screen?.setPaused(false)
     }
 
     /// Records a manual note at the current point in the call. Timestamp excludes paused time,
@@ -350,21 +364,31 @@ final class RecordingSession {
         }
         state = .processing
         isStopping = true
-        lock.unlock()
-
-        micCapture?.stop()
-        await systemCapture?.stop()
-        let snippets = await screenCapturer?.stop() ?? []
-        liveStartTask?.cancel()
-        // Don't await .value — a first-use model download inside live.start() may not cancel promptly
-        // and would block stop()/quit. The isStopping flag stops any live instance the task assigns,
-        // and this stops one already assigned; so the transcriber is torn down exactly once (audit L6).
-        liveStartTask = nil
-        await liveTranscriber?.stop()
+        // Detach every capture reference and clear its slot in the SAME critical section, so tearing
+        // them down below can't race pause()/resume() reading the slots or the liveStartTask closure
+        // assigning them — all of which touch these vars only under `lock`. We then operate solely on
+        // the locals, never the stored slots, across the awaits (the lock is not held there).
+        // isStopping (set above) already blocks the closure from resurrecting a transcriber past here.
+        let mic = micCapture
+        let system = systemCapture
+        let screen = screenCapturer
+        let live = liveTranscriber
+        let startTask = liveStartTask
         micCapture = nil
         systemCapture = nil
         screenCapturer = nil
         liveTranscriber = nil
+        liveStartTask = nil
+        lock.unlock()
+
+        mic?.stop()
+        await system?.stop()
+        let snippets = await screen?.stop() ?? []
+        startTask?.cancel()
+        // Don't await .value — a first-use model download inside live.start() may not cancel promptly
+        // and would block stop()/quit. The isStopping flag stops any live instance the task assigns,
+        // and this stops one already assigned; so the transcriber is torn down exactly once (audit L6).
+        await live?.stop()
         endActivity()
 
         let systemURL = self.systemURL

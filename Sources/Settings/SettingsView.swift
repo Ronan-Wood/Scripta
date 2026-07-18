@@ -630,6 +630,11 @@ struct SettingsView: View {
             if let store = IndexStore.shared {
                 IndexBuilder.syncTerms(store: store)
                 IndexBuilder.reconcile(store: store)
+                // Re-embed here too: clear() wiped chunk_vectors, and embedPending otherwise only runs
+                // at launch — so a manual rebuild would leave vectors empty until the next launch.
+                // No-op unless an embedder is configured. EntityMirror mirrors the launch order.
+                await IndexBuilder.embedPending(store: store)
+                EntityMirror.sync(store: store)   // no-op unless mirroring is enabled
             }
             await MainActor.run {
                 AppModel.shared.reloadCalls()

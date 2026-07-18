@@ -181,9 +181,8 @@ struct KnowledgeView: View {
 
     private func reload() {
         mineSuggestions()   // manages its own background Task
-        // Registry reads are cheap in-memory scans, kept inline for simplicity. (EntityRegistry is
-        // not yet lock-protected and is also mutated off-main by IndexBuilder — a pre-existing race
-        // tracked separately; this change neither introduces nor fixes it.)
+        // Registry reads are cheap in-memory scans (lock-protected against the off-main IndexBuilder
+        // writers), kept inline for simplicity.
         vocabTerms = EntityRegistry.shared.terms(group: model.activeGroup)
         collisions = EntityRegistry.shared.collisionCandidates(group: model.activeGroup)
         // The heavy reads — SQLite digest (which can block behind a background index upsert on the
@@ -222,7 +221,7 @@ struct KnowledgeView: View {
     private func mineSuggestions() {
         guard let store = model.index else { return }
         let group = model.activeGroup
-        let known = Set(EntityRegistry.shared.entities.flatMap { [EntityRegistry.normalize($0.name)] + $0.aliases })
+        let known = Set(EntityRegistry.shared.allEntities().flatMap { [EntityRegistry.normalize($0.name)] + $0.aliases })
         Task.detached(priority: .utility) {
             let blocklist: Set<String> = ["ok", "am", "pm", "tv", "us", "uk", "id", "ai", "iou"]
             var counts: [String: Int] = [:]

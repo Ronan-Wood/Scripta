@@ -8,11 +8,21 @@ import Foundation
 /// the `app: call-transcriber` marker on its own line, and it never recurses into subdirectories.
 enum RetentionPruner {
 
-    static func pruneIfNeeded() {
-        guard AppSettings.retentionEnabled else { return }
-        let days = max(1, AppSettings.retentionDays)
+    /// The settings the pruner reads. Injected rather than pulled from `AppSettings` directly so the
+    /// pruning logic (and its vault-safety guarantees) stays in the dependency-free layer and can be
+    /// exercised by the host-less test bundle. The app builds this from `AppSettings` — see the
+    /// zero-argument `pruneIfNeeded()` in `RetentionPruner+Live.swift`.
+    struct Config {
+        var enabled: Bool
+        var days: Int
+        var folder: URL
+    }
+
+    static func pruneIfNeeded(_ config: Config) {
+        guard config.enabled else { return }
+        let days = max(1, config.days)
         let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
-        let folder = AppSettings.outputFolder
+        let folder = config.folder
         let fileManager = FileManager.default
 
         // contentsOfDirectory is shallow (non-recursive) by design.
