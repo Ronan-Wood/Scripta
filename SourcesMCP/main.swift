@@ -553,7 +553,9 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         guard let query = (args["query"] as? String)?.trimmingCharacters(in: .whitespaces), !query.isEmpty else {
             return textResult("Provide a non-empty query.", isError: true)
         }
-        let limit = max(1, (args["limit"] as? Int) ?? 15)   // clamp like overview/list, and match the app
+        // Clamp both ends: a client can send any Int, and fused() over-fetches limit*4, which would
+        // trap on overflow for a huge value. 200 is far above any useful retrieval page.
+        let limit = min(200, max(1, (args["limit"] as? Int) ?? 15))
         guard let hits = retrieve(query, participant: args["participant"] as? String,
                                   tag: args["tag"] as? String, since: args["since"] as? String,
                                   speaker: args["speaker"] as? String, group: group, limit: limit) else {

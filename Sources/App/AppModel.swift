@@ -143,13 +143,21 @@ final class AppModel: ObservableObject {
 
     private init() {}
 
+    private var callsReloadGeneration = 0
     func reloadCalls() {
         // TranscriptStore.list() scans the output folder and head-reads every file. Run it off the
         // main actor so the many callers (recording-complete, delete, index change, view appear)
         // don't block the UI (audit M7); the @Published assignment lands back on the main actor.
+        // A generation token makes it latest-wins, so an older overlapping scan can't overwrite a
+        // newer one (e.g. a stale list flashing a just-deleted call back).
+        callsReloadGeneration &+= 1
+        let generation = callsReloadGeneration
         Task.detached(priority: .userInitiated) {
             let loaded = TranscriptStore.list()
-            await MainActor.run { AppModel.shared.calls = loaded }
+            await MainActor.run {
+                guard AppModel.shared.callsReloadGeneration == generation else { return }
+                AppModel.shared.calls = loaded
+            }
         }
     }
 

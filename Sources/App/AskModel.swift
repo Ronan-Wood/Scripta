@@ -78,7 +78,9 @@ final class AskModel: ObservableObject {
         conversations.removeAll { $0.created < cutoff }
         if conversations.count != before {
             if !conversations.contains(where: { $0.id == currentID }) {
-                currentID = nil; messages = []; conversationEpoch &+= 1
+                // Clear the model session and workspace too, or a later activate(sameGroup) early-returns
+                // on the stale currentGroup and keeps the pruned conversation's `chat` context.
+                currentID = nil; messages = []; conversationEpoch &+= 1; currentGroup = nil; chat = nil; thinking = false
             }
             Self.save(conversations)
         }
@@ -103,6 +105,7 @@ final class AskModel: ObservableObject {
     func activate(group: String) {
         if currentGroup == group { return }   // already in this workspace — nothing to switch
         conversationEpoch &+= 1
+        thinking = false   // any in-flight send for the outgoing conversation is now abandoned
         syncCurrent(into: currentGroup ?? group)   // flush the OUTGOING conversation under ITS group
         if let latest = conversations(in: group).first {
             currentID = latest.id
@@ -120,6 +123,7 @@ final class AskModel: ObservableObject {
         syncCurrent(into: group)
         guard let conversation = conversations.first(where: { $0.id == id }) else { return }
         conversationEpoch &+= 1   // only after we know we're actually reassigning `messages`
+        thinking = false
         currentID = conversation.id
         messages = conversation.messages
         currentGroup = group
@@ -128,6 +132,7 @@ final class AskModel: ObservableObject {
 
     func newConversation(group: String) {
         conversationEpoch &+= 1
+        thinking = false
         syncCurrent(into: group)
         currentID = nil
         messages = []
@@ -140,6 +145,7 @@ final class AskModel: ObservableObject {
         conversations.removeAll { $0.id == id }
         if currentID == id {
             conversationEpoch &+= 1
+            thinking = false
             currentID = conversations(in: group).first?.id
             messages = conversations.first(where: { $0.id == currentID })?.messages ?? []
             currentGroup = group
@@ -252,11 +258,11 @@ final class AskModel: ObservableObject {
         // (and persist into) the wrong conversation — or crash out of bounds (audit H3).
         do {
             try await run(prompt, into: index, epoch: epoch)
-            guard epoch == conversationEpoch, index < messages.count else { thinking = false; return }
+            guard epoch == conversationEpoch, index < messages.count else { return }   // switcher owns the thinking flag now
             messages[index].sources = sources
             messages[index].grounding = grounding
         } catch {
-            guard epoch == conversationEpoch, index < messages.count else { thinking = false; return }
+            guard epoch == conversationEpoch, index < messages.count else { return }   // switcher owns the thinking flag now
             // Ask, first message → auto-fall back to Apple FM with a notice, and the answer still
             // arrives. Mid-conversation → no silent swap: keep the partial text, hint at retry.
             if firstAnswer && usingEndpoint {
@@ -265,12 +271,12 @@ final class AskModel: ObservableObject {
                 messages[index].engineLabel = engineLabel
                 do {
                     try await run(prompt, into: index, epoch: epoch)
-                    guard epoch == conversationEpoch, index < messages.count else { thinking = false; return }
+                    guard epoch == conversationEpoch, index < messages.count else { return }   // switcher owns the thinking flag now
                     messages[index].sources = sources
                     messages[index].grounding = grounding
                 }
                 catch {
-                    guard epoch == conversationEpoch, index < messages.count else { thinking = false; return }
+                    guard epoch == conversationEpoch, index < messages.count else { return }   // switcher owns the thinking flag now
                     messages[index].text = Self.errorText(error)
                 }
             } else if messages[index].text.isEmpty {
