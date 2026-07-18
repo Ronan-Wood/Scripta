@@ -24,33 +24,13 @@ enum RetentionPruner {
 
         for url in entries {
             guard url.pathExtension == "md",
-                  hasTranscriptFilename(url),
-                  isAppAuthored(url),
+                  RetentionGate.hasTranscriptFilename(url),
+                  RetentionGate.isAppAuthored(url),
                   let date = fileDate(url),
                   date < cutoff
             else { continue }
             try? fileManager.removeItem(at: url)
         }
-    }
-
-    /// Matches the "<Title> — yyyy-MM-dd HHmm[ (n)]" filename shape `TranscriptWriter.uniqueURL`
-    /// produces. A user's own note can carry the marker text but won't carry this name.
-    private static func hasTranscriptFilename(_ url: URL) -> Bool {
-        let name = url.deletingPathExtension().lastPathComponent
-        return name.range(of: #" — \d{4}-\d{2}-\d{2} \d{4}( \(\d+\))?$"#,
-                          options: .regularExpression) != nil
-    }
-
-    /// Confirms the marker sits on its own line inside the leading frontmatter block — a note
-    /// that merely quotes the marker in its body can never match. Reuses the shared line-based
-    /// splitter + marker check, so quoting/`---` handling stays consistent app-wide.
-    private static func isAppAuthored(_ url: URL) -> Bool {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-        defer { try? handle.close() }
-        let head = (try? handle.read(upToCount: 2048)) ?? Data()
-        guard let text = String(data: head, encoding: .utf8),
-              let split = Frontmatter.split(text) else { return false }
-        return Frontmatter.hasOwnerMarker(split.frontmatter)
     }
 
     private static func fileDate(_ url: URL) -> Date? {
