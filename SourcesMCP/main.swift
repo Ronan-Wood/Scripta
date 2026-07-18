@@ -36,82 +36,26 @@ struct Meta {
     let group: String
 }
 
-/// Splits on delimiter LINES (`---` alone on a line), mirroring the app's Frontmatter helper —
-/// a `---` inside a title or the body (Screen Context dividers) must not truncate parsing.
-func splitFrontmatter(_ content: String) -> (frontmatter: String, body: String)? {
-    var lines = content.components(separatedBy: "\n")[...]
-    guard lines.popFirst()?.trimmingCharacters(in: .whitespaces) == "---" else { return nil }
-    guard let close = lines.firstIndex(where: {
-        let t = $0.trimmingCharacters(in: .whitespaces)
-        return t == "---" || t == "..."
-    }) else { return nil }
-    return (lines[..<close].joined(separator: "\n"), lines[(close + 1)...].joined(separator: "\n"))
-}
-
-func rawFrontmatterValue(_ frontmatter: String, _ key: String) -> String {
-    for line in frontmatter.split(separator: "\n") {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("\(key):") {
-            return String(trimmed.dropFirst(key.count + 1)).trimmingCharacters(in: .whitespaces)
-        }
-    }
-    return ""
-}
-
-func frontmatterField(_ frontmatter: String, _ key: String) -> String {
-    rawFrontmatterValue(frontmatter, key).trimmingCharacters(in: CharacterSet(charactersIn: " \"[]"))
-}
-
-/// Quoted items are taken verbatim — a "Last, First" name is ONE participant, not two;
-/// unquoted values fall back to comma-splitting. Mirrors the app's TranscriptStore.parseList.
-func frontmatterList(_ frontmatter: String, _ key: String) -> [String] {
-    var value = rawFrontmatterValue(frontmatter, key)
-    if value.hasPrefix("[") { value.removeFirst() }
-    if value.hasSuffix("]") { value.removeLast() }
-    guard value.contains("\"") else {
-        return value.split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-    }
-    var items: [String] = []
-    var current = ""
-    var inQuote = false
-    for ch in value {
-        if ch == "\"" {
-            if inQuote {
-                let item = current.trimmingCharacters(in: .whitespaces)
-                if !item.isEmpty { items.append(item) }
-                current = ""
-            }
-            inQuote.toggle()
-        } else if inQuote {
-            current.append(ch)
-        }
-    }
-    return items
-}
+// Frontmatter parsing (split, owner-marker check, scalar field, flow list) is shared with the app
+// and the eval harness via Sources/Shared/Frontmatter.swift — see `enum Frontmatter` — so the
+// "app-authored only" gate and field parsing can never drift between this server and the app.
 
 func parseMeta(_ url: URL) -> Meta? {
+    // Only app-authored files: the owner marker must sit on its own line inside the frontmatter.
     guard let content = try? String(contentsOf: url, encoding: .utf8),
-          let split = splitFrontmatter(content) else { return nil }
+          let split = Frontmatter.split(content),
+          Frontmatter.hasOwnerMarker(split.frontmatter) else { return nil }
     let fm = split.frontmatter
-    // Only app-authored files: the marker must sit on its own line inside the frontmatter,
-    // tolerating YAML quoting (`app: "call-transcriber"`) an editor may have added.
-    guard fm.components(separatedBy: "\n").contains(where: { line -> Bool in
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasPrefix("app:") else { return false }
-        return trimmed.dropFirst(4).trimmingCharacters(in: CharacterSet(charactersIn: " \"'")) == ownerMarker
-    }) else { return nil }
     return Meta(
         url: url,
-        title: frontmatterField(fm, "title"),
-        date: frontmatterField(fm, "date"),
-        time: frontmatterField(fm, "time"),
-        duration: frontmatterField(fm, "duration"),
-        participants: frontmatterList(fm, "participants"),
-        tags: frontmatterList(fm, "tags").filter { $0 != ownerMarker },
-        isConference: frontmatterField(fm, "mode") == "conference",
-        group: frontmatterField(fm, "group")
+        title: Frontmatter.field(fm, "title"),
+        date: Frontmatter.field(fm, "date"),
+        time: Frontmatter.field(fm, "time"),
+        duration: Frontmatter.field(fm, "duration"),
+        participants: Frontmatter.list(fm, "participants"),
+        tags: Frontmatter.list(fm, "tags").filter { $0 != ownerMarker },
+        isConference: Frontmatter.field(fm, "mode") == "conference",
+        group: Frontmatter.field(fm, "group")
     )
 }
 
@@ -130,7 +74,7 @@ func activeGroupScope() -> (group: String, refusal: String?) {
 }
 
 func bodyText(_ content: String) -> String {
-    splitFrontmatter(content)?.body ?? content
+    Frontmatter.split(content)?.body ?? content
 }
 
 /// Extracts the "## Summary" section, if present.
@@ -210,7 +154,9 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
     // Passage + (unless a speaker filter is set) topic fusion for one MATCH expression. Mirrors
     // IndexStore.search so the MCP and the app return the same results (shared FTSQuery).
     func fused(_ match: String) -> [RetrieveHit] {
-        var hits: [RetrieveHit] = []
+        // Over-fetch passages (LIMIT ×4) so the per-call diversity cap below still leaves `limit`
+        // results — mirrors IndexStore.passageHits so the MCP and app rank/diversify alike.
+        var passageRows: [RetrieveHit] = []
         var sql = """
         SELECT t.title, t.date, c.path, c.start_ms, IFNULL(c.speaker,''),
                snippet(chunks_fts, 0, '⟦', '⟧', '…', 14), bm25(chunks_fts)
@@ -222,7 +168,7 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
         if since?.isEmpty == false { sql += " AND t.date >= ?" }
         if speakerSet { sql += " AND c.speaker = ?" }
         sql += " AND t.\"group\" = ?"   // the privacy wall (always applied)
-        sql += " ORDER BY bm25(chunks_fts) LIMIT \(max(1, limit));"
+        sql += " ORDER BY bm25(chunks_fts) LIMIT \(max(1, limit) * 4);"
 
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
@@ -236,17 +182,31 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
             bind(group)
             func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
             while sqlite3_step(stmt) == SQLITE_ROW {
-                hits.append(RetrieveHit(title: col(0), date: col(1), path: col(2), speaker: col(4),
-                                        snippet: col(5), startMs: Int(sqlite3_column_int64(stmt, 3)),
-                                        score: sqlite3_column_double(stmt, 6)))
+                passageRows.append(RetrieveHit(title: col(0), date: col(1), path: col(2), speaker: col(4),
+                                               snippet: col(5), startMs: Int(sqlite3_column_int64(stmt, 3)),
+                                               score: sqlite3_column_double(stmt, 6)))
             }
         }
         sqlite3_finalize(stmt); stmt = nil
 
-        // Topic-level fusion: calls matched by name/summary/concept-tag with no spoken-word hit.
-        // Skipped under a speaker filter (topic rows carry no speaker), mirroring the app.
-        guard !speakerSet else { return Array(hits.prefix(max(1, limit))) }
-        let seen = Set(hits.map(\.path))
+        // Per-call diversity: keep each call's 2 best chunks so one long call can't monopolise.
+        var perPath: [String: Int] = [:]
+        var passages: [RetrieveHit] = []
+        for h in passageRows {
+            let n = perPath[h.path, default: 0]
+            if n >= 2 { continue }
+            perPath[h.path] = n + 1
+            passages.append(h)
+            if passages.count >= limit { break }
+        }
+
+        // Topic rows carry no speaker, so a speaker filter excludes them (mirrors the app).
+        guard !speakerSet else { return Array(passages.prefix(max(1, limit))) }
+
+        // Topic-level fusion: calls (and the user's notes/documents) matched by name/summary/
+        // concept-tag with no spoken-word hit.
+        let passagePaths = Set(passages.map(\.path))
+        var topics: [RetrieveHit] = []
         var tsql = """
         SELECT f.title, t.date, f.path, f.summary, t.kind
         FROM transcripts_fts f JOIN transcripts t ON t.path = f.path
@@ -268,7 +228,7 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
             func tcol(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
             while sqlite3_step(stmt) == SQLITE_ROW {
                 let path = tcol(2)
-                if seen.contains(path) { continue }
+                if passagePaths.contains(path) { continue }
                 let summary = tcol(3)
                 let kind = tcol(4)
                 // Notes/documents get a longer window: their "summary" IS the content, not a teaser.
@@ -276,12 +236,31 @@ func retrieve(_ query: String, participant: String?, tag: String?, since: String
                 // The user's own notes and files retrieve alongside calls — labeled as theirs.
                 if kind == "note" { snippet = "the user's note — " + snippet }
                 if kind == "doc" { snippet = "the user's document — " + snippet }
-                hits.append(RetrieveHit(title: tcol(0), date: tcol(1), path: path, speaker: "",
-                                        snippet: snippet, startMs: 0, score: 0, isTopic: true))
+                topics.append(RetrieveHit(title: tcol(0), date: tcol(1), path: path, speaker: "",
+                                          snippet: snippet, startMs: 0, score: 0, isTopic: true))
             }
             sqlite3_finalize(stmt); stmt = nil
         }
-        return Array(hits.prefix(max(1, limit)))
+
+        guard !topics.isEmpty else { return passages }
+
+        // Reserve up to 3 slots for topic matches so a concept-tag hit isn't starved when passages
+        // fill the limit (mirrors IndexStore.fusedHits), then backfill any remaining budget with the
+        // passages held back by the reservation.
+        let reserve = min(3, topics.count)
+        var out = Array(passages.prefix(max(0, limit - reserve)))
+        var seenPaths = Set(out.map(\.path))
+        for topic in topics where !seenPaths.contains(topic.path) {
+            out.append(topic); seenPaths.insert(topic.path)
+            if out.count >= limit { break }
+        }
+        if out.count < limit {
+            var seenKeys = Set(out.map { "\($0.path)|\($0.startMs)" })
+            for p in passages where out.count < limit {
+                if seenKeys.insert("\(p.path)|\(p.startMs)").inserted { out.append(p) }
+            }
+        }
+        return out
     }
 
     // AND-first (precise), OR fallback (recall floor) — same two-pass as the app, with the same
@@ -574,7 +553,7 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         guard let query = (args["query"] as? String)?.trimmingCharacters(in: .whitespaces), !query.isEmpty else {
             return textResult("Provide a non-empty query.", isError: true)
         }
-        let limit = (args["limit"] as? Int) ?? 15
+        let limit = max(1, (args["limit"] as? Int) ?? 15)   // clamp like overview/list, and match the app
         guard let hits = retrieve(query, participant: args["participant"] as? String,
                                   tag: args["tag"] as? String, since: args["since"] as? String,
                                   speaker: args["speaker"] as? String, group: group, limit: limit) else {

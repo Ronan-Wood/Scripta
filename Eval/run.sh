@@ -13,7 +13,7 @@ swiftc -Onone -o "$BIN" \
   Sources/Shared/FTSQuery.swift \
   Sources/Shared/SharedLocations.swift \
   Sources/Viewer/TranscriptParser.swift \
-  Sources/Support/Frontmatter.swift \
+  Sources/Shared/Frontmatter.swift \
   Sources/Index/IndexStore.swift \
   Sources/Index/Indexing.swift \
   Eval/main.swift \
