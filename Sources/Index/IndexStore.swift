@@ -457,6 +457,14 @@ final class IndexStore {
         exec("DELETE FROM transcripts;")
         exec("DELETE FROM transcripts_fts;")
         exec("DELETE FROM chunk_vectors;")
+        // Reset the derived caches too, or reconcile's ledger-gated stages no-op: stale
+        // enrichment_ledger hashes suppress re-embedding + re-extraction, so "Rebuild Index" would
+        // silently leave stale (now orphaned) embeddings and entity graph (audit M2). `terms` is the
+        // vocabulary cache (from the registry, not content-derived), so it is deliberately kept.
+        exec("DELETE FROM enrichment_ledger;")
+        exec("DELETE FROM entities;")
+        exec("DELETE FROM entity_mentions;")
+        exec("DELETE FROM action_items;")
         if !exec("COMMIT;") { exec("ROLLBACK;") }
     }
 
