@@ -104,7 +104,13 @@ enum DocumentImporter {
     /// The index row is cleared by the caller.
     static func delete(mdURL: URL) {
         if let meta = parse(mdURL), !meta.file.isEmpty {
-            try? FileManager.default.removeItem(at: folder.appendingPathComponent(meta.file))
+            // Only delete a file that sits DIRECTLY in Files/ — a hand-edited/foreign `file:` field
+            // containing a path separator or `..` must not delete outside the folder (audit L8),
+            // mirroring the in-place-import containment check.
+            let target = folder.appendingPathComponent(meta.file)
+            if target.standardizedFileURL.deletingLastPathComponent().path == folder.standardizedFileURL.path {
+                try? FileManager.default.removeItem(at: target)
+            }
         }
         try? FileManager.default.removeItem(at: mdURL)
     }

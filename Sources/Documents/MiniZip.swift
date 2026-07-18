@@ -122,29 +122,35 @@ enum MiniZip {
 
     private static func inflate(_ payload: Data, expected: Int) throws -> Data {
         guard !payload.isEmpty else { throw ZipError.corrupt }
-        // `expected` (the entry's declared uncompressed size) is attacker-controlled — never let it
-        // size the buffer directly (a tiny entry could declare ~4 GB and exhaust memory). DEFLATE
-        // tops out around 1032:1, so bound the allocation by what THIS payload could plausibly
-        // inflate to, plus an absolute ceiling.
+        // `expected` (the entry's declared uncompressed size) is attacker-controlled — never trust it
+        // to size the buffer (a tiny entry could declare ~4 GB and exhaust memory, or under-declare
+        // and silently truncate). DEFLATE tops out ~1032:1, so the TRUE upper bound is the payload's
+        // plausible inflate size, capped absolutely. Start from `expected`, but if a decode fills the
+        // buffer exactly (which may mean truncation), grow toward that bound and re-decode — so an
+        // under-declared size can't silently truncate the extracted text (audit L12).
         let maxInflate = 512 * 1024 * 1024   // no OOXML text part is remotely this large
         let ratio = payload.count.multipliedReportingOverflow(by: 1100)
-        let ratioCap = ratio.overflow ? Int.max : ratio.partialValue &+ 4096
-        let capacity = max(64, min(expected, ratioCap, maxInflate))
-        var out = Data(count: capacity)
-        let written = out.withUnsafeMutableBytes { dst in
-            payload.withUnsafeBytes { src in
-                compression_decode_buffer(
-                    dst.bindMemory(to: UInt8.self).baseAddress!, capacity,
-                    src.bindMemory(to: UInt8.self).baseAddress!, payload.count,
-                    nil, COMPRESSION_ZLIB)
+        let ratioCap = min(ratio.overflow ? maxInflate : ratio.partialValue &+ 4096, maxInflate)
+        var capacity = max(64, min(expected > 0 ? expected : ratioCap, ratioCap))
+        while true {
+            var out = Data(count: capacity)
+            let written = out.withUnsafeMutableBytes { dst in
+                payload.withUnsafeBytes { src in
+                    compression_decode_buffer(
+                        dst.bindMemory(to: UInt8.self).baseAddress!, capacity,
+                        src.bindMemory(to: UInt8.self).baseAddress!, payload.count,
+                        nil, COMPRESSION_ZLIB)
+                }
             }
+            guard written > 0 else { throw ZipError.corrupt }
+            if written < capacity {   // decode finished with room to spare → complete
+                out.removeSubrange(written..<out.count)
+                return out
+            }
+            // Buffer filled exactly: possibly truncated. A real DEFLATE stream can't exceed ratioCap,
+            // so filling that means a corrupt/over-ratio (or over-ceiling) entry — refuse. Else grow.
+            guard capacity < ratioCap else { throw ZipError.corrupt }
+            capacity = min(capacity * 2, ratioCap)
         }
-        guard written > 0 else { throw ZipError.corrupt }
-        // compression_decode_buffer can't signal "output too small": a full buffer at the absolute
-        // ceiling means we clamped below the true size, so fail loud instead of returning a silently
-        // truncated document. (A normal entry fills exactly `expected`, which is < maxInflate.)
-        if written == capacity, capacity == maxInflate { throw ZipError.corrupt }
-        out.removeSubrange(written..<out.count)
-        return out
     }
 }
