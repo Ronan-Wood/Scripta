@@ -22,8 +22,17 @@ struct HomeView: View {
     }
 
     private func reload() {
-        model.reloadCalls()
-        rows = model.index?.digest(group: model.activeGroup) ?? []
+        model.reloadCalls()   // loads off the main actor internally (audit M7)
+        // Digest is SQLite under the store's lock (can block behind a background upsert) — off-main.
+        let group = model.activeGroup
+        let store = model.index
+        Task.detached(priority: .userInitiated) {
+            let rows = store?.digest(group: group) ?? []
+            await MainActor.run {
+                guard group == model.activeGroup else { return }   // discard a stale load after a switch
+                self.rows = rows
+            }
+        }
     }
 
     private var dashboard: some View {

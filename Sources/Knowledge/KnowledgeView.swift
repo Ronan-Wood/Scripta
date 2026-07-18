@@ -180,12 +180,28 @@ struct KnowledgeView: View {
     }
 
     private func reload() {
-        rows = model.index?.digest(group: model.activeGroup) ?? []
-        notes = NoteStore.list(group: model.activeGroup)
+        mineSuggestions()   // manages its own background Task
+        // Registry reads are cheap in-memory scans, kept inline for simplicity. (EntityRegistry is
+        // not yet lock-protected and is also mutated off-main by IndexBuilder — a pre-existing race
+        // tracked separately; this change neither introduces nor fixes it.)
         vocabTerms = EntityRegistry.shared.terms(group: model.activeGroup)
         collisions = EntityRegistry.shared.collisionCandidates(group: model.activeGroup)
-        docs = DocumentImporter.list(group: model.activeGroup)
-        mineSuggestions()
+        // The heavy reads — SQLite digest (which can block behind a background index upsert on the
+        // store's lock) plus two directory scans that read every note/doc file — go off the main
+        // actor so opening the hub or switching workspace doesn't stall the UI (audit M7).
+        let group = model.activeGroup
+        let store = model.index
+        Task.detached(priority: .userInitiated) {
+            let rows = store?.digest(group: group) ?? []
+            let notes = NoteStore.list(group: group)
+            let docs = DocumentImporter.list(group: group)
+            await MainActor.run {
+                guard group == model.activeGroup else { return }   // discard a stale load after a switch
+                self.rows = rows
+                self.notes = notes
+                self.docs = docs
+            }
+        }
     }
 
     private func importFromPanel() {
