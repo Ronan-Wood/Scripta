@@ -23,6 +23,10 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
     /// `maxStreamBytes` bounds BOTH a single SSE line and the accumulated answer.
     private static let maxStreamBytes = 4 * 1024 * 1024
     private static let maxStreamChunks = 200_000
+    /// Cap for a non-streaming response body. `data(for:)` buffers the whole body unbounded, so a
+    /// hostile/buggy local server could OOM the app; embeddings batches are the largest legit case,
+    /// so keep it generous (audit L9).
+    private static let maxResponseBytes = 32 * 1024 * 1024
 
     init(baseURL: URL, lanConfirmed: Bool) {
         self.baseURL = baseURL
@@ -45,6 +49,22 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
         return baseURL.appendingPathComponent(path)
     }
 
+    /// Reads a non-streaming response with a hard size cap so a hostile/buggy local server can't OOM
+    /// the app — `session.data(for:)` buffers the whole body with no limit (audit L9).
+    private func dataCapped(for req: URLRequest) async throws -> (Data, URLResponse) {
+        let (bytes, resp) = try await session.bytes(for: req)
+        // Reject a declared-oversized body up front; otherwise read into Data with a running cap so
+        // a chunked/lying server can't push us past the ceiling either.
+        if resp.expectedContentLength > Int64(Self.maxResponseBytes) { throw EngineError.responseTooLarge }
+        var data = Data()
+        data.reserveCapacity(64 * 1024)
+        for try await b in bytes {
+            data.append(b)
+            if data.count > Self.maxResponseBytes { throw EngineError.responseTooLarge }
+        }
+        return (data, resp)
+    }
+
     /// Drop any redirect that would leave the box. Re-applies the full locality gate to the redirect
     /// target — same string + resolved-address checks as the initial request — and keeps it pinned
     /// to the configured host, so a local server can't 302 us onto a public address.
@@ -64,7 +84,7 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
     func models(timeout: TimeInterval = 2) async throws -> [String] {
         var req = URLRequest(url: try endpoint("models"))
         req.timeoutInterval = timeout
-        let (data, resp) = try await session.data(for: req)
+        let (data, resp) = try await dataCapped(for: req)
         guard let http = resp as? HTTPURLResponse else { throw EngineError.badResponse }
         guard http.statusCode == 200 else { throw EngineError.http(http.statusCode) }
         struct List: Decodable { struct M: Decodable { let id: String }; let data: [M] }
@@ -92,7 +112,7 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
             req.timeoutInterval = timeout
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = body(model: model, messages: messages, stream: false, jsonMode: json)
-            let (data, resp) = try await session.data(for: req)
+            let (data, resp) = try await dataCapped(for: req)
             guard let http = resp as? HTTPURLResponse else { throw EngineError.badResponse }
             if http.statusCode == 400 && json { throw RetrySansJSON() }
             guard http.statusCode == 200 else { throw EngineError.http(http.statusCode) }
@@ -110,7 +130,7 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
     /// timeout covers a cold model load on the server (that's the feature working, not a hang).
     func stream(model: String, messages: [Message], timeout: TimeInterval = 60) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
                     var req = URLRequest(url: try endpoint("chat/completions"))
                     req.httpMethod = "POST"
@@ -152,6 +172,9 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
                     continuation.finish(throwing: error)
                 }
             }
+            // Consumer stopped iterating (e.g. the user switched conversation) → cancel the in-flight
+            // request instead of leaking the connection until it finishes on its own (audit L10).
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
 
@@ -179,7 +202,7 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
         req.timeoutInterval = timeout
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["model": model, "messages": messages, "stream": false])
-        let (data, resp) = try await session.data(for: req)
+        let (data, resp) = try await dataCapped(for: req)
         guard let http = resp as? HTTPURLResponse else { throw EngineError.badResponse }
         guard http.statusCode == 200 else { throw EngineError.http(http.statusCode) }
         struct Resp: Decodable { struct C: Decodable { struct M: Decodable { let content: String }; let message: M }; let choices: [C] }
@@ -197,7 +220,7 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
         req.timeoutInterval = timeout
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["model": model, "input": input])
-        let (data, resp) = try await session.data(for: req)
+        let (data, resp) = try await dataCapped(for: req)
         guard let http = resp as? HTTPURLResponse else { throw EngineError.badResponse }
         guard http.statusCode == 200 else { throw EngineError.http(http.statusCode) }
         struct Resp: Decodable { struct E: Decodable { let embedding: [Float] }; let data: [E] }

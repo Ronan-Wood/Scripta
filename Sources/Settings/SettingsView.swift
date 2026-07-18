@@ -496,6 +496,9 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
                     .onChange(of: endpointURLText) { _, v in
                         AppSettings.endpointURLString = v.trimmingCharacters(in: .whitespaces)
+                        // Editing the endpoint invalidates any prior LAN confirmation — the new
+                        // address must be confirmed again before it's used (audit L1).
+                        AppSettings.endpointLANConfirmed = false
                     }
                 HStack(spacing: 8) {
                     Button(testingEndpoint ? "Testing…" : "Test connection") { testEndpoint() }
