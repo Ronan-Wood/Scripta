@@ -53,6 +53,16 @@ final class AskModel: ObservableObject {
     @Published var input = ""
     @Published var thinking = false
 
+    /// Bumped whenever `messages` is swapped to another conversation/workspace. An in-flight
+    /// `send()` captures it and abandons its writes if it changes, so a mid-stream switch can't
+    /// stream into — or persist — the wrong conversation (audit H3).
+    private var conversationEpoch = 0
+
+    /// The workspace `messages` currently belong to (nil until the first `activate`). Tracked so a
+    /// workspace switch flushes the OUTGOING conversation under its own group — `AppSettings.activeGroup`
+    /// has already advanced to the destination by the time `activate` runs (audit H3, invariant 5).
+    private var currentGroup: String?
+
     init() {
         conversations = Self.load()
         pruneExpiredConversations()
@@ -67,7 +77,9 @@ final class AskModel: ObservableObject {
         let before = conversations.count
         conversations.removeAll { $0.created < cutoff }
         if conversations.count != before {
-            if !conversations.contains(where: { $0.id == currentID }) { currentID = nil; messages = [] }
+            if !conversations.contains(where: { $0.id == currentID }) {
+                currentID = nil; messages = []; conversationEpoch &+= 1
+            }
             Self.save(conversations)
         }
     }
@@ -89,8 +101,9 @@ final class AskModel: ObservableObject {
 
     /// Entering a workspace (or first showing the pane): resume its latest conversation.
     func activate(group: String) {
-        if let current = conversations.first(where: { $0.id == currentID }), current.group == group { return }
-        syncCurrent(into: AppSettings.activeGroup)
+        if currentGroup == group { return }   // already in this workspace — nothing to switch
+        conversationEpoch &+= 1
+        syncCurrent(into: currentGroup ?? group)   // flush the OUTGOING conversation under ITS group
         if let latest = conversations(in: group).first {
             currentID = latest.id
             messages = latest.messages
@@ -99,21 +112,26 @@ final class AskModel: ObservableObject {
             messages = []
         }
         chat = nil   // fresh model session; the transcript above is display history
+        currentGroup = group
     }
 
     func select(_ id: UUID, group: String) {
         guard id != currentID else { return }
         syncCurrent(into: group)
         guard let conversation = conversations.first(where: { $0.id == id }) else { return }
+        conversationEpoch &+= 1   // only after we know we're actually reassigning `messages`
         currentID = conversation.id
         messages = conversation.messages
+        currentGroup = group
         chat = nil
     }
 
     func newConversation(group: String) {
+        conversationEpoch &+= 1
         syncCurrent(into: group)
         currentID = nil
         messages = []
+        currentGroup = group
         input = ""
         chat = nil
     }
@@ -121,8 +139,10 @@ final class AskModel: ObservableObject {
     func delete(_ id: UUID, group: String) {
         conversations.removeAll { $0.id == id }
         if currentID == id {
+            conversationEpoch &+= 1
             currentID = conversations(in: group).first?.id
             messages = conversations.first(where: { $0.id == currentID })?.messages ?? []
+            currentGroup = group
             chat = nil
         }
         Self.save(conversations)
@@ -171,6 +191,7 @@ final class AskModel: ObservableObject {
         input = ""
         let previousUser = messages.last(where: { $0.fromUser })?.text
         messages.append(Message(fromUser: true, text: question))
+        let epoch = conversationEpoch
 
         // Only require Apple Intelligence when we're not using the local endpoint.
         if !EngineRouter.usesEndpoint(for: .ask), let unavailable = TranscriptEnricher.availabilityMessage {
@@ -191,6 +212,10 @@ final class AskModel: ObservableObject {
             chunks = await Retriever.context(for: previousUser + " " + question, group: group, limit: limit)
             usedFallback = true
         }
+
+        // If the visible conversation was swapped out during retrieval, abandon rather than append
+        // or stream into the wrong conversation (audit H3).
+        guard epoch == conversationEpoch else { return }
 
         // Short-circuit empty retrieval: answer deterministically instead of spending an inference
         // on "(nothing found)" and risking a source-less hallucination.
@@ -222,11 +247,16 @@ final class AskModel: ObservableObject {
         let firstAnswer = !messages.contains { !$0.fromUser && !$0.text.isEmpty }
         let index = messages.count
         messages.append(Message(fromUser: false, text: "", engineLabel: engineLabel))
+        // After every await below, re-check the epoch before touching messages[index]: a mid-stream
+        // conversation/workspace switch reassigns `messages`, so a stale index write would corrupt
+        // (and persist into) the wrong conversation — or crash out of bounds (audit H3).
         do {
-            try await run(prompt, into: index)
+            try await run(prompt, into: index, epoch: epoch)
+            guard epoch == conversationEpoch, index < messages.count else { thinking = false; return }
             messages[index].sources = sources
             messages[index].grounding = grounding
         } catch {
+            guard epoch == conversationEpoch, index < messages.count else { thinking = false; return }
             // Ask, first message → auto-fall back to Apple FM with a notice, and the answer still
             // arrives. Mid-conversation → no silent swap: keep the partial text, hint at retry.
             if firstAnswer && usingEndpoint {
@@ -234,11 +264,15 @@ final class AskModel: ObservableObject {
                 messages[index].text = ""
                 messages[index].engineLabel = engineLabel
                 do {
-                    try await run(prompt, into: index)
+                    try await run(prompt, into: index, epoch: epoch)
+                    guard epoch == conversationEpoch, index < messages.count else { thinking = false; return }
                     messages[index].sources = sources
                     messages[index].grounding = grounding
                 }
-                catch { messages[index].text = Self.errorText(error) }
+                catch {
+                    guard epoch == conversationEpoch, index < messages.count else { thinking = false; return }
+                    messages[index].text = Self.errorText(error)
+                }
             } else if messages[index].text.isEmpty {
                 messages[index].text = Self.errorText(error)
             } else {
@@ -268,9 +302,9 @@ final class AskModel: ObservableObject {
     }
 
     /// Streams cumulative snapshots into the placeholder message so tokens appear as they generate.
-    private func run(_ prompt: String, into index: Int) async throws {
+    private func run(_ prompt: String, into index: Int, epoch: Int) async throws {
         for try await snapshot in chat!.stream(prompt) {
-            guard index < messages.count else { return }
+            guard epoch == conversationEpoch, index < messages.count else { return }
             messages[index].text = snapshot
             thinking = false   // first token has arrived
         }
