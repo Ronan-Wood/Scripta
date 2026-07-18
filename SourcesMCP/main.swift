@@ -142,8 +142,15 @@ struct RetrieveHit {
 
 /// Whole-value match against a newline-joined column (tag "ai" must not match "training"), and the
 /// column-weighted BM25 for the topic table — mirroring IndexStore so the MCP and app rank alike.
-func delimitedClause(_ column: String) -> String { " AND (char(10)||lower(\(column))||char(10)) LIKE ?" }
-func delimitedValue(_ value: String) -> String { "%\n\(value.lowercased())\n%" }
+func delimitedClause(_ column: String) -> String { " AND (char(10)||lower(\(column))||char(10)) LIKE ? ESCAPE '\\'" }
+func delimitedValue(_ value: String) -> String {
+    // Escape LIKE metacharacters so a participant/tag containing % or _ matches exactly (audit L3).
+    let escaped = value.lowercased()
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "%", with: "\\%")
+        .replacingOccurrences(of: "_", with: "\\_")
+    return "%\n\(escaped)\n%"
+}
 let topicBM25 = "bm25(transcripts_fts, 0.0, 4.0, 1.0, 3.0, 0.5)"
 
 func retrieve(_ query: String, participant: String?, tag: String?, since: String?, speaker: String?, group: String, limit: Int) -> [RetrieveHit]? {
@@ -298,13 +305,16 @@ func aliasGroups(db: OpaquePointer, group: String) -> [[String]] {
 /// naturally excluded since chunks are built only from audio lines). nil for an unknown/guarded
 /// path or an empty window.
 func getSection(path: String, start: Int, end: Int) -> String? {
-    guard let meta = safeTranscript(at: path), let db = openIndex() else { return nil }
+    // safeTranscript validates containment + app-authorship; the chunk query then binds the path AS
+    // PROVIDED (it came from retrieve/list = the index's stored key), not the symlink-resolved
+    // meta.url.path, which wouldn't match when the output folder sits under a symlink (audit L5).
+    guard safeTranscript(at: path) != nil, let db = openIndex() else { return nil }
     defer { sqlite3_close(db) }
     let sql = "SELECT start_ms, IFNULL(speaker,''), text FROM chunks WHERE path = ? AND start_ms >= ? AND start_ms <= ? ORDER BY start_ms;"
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, meta.url.path, -1, SQLITE_TRANSIENT_MCP)
+    sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT_MCP)
     sqlite3_bind_int64(stmt, 2, Int64(start))
     sqlite3_bind_int64(stmt, 3, Int64(end))
     func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }

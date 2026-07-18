@@ -54,9 +54,11 @@ enum Frontmatter {
         return ""
     }
 
-    /// A scalar field: the raw value with surrounding quotes/brackets stripped.
+    /// A scalar field: the raw value with only surrounding quotes/space stripped — NOT brackets, so
+    /// a title like `[Draft] Plan` keeps them. Flow lists go through `list`/`parseList`, which strip
+    /// the outer `[ ]` themselves (audit L4).
     static func field(_ frontmatter: String, _ key: String) -> String {
-        rawValue(frontmatter, key).trimmingCharacters(in: CharacterSet(charactersIn: " \"[]"))
+        rawValue(frontmatter, key).trimmingCharacters(in: CharacterSet(charactersIn: " \""))
     }
 
     /// A frontmatter flow list. Quoted items are taken verbatim — a "Last, First" name is ONE

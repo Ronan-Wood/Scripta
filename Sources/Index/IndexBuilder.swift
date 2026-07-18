@@ -22,14 +22,20 @@ enum IndexBuilder {
         }
         let content = TranscriptStore.body(of: url)
 
+        // Strip NUL/control chars so sqlite3_bind_text (strlen-based) can't truncate the indexed text
+        // at an embedded NUL — screen-context OCR of a broken glyph can emit one, the same class the
+        // v11 rebuild fixed for the document/note paths (audit L2).
         let transcript = IndexedTranscript(
             path: url.path, title: meta.title, date: meta.date, time: meta.time,
             duration: meta.duration, participants: meta.participants, tags: meta.tags,
-            summary: Indexing.summary(from: content), mtime: mtime,
+            summary: DocumentImporter.stripControlChars(Indexing.summary(from: content)), mtime: mtime,
             mode: meta.isConference ? "conference" : "", group: meta.group)
 
         // Spoken chunks + on-screen text (marked "Screen") — both searchable + embeddable now.
-        let chunks = Indexing.chunks(from: content) + Indexing.screenChunks(from: content)
+        let chunks = (Indexing.chunks(from: content) + Indexing.screenChunks(from: content)).map {
+            IndexedChunk(startMs: $0.startMs, endMs: $0.endMs, speaker: $0.speaker,
+                         text: DocumentImporter.stripControlChars($0.text))
+        }
         store.upsert(transcript, chunks: chunks)
         let hash = Indexing.contentHash(chunks)
         store.recordStage(path: url.path, stage: "chunk", hash: hash, model: "chunker-v1")
