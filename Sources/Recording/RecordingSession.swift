@@ -65,9 +65,13 @@ final class RecordingSession {
     private var pausedAccum: TimeInterval = 0
     private var pauseBegan: Date?
 
-    // Manual in-call notes. Appended from the UI (main actor) via `addNote`, read once in `stop()`;
-    // the lock keeps that hand-off race-free without pinning the whole session to an actor.
-    private let notesLock = NSLock()
+    // Session mutable state is touched from the main actor (addNote) and off-main (start/pause/
+    // resume/stop are nonisolated async and hop off the caller's actor per SE-0338). `lock`
+    // serializes the timing fields (startedAt/pausedAccum/pauseBegan), the lifecycle `state`, and
+    // the notes hand-off, so a note's timestamp can't tear against a concurrent pause/resume —
+    // without pinning the whole session to an actor. Held only around synchronous field access,
+    // never across an `await`.
+    private let lock = NSLock()
     private var notes: [CallNote] = []
 
     /// Fired at most once, on the main actor, if system-audio capture dies mid-recording.
@@ -142,17 +146,19 @@ final class RecordingSession {
     }
 
     func start(mode: RecordingMode, screenSource: ScreenSource, group: String = "", extraVocab: [String] = []) async throws {
-        guard state == .idle else { return }
         // Transitional state before the first await: the idle guard is check-then-act, so a
-        // second start() arriving mid-await must see "not idle".
+        // second start() arriving mid-await must see "not idle" — do the check-and-set atomically.
+        lock.lock()
+        guard state == .idle else { lock.unlock(); return }
         state = .starting
+        lock.unlock()
         self.mode = mode
         self.group = group
         self.extraVocab = extraVocab
         do {
             try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
         } catch {
-            state = .idle
+            lock.lock(); state = .idle; lock.unlock()
             throw error
         }
 
@@ -161,7 +167,7 @@ final class RecordingSession {
             reason: "Recording call audio"
         )
 
-        startedAt = Date()
+        lock.lock(); startedAt = Date(); lock.unlock()
 
         // Conference mode captures a single source; a call captures both. Capturing only one
         // track is what stops a hybrid room being transcribed twice — and the merge step below
@@ -194,7 +200,7 @@ final class RecordingSession {
         } catch {
             mic?.stop()
             endActivity()
-            state = .idle
+            lock.lock(); state = .idle; lock.unlock()
             throw error
         }
         micCapture = mic
@@ -220,7 +226,7 @@ final class RecordingSession {
             screenCapturer = capturer
         }
 
-        state = .recording
+        lock.lock(); state = .recording; lock.unlock()
 
         // Live transcript from the live source — best-effort, brought up in the background AFTER
         // capture is rolling: its setup can include a model download (first use per locale), which
@@ -256,13 +262,17 @@ final class RecordingSession {
         micCapture?.isPaused = true
         systemCapture?.setPaused(true)
         await screenCapturer?.setPaused(true)
+        lock.lock()
         if pauseBegan == nil { pauseBegan = Date() }
+        lock.unlock()
     }
     func resume() async {
+        lock.lock()
         if let began = pauseBegan {
             pausedAccum += Date().timeIntervalSince(began)
             pauseBegan = nil
         }
+        lock.unlock()
         micCapture?.isPaused = false
         systemCapture?.setPaused(false)
         await screenCapturer?.setPaused(false)
@@ -278,20 +288,22 @@ final class RecordingSession {
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\r", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard state == .recording, !clean.isEmpty else { return false }
+        guard !clean.isEmpty else { return false }
 
+        // Read the timing fields and the recording gate under the lock so a note's timestamp can't
+        // tear against a concurrent pause()/resume()/stop() (all off-main). Appending here too keeps
+        // the note atomic with the timestamp it was computed against.
+        lock.lock(); defer { lock.unlock() }
+        guard state == .recording else { return false }
         var elapsedPaused = pausedAccum
         if let began = pauseBegan { elapsedPaused += Date().timeIntervalSince(began) }
         let ms = max(0, Int((Date().timeIntervalSince(startedAt) - elapsedPaused) * 1000))
-
-        notesLock.lock()
         notes.append(CallNote(startMs: ms, text: clean))
-        notesLock.unlock()
         return true
     }
 
     private func drainNotes() -> [CallNote] {
-        notesLock.lock(); defer { notesLock.unlock() }
+        lock.lock(); defer { lock.unlock() }
         return notes
     }
 
@@ -299,11 +311,14 @@ final class RecordingSession {
     /// URL on success. On success the raw audio is deleted; on failure it is left for the
     /// launch-time sweep so nothing persists indefinitely.
     func stop() async throws -> URL {
+        lock.lock()
         guard state == .recording else {
+            lock.unlock()
             throw NSError(domain: "Scripta", code: 300,
                           userInfo: [NSLocalizedDescriptionKey: "No recording is in progress."])
         }
         state = .processing
+        lock.unlock()
 
         micCapture?.stop()
         await systemCapture?.stop()
@@ -322,15 +337,17 @@ final class RecordingSession {
         let micURL = self.micURL
         let youWavURL = self.youWavURL
         let themWavURL = self.themWavURL
-        let startedAt = self.startedAt
         let isConference = mode != .call
         let extraVocab = self.extraVocab
         let group = self.group
+        lock.lock()
+        let startedAt = self.startedAt   // read under the lock so the guarantee stays local
         if let began = pauseBegan {   // stopped while paused
             pausedAccum += Date().timeIntervalSince(began)
             pauseBegan = nil
         }
         let duration = Date().timeIntervalSince(startedAt) - pausedAccum
+        lock.unlock()
         let notes = drainNotes()
 
         do {
@@ -344,11 +361,11 @@ final class RecordingSession {
 
             // Success: raw audio is no longer needed.
             cleanup()
-            state = .idle
+            lock.lock(); state = .idle; lock.unlock()
             return transcriptURL
         } catch {
             // Leave raw audio for the launch-time sweep; surface the failure.
-            state = .idle
+            lock.lock(); state = .idle; lock.unlock()
             throw error
         }
     }
