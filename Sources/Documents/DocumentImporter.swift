@@ -1,4 +1,6 @@
 import Foundation
+import ScriptaCore
+import ScriptaShared
 import PDFKit
 import ImageIO
 

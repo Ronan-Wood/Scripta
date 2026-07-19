@@ -41,3 +41,25 @@ and delete this file.
 - The mechanical public pass (commit b4e2b2d) made every non-private func/static on the moved
   types public. After the app is rewired and compiles, run a pass to demote anything with no
   external consumer back to internal — the compiler finds the true surface. Cheap in Phase 5.
+- Crosscheck (simplicity lens) already verified seven symbols consumer-free across Sources/,
+  SourcesMCP/, and scripta-eval — safe to demote any time: `Frontmatter.isOwnerMarkerLine`,
+  `Frontmatter.rawValue`, `Frontmatter.parseList`, `FTSQuery.stopwords`,
+  `SharedLocations.appGroupID`, `Indexing.maxChunkChars`/`maxChunkMs`,
+  `IndexStore.entityIDs(forPath:)` (the last is dead code repo-wide — predates the branch,
+  delete candidate).
+- Crosscheck (security lens): `IndexStore.init(url: = defaultURL)` + `static let shared` export a
+  read-write/create opener defaulting to the production DB, while "MCP reads only" stays pure
+  convention in SourcesMCP. Consider: public init requires an explicit url (default stays
+  app-side), and/or a public read-only open mode for non-app clients. Decide at rewire or when
+  the MCP adopts IndexStore (Phase 2).
+
+## Reported by crosscheck, not applied (minor tier — triage later)
+
+- Three unused `import ScriptaShared` lines: MiniZip.swift, Indexing.swift, RetentionPruner.swift
+  — they misstate the dependency graph the carve-out exists to make explicit.
+- Stale path-based comments from the move: Frontmatter.swift:8 ("lives in `Sources/Shared`…"),
+  SharedLocations.swift:6, RetentionGate.swift:6 ("see `Tests/`"), SourcesMCP/main.swift:42,
+  SPEC.md:295 — reword to name modules, not deleted paths.
+- Eval/run.sh builds `-c release` while `swift test` builds debug → package compiles twice in two
+  configs and the edit-ranking→re-run-eval loop pays a WMO rebuild each time. Old script was
+  -Onone. Consider dropping to debug unless measured eval wall-time argues otherwise.

@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 import AVFoundation
 import OSLog
 import os

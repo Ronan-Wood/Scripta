@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 
 /// The post-call VLM caption pass. Lives in the app layer (not the recording pipeline, which never
 /// touches the engine): it reads the ephemeral screenshots a recording retained, captions each with

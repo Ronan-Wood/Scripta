@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 
 /// Retrieval facade above the (untouched, synchronous) IndexStore. When the reranker is enabled
 /// and available, it pulls a wider BM25 candidate set and reorders it with a listwise LLM pass;

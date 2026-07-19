@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 
 /// One-time enrichment pass that adds concept topic tags to transcripts recorded before the topics
 /// feature (or otherwise left untagged). Topics only — title, summary, and participants are never

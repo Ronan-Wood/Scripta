@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 import FoundationModels
 
 /// Clovis — the on-device assistant over your calls: retrieves relevant passages from the index,

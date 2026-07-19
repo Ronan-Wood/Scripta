@@ -1,4 +1,6 @@
 import AppKit
+import ScriptaCore
+import ScriptaShared
 
 /// Exports a transcript to PDF or plain text, and pulls its summary — for the reader's actions.
 enum TranscriptExporter {

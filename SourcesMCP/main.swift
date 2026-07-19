@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaShared
 import SQLite3
 
 // A tiny, dependency-free MCP server (JSON-RPC 2.0 over newline-delimited stdio) that

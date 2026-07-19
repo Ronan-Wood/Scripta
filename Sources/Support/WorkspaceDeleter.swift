@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 
 /// Deletes an entire workspace's calls — the "wipe Family before lending the laptop" privacy
 /// feature (I6). Destructive and strictly user-initiated (confirmed in the UI with an exact count).

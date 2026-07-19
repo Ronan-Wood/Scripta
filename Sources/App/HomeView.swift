@@ -1,4 +1,5 @@
 import SwiftUI
+import ScriptaCore
 
 /// The hub's Home dashboard: greeting + the week at a glance, record, what's recent, and
 /// what's coming up. Purpose-built Carbon, driven by the shared AppModel; all call data

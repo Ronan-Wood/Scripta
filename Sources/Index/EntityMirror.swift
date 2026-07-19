@@ -1,4 +1,6 @@
 import Foundation
+import ScriptaCore
+import ScriptaShared
 
 /// Mirrors the entity graph into the Obsidian vault as group-foldered stub notes, so the vault's
 /// backlinks/graph reflect it (I2/Fable 7). The app NEVER rewrites transcript bodies — stubs live

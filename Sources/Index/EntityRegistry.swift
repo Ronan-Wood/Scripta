@@ -1,4 +1,6 @@
 import Foundation
+import ScriptaCore
+import ScriptaShared
 
 /// The **system of record for entity identity** (Fable A/F2). Entities get stable ids here — the
 /// SQLite `entities` table is a cache — so identity survives `rm index.db`, and hand-authored
