@@ -12,7 +12,7 @@ enum IndexBuilder {
     /// as app transcripts (de-marked, malformed frontmatter), any existing rows are purged —
     /// otherwise old spoken text stays retrievable via search/Ask/MCP with no in-app way to
     /// remove it (the file is also invisible in the viewer).
-    static func index(_ url: URL, into store: IndexStore) {
+    static func index(_ url: URL, into store: IndexStore, registry: EntityRegistry = EntityRegistry.shared) {
         // mtime is captured BEFORE reading the content: if the file changes mid-read we store
         // the older stamp and the next reconcile re-indexes, instead of skipping forever.
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
@@ -47,7 +47,7 @@ enum IndexBuilder {
         // Ledger-gated: only re-runs when the derived content changed. The registry is the identity
         // system-of-record; the entity/mention tables are a cache resolved from it.
         if store.stageHash(path: url.path, stage: "extract") != hash {
-            extractEntities(url: url, group: meta.group, attendees: meta.participants, chunks: chunks, store: store)
+            extractEntities(url: url, group: meta.group, attendees: meta.participants, chunks: chunks, store: store, registry: registry)
             store.recordStage(path: url.path, stage: "extract", hash: hash, model: "nltagger-v1")
         }
     }
@@ -75,8 +75,8 @@ enum IndexBuilder {
     }
 
     private static func extractEntities(url: URL, group: String, attendees: [String],
-                                        chunks: [IndexedChunk], store: IndexStore) {
-        let registry = EntityRegistry.shared
+                                        chunks: [IndexedChunk], store: IndexStore,
+                                        registry: EntityRegistry) {
         var resolved: [(entityID: String, startMs: Int, surface: String)] = []
         for m in EntityExtractor.mentions(chunks: chunks, attendees: attendees) {
             let id = registry.resolve(surface: m.surface, kind: m.kind, group: group)
@@ -99,8 +99,8 @@ enum IndexBuilder {
     /// Mirrors vocabulary terms from the registry (system of record) into the index DB — the
     /// cache the retrieval layer and the MCP server read for alias expansion and glosses.
     /// One row per (term, group membership).
-    static func syncTerms(store: IndexStore) {
-        let rows = EntityRegistry.shared.allEntities()
+    static func syncTerms(store: IndexStore, registry: EntityRegistry = EntityRegistry.shared) {
+        let rows = registry.allEntities()
             .filter { $0.kind == "term" }
             .flatMap { entity in
                 entity.groups.map { group in
@@ -153,6 +153,9 @@ enum IndexBuilder {
                 at: folder, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
             )) ?? []).filter { $0.pathExtension == "md" }
         }
+        // One registry snapshot for the whole pass: a mid-pass folder change must not split the
+        // pass across two registries (old-vault names contaminating the new vault's file).
+        let registry = EntityRegistry.shared
         let transcripts = mdFiles(in: AppSettings.outputFolder)
         let notes = mdFiles(in: NoteStore.folder)
         let docs = mdFiles(in: DocumentImporter.folder)
@@ -176,7 +179,7 @@ enum IndexBuilder {
                 indexOne(url, store); reindexed += 1
             }
         }
-        sweep(transcripts, index)
+        sweep(transcripts) { index($0, into: $1, registry: registry) }
         sweep(notes, indexNote)
         sweep(docs, indexDoc)
         let ms = Int(Date().timeIntervalSince(start) * 1000)

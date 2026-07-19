@@ -27,7 +27,17 @@ enum WorkspaceDeleter {
             IndexStore.shared?.remove(path: url.path)   // cascade: transcript row + chunks + FTS
             deleted += 1
         }
-        EntityRegistry.shared.purge(group: group)   // registry half of the cascade (I6)
+        // Knowledge cascade — named workspaces only: "" is BOTH the ungrouped bucket here and the
+        // GLOBAL sentinel inside the registry (groups == [""] means visible everywhere), so
+        // purging "" would destroy global vocabulary that feeds every workspace's ASR bias.
+        // Ungrouped files still delete above; only the registry/mirror halves are skipped.
+        if !group.isEmpty {
+            EntityRegistry.shared.purge(group: group)
+            if let store = IndexStore.shared {
+                IndexBuilder.syncTerms(store: store)   // terms mirror follows the registry now, not at next launch
+                store.pruneOrphanedEntities()          // wiped names must not stay readable in index.db
+            }
+        }
         return deleted
     }
 }

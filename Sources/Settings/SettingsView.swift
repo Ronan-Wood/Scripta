@@ -711,14 +711,16 @@ struct SettingsView: View {
             MCPStateFile.write()   // publish the new path to the MCP server promptly
             outputPath = url.path
             // Re-point the watcher, registry, and index — otherwise they keep pointing at the
-            // old corpus/registry until the next launch. Flush pending registry state first so
-            // nothing dirty is lost to the old file.
+            // old corpus/registry until the next launch.
             IndexWatcher.shared?.start(folder: url)
-            EntityRegistry.shared.save()
-            EntityRegistry.shared = EntityRegistry(
-                url: url.appendingPathComponent(".calltranscriber-registry.json"))
+            EntityRegistry.repoint(toFolder: url)
             Task.detached(priority: .utility) {
-                if let store = IndexStore.shared { IndexBuilder.reconcile(store: store) }
+                if let store = IndexStore.shared {
+                    // Terms mirror first: the old vault's vocabulary must not keep driving alias
+                    // expansion/glosses against the new corpus for the rest of the session.
+                    IndexBuilder.syncTerms(store: store)
+                    IndexBuilder.reconcile(store: store)
+                }
                 await MainActor.run { AppModel.shared.reloadCalls(); refreshIndexInfo() }
             }
         }

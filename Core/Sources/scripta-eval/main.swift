@@ -63,7 +63,6 @@ guard let goldData = FileManager.default.contents(atPath: goldPath),
 
 let tmpDB = URL(fileURLWithPath: NSTemporaryDirectory())
     .appendingPathComponent("scripta-eval-\(UUID().uuidString).db")
-defer { try? FileManager.default.removeItem(at: tmpDB) }
 
 guard let store = try? IndexStore(url: tmpDB) else { die("Could not open temp index") }
 store.queryMode = legacy ? .legacyOr : .andFirst
@@ -227,14 +226,19 @@ print("  → \(aliasPass ? "PASS — \"TIM\" reaches \"tenants in the market\"" 
 print("\nRegistry privacy wall")
 let regURL = URL(fileURLWithPath: NSTemporaryDirectory())
     .appendingPathComponent("scripta-eval-registry-\(UUID().uuidString).json")
-defer { try? FileManager.default.removeItem(at: regURL) }
 let reg = EntityRegistry(url: regURL)
 reg.resolve(surface: "Alice Alpha", kind: "person", group: "Alpha")
 reg.confirm(surface: "Alice Alpha", group: "Alpha")
-reg.resolve(surface: "Bob Beta", kind: "person", group: "Beta")
+let bobID = reg.resolve(surface: "Bob Beta", kind: "person", group: "Beta")
 reg.confirm(surface: "Bob Beta", group: "Beta")
-reg.resolve(surface: "Carol Cross", kind: "person", group: "Alpha")
+let carolID = reg.resolve(surface: "Carol Cross", kind: "person", group: "Alpha")
 reg.resolve(surface: "Carol Cross", kind: "person", group: "Beta")
+// Beta-only "Carol": her name IS a token-subset of Alpha's "Carol Cross", so if the group filter
+// in collisionCandidates ever regressed, this pair WOULD form — a check that can actually fail.
+reg.resolve(surface: "Carol", kind: "person", group: "Beta")
+// A user-recorded merge whose canonical (a:) is the Beta-only Bob: purging Beta must GC this
+// verdict, or applyMerges would forever redirect Carol to a dead id.
+reg.recordVerdict(bobID, carolID, same: true)
 reg.addTerm(canonical: "TIM", aliases: ["tenants in the market"], gloss: "", group: "Alpha")
 reg.addTerm(canonical: "NER", aliases: [], gloss: "global", group: "")
 var regFails = 0
@@ -247,16 +251,23 @@ regCheck(!betaTerms.contains("TIM"), "Alpha-scoped term visible in Beta")
 regCheck(alphaTerms.contains("TIM") && alphaTerms.contains("NER") && betaTerms.contains("NER"),
          "expected term visibility broken (scoped + global)")
 regCheck(!reg.collisionCandidates(group: "Alpha").contains {
-    $0.a.name == "Bob Beta" || $0.b.name == "Bob Beta" }, "collision review paired across groups")
+    $0.a.name == "Carol" || $0.b.name == "Carol" }, "collision review paired across groups (subset name)")
 reg.purge(group: "Beta")
 let names = reg.allEntities().map(\.name)
 regCheck(!names.contains("Bob Beta"), "purge left a sole-provenance entity")
 regCheck(names.contains("Alice Alpha") && names.contains("Carol Cross"), "purge over-deleted")
 regCheck(reg.allEntities().first { $0.name == "Carol Cross" }?.groups == ["Alpha"],
          "purge did not trim dual provenance to the surviving group")
+let carolResolved = reg.resolve(surface: "Carol Cross", kind: "person", group: "Alpha")
+regCheck(reg.allEntities().contains { $0.id == carolResolved },
+         "resolve followed a dangling verdict to a purged id")
 let regPass = regFails == 0
-print("  aliases/terms/collisions scoped · purge dropped sole-provenance, trimmed shared")
+print("  \(8 - regFails)/8 registry checks passed")
 print("  → \(regPass ? "PASS — registry wall holds" : "FAIL — registry leak")")
+
+// exit() bypasses top-level defers, so temp artifacts are deleted explicitly here.
+try? FileManager.default.removeItem(at: tmpDB)
+try? FileManager.default.removeItem(at: regURL)
 
 let pass = retrievalPass && leakPass && aliasPass && regPass
 print("\nOVERALL: \(pass ? "PASS" : "FAIL")")

@@ -72,20 +72,18 @@ and delete this file.
 
 ## Dead code needing a decision (crosscheck P2, simplicity lens)
 
-- `EntityRegistry.link(query:group:)` and `purge(group:)` have ZERO callers anywhere, pre-move
-  included. `purge` is the unwired I6 registry cascade its own doc comment promises —
-  WorkspaceDeleter deletes groups without calling it. Decide: wire `purge` into
-  WorkspaceDeleter.delete (probably the real bug) and delete `link`, or delete both. Demoted to
-  internal for now; not deleted (delete-or-wire is a product call).
+- ~~`EntityRegistry.link`/`purge` dead~~ → **resolved in 2ec73d0 + follow-up**: `purge` wired
+  into WorkspaceDeleter (public, with verdict GC and the ""-sentinel guard), `link` deleted.
 
 ## Reported by crosscheck, not applied (minor tier — triage later)
 
-- Registry privacy wall is now eval-certifiable (security lens, P2): the eval links ScriptaCore,
-  so ~20 lines can extend the leak check to EntityRegistry's group-scoped paths
-  (confirmedAliases/terms/link/collisionCandidates/purge across Alpha/Beta/""). High-value test
-  gap — the wall for ASR-vocab/gloss flows is currently certified by inspection only.
-- Eval's hand-rolled frontmatter field/list parsers duplicate ScriptaShared's Frontmatter (its
-  "eval-only glue" excuse comment is stale now) — replace with Frontmatter.field/list in Phase 5.
+- ~~Registry privacy wall eval extension~~ → **done in 2ec73d0 + follow-up** (8 checks incl. a
+  mutation-tested dangling-verdict fixture and a non-vacuous collision-subset fixture).
+- ~~Eval frontmatter dedup~~ → **done in 2ec73d0** (Frontmatter.field/list from ScriptaShared).
+- `EntityRegistry.confirm(surface:group:)` matches with NO kind filter (pre-existing): a calendar
+  attendee named "Tim" confirms the vocabulary term "TIM" and appends the attendee's group to the
+  term's provenance — cross-wall bleed via alias collision. Fix: kind filter (or exclude
+  kind=="term") in confirm's predicate + a colliding-surface eval fixture. Next batch candidate.
 
 - Three unused `import ScriptaShared` lines: MiniZip.swift, Indexing.swift, RetentionPruner.swift
   — they misstate the dependency graph the carve-out exists to make explicit.
