@@ -7,13 +7,13 @@ import Foundation
 /// Which side of the conversation a segment came from. `you` = the local microphone,
 /// `them` = the far side captured as system audio. `nil` when the split isn't meaningful
 /// (e.g. an in-person recording where everyone is on the mic) — then no label is shown.
-public enum Speaker: String {
+public enum Speaker: String, Sendable {
     case you = "You"
     case them = "Them"
 }
 
 /// One timestamped chunk of transcript.
-public struct TranscriptSegment {
+public struct TranscriptSegment: Sendable {
     public let startMs: Int
     public let text: String
     public let speaker: Speaker?

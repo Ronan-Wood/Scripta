@@ -492,7 +492,7 @@ final class RecordingSession {
             }
         }
 
-        let url = try TranscriptWriter.write(segments: segments,
+        let url = try TranscriptWriter.write(to: AppSettings.outputFolder, segments: segments,
                                              startedAt: startedAt, duration: duration,
                                              tags: tags, title: title, summary: summary,
                                              screenSnippets: snippets, notes: notes,
