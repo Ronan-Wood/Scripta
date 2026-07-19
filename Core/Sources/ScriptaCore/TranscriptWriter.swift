@@ -2,15 +2,16 @@ import Foundation
 import ScriptaShared
 
 /// Writes a transcript as a Markdown file with Obsidian-style YAML frontmatter into the
-/// configured output folder. The `app: call-transcriber` frontmatter key marks files this
+/// caller-supplied output folder (the app passes its configured folder via the +Live wrapper). The `app: call-transcriber` frontmatter key marks files this
 /// app owns — the retention pruner (M5) keys on it so it never touches unrelated vault files.
-enum TranscriptWriter {
+public enum TranscriptWriter {
 
     /// Marker written into every transcript's frontmatter. Load-bearing for safe pruning.
     /// The value lives in the shared `OwnerMarker` so retrieval code can reference it too.
-    static let ownerMarker = OwnerMarker.value
+    public static let ownerMarker = OwnerMarker.value
 
-    static func write(
+    public static func write(
+        to folder: URL,
         segments: [TranscriptSegment],
         startedAt: Date,
         duration: TimeInterval,
@@ -23,7 +24,6 @@ enum TranscriptWriter {
         isConference: Bool = false,
         group: String = ""
     ) throws -> URL {
-        let folder = AppSettings.outputFolder
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
         let url = uniqueURL(in: folder, startedAt: startedAt, title: title)
@@ -92,7 +92,7 @@ enum TranscriptWriter {
     /// double quotes on a single key line, so stripping quotes and newlines is what keeps a
     /// value — including one containing `---` — from escaping its line. Parsers must split
     /// frontmatter on delimiter LINES (see `Frontmatter`), never on the `---` substring.
-    static func sanitizeScalar(_ text: String) -> String {
+    public static func sanitizeScalar(_ text: String) -> String {
         text.replacingOccurrences(of: "\"", with: "'")
             .replacingOccurrences(of: "\r\n", with: " ")
             .replacingOccurrences(of: "\n", with: " ")

@@ -1,13 +1,12 @@
 import Foundation
-import ScriptaCore
 import NaturalLanguage
 
 /// Deterministic entity candidate extraction — the reliable first pass (Fable: seeds first, an LLM
 /// only *proposes* refinements later). Apple's on-device NLTagger gives person/org NER with zero
 /// deps and zero hallucination; calendar attendees are a high-precision people seed. Runs per
 /// chunk so every mention carries a real timestamp (provenance + entity-page jump-to-passage).
-enum EntityExtractor {
-    static func mentions(chunks: [IndexedChunk], attendees: [String]) -> [(surface: String, kind: String, startMs: Int)] {
+public enum EntityExtractor {
+    public static func mentions(chunks: [IndexedChunk], attendees: [String]) -> [(surface: String, kind: String, startMs: Int)] {
         var out: [(String, String, Int)] = []
         let tagger = NLTagger(tagSchemes: [.nameType])
         let options: NLTagger.Options = [.omitWhitespace, .omitPunctuation, .omitOther, .joinNames]

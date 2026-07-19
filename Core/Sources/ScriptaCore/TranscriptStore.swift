@@ -2,28 +2,28 @@ import Foundation
 import ScriptaShared
 
 /// Lightweight metadata for one transcript, parsed from its YAML frontmatter.
-struct TranscriptMeta: Identifiable, Hashable {
-    let url: URL
-    let title: String
-    let date: String
-    let time: String
-    let duration: String
-    let participants: [String]
-    let tags: [String]
+public struct TranscriptMeta: Identifiable, Hashable {
+    public let url: URL
+    public let title: String
+    public let date: String
+    public let time: String
+    public let duration: String
+    public let participants: [String]
+    public let tags: [String]
     /// Recorded in Conference mode (single source, unlabeled) rather than a two-party call.
-    var isConference: Bool = false
+    public var isConference: Bool = false
     /// The privacy/workspace partition this call belongs to. "" = ungrouped.
-    var group: String = ""
+    public var group: String = ""
 
-    var id: URL { url }
+    public var id: URL { url }
 
     private var stamp: String { [date, time].filter { !$0.isEmpty }.joined(separator: " ") }
 
-    var displayTitle: String {
+    public var displayTitle: String {
         if !title.isEmpty { return title }
         return stamp.isEmpty ? url.deletingPathExtension().lastPathComponent : stamp
     }
-    var subtitle: String {
+    public var subtitle: String {
         var parts: [String] = []
         if !title.isEmpty && !stamp.isEmpty { parts.append(stamp) }
         if !participants.isEmpty { parts.append(participants.joined(separator: ", ")) }
@@ -33,11 +33,10 @@ struct TranscriptMeta: Identifiable, Hashable {
 }
 
 /// Reads app-authored transcripts from the configured output folder.
-enum TranscriptStore {
+public enum TranscriptStore {
 
-    /// All app-authored transcripts, newest first.
-    static func list() -> [TranscriptMeta] {
-        let folder = AppSettings.outputFolder
+    /// All app-authored transcripts in `folder`, newest first.
+    public static func list(in folder: URL) -> [TranscriptMeta] {
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: folder, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
         ) else { return [] }
@@ -48,14 +47,14 @@ enum TranscriptStore {
             .sorted { ($0.date, $0.time) > ($1.date, $1.time) }   // newest first, from frontmatter
     }
 
-    static func body(of url: URL) -> String {
+    public static func body(of url: URL) -> String {
         (try? String(contentsOf: url, encoding: .utf8)) ?? ""
     }
 
     /// Frontmatter metadata for a single transcript, or nil if it isn't an app-authored file.
     /// Cached by (path, mtime): list() runs on the main thread from several views, and the
     /// reader re-resolves the selection per invalidation — neither should re-read files.
-    static func meta(of url: URL) -> TranscriptMeta? {
+    public static func meta(of url: URL) -> TranscriptMeta? {
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate ?? .distantPast
         cacheLock.lock()

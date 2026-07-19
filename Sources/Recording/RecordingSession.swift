@@ -4,14 +4,6 @@ import AVFoundation
 import OSLog
 import os
 
-/// A manual note the user typed during a recording, timestamped against the session start
-/// (paused intervals spliced out, exactly like the audio tracks) so it interleaves into the
-/// transcript body at the right moment.
-struct CallNote: Sendable {
-    let startMs: Int
-    let text: String
-}
-
 /// Orchestrates one recording end-to-end: captures system + microphone audio to a private
 /// temp directory, then on stop transcribes each track separately (mic = "You", system =
 /// "Them"), interleaves the segments by timestamp, writes a Markdown transcript to the

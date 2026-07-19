@@ -5,6 +5,17 @@ import CryptoKit
 /// Transcript → index derivation: speaker-turn chunking and summary extraction. Shared so the
 /// app's `IndexBuilder` and the eval harness produce identical index rows from the same Markdown.
 public enum Indexing {
+    /// Removes NUL and other C0/DEL control characters (keeping tab + newline). Broken PDF glyph
+    /// or ligature mappings emit NUL bytes; `sqlite3_bind_text(…, -1, …)` uses strlen and would
+    /// truncate the indexed text at the first NUL — silently indexing only a fragment. Stripping
+    /// them also keeps FTS tokenization clean. Lives here (not on the app's document importer)
+    /// because it guards every FTS bind path.
+    public static func stripControlChars(_ s: String) -> String {
+        String(s.unicodeScalars.filter { scalar in
+            scalar == "\n" || scalar == "\t" || (scalar.value >= 0x20 && scalar.value != 0x7F)
+        })
+    }
+
     /// Content hash for the enrichment ledger, taken over the DERIVED chunks (not the raw file).
     /// So a frontmatter edit (title / group / tag) never invalidates chunks/embeddings/entities,
     /// but a body edit (a user ASR fix in Obsidian) does — which is exactly when re-enrich is due.

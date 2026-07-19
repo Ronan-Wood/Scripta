@@ -1,4 +1,5 @@
 import SwiftUI
+import ScriptaCore
 
 /// The calendar: an always-visible "Upcoming" strip of the next video meetings, over a Month/Week/
 /// Day calendar of recorded calls (past) and meetings (future). Recording is always a manual click.

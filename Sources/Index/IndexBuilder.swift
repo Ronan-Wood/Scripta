@@ -29,15 +29,15 @@ enum IndexBuilder {
         let transcript = IndexedTranscript(
             path: url.path, title: meta.title, date: meta.date, time: meta.time,
             duration: meta.duration, participants: meta.participants, tags: meta.tags,
-            summary: DocumentImporter.stripControlChars(Indexing.summary(from: content)), mtime: mtime,
+            summary: Indexing.stripControlChars(Indexing.summary(from: content)), mtime: mtime,
             mode: meta.isConference ? "conference" : "", group: meta.group,
             // The full file, verbatim, so the MCP serves get_transcript byte-exact off the index.
-            body: DocumentImporter.stripControlChars(content))
+            body: Indexing.stripControlChars(content))
 
         // Spoken chunks + on-screen text (marked "Screen") — both searchable + embeddable now.
         let chunks = (Indexing.chunks(from: content) + Indexing.screenChunks(from: content)).map {
             IndexedChunk(startMs: $0.startMs, endMs: $0.endMs, speaker: $0.speaker,
-                         text: DocumentImporter.stripControlChars($0.text))
+                         text: Indexing.stripControlChars($0.text))
         }
         store.upsert(transcript, chunks: chunks)
         let hash = Indexing.contentHash(chunks)
@@ -121,7 +121,7 @@ enum IndexBuilder {
             store.remove(path: url.path)
             return
         }
-        let entriesText = DocumentImporter.stripControlChars(note.entries
+        let entriesText = Indexing.stripControlChars(note.entries
             .map { entry in entry.linkedCall.map { "[\(entry.stamp), re: \($0)] \(entry.text)" } ?? "[\(entry.stamp)] \(entry.text)" }
             .joined(separator: "\n"))
         store.upsert(IndexedTranscript(
@@ -140,7 +140,7 @@ enum IndexBuilder {
             return
         }
         // Strip control chars (a NUL from a broken PDF glyph would truncate the FTS bind at strlen).
-        let cleanBody = DocumentImporter.stripControlChars(doc.body)
+        let cleanBody = Indexing.stripControlChars(doc.body)
         store.upsert(IndexedTranscript(
             path: url.path, title: doc.title, date: String(doc.created.prefix(10)), time: "",
             duration: "", participants: [], tags: [], summary: String(cleanBody.prefix(60_000)),
