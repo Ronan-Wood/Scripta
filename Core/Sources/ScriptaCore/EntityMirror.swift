@@ -35,6 +35,31 @@ public enum EntityMirror {
         }
     }
 
+    /// Deletes the wiped group's stub notes — the mirror half of the workspace-wipe cascade.
+    /// Runs regardless of the mirror toggle: stubs written while mirroring was enabled must not
+    /// survive a wipe just because the setting was later turned off (deleting our own files is
+    /// always safe; only WRITING into the vault is consent-gated). Reuses the write-side safety:
+    /// only files carrying this app's entity marker are touched, so a user note sharing the
+    /// folder or a name survives; the folder is removed only if left empty.
+    public static func purge(group: String, vault: URL) {
+        guard !group.isEmpty else { return }
+        let folder = vault.appendingPathComponent("Entities", isDirectory: true)
+            .appendingPathComponent(safeName(group), isDirectory: true)
+        let fm = FileManager.default
+        for url in (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] {
+            guard url.pathExtension == "md",
+                  let content = try? String(contentsOf: url, encoding: .utf8),
+                  let split = Frontmatter.split(content),
+                  split.frontmatter.components(separatedBy: "\n").contains(where: {
+                      $0.trimmingCharacters(in: .whitespaces) == "app: \(marker)"
+                  }) else { continue }
+            try? fm.removeItem(at: url)
+        }
+        if let remaining = try? fm.contentsOfDirectory(atPath: folder.path), remaining.isEmpty {
+            try? fm.removeItem(at: folder)
+        }
+    }
+
     private static func writeStub(at url: URL, entity: (id: String, name: String, kind: String, count: Int),
                                   calls: [SearchHit], group: String) {
         let links = calls.map { "- [[\(($0.path as NSString).lastPathComponent.replacingOccurrences(of: ".md", with: ""))]]" }

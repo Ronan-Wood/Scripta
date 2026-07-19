@@ -169,6 +169,10 @@ enum IndexBuilder {
         for path in indexed.keys where !livePaths.contains(path) {
             store.remove(path: path); removed += 1
         }
+        // Removed files orphan their mentions' entity-cache rows; pruning here covers every
+        // removal flow — retention, external deletes, vault switches — not just the wipe cascade
+        // (which prunes for itself rather than depend on a later reconcile).
+        if removed > 0 { store.pruneOrphanedEntities() }
         // Index anything new or modified since it was last indexed.
         var reindexed = 0, unchanged = 0
         func sweep(_ urls: [URL], _ indexOne: (URL, IndexStore) -> Void) {

@@ -80,8 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.message = "Where should your call transcripts live?"
         if panel.runModal() == .OK, let url = panel.url {
             AppSettings.setOutputFolder(url)
-            // No registry re-point needed: nothing touches EntityRegistry.shared before this runs,
-            // so its lazy first access binds to the folder just chosen.
+            // The global record hotkey is live during this modal and reads the registry (ASR
+            // bias via confirmedAliases), which would lazy-bind shared to the default folder —
+            // so re-point explicitly. Idempotent when the lazy binding never happened.
+            EntityRegistry.repoint(toFolder: url)
         }
     }
 
