@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 import NaturalLanguage
 
 /// Deterministic entity candidate extraction — the reliable first pass (Fable: seeds first, an LLM

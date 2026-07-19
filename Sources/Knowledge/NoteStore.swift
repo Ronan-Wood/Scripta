@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaShared
 
 /// A living knowledge note — a standing document you work out of, accumulating timestamped
 /// entries across calls (the vault model: read it before, append to it after). Plain Markdown

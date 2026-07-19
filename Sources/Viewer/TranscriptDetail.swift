@@ -1,4 +1,5 @@
 import SwiftUI
+import ScriptaCore
 import AppKit
 
 /// Reader for one transcript, used inside the hub's Calls pane. (The old standalone viewer window

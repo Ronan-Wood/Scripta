@@ -1,4 +1,5 @@
 import SwiftUI
+import ScriptaCore
 
 /// The Knowledge center: review what happened across your calls. A day-grouped digest of every
 /// call's generated note (title, summary, topics, people), with the workspace's people and

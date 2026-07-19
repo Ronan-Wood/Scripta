@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 
 /// The app-facing entry point: prunes using the user's live retention settings. Kept separate from
 /// `RetentionPruner.swift` so the pure pruning logic links into the host-less test bundle without

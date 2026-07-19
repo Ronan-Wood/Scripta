@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaShared
 
 /// Rewrites the editable metadata (title + participants) in an existing app-authored transcript's
 /// YAML frontmatter, in place. The file is NOT renamed — every display surface (viewer, MCP,

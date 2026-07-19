@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaShared
 
 /// Bridges the app's active workspace to the bundled MCP server. The server is spawned by the LLM
 /// client, not the app, so they share no session — instead the app writes `{activeGroup, heartbeat}`

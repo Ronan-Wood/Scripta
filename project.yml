@@ -5,6 +5,13 @@ options:
     macOS: "26.0"
   createIntermediateGroups: true
 
+# The pure core lives in a local SwiftPM package (statically linked — invisible to the bundle
+# layout and App Review). Unit tests moved with it: `swift test --package-path Core`; the eval
+# harness is its `scripta-eval` executable (`./Eval/run.sh`).
+packages:
+  ScriptaCore:
+    path: Core
+
 # One app, two flavors sharing this template. `Scripta` (direct .dmg) bundles the MCP
 # helper; `Scripta-MAS` (App Store) must not — embedded executables have to inherit the
 # app's sandbox, which breaks external spawning by LLM clients, so the store flavor offers the
@@ -25,6 +32,11 @@ targetTemplates:
         buildPhase: resources
       - path: Resources/PrivacyInfo.xcprivacy
         buildPhase: resources
+    dependencies:
+      - package: ScriptaCore
+        product: ScriptaCore
+      - package: ScriptaCore
+        product: ScriptaShared
     info:
       path: Sources/App/Info.plist
       properties:
@@ -65,19 +77,20 @@ targets:
         copy:
           destination: executables
 
+  # Build with SYMROOT=build-mas so the two flavors never overwrite each other — a baked
+  # CONFIGURATION_BUILD_DIR override breaks SwiftPM module resolution (packages build to the
+  # default location; the target would look in the overridden one).
   Scripta-MAS:
     templates: [ScriptaApp]
-    settings:
-      base:
-        # Builds to build/<config>-mas/ so the two flavors never overwrite each other.
-        CONFIGURATION_BUILD_DIR: $(SYMROOT)/$(CONFIGURATION)-mas
 
   scripta-mcp:
     type: tool
     platform: macOS
     sources:
       - SourcesMCP
-      - Sources/Shared
+    dependencies:
+      - package: ScriptaCore
+        product: ScriptaShared
     settings:
       base:
         PRODUCT_NAME: scripta-mcp
@@ -90,28 +103,4 @@ targets:
         # the shared App Group so it reads the index + state file without container prompts.
         CODE_SIGN_ENTITLEMENTS: SourcesMCP/scripta-mcp.entitlements
 
-  # Logic-test bundle for the dependency-free correctness-critical predicates. Compiles just the
-  # pure sources it exercises (no app host), so it runs headless: `xcodebuild test -scheme ScriptaTests`.
-  ScriptaTests:
-    type: bundle.unit-test
-    platform: macOS
-    sources:
-      - Tests
-      - Sources/Support/RetentionGate.swift
-      - Sources/Support/RetentionPruner.swift
-      - Sources/Shared/Frontmatter.swift
-      - Sources/Shared/OwnerMarker.swift
-      - Sources/Shared/FTSQuery.swift
-      - Sources/Shared/SharedLocations.swift
-      - Sources/Documents/MiniZip.swift
-      - Sources/Viewer/TranscriptParser.swift
-      - Sources/Index/IndexStore.swift
-    settings:
-      base:
-        PRODUCT_NAME: ScriptaTests
-        PRODUCT_BUNDLE_IDENTIFIER: com.ronanwood.ScriptaTests
-        MACOSX_DEPLOYMENT_TARGET: "26.0"
-        SWIFT_VERSION: "5.0"
-        GENERATE_INFOPLIST_FILE: YES
-        CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 6CTH5M9UWZ
+  # Unit tests live in the Core package (Core/Tests/ScriptaCoreTests): `swift test --package-path Core`.

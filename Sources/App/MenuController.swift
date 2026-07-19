@@ -1,4 +1,5 @@
 import AppKit
+import ScriptaCore
 import SwiftUI
 import Combine
 

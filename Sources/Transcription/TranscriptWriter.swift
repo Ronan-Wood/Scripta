@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaShared
 
 /// Writes a transcript as a Markdown file with Obsidian-style YAML frontmatter into the
 /// configured output folder. The `app: call-transcriber` frontmatter key marks files this

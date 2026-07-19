@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaShared
 
 /// Lightweight metadata for one transcript, parsed from its YAML frontmatter.
 struct TranscriptMeta: Identifiable, Hashable {

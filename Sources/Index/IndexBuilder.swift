@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 import OSLog
 
 /// Builds the retrieval index from transcript Markdown files. Chunks by speaker turn so each

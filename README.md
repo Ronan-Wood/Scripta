@@ -85,7 +85,7 @@ Register it: `claude mcp add scripta -- "/Applications/Scripta.app/Contents/MacO
 brew install xcodegen                       # once
 cd Scripta
 xcodegen generate                           # after any project.yml change
-xcodebuild -project Scripta.xcodeproj -target Scripta -configuration Debug -allowProvisioningUpdates build
+xcodebuild -project Scripta.xcodeproj -scheme Scripta -configuration Debug -allowProvisioningUpdates build SYMROOT="$(pwd)/build"
 open build/Debug/Scripta.app
 ```
 

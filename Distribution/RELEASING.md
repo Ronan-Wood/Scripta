@@ -7,7 +7,7 @@ Two flavors from one codebase (see `project.yml` targets):
 | Sandbox | Yes | Yes |
 | Bundled MCP helper | Yes (`Contents/MacOS/scripta-mcp`) | **No** — separate download |
 | Signing | Developer ID Application + notarization | Apple Distribution via ASC |
-| Build output | `build/<config>/` | `build/<config>-mas/` |
+| Build output | `build/<config>/` (SYMROOT=build) | `build-mas/<config>/` (SYMROOT=build-mas) |
 
 Docs pane auto-detects the flavor (`helperIsBundled`) and shows the right Claude setup.
 
@@ -41,7 +41,7 @@ xcodebuild -project Scripta.xcodeproj -scheme Scripta-MAS archive \
 ## Channel B — direct .dmg
 
 ```sh
-xcodebuild -project Scripta.xcodeproj -target Scripta -configuration Release build
+xcodebuild -project Scripta.xcodeproj -scheme Scripta -configuration Release build SYMROOT="$(pwd)/build"
 # sign check: hardened runtime + sandbox + Developer ID identity
 codesign -dv --verbose=2 build/Release/Scripta.app
 # stage dmg (app + /Applications symlink + README), then:
@@ -56,7 +56,7 @@ changes), and the first sandboxed launch shows the folder-choice notice — expe
 ## The helper (App Store users' separate download)
 
 ```sh
-xcodebuild -project Scripta.xcodeproj -target scripta-mcp -configuration Release build
+xcodebuild -project Scripta.xcodeproj -scheme scripta-mcp -configuration Release build SYMROOT="$(pwd)/build"
 codesign --force --options runtime --entitlements SourcesMCP/scripta-mcp.entitlements \
   -s "Developer ID Application" build/Release/scripta-mcp
 ditto -c -k build/Release/scripta-mcp scripta-mcp.zip

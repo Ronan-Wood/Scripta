@@ -1,4 +1,5 @@
 import AppKit
+import ScriptaCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuController: MenuController?

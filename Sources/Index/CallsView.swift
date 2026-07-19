@@ -1,4 +1,5 @@
 import SwiftUI
+import ScriptaCore
 
 /// Unified Calls page: browse and search are one surface. An empty query lists every call
 /// (newest first); typing ranks calls by the holistic index; People/Tags act as filters. The
