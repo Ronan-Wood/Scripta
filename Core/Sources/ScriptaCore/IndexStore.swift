@@ -882,14 +882,14 @@ public final class IndexStore {
     /// One call's card for the Home dashboard and Knowledge digest — everything the index
     /// already holds about a call, so those surfaces never re-read transcript files.
     public struct DigestRow {
-        let path: String
-        let title: String
-        let date: String
-        let time: String
-        let duration: String
-        let summary: String
-        let participants: [String]
-        let tags: [String]
+        public let path: String
+        public let title: String
+        public let date: String
+        public let time: String
+        public let duration: String
+        public let summary: String
+        public let participants: [String]
+        public let tags: [String]
     }
 
     /// Recent calls in one workspace, newest first — the dashboard/digest feed. Scoped to the
