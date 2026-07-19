@@ -29,8 +29,10 @@ and delete this file.
 ## Phase 2 decisions taken (2026-07-18, under the full-autonomy grant)
 
 - **Moved to ScriptaCore:** EntityRegistry (+Live shared instance), EntityExtractor, EntityMirror
-  (vault root injected, opt-in gate stays app-side), IndexWatcher (rewritten as a generic
-  debounced folder-watcher with the action injected — its debounce is now host-less testable),
+  (vault root injected, opt-in gate stays app-side; core entry renamed `syncUnconditionally` so an
+  ungated call can't shadow the gated bridge), IndexWatcher (rewritten as an action-injected
+  debounced folder-watcher — app log subsystem + 2 s interval still hardcoded; parameterize the
+  interval when writing its debounce test),
   TranscriptStore (folder injected), TranscriptWriter (folder injected), FillerCleaner, the
   transcript input types (Speaker, TranscriptSegment, ScreenSnippet, CallNote →
   TranscriptInputs.swift), and stripControlChars (→ Indexing — it guards every FTS bind path).
@@ -68,7 +70,22 @@ and delete this file.
   app-side), and/or a public read-only open mode for non-app clients. Decide at rewire or when
   the MCP adopts IndexStore (Phase 2).
 
+## Dead code needing a decision (crosscheck P2, simplicity lens)
+
+- `EntityRegistry.link(query:group:)` and `purge(group:)` have ZERO callers anywhere, pre-move
+  included. `purge` is the unwired I6 registry cascade its own doc comment promises —
+  WorkspaceDeleter deletes groups without calling it. Decide: wire `purge` into
+  WorkspaceDeleter.delete (probably the real bug) and delete `link`, or delete both. Demoted to
+  internal for now; not deleted (delete-or-wire is a product call).
+
 ## Reported by crosscheck, not applied (minor tier — triage later)
+
+- Registry privacy wall is now eval-certifiable (security lens, P2): the eval links ScriptaCore,
+  so ~20 lines can extend the leak check to EntityRegistry's group-scoped paths
+  (confirmedAliases/terms/link/collisionCandidates/purge across Alpha/Beta/""). High-value test
+  gap — the wall for ASR-vocab/gloss flows is currently certified by inspection only.
+- Eval's hand-rolled frontmatter field/list parsers duplicate ScriptaShared's Frontmatter (its
+  "eval-only glue" excuse comment is stale now) — replace with Frontmatter.field/list in Phase 5.
 
 - Three unused `import ScriptaShared` lines: MiniZip.swift, Indexing.swift, RetentionPruner.swift
   — they misstate the dependency graph the carve-out exists to make explicit.

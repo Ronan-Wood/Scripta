@@ -6,6 +6,6 @@ extension EntityMirror {
     /// No-op unless mirroring is enabled.
     static func sync(store: IndexStore) {
         guard AppSettings.mirrorEnabled else { return }
-        sync(store: store, vault: AppSettings.outputFolder)
+        syncUnconditionally(store: store, vault: AppSettings.outputFolder)
     }
 }

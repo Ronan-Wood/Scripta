@@ -17,6 +17,11 @@ public final class IndexWatcher {
 
     public init(onChange: @escaping () -> Void) { self.onChange = onChange }
 
+    /// `arm`/`tearDown` and the FSEvents callback are all serialized on `queue`, so a synchronous
+    /// teardown here drains any in-flight callback and invalidates the stream before the memory
+    /// backing its `passUnretained` context pointer is reused.
+    deinit { queue.sync { tearDown() } }
+
     /// Arms the watcher on `folder` (replacing any previous watch). Reconcile is not run here —
     /// callers do an explicit reconcile when they need the current contents indexed.
     public func start(folder: URL) {

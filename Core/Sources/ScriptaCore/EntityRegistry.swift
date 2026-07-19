@@ -28,13 +28,11 @@ public final class EntityRegistry {
         /// additive, so registries written before it decode unchanged.
         public var gloss: String? = nil
     }
-    public struct Verdict: Codable {
-        public var a: String; public var b: String; public var same: Bool; public var by: String
-    }
+    struct Verdict: Codable { var a: String; var b: String; var same: Bool; var by: String }
 
     private struct Doc: Codable { var version: Int; var entities: [Entity]; var verdicts: [Verdict] }
 
-    public let url: URL
+    let url: URL
     /// Guards `entities`, `verdicts`, and `dirty`. NSLock is NON-reentrant, so a method that already
     /// holds it must call the private `*Locked` variants (e.g. `saveLocked`, `termsLocked`), never
     /// another public method — doing so would deadlock.
@@ -45,7 +43,7 @@ public final class EntityRegistry {
 
     public init(url: URL) { self.url = url; load() }
 
-    public func load() {
+    func load() {
         lock.lock(); defer { lock.unlock() }
         guard let data = try? Data(contentsOf: url),
               let doc = try? JSONDecoder().decode(Doc.self, from: data) else { return }
@@ -139,7 +137,7 @@ public final class EntityRegistry {
 
     /// Entity ids whose name/aliases match any content term of a query — query-side entity linking
     /// (the thing that makes entity-anchored retrieval fire).
-    public func link(query: String, group: String) -> [String] {
+    func link(query: String, group: String) -> [String] {
         lock.lock(); defer { lock.unlock() }
         let terms = Set(FTSQuery.terms(query))
         guard !terms.isEmpty else { return [] }
@@ -152,7 +150,7 @@ public final class EntityRegistry {
 
     /// Drops entities whose provenance is only the deleted group (I6 × registry). Keeps ones seen
     /// elsewhere, just removing that group from their provenance.
-    public func purge(group: String) {
+    func purge(group: String) {
         lock.lock(); defer { lock.unlock() }
         entities = entities.compactMap { e in
             guard e.groups.contains(group) else { return e }

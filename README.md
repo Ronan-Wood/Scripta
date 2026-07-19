@@ -52,20 +52,20 @@ In parallel during recording: live transcription (SpeechAnalyzer volatile result
 
 | Area | Files |
 |---|---|
-| Core package | `Core/` (local SwiftPM, statically linked) — **`ScriptaShared`** (macOS 14; the app↔MCP contract: `Frontmatter`, `FTSQuery`, `OwnerMarker`, `SharedLocations`) · **`ScriptaCore`** (`TranscriptParser`, `IndexStore` (SQLite/FTS5), `Indexing`, `TranscriptStore`, `TranscriptWriter` + input types, `FillerCleaner`, entity registry/extractor/mirror, `IndexWatcher`, `RetentionGate`/`Pruner`, `MiniZip`) · `scripta-eval` + the unit tests (`swift test --package-path Core`) |
+| Core package | `Core/` (local SwiftPM, statically linked) — **`ScriptaShared`** (macOS 14; the app↔MCP file/query contract) · **`ScriptaCore`** (parsing, indexing/FTS5, transcript store/writer, entities, retention) · `scripta-eval` + the unit tests (`swift test --package-path Core`) |
 | App shell | `App/` — `main.swift`, `AppDelegate` (first-run, folder grant, orphan recovery), `MenuController`, `HubView` + panes, `MCPStateFile` |
 | Capture | `Recording/` — `SystemAudioCapture` (SCStream), `MicrophoneCapture` (AVAudioEngine), `AudioConverter`, `RecordingSession`, `RecordingMode` (call/conference) |
 | Transcription | `Transcription/` — `SpeechEngine`, `LiveTranscriber`, `TranscriptEnricher`, `ConceptBackfill` |
 | Screen context | `ScreenContext/` — `ScreenContextCapturer`, `FrontmostWindowResolver`, `DocumentReader`, `SnippetDeduplicator` |
 | Model engine | `Engine/` — engine protocols, `AppleFMEngine` (default), `EndpointEngine` + `OpenAIWire` (opt-in local server), `EngineRouter`, `Locality`, `Retriever`, `VLMCaptioner` |
-| Index orchestration | `Index/` — `IndexBuilder` (stays app-side: it fuses app inputs — notes, docs, embedder — into the core store) + the `+Live` bridges binding package types to `AppSettings` |
+| Index orchestration | `Index/` — `IndexBuilder` (stays app-side: it fuses app inputs — notes, docs, embedder — into the core store) + the entity/watcher `+Live` bridges |
 | Calls UI | `Calls/` — `CallsView`, `CalendarView`, `RelatedCallsPanel`, `SnippetHighlight` |
 | Settings | `Settings/` — `AppSettings` (incl. security-scoped folder bookmark), `SettingsView` |
 | Viewer | `Viewer/` — `TranscriptDetail`, details/metadata editors, `TranscriptExporter` |
 | MCP server | `SourcesMCP/main.swift` — separate `scripta-mcp` tool target (links `ScriptaShared`), embedded in the app |
 | Skill / Eval | `Skill/scripta/SKILL.md` (bundled) · `Eval/` — gold cases + gates for the package's eval executable (`./Eval/run.sh`) |
 
-Three build targets (via `project.yml` / XcodeGen) over one local package: the **app** (macOS 26, **sandboxed in every configuration**, in two flavors — direct bundles the helper, `Scripta-MAS` must not and scrubs it), **`scripta-mcp`** (macOS 14, unsandboxed — LLM clients spawn it; links `ScriptaShared` so its file/query contract is compiled from the same module as the app's). Rule of thumb: pure data transforms and storage live in `Core/`; anything touching an app-only framework (SwiftUI, AVFoundation/SCKit, EventKit, Vision, FoundationModels) or `AppSettings` stays in `Sources/`, bridged by thin `+Live` extensions. Shared state (`index.db`, `mcp-state.json`) lives in the team App Group container so both processes can reach it across the sandbox boundary; the transcripts folder is accessed through a security-scoped bookmark granted once in Settings.
+Three build targets (via `project.yml` / XcodeGen) over one local package: the **app** (macOS 26, **sandboxed in every configuration**, in two flavors — direct bundles the helper, `Scripta-MAS` must not and scrubs it), **`scripta-mcp`** (macOS 14, unsandboxed — LLM clients spawn it; links `ScriptaShared` so its file/query contract is compiled from the same module as the app's). Rule of thumb: pure data transforms and storage live in `Core/`; anything touching an app-only framework (SwiftUI, AVFoundation/SCKit, EventKit, Vision, FoundationModels) or `AppSettings` stays in `Sources/`, bridged by thin `+Live` extensions living beside their feature area (each in its moved type's former folder). Shared state (`index.db`, `mcp-state.json`) lives in the team App Group container so both processes can reach it across the sandbox boundary; the transcripts folder is accessed through a security-scoped bookmark granted once in Settings.
 
 ## Claude integration (MCP + skill)
 

@@ -11,12 +11,14 @@ import ScriptaShared
 /// preserved; and it only ever overwrites files carrying its own marker (name collisions with a
 /// user's note are skipped). Idempotent: an unchanged graph re-runs to a zero diff.
 public enum EntityMirror {
-    public static let marker = "call-transcriber-entity"
+    static let marker = "call-transcriber-entity"
     private static let begin = "<!-- calltranscriber:entities -->"
     private static let end = "<!-- /calltranscriber:entities -->"
 
-    /// The caller gates opt-in (the app checks its mirror setting) and supplies the vault root.
-    public static func sync(store: IndexStore, vault: URL) {
+    /// UNGATED: writes stubs into `vault` unconditionally. The app must never call this directly —
+    /// consent lives in the app-side `sync(store:)` bridge, which checks the opt-in setting first.
+    /// Named so an ungated call site reads as deliberate instead of overload-shadowing the bridge.
+    public static func syncUnconditionally(store: IndexStore, vault: URL) {
         let root = vault.appendingPathComponent("Entities", isDirectory: true)
         var groups = Set(store.groups().map(\.name))
         groups.insert("")   // ungrouped bucket
