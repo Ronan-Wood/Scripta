@@ -7,15 +7,15 @@ import Foundation
 /// The single source of truth for frontmatter parsing across the app, the bundled MCP server, and
 /// the eval harness (lives in `Sources/Shared`, which all three compile) — so the marker check that
 /// gates "app-authored only" and the field/list parsing can never drift between them.
-enum Frontmatter {
-    struct Split {
+public enum Frontmatter {
+    public struct Split {
         /// The lines between the delimiter lines (delimiters excluded).
-        let frontmatter: String
+        public let frontmatter: String
         /// Everything after the closing delimiter line.
-        let body: String
+        public let body: String
     }
 
-    static func split(_ content: String) -> Split? {
+    public static func split(_ content: String) -> Split? {
         var lines = content.components(separatedBy: "\n")[...]
         guard lines.popFirst()?.trimmingCharacters(in: .whitespaces) == "---" else { return nil }
         guard let close = lines.firstIndex(where: {
@@ -27,14 +27,14 @@ enum Frontmatter {
     }
 
     /// True when the `app: call-transcriber` owner marker sits on its own line in the block.
-    static func hasOwnerMarker(_ frontmatter: String) -> Bool {
+    public static func hasOwnerMarker(_ frontmatter: String) -> Bool {
         frontmatter.components(separatedBy: "\n").contains(where: isOwnerMarkerLine)
     }
 
     /// Matches the owner-marker line, tolerating YAML quoting (`app: "call-transcriber"` or
     /// `'call-transcriber'`) that Obsidian's properties editor adds — those are still our files.
     /// Safe to accept broadly: the retention pruner also gates on the transcript filename shape.
-    static func isOwnerMarkerLine(_ line: String) -> Bool {
+    public static func isOwnerMarkerLine(_ line: String) -> Bool {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard trimmed.hasPrefix("app:") else { return false }
         let value = trimmed.dropFirst(4).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
@@ -44,7 +44,7 @@ enum Frontmatter {
     // MARK: - Field access (shared by the app's TranscriptStore and the MCP)
 
     /// The raw text after `key:` on its frontmatter line (surrounding whitespace trimmed), or "".
-    static func rawValue(_ frontmatter: String, _ key: String) -> String {
+    public static func rawValue(_ frontmatter: String, _ key: String) -> String {
         for line in frontmatter.split(separator: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("\(key):") {
@@ -57,18 +57,18 @@ enum Frontmatter {
     /// A scalar field: the raw value with only surrounding quotes/space stripped — NOT brackets, so
     /// a title like `[Draft] Plan` keeps them. Flow lists go through `list`/`parseList`, which strip
     /// the outer `[ ]` themselves (audit L4).
-    static func field(_ frontmatter: String, _ key: String) -> String {
+    public static func field(_ frontmatter: String, _ key: String) -> String {
         rawValue(frontmatter, key).trimmingCharacters(in: CharacterSet(charactersIn: " \""))
     }
 
     /// A frontmatter flow list. Quoted items are taken verbatim — a "Last, First" name is ONE
     /// participant, not two; unquoted values (hand-edited files) fall back to comma-splitting.
-    static func list(_ frontmatter: String, _ key: String) -> [String] {
+    public static func list(_ frontmatter: String, _ key: String) -> [String] {
         parseList(rawValue(frontmatter, key))
     }
 
     /// Parses a frontmatter flow-list value (the string after `key:`).
-    static func parseList(_ raw: String) -> [String] {
+    public static func parseList(_ raw: String) -> [String] {
         var value = raw.trimmingCharacters(in: .whitespaces)
         if value.hasPrefix("[") { value.removeFirst() }
         if value.hasSuffix("]") { value.removeLast() }

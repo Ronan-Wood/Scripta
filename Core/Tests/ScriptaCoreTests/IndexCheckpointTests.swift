@@ -1,4 +1,6 @@
 import XCTest
+@testable import ScriptaCore
+@testable import ScriptaShared
 import SQLite3
 
 /// WAL checkpointing — operational robustness for the retrieval index. In WAL mode every write is

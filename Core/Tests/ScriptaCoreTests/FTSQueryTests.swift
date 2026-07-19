@@ -1,4 +1,6 @@
 import XCTest
+@testable import ScriptaCore
+@testable import ScriptaShared
 
 /// Covers the FTS5 query builder — the deterministic term extraction + escaping that feeds every
 /// search/Ask/MCP MATCH. A regression here silently breaks retrieval (audit L14).

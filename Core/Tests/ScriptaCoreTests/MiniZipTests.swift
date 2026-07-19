@@ -1,4 +1,6 @@
 import XCTest
+@testable import ScriptaCore
+@testable import ScriptaShared
 import Compression
 
 /// Covers the hand-rolled ZIP reader used to extract text from user-imported .pptx/.docx — an

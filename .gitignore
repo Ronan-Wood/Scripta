@@ -6,3 +6,4 @@ Eval/*.db
 
 # Eval baseline — local-only, derived from private corpus (never commit)
 Eval/.eval-baseline.json
+Core/.build/

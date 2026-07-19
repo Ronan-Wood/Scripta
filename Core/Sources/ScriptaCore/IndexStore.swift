@@ -1,63 +1,83 @@
 import Foundation
+import ScriptaShared
 import SQLite3
 import OSLog
 import Accelerate
 import os
 
 /// Transcript-level metadata as stored in the index.
-struct IndexedTranscript {
-    let path: String
-    let title: String
-    let date: String
-    let time: String
-    let duration: String
-    let participants: [String]
-    let tags: [String]
-    let summary: String
-    let mtime: Double
+public struct IndexedTranscript {
+    public let path: String
+    public let title: String
+    public let date: String
+    public let time: String
+    public let duration: String
+    public let participants: [String]
+    public let tags: [String]
+    public let summary: String
+    public let mtime: Double
     /// "conference" for a single-source conference recording, "" for a normal call.
-    var mode: String = ""
+    public var mode: String = ""
     /// The privacy/workspace partition. "" = ungrouped.
-    var group: String = ""
+    public var group: String = ""
     /// "call" for transcripts, "note" for knowledge notes. Call-listing surfaces filter on it;
     /// retrieval surfaces (Ask context, MCP retrieve) deliberately include both.
-    var kind: String = "call"
+    public var kind: String = "call"
     /// The verbatim transcript body, stored so the MCP can serve get_transcript faithfully without
     /// reading the .md — which may live in a TCC-protected cloud vault the unsandboxed server can't
     /// open. A derived copy of the source (rebuilt on reconcile), distinct from the coarser `chunks`.
-    var body: String = ""
+    public var body: String = ""
+
+    public init(path: String, title: String, date: String, time: String, duration: String,
+                participants: [String], tags: [String], summary: String, mtime: Double,
+                mode: String = "", group: String = "", kind: String = "call", body: String = "") {
+        self.path = path; self.title = title; self.date = date; self.time = time
+        self.duration = duration; self.participants = participants; self.tags = tags
+        self.summary = summary; self.mtime = mtime
+        self.mode = mode; self.group = group; self.kind = kind; self.body = body
+    }
 }
 
 /// One retrievable chunk of a transcript (a speaker turn).
-struct IndexedChunk {
-    let startMs: Int
-    let endMs: Int
-    let speaker: String?
-    let text: String
+public struct IndexedChunk {
+    public let startMs: Int
+    public let endMs: Int
+    public let speaker: String?
+    public let text: String
+
+    public init(startMs: Int, endMs: Int, speaker: String?, text: String) {
+        self.startMs = startMs; self.endMs = endMs; self.speaker = speaker; self.text = text
+    }
 }
 
 /// A full passage retrieved for on-device answering.
-struct ContextChunk {
-    let path: String
-    let title: String
-    let date: String
-    let startMs: Int
-    let speaker: String
-    let text: String
+public struct ContextChunk {
+    public let path: String
+    public let title: String
+    public let date: String
+    public let startMs: Int
+    public let speaker: String
+    public let text: String
     /// True for a synthetic "call summary/topics" passage (topic fusion), not spoken content.
-    var isTopic: Bool = false
+    public var isTopic: Bool = false
+
+    public init(path: String, title: String, date: String, startMs: Int, speaker: String,
+                text: String, isTopic: Bool = false) {
+        self.path = path; self.title = title; self.date = date; self.startMs = startMs
+        self.speaker = speaker; self.text = text; self.isTopic = isTopic
+    }
 }
 
 /// A ranked search result pointing back into a transcript.
-struct SearchHit: Identifiable {
-    let id = UUID()
-    let path: String
-    let title: String
-    let date: String
-    let startMs: Int
-    let speaker: String?
-    let snippet: String
-    let score: Double
+public struct SearchHit: Identifiable {
+    public let id = UUID()
+    public let path: String
+    public let title: String
+    public let date: String
+    public let startMs: Int
+    public let speaker: String?
+    public let snippet: String
+    public let score: Double
 }
 
 /// The local retrieval backend: a SQLite database (system SQLite, FTS5) holding a derived index
@@ -66,18 +86,18 @@ struct SearchHit: Identifiable {
 ///
 /// Reads are safe across processes (the app writes; the bundled MCP reads) via WAL mode.
 /// Access within a process is serialized by an internal lock.
-final class IndexStore {
-    static let shared = try? IndexStore()
+public final class IndexStore {
+    public static let shared = try? IndexStore()
 
     /// Fixed location, independent of the (user-configurable) transcript output folder.
     /// Lives in the App Group container so the MCP server can read it across the sandbox
     /// boundary; a location change just means a rebuild — this is a declared cache.
-    static var defaultURL: URL { SharedLocations.indexDB }
+    public static var defaultURL: URL { SharedLocations.indexDB }
 
     /// How `search`/`context` build their MATCH expression. Production is `.andFirst`; the eval
     /// harness flips to `.legacyOr` to measure the before/after of the stopword + AND-first change.
-    enum QueryMode { case andFirst, legacyOr }
-    var queryMode: QueryMode = .andFirst
+    public enum QueryMode { case andFirst, legacyOr }
+    public var queryMode: QueryMode = .andFirst
 
     /// Bumped whenever the schema OR the chunking geometry (see `Indexing`) changes. A DB at a
     /// different version is dropped and recreated — correct for a declared rebuildable cache —
@@ -128,7 +148,7 @@ final class IndexStore {
     private let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Index")
     private static let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    init(url: URL = IndexStore.defaultURL) throws {
+    public init(url: URL = IndexStore.defaultURL) throws {
         var handle: OpaquePointer?
         guard sqlite3_open(url.path, &handle) == SQLITE_OK, let handle else {
             throw NSError(domain: "Scripta.Index", code: 1,
@@ -252,7 +272,7 @@ final class IndexStore {
 
     /// Replaces a transcript's row + chunks wholesale (delete then insert), keeping FTS in sync
     /// via the triggers. Called on write and on any metadata edit.
-    func upsert(_ t: IndexedTranscript, chunks: [IndexedChunk]) {
+    public func upsert(_ t: IndexedTranscript, chunks: [IndexedChunk]) {
         let unlock = acquireLock(); defer { unlock() }
         guard exec("BEGIN;") else { return }
         var ok = removeRows(path: t.path)
@@ -291,7 +311,7 @@ final class IndexStore {
     }
 
     /// Removes a transcript from the index (e.g. after retention prunes the file).
-    func remove(path: String) {
+    public func remove(path: String) {
         let unlock = acquireLock(); defer { unlock() }
         guard exec("BEGIN;") else { return }
         if removeRows(path: path) && exec("COMMIT;") { return }
@@ -315,7 +335,7 @@ final class IndexStore {
 
     /// Stores a chunk embedding, tagged with its embed model + dimension so vector spaces can never
     /// silently mix (Fable: a model change means a full re-embed, never mixed-space fusion).
-    func storeVector(chunkID: Int64, vector: [Float], model: String) {
+    public func storeVector(chunkID: Int64, vector: [Float], model: String) {
         let unlock = acquireLock(); defer { unlock() }
         let data = vector.withUnsafeBytes { Data($0) }
         run("INSERT OR REPLACE INTO chunk_vectors(chunk_id,vector,embed_model,dim) VALUES(?,?,?,?)") { stmt in
@@ -326,7 +346,7 @@ final class IndexStore {
     }
 
     /// (chunk id, text) for a transcript — the embed pipeline's input.
-    func chunkRows(path: String) -> [(id: Int64, text: String)] {
+    public func chunkRows(path: String) -> [(id: Int64, text: String)] {
         let unlock = acquireLock(); defer { unlock() }
         var out: [(Int64, String)] = []
         query("SELECT id, text FROM chunks WHERE path = ? ORDER BY id",
@@ -335,7 +355,7 @@ final class IndexStore {
     }
 
     /// True once any chunk is embedded with `model` (so the retriever knows to go hybrid).
-    func hasVectors(model: String) -> Bool {
+    public func hasVectors(model: String) -> Bool {
         let unlock = acquireLock(); defer { unlock() }
         var n = 0
         query("SELECT 1 FROM chunk_vectors WHERE embed_model = ? LIMIT 1",
@@ -345,14 +365,14 @@ final class IndexStore {
 
     /// Embed-version discipline: drop every vector NOT from the current model (a model change
     /// invalidates the whole space; cheap to re-embed at personal scale).
-    func dropVectors(keepingModel model: String) {
+    public func dropVectors(keepingModel model: String) {
         let unlock = acquireLock(); defer { unlock() }
         run("DELETE FROM chunk_vectors WHERE embed_model <> ?") { bind($0, 1, model) }
     }
 
     /// Cosine top-k over in-group chunk vectors (brute-force vDSP — instant at personal scale, and
     /// no ANN index to maintain). Group-scoped inside the query, before ranking.
-    func vectorCandidates(vector queryVec: [Float], group: String?, model: String, limit: Int) -> [Int64] {
+    public func vectorCandidates(vector queryVec: [Float], group: String?, model: String, limit: Int) -> [Int64] {
         let unlock = acquireLock(); defer { unlock() }
         var qnorm = queryVec
         var qmag: Float = 0; vDSP_svesq(queryVec, 1, &qmag, vDSP_Length(queryVec.count)); qmag = sqrt(qmag)
@@ -385,7 +405,7 @@ final class IndexStore {
     }
 
     /// FTS spoken-passage candidate chunk ids (group-scoped) — the lexical half of hybrid fusion.
-    func ftsCandidates(_ rawQuery: String, group: String?, limit: Int) -> [Int64] {
+    public func ftsCandidates(_ rawQuery: String, group: String?, limit: Int) -> [Int64] {
         let unlock = acquireLock(); defer { unlock() }
         let aliases = aliasGroupsLocked(group: group)
         var ids = rankedChunkIDs(FTSQuery.andExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit)
@@ -395,7 +415,7 @@ final class IndexStore {
 
     /// Materialises chunk ids into context passages (neighbour-expanded), preserving the given
     /// order — used by the hybrid retriever after RRF fusion.
-    func contextForChunkIDs(_ ids: [Int64], limit: Int) -> [ContextChunk] {
+    public func contextForChunkIDs(_ ids: [Int64], limit: Int) -> [ContextChunk] {
         let unlock = acquireLock(); defer { unlock() }
         var out: [ContextChunk] = []
         var seenID = Set<Int64>()
@@ -413,7 +433,7 @@ final class IndexStore {
     // MARK: - Entity graph (cache of the registry)
 
     /// Upserts entity cache rows (from the registry) and replaces a transcript's mentions wholesale.
-    func setEntities(_ ents: [(id: String, name: String, kind: String)],
+    public func setEntities(_ ents: [(id: String, name: String, kind: String)],
                      mentions path: String, _ mentions: [(entityID: String, startMs: Int, surface: String)]) {
         let unlock = acquireLock(); defer { unlock() }
         guard exec("BEGIN;") else { return }
@@ -434,7 +454,7 @@ final class IndexStore {
 
     /// Calls that mention an entity, newest first — the entity-anchored retrieval rail (mode 3).
     /// Group-scoped by joining transcripts (a mention's group IS its call's group).
-    func callsMentioning(entityID: String, group: String?, limit: Int = 50) -> [SearchHit] {
+    public func callsMentioning(entityID: String, group: String?, limit: Int = 50) -> [SearchHit] {
         let unlock = acquireLock(); defer { unlock() }
         var sql = """
         SELECT DISTINCT t.path, t.title, t.date, MIN(m.start_ms)
@@ -457,7 +477,7 @@ final class IndexStore {
 
     /// Entities appearing in a workspace, with call counts — the "People & Orgs" browse. Group-
     /// scoped by joining each mention's call to the active workspace (mentions carry no group).
-    func entities(group: String, limit: Int = 200) -> [(id: String, name: String, kind: String, count: Int)] {
+    public func entities(group: String, limit: Int = 200) -> [(id: String, name: String, kind: String, count: Int)] {
         let unlock = acquireLock(); defer { unlock() }
         var out: [(String, String, String, Int)] = []
         let sql = """
@@ -474,7 +494,7 @@ final class IndexStore {
     }
 
     /// Distinct entity ids mentioned in a transcript (for its reader / entity chips).
-    func entityIDs(forPath path: String) -> [String] {
+    public func entityIDs(forPath path: String) -> [String] {
         let unlock = acquireLock(); defer { unlock() }
         var ids: [String] = []
         query("SELECT DISTINCT entity_id FROM entity_mentions WHERE path = ?",
@@ -486,7 +506,7 @@ final class IndexStore {
 
     /// Records that `stage` completed for `path` at content `hash` with `model`. A later reconcile
     /// treats a stage whose stored hash differs from the current content hash as stale.
-    func recordStage(path: String, stage: String, hash: String, model: String) {
+    public func recordStage(path: String, stage: String, hash: String, model: String) {
         let unlock = acquireLock(); defer { unlock() }
         run("INSERT OR REPLACE INTO enrichment_ledger(path,stage,content_hash,model_version) VALUES(?,?,?,?)") { stmt in
             bind(stmt, 1, path); bind(stmt, 2, stage); bind(stmt, 3, hash); bind(stmt, 4, model)
@@ -495,7 +515,7 @@ final class IndexStore {
 
     /// The content hash recorded for a completed stage, or nil if it never ran — so a caller can
     /// decide whether to (re)run embed/extract/summarize for a transcript at its current hash.
-    func stageHash(path: String, stage: String) -> String? {
+    public func stageHash(path: String, stage: String) -> String? {
         let unlock = acquireLock(); defer { unlock() }
         var h: String?
         query("SELECT content_hash FROM enrichment_ledger WHERE path = ? AND stage = ?",
@@ -505,7 +525,7 @@ final class IndexStore {
 
     /// Empties every table (keeping the schema) so a caller can reindex from disk — the "Rebuild
     /// Index" escape hatch for corruption, chunking changes, or "search seems wrong".
-    func clear() {
+    public func clear() {
         let unlock = acquireLock(); defer { unlock() }
         guard exec("BEGIN;") else { return }
         exec("DELETE FROM chunks;")            // triggers keep chunks_fts in sync
@@ -531,7 +551,7 @@ final class IndexStore {
     /// read-only opener the MCP uses. The app is the only writer, so this never fights another writer; it
     /// waits up to the busy timeout for any in-flight MCP reader (whose reads are per-request, never a
     /// long-lived snapshot) and, if one is mid-query, reports busy and leaves the WAL for the next pass.
-    func checkpoint() {
+    public func checkpoint() {
         let unlock = acquireLock(); defer { unlock() }
         // PRAGMA wal_checkpoint returns one row: (busy, walPages, checkpointedPages).
         var busy: Int32 = -1, moved: Int32 = 0
@@ -547,7 +567,7 @@ final class IndexStore {
     }
 
     /// Row counts + on-disk size for the Settings "Index" section.
-    func stats() -> (calls: Int, passages: Int, bytes: Int) {
+    public func stats() -> (calls: Int, passages: Int, bytes: Int) {
         let unlock = acquireLock(); defer { unlock() }
         var calls = 0, passages = 0
         query("SELECT (SELECT COUNT(*) FROM transcripts), (SELECT COUNT(*) FROM chunks);") { stmt in
@@ -561,7 +581,7 @@ final class IndexStore {
     }
 
     /// path -> mtime for every indexed transcript, used to reconcile against the folder.
-    func indexedPaths() -> [String: Double] {
+    public func indexedPaths() -> [String: Double] {
         let unlock = acquireLock(); defer { unlock() }
         var result: [String: Double] = [:]
         query("SELECT path, mtime FROM transcripts") { stmt in
@@ -579,7 +599,7 @@ final class IndexStore {
     /// `group` is the privacy wall: non-nil scopes to that workspace ("" = ungrouped), nil means
     /// all groups (the explicit, non-default cross-group action). Applied inside the candidate
     /// query, before LIMIT.
-    func search(_ rawQuery: String, participant: String? = nil, tag: String? = nil,
+    public func search(_ rawQuery: String, participant: String? = nil, tag: String? = nil,
                 since: String? = nil, speaker: String? = nil, group: String? = nil, limit: Int = 30) -> [SearchHit] {
         let unlock = acquireLock(); defer { unlock() }
         if queryMode == .legacyOr {
@@ -737,7 +757,7 @@ final class IndexStore {
     /// the layer that has no spoken chunks or vectors. The hybrid (embeddings) retrieval path is
     /// chunk/vector-only, so it must call this too or docs and notes become invisible once a
     /// corpus is embedded.
-    func topicMatches(for rawQuery: String, group: String? = nil, limit: Int = 3) -> [ContextChunk] {
+    public func topicMatches(for rawQuery: String, group: String? = nil, limit: Int = 3) -> [ContextChunk] {
         let unlock = acquireLock(); defer { unlock() }
         let aliases = aliasGroupsLocked(group: group)
         return topicContext(FTSQuery.andExpression(rawQuery, aliasGroups: aliases)
@@ -745,7 +765,7 @@ final class IndexStore {
                             group: group, limit: limit)
     }
 
-    func context(for rawQuery: String, group: String? = nil, limit: Int = 6) -> [ContextChunk] {
+    public func context(for rawQuery: String, group: String? = nil, limit: Int = 6) -> [ContextChunk] {
         let unlock = acquireLock(); defer { unlock() }
         let aliases = aliasGroupsLocked(group: group)
         var hits = rankedChunkIDs(FTSQuery.andExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit * 3)
@@ -861,7 +881,7 @@ final class IndexStore {
 
     /// One call's card for the Home dashboard and Knowledge digest — everything the index
     /// already holds about a call, so those surfaces never re-read transcript files.
-    struct DigestRow {
+    public struct DigestRow {
         let path: String
         let title: String
         let date: String
@@ -874,7 +894,7 @@ final class IndexStore {
 
     /// Recent calls in one workspace, newest first — the dashboard/digest feed. Scoped to the
     /// group like every other read surface (the privacy wall applies to dashboards too).
-    func digest(group: String, limit: Int = 400) -> [DigestRow] {
+    public func digest(group: String, limit: Int = 400) -> [DigestRow] {
         let unlock = acquireLock(); defer { unlock() }
         var rows: [DigestRow] = []
         query("""
@@ -893,16 +913,21 @@ final class IndexStore {
 
     // MARK: - Vocabulary (terms cache)
 
-    struct TermRow {
-        let id: String
-        let canonical: String
-        let aliases: [String]
-        let gloss: String
-        let group: String
+    public struct TermRow {
+        public let id: String
+        public let canonical: String
+        public let aliases: [String]
+        public let gloss: String
+        public let group: String
+
+        public init(id: String, canonical: String, aliases: [String], gloss: String, group: String) {
+            self.id = id; self.canonical = canonical; self.aliases = aliases
+            self.gloss = gloss; self.group = group
+        }
     }
 
     /// Replaces the vocabulary cache wholesale (mirrors the registry's kind="term" entries).
-    func setTerms(_ rows: [TermRow]) {
+    public func setTerms(_ rows: [TermRow]) {
         let unlock = acquireLock(); defer { unlock() }
         guard exec("BEGIN;") else { return }
         var ok = run("DELETE FROM terms;") { _ in }
@@ -919,7 +944,7 @@ final class IndexStore {
 
     /// Alias groups for query expansion: [canonical + aliases], scoped to a workspace plus
     /// globals (nil group = everything, for the blind cross-workspace search).
-    func aliasGroups(group: String?) -> [[String]] {
+    public func aliasGroups(group: String?) -> [[String]] {
         let unlock = acquireLock(); defer { unlock() }
         return aliasGroupsLocked(group: group)
     }
@@ -940,7 +965,7 @@ final class IndexStore {
     }
 
     /// A sample of spoken text for deterministic vocabulary suggestion (acronym mining).
-    func sampleChunkTexts(group: String, limit: Int = 400) -> [String] {
+    public func sampleChunkTexts(group: String, limit: Int = 400) -> [String] {
         let unlock = acquireLock(); defer { unlock() }
         var out: [String] = []
         query("""
@@ -954,7 +979,7 @@ final class IndexStore {
     }
 
     /// Terms with a non-empty meaning, for gloss injection into Clovis context.
-    func termGlosses(group: String) -> [(term: String, gloss: String)] {
+    public func termGlosses(group: String) -> [(term: String, gloss: String)] {
         let unlock = acquireLock(); defer { unlock() }
         var out: [(String, String)] = []
         query("SELECT canonical, gloss FROM terms WHERE (\"group\" = ? OR \"group\" = '') AND gloss != ''",
@@ -965,7 +990,7 @@ final class IndexStore {
     }
 
     /// Distinct non-empty groups (workspaces) with call counts, most-populated first.
-    func groups() -> [(name: String, count: Int)] {
+    public func groups() -> [(name: String, count: Int)] {
         let unlock = acquireLock(); defer { unlock() }
         var counts: [String: Int] = [:]
         query("SELECT \"group\", COUNT(*) FROM transcripts WHERE kind = 'call' GROUP BY \"group\"") { stmt in
@@ -977,7 +1002,7 @@ final class IndexStore {
     }
 
     /// Call count in one workspace ("" = ungrouped) — for the scope indicator.
-    func count(group: String) -> Int {
+    public func count(group: String) -> Int {
         let unlock = acquireLock(); defer { unlock() }
         var n = 0
         query("SELECT COUNT(*) FROM transcripts WHERE \"group\" = ? AND kind = 'call'",
@@ -986,12 +1011,12 @@ final class IndexStore {
     }
 
     /// All participants across transcripts with a call count, most-frequent first.
-    func people() -> [(name: String, count: Int)] {
+    public func people() -> [(name: String, count: Int)] {
         aggregateList(column: "participants")
     }
 
     /// All tags across transcripts (excluding the owner marker) with a count, most-frequent first.
-    func tags() -> [(name: String, count: Int)] {
+    public func tags() -> [(name: String, count: Int)] {
         aggregateList(column: "tags").filter { $0.name != OwnerMarker.value }
     }
 

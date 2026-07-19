@@ -8,10 +8,10 @@ import Foundation
 /// dominant shape in search and Ask); the OR expression is the recall floor when AND finds
 /// nothing. Stopwords are dropped so BM25 ranks on content terms, not function words — this is
 /// deterministic query rewriting, not LLM expansion.
-enum FTSQuery {
+public enum FTSQuery {
     /// ~100 common English function words. Dropping them stops "the"*/"with"* from matching
     /// nearly every chunk and dominating the OR-sum BM25 score.
-    static let stopwords: Set<String> = [
+    public static let stopwords: Set<String> = [
         "a", "about", "above", "after", "again", "all", "am", "an", "and", "any", "are", "as",
         "at", "be", "because", "been", "before", "being", "below", "between", "both", "but", "by",
         "can", "could", "did", "do", "does", "doing", "down", "during", "each", "few", "for",
@@ -27,7 +27,7 @@ enum FTSQuery {
     /// Content terms: lowercased, split on non-alphanumerics, ≥2 chars, stopwords removed,
     /// de-duplicated, capped to the 10 longest. If removing stopwords empties the query (e.g.
     /// "what about it"), the originals are kept so the query still returns something.
-    static func terms(_ raw: String) -> [String] {
+    public static func terms(_ raw: String) -> [String] {
         let all = raw.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { $0.count >= 2 }
@@ -84,14 +84,14 @@ enum FTSQuery {
     /// Joined with an explicit `AND`, not juxtaposition: FTS5 rejects a parenthesized group next to
     /// another term with implicit AND (`(a OR b) "c"` is a syntax error), which an alias expansion
     /// introduces — so implicit-AND silently zeroed every alias-touching query.
-    static func andExpression(_ raw: String, aliasGroups: [[String]] = []) -> String? {
+    public static func andExpression(_ raw: String, aliasGroups: [[String]] = []) -> String? {
         let t = terms(raw)
         guard !t.isEmpty else { return nil }
         return t.map { expanded($0, groups: aliasGroups) }.joined(separator: " AND ")
     }
 
     /// OR of quoted prefix terms — the recall floor. nil if empty.
-    static func orExpression(_ raw: String, aliasGroups: [[String]] = []) -> String? {
+    public static func orExpression(_ raw: String, aliasGroups: [[String]] = []) -> String? {
         let t = terms(raw)
         guard !t.isEmpty else { return nil }
         return t.map { expanded($0, groups: aliasGroups) }.joined(separator: " OR ")
@@ -99,7 +99,7 @@ enum FTSQuery {
 
     /// The pre-overhaul behaviour: OR over every ≥2-char term with no stopword filtering. Kept
     /// only so the eval harness can measure the before/after of the AND-first + stopword change.
-    static func legacyOr(_ raw: String) -> String? {
+    public static func legacyOr(_ raw: String) -> String? {
         let all = raw.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { $0.count >= 2 }

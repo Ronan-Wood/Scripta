@@ -1,4 +1,6 @@
 import Foundation
+import ScriptaShared
+import ScriptaCore
 
 // Retrieval eval harness. Builds a throwaway SQLite index from a transcript folder using the SAME
 // shared indexing code the app uses (Frontmatter + Indexing + IndexStore), then runs each gold

@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaShared
 import Compression
 
 /// A minimal zip reader — just enough for OOXML (.pptx/.docx are zips of XML with stored or
@@ -9,12 +10,12 @@ import Compression
 /// Input is attacker-influenced (users import arbitrary documents), so every offset/length read
 /// from the archive is bounds-checked before use and the decompression buffer is sized from the
 /// compressed payload — never from the archive's self-declared uncompressed size.
-enum MiniZip {
-    enum ZipError: Error { case notAZip, entryNotFound, unsupported, corrupt }
+public enum MiniZip {
+    public enum ZipError: Error { case notAZip, entryNotFound, unsupported, corrupt }
 
     /// An opened archive. The file bytes are read and the central directory parsed ONCE; reuse the
     /// returned value to extract many entries without re-reading/re-parsing the whole file per entry.
-    struct Archive {
+    public struct Archive {
         fileprivate let data: Data
         fileprivate let entries: [Entry]
         fileprivate let index: [String: Int]   // name → entries index (first occurrence wins), O(1) lookup
@@ -30,7 +31,7 @@ enum MiniZip {
     }
 
     /// Reads + parses the archive once. Reuse the returned `Archive` to extract several entries.
-    static func open(_ url: URL) throws -> Archive {
+    public static func open(_ url: URL) throws -> Archive {
         let data = try Data(contentsOf: url)
         let entries = try centralDirectory(of: data)
         var index = [String: Int](minimumCapacity: entries.count)
