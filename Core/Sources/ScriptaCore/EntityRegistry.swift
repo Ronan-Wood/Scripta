@@ -141,23 +141,24 @@ public final class EntityRegistry {
     /// wiped workspace's identities don't linger in the registry file.
     public func purge(group: String) {
         lock.lock(); defer { lock.unlock() }
-        var removedIDs: [String] = []
         var changed = false
         entities = entities.compactMap { e in
             guard e.groups.contains(group) else { return e }
             changed = true
             let remaining = e.groups.filter { $0 != group }
-            if remaining.isEmpty { removedIDs.append(e.id); return nil }
+            if remaining.isEmpty { return nil }
             var kept = e; kept.groups = remaining; return kept
         }
-        // Drop verdicts referencing purged ids: a dangling "same" verdict would make applyMerges
-        // permanently redirect a surviving entity to a dead canonical, resurrecting the wiped
-        // identity through the mentions cache. Aliases learned in the wiped group on SURVIVING
-        // shared entities are deliberately not trimmed — alias provenance isn't tracked.
-        if !removedIDs.isEmpty {
-            let dead = Set(removedIDs)
-            verdicts.removeAll { dead.contains($0.a) || dead.contains($0.b) }
-        }
+        // Idempotent verdict GC against the SURVIVING set — not just this call's removals — so a
+        // verdict left dangling by any earlier state is cleaned too. A dangling "same" verdict
+        // would make applyMerges permanently redirect a surviving entity to a dead canonical,
+        // resurrecting the wiped identity through the mentions cache. Aliases learned in the
+        // wiped group on SURVIVING shared entities are deliberately not trimmed — alias
+        // provenance isn't tracked.
+        let alive = Set(entities.map(\.id))
+        let verdictsBefore = verdicts.count
+        verdicts.removeAll { !alive.contains($0.a) || !alive.contains($0.b) }
+        if verdicts.count != verdictsBefore { changed = true }
         guard changed else { return }   // nothing purged: don't touch/create the registry file
         dirty = true
         saveLocked()

@@ -45,6 +45,11 @@ and delete this file.
 
 ## Decisions parked
 
+- **Byte-level scrubbing of main-DB free pages** (crosscheck R2, both lenses): the wipe now
+  checkpoints (WAL truncated), but DELETEd content survives in index.db free pages until
+  overwritten. If the bar is byte-level, the options are `PRAGMA secure_delete=ON` for the wipe
+  path or a post-wipe VACUUM. Explicit product decision — perf cost vs. threat model.
+
 - **Package floor vs Phase 3 `Mutex`:** `Mutex` (Synchronization) needs macOS 15+; package floor
   is 14 (inherited from scripta-mcp). Either bump helper+package floor (26 is defensible — the
   helper refuses without the app running, and the app needs 26) or use `OSAllocatedUnfairLock`.
@@ -80,6 +85,10 @@ and delete this file.
 - ~~Registry privacy wall eval extension~~ → **done in 2ec73d0 + follow-up** (8 checks incl. a
   mutation-tested dangling-verdict fixture and a non-vacuous collision-subset fixture).
 - ~~Eval frontmatter dedup~~ → **done in 2ec73d0** (Frontmatter.field/list from ScriptaShared).
+- Crosscheck audit-trail note: R1 judged the AppDelegate first-run re-point a no-op and it was
+  deleted; R2's correctness lens reversed that with a sharper trace (the global record hotkey is
+  live during the first-run modal and lazy-binds the registry). Restored via repoint. Lesson:
+  "traced the launch order" must include event-driven entry points.
 - `EntityRegistry.confirm(surface:group:)` matches with NO kind filter (pre-existing): a calendar
   attendee named "Tim" confirms the vocabulary term "TIM" and appends the attendee's group to the
   term's provenance — cross-wall bleed via alias collision. Fix: kind filter (or exclude

@@ -84,7 +84,10 @@ for url in files {
     store.upsert(transcript, chunks: Indexing.chunks(from: content))
     indexed += 1
 }
-if indexed == 0 { die("No app-authored transcripts found in \(folderPath)") }
+if indexed == 0 {
+    for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(at: URL(fileURLWithPath: tmpDB.path + suffix)) }
+    die("No app-authored transcripts found in \(folderPath)")
+}
 
 // MARK: - Score
 
@@ -242,7 +245,8 @@ reg.recordVerdict(bobID, carolID, same: true)
 reg.addTerm(canonical: "TIM", aliases: ["tenants in the market"], gloss: "", group: "Alpha")
 reg.addTerm(canonical: "NER", aliases: [], gloss: "global", group: "")
 var regFails = 0
-func regCheck(_ ok: Bool, _ msg: String) { if !ok { regFails += 1; print("  FAIL: \(msg)") } }
+var regTotal = 0
+func regCheck(_ ok: Bool, _ msg: String) { regTotal += 1; if !ok { regFails += 1; print("  FAIL: \(msg)") } }
 regCheck(!reg.confirmedAliases(group: "Alpha").contains("Bob Beta")
       && !reg.confirmedAliases(group: "Beta").contains("Alice Alpha"), "confirmed aliases crossed groups")
 let alphaTerms = reg.terms(group: "Alpha").map(\.name)
@@ -262,11 +266,12 @@ let carolResolved = reg.resolve(surface: "Carol Cross", kind: "person", group: "
 regCheck(reg.allEntities().contains { $0.id == carolResolved },
          "resolve followed a dangling verdict to a purged id")
 let regPass = regFails == 0
-print("  \(8 - regFails)/8 registry checks passed")
+print("  \(regTotal - regFails)/\(regTotal) registry checks passed")
 print("  → \(regPass ? "PASS — registry wall holds" : "FAIL — registry leak")")
 
-// exit() bypasses top-level defers, so temp artifacts are deleted explicitly here.
-try? FileManager.default.removeItem(at: tmpDB)
+// exit() bypasses top-level defers AND IndexStore.deinit (sqlite3_close never runs), so the
+// WAL-mode temp DB leaves -wal/-shm siblings holding real corpus text — delete all of it.
+for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(at: URL(fileURLWithPath: tmpDB.path + suffix)) }
 try? FileManager.default.removeItem(at: regURL)
 
 let pass = retrievalPass && leakPass && aliasPass && regPass

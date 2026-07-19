@@ -28,15 +28,26 @@ enum WorkspaceDeleter {
             deleted += 1
         }
         // Knowledge cascade — named workspaces only: "" is BOTH the ungrouped bucket here and the
-        // GLOBAL sentinel inside the registry (groups == [""] means visible everywhere), so
-        // purging "" would destroy global vocabulary that feeds every workspace's ASR bias.
-        // Ungrouped files still delete above; only the registry/mirror halves are skipped.
+        // registry's GLOBAL sentinel for vocabulary (terms/termVocab treat groups == [""] as
+        // visible in every workspace — people entities are not globalized), so purging "" would
+        // destroy global vocabulary that feeds every workspace's ASR bias. Ungrouped files still
+        // delete above; only the registry/mirror halves are skipped.
         if !group.isEmpty {
-            EntityRegistry.shared.purge(group: group)
+            // One registry snapshot for the whole cascade (the snapshot-per-pass rule): a
+            // concurrent vault switch must not split purge and mirror across two registries.
+            let registry = EntityRegistry.shared
+            registry.purge(group: group)
+            // Vault stubs (Entities/<group>/) go too, toggle or no toggle — marker-gated inside.
+            EntityMirror.purge(group: group, vault: AppSettings.outputFolder)
             if let store = IndexStore.shared {
-                IndexBuilder.syncTerms(store: store)   // terms mirror follows the registry now, not at next launch
-                store.pruneOrphanedEntities()          // wiped names must not stay readable in index.db
+                IndexBuilder.syncTerms(store: store, registry: registry)
             }
+        }
+        if let store = IndexStore.shared {
+            store.pruneOrphanedEntities()   // registry-independent — runs for "" wipes too
+            // Truncate the WAL: the wiped calls' verbatim text must not linger in index.db-wal at
+            // laptop-handoff time. (Bytes in main-DB free pages are a separate, parked decision.)
+            store.checkpoint()
         }
         return deleted
     }
