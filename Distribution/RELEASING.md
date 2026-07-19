@@ -7,7 +7,7 @@ Two flavors from one codebase (see `project.yml` targets):
 | Sandbox | Yes | Yes |
 | Bundled MCP helper | Yes (`Contents/MacOS/scripta-mcp`) | **No** — separate download |
 | Signing | Developer ID Application + notarization | Apple Distribution via ASC |
-| Build output | `build/<config>/` (SYMROOT=build) | `build-mas/<config>/` (SYMROOT=build-mas) |
+| Build output | `build/<config>/` (SYMROOT=build) | archive → `build/mas.xcarchive`; local builds `build-mas/<config>/` (SYMROOT=build-mas) |
 
 Docs pane auto-detects the flavor (`helperIsBundled`) and shows the right Claude setup.
 
@@ -31,6 +31,9 @@ xcodegen generate
 xcodebuild -project Scripta.xcodeproj -scheme Scripta-MAS archive \
   -archivePath build/mas.xcarchive
 # then Xcode Organizer (or altool/Transporter): Distribute App → App Store Connect
+
+# local flavor-check build only (the archive above doesn't need SYMROOT):
+xcodebuild -project Scripta.xcodeproj -scheme Scripta-MAS -configuration Release build SYMROOT="$(pwd)/build-mas"
 ```
 
 - TestFlight the build yourself before submitting (needs the sandbox — which we have).
@@ -41,7 +44,10 @@ xcodebuild -project Scripta.xcodeproj -scheme Scripta-MAS archive \
 ## Channel B — direct .dmg
 
 ```sh
+rm -rf build/Release   # fail fast on a dropped SYMROOT instead of staging a stale binary
 xcodebuild -project Scripta.xcodeproj -scheme Scripta -configuration Release build SYMROOT="$(pwd)/build"
+# flavor check: the direct app MUST bundle the helper (missing = a MAS build landed here)
+test -x build/Release/Scripta.app/Contents/MacOS/scripta-mcp || { echo "wrong flavor: bundled helper missing"; exit 1; }
 # sign check: hardened runtime + sandbox + Developer ID identity
 codesign -dv --verbose=2 build/Release/Scripta.app
 # stage dmg (app + /Applications symlink + README), then:
@@ -56,6 +62,7 @@ changes), and the first sandboxed launch shows the folder-choice notice — expe
 ## The helper (App Store users' separate download)
 
 ```sh
+rm -f build/Release/scripta-mcp   # never sign/notarize a stale helper from a previous run
 xcodebuild -project Scripta.xcodeproj -scheme scripta-mcp -configuration Release build SYMROOT="$(pwd)/build"
 codesign --force --options runtime --entitlements SourcesMCP/scripta-mcp.entitlements \
   -s "Developer ID Application" build/Release/scripta-mcp
