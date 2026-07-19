@@ -143,8 +143,10 @@ frontmatter, written to a user-configured folder (typically inside an Obsidian v
 ```sh
 cd CallTranscriber
 xcodegen generate           # after any project.yml change
-xcodebuild -project CallTranscriber.xcodeproj -target CallTranscriber -configuration Debug build
-open build/Debug/CallTranscriber.app
+xcodebuild -project Scripta.xcodeproj -scheme Scripta -configuration Debug build SYMROOT="$(pwd)/build"
+open build/Debug/Scripta.app
+# unit tests + retrieval eval live in the Core package:
+swift test --package-path Core && ./Eval/run.sh
 ```
 
 Tooling still needed: whisper-cpp (M3), ggml-large-v3-turbo download (M3).

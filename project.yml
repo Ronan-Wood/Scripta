@@ -82,6 +82,15 @@ targets:
   # default location; the target would look in the overridden one).
   Scripta-MAS:
     templates: [ScriptaApp]
+    # Both flavors share PRODUCT_NAME, so a MAS build into a dir where the direct flavor built
+    # earlier (Xcode's shared DerivedData, or a reused SYMROOT) inherits the direct bundle's
+    # embedded helper — Xcode never scrubs foreign files. The store flavor must not carry the
+    # helper (embedded executables must inherit the sandbox), so re-establish that invariant
+    # structurally at the end of every MAS build.
+    postBuildScripts:
+      - name: Scrub bundled helper (store flavor must not embed it)
+        script: rm -f "$CODESIGNING_FOLDER_PATH/Contents/MacOS/scripta-mcp"
+        basedOnDependencyAnalysis: false
 
   scripta-mcp:
     type: tool
