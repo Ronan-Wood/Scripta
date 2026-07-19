@@ -17,6 +17,10 @@ public enum RetentionPruner {
         var enabled: Bool
         var days: Int
         var folder: URL
+
+        public init(enabled: Bool, days: Int, folder: URL) {
+            self.enabled = enabled; self.days = days; self.folder = folder
+        }
     }
 
     public static func pruneIfNeeded(_ config: Config) {

@@ -21,10 +21,10 @@ public enum MiniZip {
         fileprivate let index: [String: Int]   // name → entries index (first occurrence wins), O(1) lookup
 
         /// All entry names in the archive.
-        var names: [String] { entries.map(\.name) }
+        public var names: [String] { entries.map(\.name) }
 
         /// Decompressed contents of one entry.
-        func read(_ name: String) throws -> Data {
+        public func read(_ name: String) throws -> Data {
             guard let i = index[name] else { throw ZipError.entryNotFound }
             return try MiniZip.extract(entries[i], from: data)
         }
