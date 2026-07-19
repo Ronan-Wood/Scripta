@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaShared
 
 /// Deletes transcripts older than the configured retention window, when enabled.
 ///
@@ -6,19 +7,19 @@ import Foundation
 /// touch anything the app didn't create. It only considers `.md` files whose filename matches
 /// the shape `TranscriptWriter.uniqueURL` produces AND whose leading frontmatter block carries
 /// the `app: call-transcriber` marker on its own line, and it never recurses into subdirectories.
-enum RetentionPruner {
+public enum RetentionPruner {
 
     /// The settings the pruner reads. Injected rather than pulled from `AppSettings` directly so the
     /// pruning logic (and its vault-safety guarantees) stays in the dependency-free layer and can be
     /// exercised by the host-less test bundle. The app builds this from `AppSettings` — see the
     /// zero-argument `pruneIfNeeded()` in `RetentionPruner+Live.swift`.
-    struct Config {
+    public struct Config {
         var enabled: Bool
         var days: Int
         var folder: URL
     }
 
-    static func pruneIfNeeded(_ config: Config) {
+    public static func pruneIfNeeded(_ config: Config) {
         guard config.enabled else { return }
         let days = max(1, config.days)
         let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)

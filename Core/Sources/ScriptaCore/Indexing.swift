@@ -1,25 +1,26 @@
 import Foundation
+import ScriptaShared
 import CryptoKit
 
 /// Transcript → index derivation: speaker-turn chunking and summary extraction. Shared so the
 /// app's `IndexBuilder` and the eval harness produce identical index rows from the same Markdown.
-enum Indexing {
+public enum Indexing {
     /// Content hash for the enrichment ledger, taken over the DERIVED chunks (not the raw file).
     /// So a frontmatter edit (title / group / tag) never invalidates chunks/embeddings/entities,
     /// but a body edit (a user ASR fix in Obsidian) does — which is exactly when re-enrich is due.
-    static func contentHash(_ chunks: [IndexedChunk]) -> String {
+    public static func contentHash(_ chunks: [IndexedChunk]) -> String {
         let joined = chunks.map { "\($0.startMs):\($0.speaker ?? ""):\($0.text)" }.joined(separator: "\n")
         return SHA256.hash(data: Data(joined.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Budgets keep unlabeled/monologue calls from collapsing into one enormous chunk (which would
     /// give BM25 nothing to rank and produce useless snippets/timestamps).
-    static let maxChunkChars = 500
-    static let maxChunkMs = 45_000
+    public static let maxChunkChars = 500
+    public static let maxChunkMs = 45_000
 
     /// Groups transcript audio lines into retrievable chunks: a new chunk starts when the speaker
     /// changes, or when the running chunk passes a size/time budget.
-    static func chunks(from content: String) -> [IndexedChunk] {
+    public static func chunks(from content: String) -> [IndexedChunk] {
         var chunks: [IndexedChunk] = []
         var startMs = 0
         var lastMs = 0
@@ -51,7 +52,7 @@ enum Indexing {
     }
 
     /// "[0:05]" / "[1:23:45]" → milliseconds.
-    static func parseStamp(_ stamp: String) -> Int? {
+    public static func parseStamp(_ stamp: String) -> Int? {
         let digits = stamp.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         let parts = digits.split(separator: ":").compactMap { Int($0) }
         guard !parts.isEmpty else { return nil }
@@ -62,7 +63,7 @@ enum Indexing {
     /// Chunks the "## Screen Context" section so on-screen text becomes searchable + embeddable
     /// (it's captured today but invisible to retrieval). Marked speaker "Screen" so retrieval
     /// provenance distinguishes what was shown from what was said. Each captured entry is one chunk.
-    static func screenChunks(from content: String) -> [IndexedChunk] {
+    public static func screenChunks(from content: String) -> [IndexedChunk] {
         guard let range = content.range(of: "## Screen Context") else { return [] }
         let section = String(content[range.upperBound...])
         var chunks: [IndexedChunk] = []
@@ -83,7 +84,7 @@ enum Indexing {
     }
 
     /// Pulls the "## Summary" section text (if any) for the transcript-level row.
-    static func summary(from content: String) -> String {
+    public static func summary(from content: String) -> String {
         guard let range = content.range(of: "## Summary") else { return "" }
         let after = content[range.upperBound...]
         var lines: [String] = []

@@ -1,4 +1,6 @@
 import XCTest
+@testable import ScriptaCore
+@testable import ScriptaShared
 
 /// Covers the retention pruner's app-authored gate — the guard that keeps a user's surrounding
 /// Obsidian vault from ever losing a file the app didn't create (audit M10). These are pure

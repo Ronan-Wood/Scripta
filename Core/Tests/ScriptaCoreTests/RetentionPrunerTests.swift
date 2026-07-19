@@ -1,4 +1,6 @@
 import XCTest
+@testable import ScriptaCore
+@testable import ScriptaShared
 
 /// Exercises `RetentionPruner.pruneIfNeeded` end-to-end against a real directory — the safety
 /// guarantees the pure `RetentionGate` predicates can't reach on their own (audit M10). Each kept

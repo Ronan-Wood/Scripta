@@ -1,7 +1,8 @@
 import Foundation
+import ScriptaShared
 
 /// A renderable block of a parsed transcript.
-enum TranscriptBlock: Sendable {
+public enum TranscriptBlock: Sendable {
     case section(String)                       // "## …" headers
     case audioLine(String, String?, String)    // timestamp, speaker (You/Them or nil), spoken text
     case screenMarker(String)                  // a Screen Context entry's timestamp
@@ -12,9 +13,9 @@ enum TranscriptBlock: Sendable {
 
 /// Parses our transcript Markdown into blocks for the in-app viewer. Purpose-built for the
 /// format TranscriptWriter emits — not a general Markdown engine.
-enum TranscriptParser {
+public enum TranscriptParser {
 
-    static func parse(_ content: String) -> [TranscriptBlock] {
+    public static func parse(_ content: String) -> [TranscriptBlock] {
         let body = Frontmatter.split(content)?.body ?? content
 
         var blocks: [TranscriptBlock] = []

@@ -1,4 +1,6 @@
 import XCTest
+@testable import ScriptaCore
+@testable import ScriptaShared
 
 /// Covers the transcript-line parser — purpose-built for the exact shapes TranscriptWriter emits.
 /// A regression here mis-renders the viewer (drops speaker labels, mangles timestamps) (audit L14).
