@@ -26,6 +26,21 @@ and delete this file.
 - **SourcesMCP has zero tests** — tool routing, path guarding (symlink resolution), heartbeat
   refusal. Bigger lift (needs a stdio harness); worth its own line in the plan.
 
+## Phase 2 decisions taken (2026-07-18, under the full-autonomy grant)
+
+- **Moved to ScriptaCore:** EntityRegistry (+Live shared instance), EntityExtractor, EntityMirror
+  (vault root injected, opt-in gate stays app-side), IndexWatcher (rewritten as a generic
+  debounced folder-watcher with the action injected — its debounce is now host-less testable),
+  TranscriptStore (folder injected), TranscriptWriter (folder injected), FillerCleaner, the
+  transcript input types (Speaker, TranscriptSegment, ScreenSnippet, CallNote →
+  TranscriptInputs.swift), and stripControlChars (→ Indexing — it guards every FTS bind path).
+- **Stayed app-side, deliberately:** IndexBuilder and Retriever. Both are orchestrators over
+  app-only inputs (NoteStore/DocumentImporter parsers, Embedder/EngineRouter, AppSettings);
+  packaging them would mean injecting half the app through config structs. Revisit only if the
+  iOS companion needs reconcile logic — then the app-format parsers become the real question.
+- The unused `import ScriptaCore` in EntityRegistry (crosscheck B minor) resolved itself in the
+  move; self-imports stripped from the other movers.
+
 ## Decisions parked
 
 - **Package floor vs Phase 3 `Mutex`:** `Mutex` (Synchronization) needs macOS 15+; package floor

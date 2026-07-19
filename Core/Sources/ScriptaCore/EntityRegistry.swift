@@ -1,5 +1,4 @@
 import Foundation
-import ScriptaCore
 import ScriptaShared
 
 /// The **system of record for entity identity** (Fable A/F2). Entities get stable ids here — the
@@ -17,23 +16,25 @@ import ScriptaShared
 /// reconcile on the watcher's utility queue, and the post-recording extract pass in `Task.detached`.
 /// Without the lock those overlap as a data race: torn reads, or an EXC_BAD_ACCESS when a
 /// concurrent `append` reallocates the array mid-iteration. Mirrors IndexStore / TranscriptStore.
-final class EntityRegistry {
-    struct Entity: Codable {
-        var id: String
-        var name: String          // display (most frequent original spelling)
-        var kind: String          // "person" | "org" | "term" (vocabulary)
-        var aliases: [String]     // normalized surface forms that resolve to this id
-        var groups: [String]      // workspaces this identity has appeared in ("" = global)
-        var confirmed: Bool       // user-confirmed (only confirmed aliases seed ASR — Fable F)
+public final class EntityRegistry {
+    public struct Entity: Codable {
+        public var id: String
+        public var name: String          // display (most frequent original spelling)
+        public var kind: String          // "person" | "org" | "term" (vocabulary)
+        public var aliases: [String]     // normalized surface forms that resolve to this id
+        public var groups: [String]      // workspaces this identity has appeared in ("" = global)
+        public var confirmed: Bool       // user-confirmed (only confirmed aliases seed ASR — Fable F)
         /// One-line meaning, for vocabulary terms ("TIM — tenants in the market"). Optional and
         /// additive, so registries written before it decode unchanged.
-        var gloss: String? = nil
+        public var gloss: String? = nil
     }
-    struct Verdict: Codable { var a: String; var b: String; var same: Bool; var by: String }
+    public struct Verdict: Codable {
+        public var a: String; public var b: String; public var same: Bool; public var by: String
+    }
 
     private struct Doc: Codable { var version: Int; var entities: [Entity]; var verdicts: [Verdict] }
 
-    let url: URL
+    public let url: URL
     /// Guards `entities`, `verdicts`, and `dirty`. NSLock is NON-reentrant, so a method that already
     /// holds it must call the private `*Locked` variants (e.g. `saveLocked`, `termsLocked`), never
     /// another public method — doing so would deadlock.
@@ -42,15 +43,9 @@ final class EntityRegistry {
     private var verdicts: [Verdict] = []
     private var dirty = false
 
-    /// Shared instance rooted in the current output folder (vault). Recreated when the folder moves.
-    static var shared = EntityRegistry(url: EntityRegistry.defaultURL)
-    static var defaultURL: URL {
-        AppSettings.outputFolder.appendingPathComponent(".calltranscriber-registry.json")
-    }
+    public init(url: URL) { self.url = url; load() }
 
-    init(url: URL) { self.url = url; load() }
-
-    func load() {
+    public func load() {
         lock.lock(); defer { lock.unlock() }
         guard let data = try? Data(contentsOf: url),
               let doc = try? JSONDecoder().decode(Doc.self, from: data) else { return }
@@ -61,12 +56,12 @@ final class EntityRegistry {
     /// A value snapshot of every entity, copied under the lock, for callers that need to scan the
     /// whole set off the main actor (vocabulary mining, the DB term sync). Reading the `entities`
     /// array directly would race the background writers.
-    func allEntities() -> [Entity] {
+    public func allEntities() -> [Entity] {
         lock.lock(); defer { lock.unlock() }
         return entities
     }
 
-    func save() {
+    public func save() {
         lock.lock(); defer { lock.unlock() }
         saveLocked()
     }
@@ -80,7 +75,7 @@ final class EntityRegistry {
         dirty = false
     }
 
-    static func normalize(_ s: String) -> String {
+    public static func normalize(_ s: String) -> String {
         s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -88,7 +83,7 @@ final class EntityRegistry {
     /// auto-merge only**: exact normalized-name or alias match (wrong merges are catastrophic and
     /// hard to notice; fuzzy proposals go to a review queue, not here). Records group provenance.
     @discardableResult
-    func resolve(surface: String, kind: String, group: String) -> String {
+    public func resolve(surface: String, kind: String, group: String) -> String {
         lock.lock(); defer { lock.unlock() }
         let norm = Self.normalize(surface)
         if let i = entities.firstIndex(where: { e in
@@ -106,7 +101,7 @@ final class EntityRegistry {
 
     /// Marks the entity matching a surface as user-confirmed (ground truth) — e.g. a name the user
     /// entered as a participant. Confirmed names are the only ones that feed ASR (Fable F).
-    func confirm(surface: String, group: String) {
+    public func confirm(surface: String, group: String) {
         lock.lock(); defer { lock.unlock() }
         let norm = Self.normalize(surface)
         if let i = entities.firstIndex(where: { $0.aliases.contains(norm) || Self.normalize($0.name) == norm }) {
@@ -116,7 +111,7 @@ final class EntityRegistry {
     }
 
     /// A confirmed same/distinct verdict between two identities (reversible: change or delete it).
-    func recordVerdict(_ a: String, _ b: String, same: Bool, by: String = "user") {
+    public func recordVerdict(_ a: String, _ b: String, same: Bool, by: String = "user") {
         lock.lock(); defer { lock.unlock() }
         verdicts.removeAll { ($0.a == a && $0.b == b) || ($0.a == b && $0.b == a) }
         verdicts.append(Verdict(a: a, b: b, same: same, by: by))
@@ -137,14 +132,14 @@ final class EntityRegistry {
 
     /// Only user-confirmed aliases feed ASR contextual vocabulary (Fable F — an unreviewed alias
     /// must not steer future transcription and contaminate the source of truth).
-    func confirmedAliases(group: String) -> [String] {
+    public func confirmedAliases(group: String) -> [String] {
         lock.lock(); defer { lock.unlock() }
         return entities.filter { $0.confirmed && $0.groups.contains(group) }.map(\.name)
     }
 
     /// Entity ids whose name/aliases match any content term of a query — query-side entity linking
     /// (the thing that makes entity-anchored retrieval fire).
-    func link(query: String, group: String) -> [String] {
+    public func link(query: String, group: String) -> [String] {
         lock.lock(); defer { lock.unlock() }
         let terms = Set(FTSQuery.terms(query))
         guard !terms.isEmpty else { return [] }
@@ -157,7 +152,7 @@ final class EntityRegistry {
 
     /// Drops entities whose provenance is only the deleted group (I6 × registry). Keeps ones seen
     /// elsewhere, just removing that group from their provenance.
-    func purge(group: String) {
+    public func purge(group: String) {
         lock.lock(); defer { lock.unlock() }
         entities = entities.compactMap { e in
             guard e.groups.contains(group) else { return e }
@@ -173,7 +168,7 @@ final class EntityRegistry {
     /// normalized name is a token-subset of the other's ("dana" ⊂ "dana whitfield") with no
     /// recorded verdict. The clarifying question generated from DATA, not model judgment —
     /// and because the verdict persists, each pair is asked once, ever.
-    func collisionCandidates(group: String, limit: Int = 3) -> [(a: Entity, b: Entity)] {
+    public func collisionCandidates(group: String, limit: Int = 3) -> [(a: Entity, b: Entity)] {
         lock.lock(); defer { lock.unlock() }
         let scoped = entities.filter { $0.kind != "term" && $0.groups.contains(group) }
         var out: [(Entity, Entity)] = []
@@ -199,7 +194,7 @@ final class EntityRegistry {
     // MARK: - Vocabulary (kind "term" — the correction loop's write target)
 
     /// Vocabulary terms visible in a workspace: its own plus global ("") entries.
-    func terms(group: String) -> [Entity] {
+    public func terms(group: String) -> [Entity] {
         lock.lock(); defer { lock.unlock() }
         return termsLocked(group: group)
     }
@@ -212,7 +207,7 @@ final class EntityRegistry {
     /// Adds (or extends) a vocabulary term. User-initiated, so confirmed by definition — every
     /// consumer (ASR bias, alias expansion, gloss injection) may trust it immediately.
     @discardableResult
-    func addTerm(canonical: String, aliases: [String], gloss: String?, group: String) -> String {
+    public func addTerm(canonical: String, aliases: [String], gloss: String?, group: String) -> String {
         lock.lock(); defer { lock.unlock() }
         let trimmed = canonical.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return "" }
@@ -237,7 +232,7 @@ final class EntityRegistry {
 
     /// ASR bias strings from the vocabulary: canonical spellings plus multi-word aliases
     /// (single-word normalized aliases add nothing the canonical doesn't).
-    func termVocab(group: String) -> [String] {
+    public func termVocab(group: String) -> [String] {
         lock.lock(); defer { lock.unlock() }
         return termsLocked(group: group).flatMap { [$0.name] + $0.aliases.filter { $0.contains(" ") } }
     }

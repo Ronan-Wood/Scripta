@@ -1,17 +1,8 @@
 import Foundation
+import ScriptaCore
 import ScreenCaptureKit
 import AppKit
 import OSLog
-
-/// A timestamped piece of screen text retained during a recording. `imagePath` points at an
-/// EPHEMERAL PNG on disk (same posture as the raw audio — temp file, deleted after the post-call
-/// caption pass, never in the vault), set only when a vision model is assigned. Nothing is held in
-/// memory across the call.
-struct ScreenSnippet: Sendable {
-    let startMs: Int
-    let text: String
-    var imagePath: URL?
-}
 
 /// What the screen-context feature reads from, chosen per recording.
 enum ScreenSource: Equatable {

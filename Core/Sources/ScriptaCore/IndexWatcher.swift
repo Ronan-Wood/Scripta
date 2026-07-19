@@ -1,27 +1,25 @@
 import Foundation
-import ScriptaCore
 import CoreServices
 import OSLog
 
-/// Watches the transcript output folder and reconciles the index a couple of seconds after any
-/// change. The output folder is often an Obsidian vault / synced folder edited by other apps, so
-/// without this the index (and therefore search, Ask, related-calls, and MCP retrieve) stays
-/// stale until the next launch. Uses FSEvents with file-level events so in-place edits — not just
-/// create/delete — trigger a refresh.
-final class IndexWatcher {
-    static let shared: IndexWatcher? = IndexStore.shared.map { IndexWatcher(store: $0) }
-
-    private let store: IndexStore
+/// Watches a folder and fires a debounced `onChange` a couple of seconds after any change. The
+/// watched folder is often an Obsidian vault / synced folder edited by other apps, so without
+/// this the index (and therefore search, Ask, related-calls, and MCP retrieve) stays stale until
+/// the next launch. Uses FSEvents with file-level events so in-place edits — not just
+/// create/delete — trigger a refresh. The action is injected (the app passes reconcile + UI
+/// refresh) so the watcher itself stays dependency-free and its debounce is testable host-less.
+public final class IndexWatcher {
+    private let onChange: () -> Void
     private let queue = DispatchQueue(label: "com.ronanwood.Scripta.indexWatcher", qos: .utility)
     private let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Index")
     private var stream: FSEventStreamRef?
     private var debounce: DispatchWorkItem?
 
-    private init(store: IndexStore) { self.store = store }
+    public init(onChange: @escaping () -> Void) { self.onChange = onChange }
 
     /// Arms the watcher on `folder` (replacing any previous watch). Reconcile is not run here —
     /// callers do an explicit reconcile when they need the current contents indexed.
-    func start(folder: URL) {
+    public func start(folder: URL) {
         queue.async { [weak self] in self?.arm(folder) }
     }
 
@@ -54,14 +52,12 @@ final class IndexWatcher {
         self.stream = nil
     }
 
-    /// Debounced: many events during a sync burst collapse into one reconcile. reconcile is
-    /// mtime-diffed and idempotent, so a spurious fire is cheap.
+    /// Debounced: many events during a sync burst collapse into one onChange. The injected action
+    /// (reconcile) is mtime-diffed and idempotent, so a spurious fire is cheap.
     private func scheduleReconcile() {
         debounce?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            IndexBuilder.reconcile(store: self.store)
-            Task { @MainActor in AppModel.shared.reloadCalls() }
+            self?.onChange()
         }
         debounce = work
         queue.asyncAfter(deadline: .now() + 2, execute: work)

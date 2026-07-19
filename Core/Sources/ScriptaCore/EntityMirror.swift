@@ -1,5 +1,4 @@
 import Foundation
-import ScriptaCore
 import ScriptaShared
 
 /// Mirrors the entity graph into the Obsidian vault as group-foldered stub notes, so the vault's
@@ -11,14 +10,14 @@ import ScriptaShared
 /// are never indexed as calls; a delimited **managed region** so anything a user adds outside it is
 /// preserved; and it only ever overwrites files carrying its own marker (name collisions with a
 /// user's note are skipped). Idempotent: an unchanged graph re-runs to a zero diff.
-enum EntityMirror {
-    static let marker = "call-transcriber-entity"
+public enum EntityMirror {
+    public static let marker = "call-transcriber-entity"
     private static let begin = "<!-- calltranscriber:entities -->"
     private static let end = "<!-- /calltranscriber:entities -->"
 
-    static func sync(store: IndexStore) {
-        guard AppSettings.mirrorEnabled else { return }
-        let root = AppSettings.outputFolder.appendingPathComponent("Entities", isDirectory: true)
+    /// The caller gates opt-in (the app checks its mirror setting) and supplies the vault root.
+    public static func sync(store: IndexStore, vault: URL) {
+        let root = vault.appendingPathComponent("Entities", isDirectory: true)
         var groups = Set(store.groups().map(\.name))
         groups.insert("")   // ungrouped bucket
         for group in groups {
