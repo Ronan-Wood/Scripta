@@ -53,7 +53,7 @@ struct HubView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This permanently deletes the transcript files for every call in “\(model.activeGroup)”. This can't be undone.")
+            Text("This permanently deletes the transcript files for every call in “\(model.activeGroup)”. It also removes people and vocabulary known only in this workspace. This can't be undone.")
         }
         .alert("New workspace", isPresented: $creatingWorkspace) {
             TextField("Name (e.g. Deals)", text: $newWorkspaceName)

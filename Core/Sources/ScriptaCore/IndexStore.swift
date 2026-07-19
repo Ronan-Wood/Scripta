@@ -311,6 +311,13 @@ public final class IndexStore {
     }
 
     /// Removes a transcript from the index (e.g. after retention prunes the file).
+    /// The index half of the workspace-wipe cascade: drops entities-cache rows no mention
+    /// references anymore. Names of wiped identities must not remain readable in the DB file.
+    public func pruneOrphanedEntities() {
+        let unlock = acquireLock(); defer { unlock() }
+        _ = run("DELETE FROM entities WHERE id NOT IN (SELECT DISTINCT entity_id FROM entity_mentions)") { _ in }
+    }
+
     public func remove(path: String) {
         let unlock = acquireLock(); defer { unlock() }
         guard exec("BEGIN;") else { return }
