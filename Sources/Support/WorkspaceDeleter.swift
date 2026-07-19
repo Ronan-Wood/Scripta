@@ -10,9 +10,9 @@ import ScriptaCore
 /// the filename shape — for a privacy wipe, completeness matters (an untitled "Call …" left behind
 /// would be a leak), and the marker + explicit group already guarantee app ownership.
 ///
-/// Cascade: removes the Markdown file and the index rows (chunks / FTS / transcript). As the
-/// knowledge layer adds tables (vectors, mentions, registry), extend `IndexStore.remove` — this
-/// stays the single call site.
+/// Cascade: removes the Markdown file, the index rows (chunks / FTS / transcript), and the
+/// group's sole-provenance registry entities. As the knowledge layer adds tables, extend here —
+/// this stays the single call site.
 enum WorkspaceDeleter {
     /// Files that would be deleted for `group` ("" = ungrouped) — drives the confirmation count.
     static func candidates(group: String) -> [URL] {
@@ -27,6 +27,7 @@ enum WorkspaceDeleter {
             IndexStore.shared?.remove(path: url.path)   // cascade: transcript row + chunks + FTS
             deleted += 1
         }
+        EntityRegistry.shared.purge(group: group)   // registry half of the cascade (I6)
         return deleted
     }
 }

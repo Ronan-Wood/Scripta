@@ -80,6 +80,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.message = "Where should your call transcripts live?"
         if panel.runModal() == .OK, let url = panel.url {
             AppSettings.setOutputFolder(url)
+            EntityRegistry.shared.save()
+            EntityRegistry.shared = EntityRegistry(
+                url: url.appendingPathComponent(".calltranscriber-registry.json"))
         }
     }
 
