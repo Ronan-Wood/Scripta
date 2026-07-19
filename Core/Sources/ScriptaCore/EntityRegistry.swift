@@ -135,22 +135,11 @@ public final class EntityRegistry {
         return entities.filter { $0.confirmed && $0.groups.contains(group) }.map(\.name)
     }
 
-    /// Entity ids whose name/aliases match any content term of a query — query-side entity linking
-    /// (the thing that makes entity-anchored retrieval fire).
-    func link(query: String, group: String) -> [String] {
-        lock.lock(); defer { lock.unlock() }
-        let terms = Set(FTSQuery.terms(query))
-        guard !terms.isEmpty else { return [] }
-        return entities.filter { e in
-            e.groups.contains(group) &&
-            (terms.contains(Self.normalize(e.name)) || e.aliases.contains(where: terms.contains)
-             || e.name.lowercased().split(separator: " ").contains { terms.contains(String($0)) })
-        }.map { applyMerges($0.id) }
-    }
-
     /// Drops entities whose provenance is only the deleted group (I6 × registry). Keeps ones seen
     /// elsewhere, just removing that group from their provenance.
-    func purge(group: String) {
+    /// The registry half of the I6 delete-a-group cascade — WorkspaceDeleter calls this so a
+    /// wiped workspace's identities don't linger in the registry file.
+    public func purge(group: String) {
         lock.lock(); defer { lock.unlock() }
         entities = entities.compactMap { e in
             guard e.groups.contains(group) else { return e }

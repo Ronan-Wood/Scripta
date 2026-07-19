@@ -59,37 +59,6 @@ guard let goldData = FileManager.default.contents(atPath: goldPath),
     die("Could not read gold cases at \(goldPath)")
 }
 
-// MARK: - Minimal frontmatter field parsing (eval-only glue; the app uses TranscriptStore)
-
-func field(_ fm: String, _ key: String) -> String {
-    for line in fm.split(separator: "\n") {
-        let t = line.trimmingCharacters(in: .whitespaces)
-        if t.hasPrefix("\(key):") {
-            return String(t.dropFirst(key.count + 1)).trimmingCharacters(in: CharacterSet(charactersIn: " \"[]"))
-        }
-    }
-    return ""
-}
-
-func list(_ fm: String, _ key: String) -> [String] {
-    var raw = ""
-    for line in fm.split(separator: "\n") {
-        let t = line.trimmingCharacters(in: .whitespaces)
-        if t.hasPrefix("\(key):") { raw = String(t.dropFirst(key.count + 1)).trimmingCharacters(in: .whitespaces); break }
-    }
-    if raw.hasPrefix("[") { raw.removeFirst() }
-    if raw.hasSuffix("]") { raw.removeLast() }
-    if raw.contains("\"") {
-        var items: [String] = []; var cur = ""; var q = false
-        for ch in raw {
-            if ch == "\"" { if q { let it = cur.trimmingCharacters(in: .whitespaces); if !it.isEmpty { items.append(it) }; cur = "" }; q.toggle() }
-            else if q { cur.append(ch) }
-        }
-        return items
-    }
-    return raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-}
-
 // MARK: - Build a fresh index
 
 let tmpDB = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -108,10 +77,10 @@ for url in files {
           let split = Frontmatter.split(content), Frontmatter.hasOwnerMarker(split.frontmatter) else { continue }
     let fm = split.frontmatter
     let transcript = IndexedTranscript(
-        path: url.path, title: field(fm, "title"), date: field(fm, "date"), time: field(fm, "time"),
-        duration: field(fm, "duration"),
-        participants: list(fm, "participants"),
-        tags: list(fm, "tags").filter { $0 != OwnerMarker.value },
+        path: url.path, title: Frontmatter.field(fm, "title"), date: Frontmatter.field(fm, "date"), time: Frontmatter.field(fm, "time"),
+        duration: Frontmatter.field(fm, "duration"),
+        participants: Frontmatter.list(fm, "participants"),
+        tags: Frontmatter.list(fm, "tags").filter { $0 != OwnerMarker.value },
         summary: Indexing.summary(from: content), mtime: 0)
     store.upsert(transcript, chunks: Indexing.chunks(from: content))
     indexed += 1
@@ -252,6 +221,43 @@ let aliasPass = beforeTerm.isEmpty && afterTerm.contains { $0.path == "/fx-alias
 print("  acronym query without term: \(beforeTerm.count) hits · with term seeded: \(afterTerm.count) hits")
 print("  → \(aliasPass ? "PASS — \"TIM\" reaches \"tenants in the market\"" : "FAIL — expansion did not fire")")
 
-let pass = retrievalPass && leakPass && aliasPass
+// Registry privacy wall: the entity/vocabulary registry must scope like the store — confirmed
+// aliases feed ASR bias, terms feed gloss injection, collision review is per-workspace, and
+// purge is the I6 cascade. Fixtures span Alpha/Beta/global ("").
+print("\nRegistry privacy wall")
+let regURL = URL(fileURLWithPath: NSTemporaryDirectory())
+    .appendingPathComponent("scripta-eval-registry-\(UUID().uuidString).json")
+defer { try? FileManager.default.removeItem(at: regURL) }
+let reg = EntityRegistry(url: regURL)
+reg.resolve(surface: "Alice Alpha", kind: "person", group: "Alpha")
+reg.confirm(surface: "Alice Alpha", group: "Alpha")
+reg.resolve(surface: "Bob Beta", kind: "person", group: "Beta")
+reg.confirm(surface: "Bob Beta", group: "Beta")
+reg.resolve(surface: "Carol Cross", kind: "person", group: "Alpha")
+reg.resolve(surface: "Carol Cross", kind: "person", group: "Beta")
+reg.addTerm(canonical: "TIM", aliases: ["tenants in the market"], gloss: "", group: "Alpha")
+reg.addTerm(canonical: "NER", aliases: [], gloss: "global", group: "")
+var regFails = 0
+func regCheck(_ ok: Bool, _ msg: String) { if !ok { regFails += 1; print("  FAIL: \(msg)") } }
+regCheck(!reg.confirmedAliases(group: "Alpha").contains("Bob Beta")
+      && !reg.confirmedAliases(group: "Beta").contains("Alice Alpha"), "confirmed aliases crossed groups")
+let alphaTerms = reg.terms(group: "Alpha").map(\.name)
+let betaTerms = reg.terms(group: "Beta").map(\.name)
+regCheck(!betaTerms.contains("TIM"), "Alpha-scoped term visible in Beta")
+regCheck(alphaTerms.contains("TIM") && alphaTerms.contains("NER") && betaTerms.contains("NER"),
+         "expected term visibility broken (scoped + global)")
+regCheck(!reg.collisionCandidates(group: "Alpha").contains {
+    $0.a.name == "Bob Beta" || $0.b.name == "Bob Beta" }, "collision review paired across groups")
+reg.purge(group: "Beta")
+let names = reg.allEntities().map(\.name)
+regCheck(!names.contains("Bob Beta"), "purge left a sole-provenance entity")
+regCheck(names.contains("Alice Alpha") && names.contains("Carol Cross"), "purge over-deleted")
+regCheck(reg.allEntities().first { $0.name == "Carol Cross" }?.groups == ["Alpha"],
+         "purge did not trim dual provenance to the surviving group")
+let regPass = regFails == 0
+print("  aliases/terms/collisions scoped · purge dropped sole-provenance, trimmed shared")
+print("  → \(regPass ? "PASS — registry wall holds" : "FAIL — registry leak")")
+
+let pass = retrievalPass && leakPass && aliasPass && regPass
 print("\nOVERALL: \(pass ? "PASS" : "FAIL")")
 exit(pass ? 0 : 1)
