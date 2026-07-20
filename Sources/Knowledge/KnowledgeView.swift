@@ -77,10 +77,12 @@ struct KnowledgeView: View {
 
     var body: some View {
         ScrollView {
+            // Regrouped by purpose, not build order (M22): at-a-glance counts, then Recent (the
+            // call log — the primary content) alongside Needs-attention/Browse in the rail, then
+            // Notes/Documents as their own area instead of sitting above the actual content.
             VStack(alignment: .leading, spacing: Space.x6) {
                 header
-                notesShelf
-                documentsSection      // jobs + imported files — visible with or without calls
+                statRow
                 if rows.isEmpty && notes.isEmpty {
                     emptyState
                 } else if !rows.isEmpty {
@@ -89,7 +91,8 @@ struct KnowledgeView: View {
                         rail.frame(width: 300)
                     }
                 }
-                vocabularySection     // the correction loop — never gated on having calls
+                notesShelf
+                documentsSection      // jobs + imported files — visible with or without calls
             }
             .padding(Space.x7)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -374,6 +377,25 @@ struct KnowledgeView: View {
         model.activeGroup.isEmpty ? "your workspace" : "“\(model.activeGroup)”"
     }
 
+    /// At-a-glance counts (M22) — the shared `StatTile` `HomeView` already uses, with
+    /// Knowledge-specific numbers (not a duplicate of Home's calls/hours tiles), all from data
+    /// this view already loads in `reload()` — no new queries for the tiles themselves.
+    private var statRow: some View {
+        HStack(spacing: Space.x5) {
+            StatTile(label: "Open commitments", value: "\(commitments.count)")
+            StatTile(label: "People tracked", value: "\(scopedPeople.count)")
+            StatTile(label: "Notes", value: "\(notes.count)")
+            StatTile(label: "Documents", value: "\(docs.count)")
+        }
+    }
+
+    /// Visually distinct from `SectionHeader` (bigger, sentence case, full-strength color) —
+    /// used only for the two rail groups below, so "Needs attention"/"Browse" read as a tier
+    /// above the individual section titles inside them, not a peer of "Commitments"/"People".
+    private func groupHeader(_ title: String) -> some View {
+        Text(title).font(CarbonFont.medium(14)).foregroundStyle(Carbon.textPrimary)
+    }
+
     private var emptyState: some View {
         CarbonCard {
             VStack(alignment: .leading, spacing: Space.x3) {
@@ -446,43 +468,80 @@ struct KnowledgeView: View {
             .sorted { $0.count != $1.count ? $0.count > $1.count : $0.name < $1.name }
     }
 
+    /// Two purpose-grouped zones (M22), not a flat stack of unrelated sections: things only you
+    /// can resolve, then facets you browse by. Order matters — actionable before reference.
     private var rail: some View {
-        VStack(alignment: .leading, spacing: Space.x6) {
-            if !scopedPeople.isEmpty {
-                VStack(alignment: .leading, spacing: Space.x3) {
-                    SectionHeader(title: "People")
-                    VStack(spacing: 1) {
-                        ForEach(scopedPeople.prefix(8), id: \.name) { person in
-                            Button {
-                                let id = EntityRegistry.shared.resolveConfirmed(surface: person.name, kind: "person", group: model.activeGroup)
-                                entitySheetTarget = EntitySheetTarget(id: id ?? person.name, fallbackName: person.name)
-                            } label: {
-                                HStack(spacing: Space.x3) {
-                                    InitialsBadge(name: person.name)
-                                    Text(shortName(person.name)).font(CarbonFont.medium(13))
-                                        .foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                                    Spacer()
-                                    Text("\(person.count) call\(person.count == 1 ? "" : "s")")
-                                        .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
-                                }
-                                .padding(Space.x4)
-                                .background(Carbon.layer)
-                                .contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                        }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
-                    .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
-                }
+        VStack(alignment: .leading, spacing: Space.x7) {
+            needsAttentionGroup
+            browseGroup
+        }
+    }
+
+    /// Commitments + identity collisions — both "only you can resolve this," previously
+    /// scattered (commitments mid-rail, collisions buried at the bottom under Vocabulary with
+    /// nothing suggesting they were related). Hidden entirely, not shown empty, when there's
+    /// genuinely nothing pending — an empty "Needs attention" header with nothing under it would
+    /// read as broken, not reassuring.
+    @ViewBuilder private var needsAttentionGroup: some View {
+        if !commitments.isEmpty || !collisions.isEmpty {
+            VStack(alignment: .leading, spacing: Space.x5) {
+                groupHeader("Needs attention")
+                commitmentsSection
+                identityCheck
             }
-            commitmentsSection
-            if !scopedTopics.isEmpty {
-                VStack(alignment: .leading, spacing: Space.x3) {
-                    SectionHeader(title: "Topics")
-                    FlexWrap(spacing: Space.x2) {
-                        ForEach(scopedTopics.prefix(14), id: \.name) { topic in
-                            CarbonChip(text: topic.name) { model.route = .tag(topic.name) }
-                        }
+        }
+    }
+
+    /// People + Topics + Vocabulary — three "look something up by facet" surfaces that used to be
+    /// split across the rail (People, Topics) and a separate section below the fold (Vocabulary).
+    /// Always shown (unlike `needsAttentionGroup`): Vocabulary already renders a placeholder
+    /// prompt when empty rather than disappearing, so this group is never genuinely empty.
+    private var browseGroup: some View {
+        VStack(alignment: .leading, spacing: Space.x5) {
+            groupHeader("Browse")
+            peopleSection
+            topicsSection
+            vocabularySection
+        }
+    }
+
+    @ViewBuilder private var peopleSection: some View {
+        if !scopedPeople.isEmpty {
+            VStack(alignment: .leading, spacing: Space.x3) {
+                SectionHeader(title: "People")
+                VStack(spacing: 1) {
+                    ForEach(scopedPeople.prefix(8), id: \.name) { person in
+                        Button {
+                            let id = EntityRegistry.shared.resolveConfirmed(surface: person.name, kind: "person", group: model.activeGroup)
+                            entitySheetTarget = EntitySheetTarget(id: id ?? person.name, fallbackName: person.name)
+                        } label: {
+                            HStack(spacing: Space.x3) {
+                                InitialsBadge(name: person.name)
+                                Text(shortName(person.name)).font(CarbonFont.medium(13))
+                                    .foregroundStyle(Carbon.textPrimary).lineLimit(1)
+                                Spacer()
+                                Text("\(person.count) call\(person.count == 1 ? "" : "s")")
+                                    .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                            }
+                            .padding(Space.x4)
+                            .background(Carbon.layer)
+                            .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
+            }
+        }
+    }
+
+    @ViewBuilder private var topicsSection: some View {
+        if !scopedTopics.isEmpty {
+            VStack(alignment: .leading, spacing: Space.x3) {
+                SectionHeader(title: "Topics")
+                FlexWrap(spacing: Space.x2) {
+                    ForEach(scopedTopics.prefix(14), id: \.name) { topic in
+                        CarbonChip(text: topic.name) { model.route = .tag(topic.name) }
                     }
                 }
             }
@@ -678,7 +737,6 @@ struct KnowledgeView: View {
                     }
                 }
             }
-            identityCheck
         }
         .alert("Add vocabulary term", isPresented: $addingTerm) {
             TextField("Term (e.g. TIM)", text: $termCanonical)
