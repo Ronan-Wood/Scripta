@@ -407,9 +407,18 @@ struct SettingsView: View {
                                     }
                                 }
                                 if isWatched(calendar.calendarIdentifier) {
-                                    TextField("Workspace (optional)", text: groupBinding(for: calendar.calendarIdentifier))
-                                        .textFieldStyle(.roundedBorder)
-                                        .padding(.leading, 18)
+                                    // A closed set, not free text: the sidebar's own workspace
+                                    // switcher (HubView.groupSwitcher) offers the identical
+                                    // "Ungrouped" + known-workspaces choice, and typing a name by
+                                    // hand here risked a silent near-duplicate workspace (a typo,
+                                    // or a casing mismatch — see groupBinding). New workspaces are
+                                    // still created in one place: the sidebar's "New workspace…".
+                                    Picker("Workspace", selection: groupBinding(for: calendar.calendarIdentifier)) {
+                                        Text("None").tag("")
+                                        ForEach(AppModel.shared.availableGroups(), id: \.self) { Text($0).tag($0) }
+                                    }
+                                    .labelsHidden()
+                                    .padding(.leading, 18)
                                 }
                             }
                         }
@@ -680,13 +689,17 @@ struct SettingsView: View {
         watchedIDs.isEmpty || watchedIDs.contains(id)
     }
 
-    /// Two-way binding for a calendar's workspace, persisted to AppSettings.
+    /// Two-way binding for a calendar's workspace, persisted to AppSettings. Values only ever
+    /// come from the Picker's own tags (existing workspace names, exactly as `availableGroups()`
+    /// returns them, or "" for none) — never re-typed, so this must NOT re-normalize the string.
+    /// (It used to lowercase on write, which silently diverged from workspace names created via
+    /// the sidebar's "New workspace…" flow — e.g. "Property Prism" elsewhere vs. "property prism"
+    /// here — an exact-match group scope would then never see the two as the same workspace.)
     private func groupBinding(for id: String) -> Binding<String> {
         Binding(
             get: { calendarGroups[id] ?? "" },
             set: { value in
-                let tag = value.trimmingCharacters(in: .whitespaces).lowercased()
-                if tag.isEmpty { calendarGroups[id] = nil } else { calendarGroups[id] = tag }
+                calendarGroups[id] = value.isEmpty ? nil : value
                 AppSettings.calendarGroups = calendarGroups
             }
         )
