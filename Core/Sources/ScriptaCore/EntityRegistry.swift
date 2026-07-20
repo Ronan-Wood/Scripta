@@ -97,6 +97,21 @@ public final class EntityRegistry {
         return id
     }
 
+    /// Like `resolve`, but never allocates — nil unless a CONFIRMED entity in this group already
+    /// matches. For callers where an unconfirmed guess would pollute the registry with speculative
+    /// identities from unreviewed model output (M17 commitment-owner matching): better to fall
+    /// back to a raw surface string than mint a new permanent entity from an FM's guess, and
+    /// there's nothing here to lose by not persisting — a read-only lookup needs no `save()`.
+    public func resolveConfirmed(surface: String, kind: String, group: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        let norm = Self.normalize(surface)
+        guard let match = entities.first(where: { e in
+            e.kind == kind && e.confirmed && e.groups.contains(group)
+                && (e.aliases.contains(norm) || Self.normalize(e.name) == norm)
+        }) else { return nil }
+        return applyMerges(match.id)
+    }
+
     /// Marks the entity matching a surface as user-confirmed (ground truth) — e.g. a name the user
     /// entered as a participant. Confirmed names are the only ones that feed ASR (Fable F).
     public func confirm(surface: String, group: String) {

@@ -498,10 +498,34 @@ final class RecordingSession {
                                              screenSnippets: snippets, notes: notes,
                                              isConference: isConference, group: group)
 
+        // Digest (when deferred) and commitment extraction (M17) both patch the SAME transcript's
+        // OWN frontmatter after the write — two independent Task.detached writers here would race
+        // on an unsynchronized read-modify-write (crosscheck: whichever's write lands last
+        // silently discards the other's change, and TranscriptMetadataEditor has no per-path
+        // locking). deferEnrichment implies summarizeEnabled, so when it's true both would always
+        // fire — combined into ONE task with ONE sequential patch instead. When digest isn't
+        // deferred (already baked into the write above, or disabled entirely), commitments is the
+        // only post-write patcher and can safely run alone.
         if deferEnrichment {
             Task.detached(priority: .utility) {
-                guard let digest = await TranscriptEnricher.enrich(plain) else { return }
-                try? TranscriptMetadataEditor.applyDigest(url: url, digest: digest)
+                async let digestResult = TranscriptEnricher.enrich(plain)
+                async let commitmentsResult = CommitmentExtractor.extract(transcript: plain)
+                let (digest, commitments) = await (digestResult, commitmentsResult)
+                if let digest { try? TranscriptMetadataEditor.applyDigest(url: url, digest: digest) }
+                // Sequential, not concurrent, with the digest patch above — applyCommitments must
+                // read the file AFTER applyDigest's write lands, or it would overwrite it with a
+                // pre-digest snapshot.
+                if !commitments.isEmpty {
+                    try? TranscriptMetadataEditor.applyCommitments(url: url, commitments: commitments)
+                }
+                if let store = IndexStore.shared { IndexBuilder.index(url, into: store) }
+                await MainActor.run { AppModel.shared.reloadCalls() }
+            }
+        } else if AppSettings.summarizeEnabled {
+            Task.detached(priority: .utility) {
+                let commitments = await CommitmentExtractor.extract(transcript: plain)
+                guard !commitments.isEmpty else { return }
+                try? TranscriptMetadataEditor.applyCommitments(url: url, commitments: commitments)
                 if let store = IndexStore.shared { IndexBuilder.index(url, into: store) }
                 await MainActor.run { AppModel.shared.reloadCalls() }
             }
@@ -534,20 +558,6 @@ final class RecordingSession {
                     return
                 }
                 if let store = IndexStore.shared { IndexBuilder.indexNote(saved.url, into: store) }
-            }
-        }
-
-        // Commitment extraction (M17): patches the transcript's OWN frontmatter (not a new
-        // file), so — unlike notes-merge — it belongs under the same disclosure/toggle as
-        // title/summary, not its own. Always backgrounded regardless of deferEnrichment: it's a
-        // second, independent FM call, not part of the digest call above.
-        if AppSettings.summarizeEnabled {
-            Task.detached(priority: .utility) {
-                let commitments = await CommitmentExtractor.extract(transcript: plain)
-                guard !commitments.isEmpty else { return }
-                try? TranscriptMetadataEditor.applyCommitments(url: url, commitments: commitments)
-                if let store = IndexStore.shared { IndexBuilder.index(url, into: store) }
-                await MainActor.run { AppModel.shared.reloadCalls() }
             }
         }
         return url
