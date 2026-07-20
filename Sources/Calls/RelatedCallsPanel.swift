@@ -1,23 +1,26 @@
 import SwiftUI
 
+/// One related-item hit, shared by `RelatedCallsPanel` (live, during recording) and
+/// `RelatedItemsPanel` (M18 — any open transcript/note/doc) so both render identical cards from
+/// the same data shape rather than duplicating it.
+struct RelatedHit: Identifiable {
+    let id = UUID()
+    let url: URL
+    let title: String
+    let snippet: AttributedString
+    let startMs: Int
+}
+
 /// Live "from your other calls" panel: every few seconds it searches the index with the recent
 /// live transcript and surfaces related passages from past calls. All local, instant (SQLite).
 struct RelatedCallsPanel: View {
     @ObservedObject private var model = AppModel.shared
-    @State private var related: [Related] = []
+    @State private var related: [RelatedHit] = []
     @State private var timer: Timer?
 
     /// FTS5 bm25 is negative (lower = stronger); below this floor a hit is too weak to show. An
     /// empty panel costs less trust than four irrelevant cards. Tune empirically.
     private static let relevanceFloor = -0.5
-
-    struct Related: Identifiable {
-        let id = UUID()
-        let url: URL
-        let title: String
-        let snippet: AttributedString
-        let startMs: Int
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.x3) {
@@ -68,9 +71,9 @@ struct RelatedCallsPanel: View {
                 related = hits.compactMap { hit in
                     let url = URL(fileURLWithPath: hit.path)
                     guard seen.insert(url).inserted else { return nil }
-                    return Related(url: url, title: hit.title.isEmpty ? hit.date : hit.title,
-                                   snippet: SnippetHighlight.attributed(hit.snippet, accent: Carbon.interactive),
-                                   startMs: hit.startMs)
+                    return RelatedHit(url: url, title: hit.title.isEmpty ? hit.date : hit.title,
+                                      snippet: SnippetHighlight.attributed(hit.snippet, accent: Carbon.interactive),
+                                      startMs: hit.startMs)
                 }.prefix(4).map { $0 }
             }
         }
