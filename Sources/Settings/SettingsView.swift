@@ -280,7 +280,7 @@ struct SettingsView: View {
         } header: {
             Text("Intelligence")
         } footer: {
-            Text("Generates a descriptive title and short summary for each transcript, on-device. Filler words (um, uh) are always removed. Your transcript wording is never rewritten — only the title and summary are AI-generated.")
+            Text("Generates a descriptive title and short summary for each transcript, on-device, and finds any commitments or action items mentioned and who owns each. Filler words (um, uh) are always removed. Your transcript wording is never rewritten — only the title, summary, and commitments are AI-generated.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

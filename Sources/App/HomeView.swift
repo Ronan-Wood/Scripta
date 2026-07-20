@@ -7,6 +7,7 @@ import ScriptaCore
 struct HomeView: View {
     @ObservedObject var model = AppModel.shared
     @State private var rows: [IndexStore.DigestRow] = []
+    @State private var openCommitments = 0
 
     var body: some View {
         Group {
@@ -29,9 +30,11 @@ struct HomeView: View {
         let store = model.index
         Task.detached(priority: .userInitiated) {
             let rows = store?.digest(group: group) ?? []
+            let commitments = store?.commitmentCount(group: group) ?? 0
             await MainActor.run {
                 guard group == model.activeGroup else { return }   // discard a stale load after a switch
                 self.rows = rows
+                self.openCommitments = commitments
             }
         }
     }
@@ -91,6 +94,7 @@ struct HomeView: View {
             StatTile(label: "Calls this week", value: "\(callsThisWeek)")
             StatTile(label: "Hours transcribed", value: hoursTranscribed, unit: "hrs")
             StatTile(label: "People tracked", value: "\(peopleTracked)")
+            StatTile(label: "Open commitments", value: "\(openCommitments)")
         }
     }
 
