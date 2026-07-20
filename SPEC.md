@@ -196,7 +196,12 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     workspace's rolling **"Captures"** note (find-or-create, `call-transcriber-note` marker) →
     `IndexBuilder.indexNote` immediately (`kind='note'`: Clovis/search/MCP see it in seconds).
     During recording, ⌥⌘N keeps its call-note meaning — the two panels are state-gated
-    complements. Menu shows "Quick Capture" when idle. Mic TCC is the only permission touched.
+    complements; **idle-only** (`.processing` blocked too, not just `.recording`) so it can never
+    run a second on-device Speech session alongside the just-stopped call's sequential transcribe
+    pass. Menu shows "Quick Capture" only when idle. Mic TCC is the only permission touched.
+    **Disclosure:** the menu-bar icon shows a distinct listening state for the duration the
+    panel is open (SPEC's "indicator always shows recording state" invariant applies to capture,
+    not just call recording).
 
 15. **Correction → vocabulary loop** *(ratified 2026-07-19).* Fix a mishear once and it stays
     fixed at the source: a correction affordance registers the correct form (+ the misheard
