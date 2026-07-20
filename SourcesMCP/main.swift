@@ -340,6 +340,119 @@ func clockStamp(_ ms: Int) -> String {
     return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
 }
 
+// MARK: - Commitments + entity graph (M17/M19 exposure)
+//
+// Same no-shared-code stance as the rest of this file: these mirror IndexStore's SQL shape
+// (commitments/entities/coOccurring/callsMentioning) but are hand-rolled independently against
+// the same read-only DB, not imported.
+
+struct MCPCommitment { let ownerID, ownerName, text, callTitle, date, path: String }
+
+/// Open commitments in the active workspace, newest call first. Owner display name comes from the
+/// entities cache when owner_id resolved to a real identity; "you" and an unresolved raw surface
+/// string both pass through IFNULL unchanged (mirrors IndexStore.commitments).
+func mcpCommitments(group: String, limit: Int = 200) -> [MCPCommitment]? {
+    guard let db = openIndex() else { return nil }
+    defer { sqlite3_close(db) }
+    let sql = """
+    SELECT a.owner_id, IFNULL(e.name, a.owner_id), a.text, t.title, t.date, a.path
+    FROM action_items a
+    JOIN transcripts t ON t.path = a.path
+    LEFT JOIN entities e ON e.id = a.owner_id
+    WHERE t."group" = ? AND IFNULL(t.kind,'call') = 'call' AND a.status = 'open'
+    ORDER BY t.date DESC, t.time DESC LIMIT \(max(1, limit));
+    """
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, group, -1, SQLITE_TRANSIENT_MCP)
+    func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
+    var out: [MCPCommitment] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+        out.append(MCPCommitment(ownerID: col(0), ownerName: col(1), text: col(2), callTitle: col(3), date: col(4), path: col(5)))
+    }
+    return out
+}
+
+/// Escapes LIKE metacharacters so a name containing `%`/`_` matches literally, not as a wildcard —
+/// the same treatment dbSearch already applies inline to its own substring match (audit L3).
+func likeSubstring(_ value: String) -> String {
+    let escaped = value.lowercased()
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "%", with: "\\%")
+        .replacingOccurrences(of: "_", with: "\\_")
+    return "%\(escaped)%"
+}
+
+/// Entities (people/terms) in the active workspace whose name contains `name` — group-scoped by
+/// joining through entity_mentions/transcripts (mentions carry no group of their own), the same
+/// shape as IndexStore.entities(group:).
+func matchingEntities(name: String, group: String) -> [(id: String, name: String, kind: String)] {
+    guard let db = openIndex() else { return [] }
+    defer { sqlite3_close(db) }
+    let sql = """
+    SELECT DISTINCT e.id, e.name, e.kind
+    FROM entities e JOIN entity_mentions m ON m.entity_id = e.id
+    JOIN transcripts t ON t.path = m.path
+    WHERE t."group" = ? AND lower(e.name) LIKE ? ESCAPE '\\';
+    """
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, group, -1, SQLITE_TRANSIENT_MCP)
+    sqlite3_bind_text(stmt, 2, likeSubstring(name), -1, SQLITE_TRANSIENT_MCP)
+    func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
+    var out: [(id: String, name: String, kind: String)] = []
+    while sqlite3_step(stmt) == SQLITE_ROW { out.append((col(0), col(1), col(2))) }
+    return out
+}
+
+/// Calls mentioning one entity, newest first — mirrors IndexStore.callsMentioning.
+func entityMentions(entityID: String, group: String, limit: Int = 20) -> [(title: String, date: String, path: String)] {
+    guard let db = openIndex() else { return [] }
+    defer { sqlite3_close(db) }
+    let sql = """
+    SELECT DISTINCT t.path, t.title, t.date
+    FROM entity_mentions m JOIN transcripts t ON t.path = m.path
+    WHERE m.entity_id = ? AND t."group" = ?
+    GROUP BY t.path ORDER BY t.date DESC, t.time DESC LIMIT \(max(1, limit));
+    """
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, entityID, -1, SQLITE_TRANSIENT_MCP)
+    sqlite3_bind_text(stmt, 2, group, -1, SQLITE_TRANSIENT_MCP)
+    func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
+    var out: [(title: String, date: String, path: String)] = []
+    while sqlite3_step(stmt) == SQLITE_ROW { out.append((col(1), col(2), col(0))) }
+    return out
+}
+
+/// Entities that co-occur with `entityID` — share at least one call — most-shared-calls first.
+/// Mirrors IndexStore.coOccurring.
+func coOccurringEntities(entityID: String, group: String, limit: Int = 20) -> [(name: String, kind: String, count: Int)] {
+    guard let db = openIndex() else { return [] }
+    defer { sqlite3_close(db) }
+    let sql = """
+    SELECT e.name, e.kind, COUNT(DISTINCT m.path) AS n
+    FROM entity_mentions m JOIN entities e ON e.id = m.entity_id
+    JOIN transcripts t ON t.path = m.path
+    WHERE t."group" = ? AND m.entity_id != ?
+      AND m.path IN (SELECT path FROM entity_mentions WHERE entity_id = ?)
+    GROUP BY e.id ORDER BY n DESC, e.name LIMIT \(max(1, limit));
+    """
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, group, -1, SQLITE_TRANSIENT_MCP)
+    sqlite3_bind_text(stmt, 2, entityID, -1, SQLITE_TRANSIENT_MCP)
+    sqlite3_bind_text(stmt, 3, entityID, -1, SQLITE_TRANSIENT_MCP)
+    func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
+    var out: [(name: String, kind: String, count: Int)] = []
+    while sqlite3_step(stmt) == SQLITE_ROW { out.append((col(0), col(1), Int(sqlite3_column_int(stmt, 2)))) }
+    return out
+}
+
 // MARK: - DB-backed transcript reads (never touch the output folder)
 
 /// The columns `metaFromRow` expects, in order — shared by the list and single-row lookups.
@@ -418,10 +531,7 @@ func reconstructTranscript(_ meta: Meta) -> String? {
 func dbSearch(_ query: String, group: String, limit: Int = 15) -> [String] {
     guard let db = openIndex() else { return [] }
     defer { sqlite3_close(db) }
-    let like = "%" + query.lowercased()
-        .replacingOccurrences(of: "\\", with: "\\\\")
-        .replacingOccurrences(of: "%", with: "\\%")
-        .replacingOccurrences(of: "_", with: "\\_") + "%"
+    let like = likeSubstring(query)
     func col(_ s: OpaquePointer?, _ n: Int32) -> String { sqlite3_column_text(s, n).map { String(cString: $0) } ?? "" }
     var hits: [String] = []
     var seen = Set<String>()
@@ -555,6 +665,26 @@ func toolDefinitions() -> [[String: Any]] {
             "name": "tags",
             "description": "Index of all topic tags across calls, with a count per tag (most frequent first). Use to see recurring themes.",
             "inputSchema": ["type": "object"]
+        ],
+        [
+            "name": "commitments",
+            "description": "Open commitments/action items extracted from calls — who owes what, and from which call. Optionally filter to one person.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "owner": ["type": "string", "description": "Only commitments for this person (name substring, or \"you\" for what the user owes)."],
+                    "limit": ["type": "integer", "description": "Max commitments to return (default 50)."]
+                ]
+            ]
+        ],
+        [
+            "name": "entity_detail",
+            "description": "One person or topic's page: which calls mention them, and who/what else co-occurs with them in those calls. Look up by name — if more than one entity matches, returns a disambiguation list instead of guessing.",
+            "inputSchema": [
+                "type": "object",
+                "properties": ["name": ["type": "string", "description": "The person or topic's name (or a distinctive substring)."]],
+                "required": ["name"]
+            ]
         ]
     ]
 }
@@ -709,6 +839,45 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         }
         if entries.isEmpty { return textResult("No topic tags yet.") }
         return textResult(entries.map { "• \($0.name) — \($0.count) call\($0.count == 1 ? "" : "s")" }.joined(separator: "\n"))
+
+    case "commitments":
+        guard let rows = mcpCommitments(group: group) else {
+            return textResult("The retrieval index isn't built yet. Open Scripta once to build it.", isError: true)
+        }
+        var items = rows
+        if let owner = (args["owner"] as? String)?.trimmingCharacters(in: .whitespaces).lowercased(), !owner.isEmpty {
+            items = items.filter { owner == "you" ? $0.ownerID == "you" : $0.ownerName.lowercased().contains(owner) }
+        }
+        let limit = min(200, max(1, (args["limit"] as? Int) ?? 50))
+        items = Array(items.prefix(limit))
+        if items.isEmpty { return textResult("No open commitments found.") }
+        let lines = items.map { c -> String in
+            let title = c.callTitle.isEmpty ? c.date : c.callTitle
+            return "• \(c.ownerName) — \(c.text)\n  from: \(title) (\(c.date))\n  path: \(c.path)"
+        }
+        return textResult(lines.joined(separator: "\n\n"))
+
+    case "entity_detail":
+        guard let name = (args["name"] as? String)?.trimmingCharacters(in: .whitespaces), !name.isEmpty else {
+            return textResult("Provide a `name` (person or topic) to look up.", isError: true)
+        }
+        let matches = matchingEntities(name: name, group: group)
+        if matches.isEmpty { return textResult("No one or nothing named \"\(name)\" found in this workspace.") }
+        if matches.count > 1 {
+            let lines = matches.map { "• \($0.name) (\($0.kind))" }
+            return textResult("Multiple matches for \"\(name)\" — be more specific:\n" + lines.joined(separator: "\n"))
+        }
+        let entity = matches[0]
+        let mentions = entityMentions(entityID: entity.id, group: group)
+        let co = coOccurringEntities(entityID: entity.id, group: group)
+        var out = "### \(entity.name) (\(entity.kind))\n"
+        out += mentions.isEmpty ? "\nNo calls yet." : "\nMentioned in:\n" + mentions.map { m -> String in
+            "• \(m.title.isEmpty ? m.date : m.title) (\(m.date))\n  path: \(m.path)"
+        }.joined(separator: "\n")
+        if !co.isEmpty {
+            out += "\n\nAppears alongside:\n" + co.map { "• \($0.name) — \($0.count) call\($0.count == 1 ? "" : "s")" }.joined(separator: "\n")
+        }
+        return textResult(out)
 
     default:
         return textResult("Unknown tool: \(name)", isError: true)
