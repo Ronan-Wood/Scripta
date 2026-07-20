@@ -110,9 +110,11 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 // note capture isn't a call.
                 button.image = coloredSymbol("mic.fill", color: .systemBlue, description: "Quick Capture listening")
             } else if let proximity = nextCallProximity() {
-                // Tint the base to the menu bar color, then badge it with the proximity dot.
+                // The "S" stays neutral (menu bar's own light/dark tint); only the "." takes the
+                // proximity color — the mark's own period is the status indicator, not a separate
+                // badge dot elsewhere on the icon.
                 let tint: NSColor = menuBarIsDark(button) ? .white : .black
-                button.image = badged(ScriptaMark.statusIcon(tint: tint), dotColor: proximity.color)
+                button.image = ScriptaMark.statusIcon(tint: tint, dotColor: proximity.color)
             } else {
                 button.image = ScriptaMark.statusIcon()   // template = adapts to menu bar light/dark
             }
@@ -146,22 +148,6 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
     private func menuBarIsDark(_ button: NSStatusBarButton) -> Bool {
         button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-    }
-
-    /// Draws a colored dot in the bottom-right corner of the icon.
-    private func badged(_ base: NSImage?, dotColor: NSColor) -> NSImage? {
-        guard let base else { return nil }
-        let size = base.size
-        let result = NSImage(size: size)
-        result.lockFocus()
-        base.draw(in: NSRect(origin: .zero, size: size))
-        let diameter = size.height * 0.42
-        let rect = NSRect(x: size.width - diameter, y: 0, width: diameter, height: diameter)
-        dotColor.setFill()
-        NSBezierPath(ovalIn: rect).fill()
-        result.unlockFocus()
-        result.isTemplate = false
-        return result
     }
 
     /// A colored (non-template) status-bar symbol. Palette-colored symbols must be
