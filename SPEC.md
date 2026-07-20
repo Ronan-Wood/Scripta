@@ -336,6 +336,55 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     entity chips, its own doc comment's original promise) is a natural, small follow-up using
     the same sheet pattern, not built in this pass.
 
+20. **Notes and docs join the entity graph** *(ratified 2026-07-20 — Ronan's "growing brain"
+    framing: notes and calls should land on the same person's page, not live in two disconnected
+    halves).* `IndexBuilder.indexNote`/`indexDoc` never call entity extraction — only `index()`
+    (calls) does. A Quick Capture note that says "talked to Bob about the CPA deal" is fully
+    searchable but never appears on Bob's page, and his page never surfaces it. Fix: build
+    `[IndexedChunk]` from a note's timestamped entries (one chunk per entry — real per-entry
+    timestamps, the same "every mention carries a jump-to-passage timestamp" principle
+    `EntityExtractor` already holds calls to) or a doc's body (one chunk), then run the exact
+    `EntityExtractor.mentions` → `registry.resolve` → `store.setEntities` path calls already use,
+    ledger-gated the same way. `EntityExtractor.mentions(chunks:attendees:)` has no call-specific
+    dependency (just `.text`/`.startMs`) — this is a new call site, not new extraction logic.
+    `entity_mentions`/`callsMentioning` already carry no `kind='call'` filter, so once populated,
+    notes/docs surface in "Mentioned in" without a query change — only the click target needs to
+    become kind-aware (`.route = .call(...)` unconditionally is wrong for a note/doc hit). Effort M.
+
+21. **Close the graph's dead ends** *(ratified 2026-07-20; same thread as M20 — a connected graph
+    nobody can click through isn't connected).* Three gaps, one theme:
+    - **Co-occurring chips are dead ends.** `EntityDetailView`'s "Appears alongside" section renders
+      plain `CarbonChip(text:)` — the one part of the entity page that doesn't lead anywhere.
+      Wiring it means the sheet retargets in place rather than closing and reopening: M19's
+      "mentioned call" click already closes the sheet for a one-hop jump to a transcript, fine
+      once, but exploring several connections in a row via close/reopen animations defeats this
+      milestone's point. `entityID` becomes `@State` instead of `let`, a small back-stack drives a
+      back affordance in the header, a `jumpTo(id:fallbackName:)` re-runs `load()` in place.
+    - **TranscriptDetail's participants are plain text.** Reading a call, you can't click a name to
+      open their page — the single most expected click target in a transcript reader doesn't work.
+      This is the exact gap M19 itself disclosed and deferred (see above). Participants are already
+      registry-confirmed at index time (`extractEntities`'s `registry.confirm`), so name→id at
+      click time is a lookup, not new inference. Same `EntitySheetTarget`/`.sheet(item:)` pattern
+      KnowledgeView already uses.
+    - **Tag chips are inconsistent.** KnowledgeView's own rail tags already navigate (`.route =
+      .tag(name)`, filtering CallsView) — TranscriptDetail's header tags and DigestCard's per-call
+      tags don't. Wiring the same existing action onto both closes the inconsistency. Tags stay
+      OUT of the entity/registry system on purpose — this milestone's actual navigational
+      principle: clicking an IDENTITY (person/org/term) opens their page; clicking a TAG filters
+      the list. Different actions for different concepts, not an oversight.
+
+    **Explicitly out of scope:** a literal node/edge graph-visualization widget — once M20+M21
+    land, "see how things connect" is served by fast click-through navigation, a better fit for
+    this app's dense/text-forward design than a force-directed graph that looks impressive at 20
+    nodes and unreadable at 200; worth reconsidering only if click-through turns out not to be
+    enough, not before. Unifying M18's content-similarity "related items" with entity
+    co-occurrence — they answer different questions (what's similar vs. who's connected); forcing
+    them into one panel would blur both. `linkedCall`'s note→call link staying one-directional (no
+    "notes that mention this call" surfaced on the call side) — a real enhancement, but a separate,
+    smaller follow-up. CallsView's existing entity filter staying a filter (bulk narrowing), not
+    merged into opening a detail page (deep dive) — two legitimate, different actions on the same
+    data, matching the tag-vs-identity principle above.
+
 **Live transcription + related-calls (2026-07-14) — implemented.** Validated `SpeechTranscriber`
 `.volatileResults` streaming in isolation (partials stream token-by-token, then `isFinal`), incl. the
 live **buffer-feed** path (`SpeechAnalyzer.bestAvailableAudioFormat` = 16 kHz mono Int16;
