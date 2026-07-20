@@ -20,7 +20,10 @@ final class LiveTranscriber {
 
     private var finalized: [String] = []
 
-    func start() async throws {
+    /// `contextualStrings` biases recognition (Quick Capture passes the workspace vocab because
+    /// its live text IS the saved artifact). The call pane passes none — there the live text is
+    /// volatile/cosmetic and the file pass re-biases for the saved transcript.
+    func start(contextualStrings: [String] = []) async throws {
         let locale = try await SpeechEngine.resolvedLocale()
         let transcriber = SpeechTranscriber(locale: locale,
                                             transcriptionOptions: [],
@@ -35,12 +38,17 @@ final class LiveTranscriber {
                           userInfo: [NSLocalizedDescriptionKey: "No compatible audio format for live transcription."])
         }
 
-        // (Name biasing is applied on the final pass, which produces the saved transcript; the live
-        // pane is volatile/cosmetic.)
         let (sequence, builder) = AsyncStream<AnalyzerInput>.makeStream()
         inputBuilder = builder
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         self.analyzer = analyzer
+        if !contextualStrings.isEmpty {
+            let context = AnalysisContext()
+            context.contextualStrings = [.general: contextualStrings]
+            // Bias is an enhancement, not a precondition — a capture must still work if the
+            // context is rejected, so this failure is deliberately swallowed.
+            try? await analyzer.setContext(context)
+        }
 
         do {
             try await analyzer.start(inputSequence: sequence)
@@ -102,6 +110,19 @@ final class LiveTranscriber {
         inputBuilder?.finish()
         try? await analyzer?.finalizeAndFinishThroughEndOfInput()
         resultsTask?.cancel()
+        resultsTask = nil
+    }
+
+    /// Like `stop()`, but waits for the results loop to drain before returning, so the last
+    /// finalized lines have been delivered through `onUpdate`. Quick Capture needs this — its
+    /// live text is the saved artifact. The call pane keeps `stop()`: cancelling can drop a
+    /// cosmetic tail there, and the file pass re-transcribes anyway.
+    func finish() async {
+        inputBuilder?.finish()
+        try? await analyzer?.finalizeAndFinishThroughEndOfInput()
+        // finalize ends the results stream, so the loop exits on its own; awaiting the task
+        // (instead of cancelling) means every isFinal result has hit the main actor already.
+        await resultsTask?.value
         resultsTask = nil
     }
 }

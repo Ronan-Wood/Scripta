@@ -19,6 +19,8 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private let statusItem: NSStatusItem
     private var hubWindow: NSWindow?
     private var quickNotePanel: NSPanel?
+    private var capturePanel: NSPanel?
+    private var captureSession: CaptureSession?
 
     private var session: RecordingSession?
     private var recordingStartedAt: Date?
@@ -63,9 +65,9 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         AppModel.shared.addNote = { [weak self] text in self?.jotNote(text) }
         AppModel.shared.reloadCalls()
 
-        // Global ⌥⌘R start/stop, ⌥⌘N quick note.
+        // Global ⌥⌘R start/stop, ⌥⌘N note (recording) / Quick Capture (otherwise).
         HotKeyManager.shared.onTrigger = { [weak self] in self?.toggleRecording() }
-        HotKeyManager.shared.onNote = { [weak self] in self?.showQuickNote() }
+        HotKeyManager.shared.onNote = { [weak self] in self?.noteHotkeyPressed() }
         HotKeyManager.shared.setEnabled(AppSettings.globalHotkeyEnabled)
 
         // Show the running time next to the menu-bar icon while recording. DispatchQueue, not
@@ -196,6 +198,13 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         if uiState == .processing { toggle.action = nil }   // disabled while working
         menu.addItem(toggle)
 
+        if uiState != .recording {
+            let capture = NSMenuItem(title: "Quick Capture",
+                                     action: #selector(quickCaptureFromMenu), keyEquivalent: "")
+            capture.target = self
+            menu.addItem(capture)
+        }
+
         if uiState == .recording {
             let pause = NSMenuItem(title: AppModel.shared.isPaused ? "Resume Recording" : "Pause Recording",
                                    action: #selector(pauseRecording), keyEquivalent: "")
@@ -254,6 +263,9 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
     /// actually starts, so an aborted attempt can never mislabel the next recording.
     private func startRecording(tiedTo meeting: UpcomingCall? = nil) {
         guard uiState == .idle, !isStarting else { return }
+        // A live capture would fight the recording for the mic — discard it (the panels are
+        // state-gated complements, same rule as closeQuickNote on stop).
+        discardCapture()
         isStarting = true
         Task {
             defer { isStarting = false }
@@ -368,6 +380,74 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
     }
 
     private func closeQuickNote() { quickNotePanel?.close() }
+
+    // MARK: - Quick Capture (M14)
+
+    /// ⌥⌘N is context-dependent: the call-note jotter while recording, Quick Capture otherwise —
+    /// one "add to brain" gesture, landing where a thought can actually go.
+    private func noteHotkeyPressed() {
+        uiState == .recording ? showQuickNote() : showCapture()
+    }
+
+    @objc private func quickCaptureFromMenu() { showCapture() }
+
+    /// Shows the Quick Capture panel — already listening on arrival, zero filing decisions.
+    /// The recording guard is belt-and-suspenders for the menu path (noteHotkeyPressed routes).
+    private func showCapture() {
+        guard uiState != .recording else { return }
+        if let panel = capturePanel {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
+        let session = CaptureSession(group: AppSettings.activeGroup)
+        captureSession = session
+        let view = CaptureView(
+            session: session,
+            onSave: { [weak self] in self?.finishCapture() },
+            onCancel: { [weak self] in self?.discardCapture() }
+        )
+        let panel = NSPanel(contentViewController: NSHostingController(rootView: view))
+        panel.styleMask = [.titled, .closable, .hudWindow]
+        panel.title = "Quick Capture"
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.delegate = self
+        panel.setContentSize(NSSize(width: 400, height: 190))
+        if let screen = NSScreen.main {
+            let frame = panel.frame
+            panel.setFrameOrigin(NSPoint(x: screen.frame.midX - frame.width / 2,
+                                         y: screen.frame.maxY - frame.height - 140))
+        }
+        capturePanel = panel
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        Task { await session.start() }
+    }
+
+    /// Return path: stop listening, clean, land it in the Captures note, close. The task holds
+    /// the session reference, so an early panel close can't lose a save already in flight.
+    private func finishCapture() {
+        guard let session = captureSession else { return }
+        Task { @MainActor in
+            guard let raw = await session.finish() else { self.closeCapture(); return }
+            let cleaned = await CaptureCleaner.clean(raw)
+            if !CaptureStore.save(cleaned, group: session.group) {
+                self.presentAlert(title: "Couldn't Save Capture",
+                                  message: "The Captures note couldn't be written to the output folder.")
+            }
+            self.closeCapture()
+        }
+    }
+
+    private func discardCapture() {
+        captureSession?.cancel()
+        closeCapture()
+    }
+
+    private func closeCapture() { capturePanel?.close() }
 
     @objc private func pauseRecording() { togglePause() }
 
@@ -490,6 +570,15 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             // Break the panel → hosting → view → closure → controller retain cycle.
             quickNotePanel?.contentViewController = nil
             quickNotePanel = nil
+            return
+        }
+        if closing === capturePanel {
+            // Any close route discards a still-listening capture — cancel is idempotent, so a
+            // finished save is unaffected. Same retain-cycle break as the note panel.
+            captureSession?.cancel()
+            captureSession = nil
+            capturePanel?.contentViewController = nil
+            capturePanel = nil
             return
         }
         guard closing === hubWindow else { return }
