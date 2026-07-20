@@ -19,10 +19,6 @@ struct RelatedItemsPanel: View {
     @State private var synthesis: String?
     @State private var loadedQuery: String?
 
-    /// FTS5 bm25 is negative (lower = stronger) — same floor `RelatedCallsPanel` uses, so a
-    /// thin/no-real-match query shows nothing rather than four unrelated cards.
-    private static let relevanceFloor = -0.5
-
     var body: some View {
         Group {
             if loadedQuery == query && hits.isEmpty {
@@ -36,17 +32,7 @@ struct RelatedItemsPanel: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     ForEach(hits) { hit in
-                        Button { model.route = .call(hit.url, ms: hit.startMs) } label: {
-                            VStack(alignment: .leading, spacing: Space.x1) {
-                                Text(hit.title).font(CarbonFont.medium(13)).foregroundStyle(Carbon.interactive).lineLimit(1)
-                                Text(hit.snippet).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary).lineLimit(3)
-                            }
-                            .padding(Space.x3)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
-                            .overlay { RoundedRectangle(cornerRadius: Radius.control, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
-                            .contentShape(Rectangle())
-                        }.buttonStyle(.plain)
+                        RelatedHitCard(hit: hit) { model.route = .call(hit.url, ms: hit.startMs) }
                     }
                 }
             }
@@ -54,16 +40,24 @@ struct RelatedItemsPanel: View {
         .task(id: query) { await load() }
     }
 
+    /// `q == query` (comparing a `let`-frozen local snapshot to the view's OWN `query` property)
+    /// can never be false within one `load()` invocation — it was a no-op guard, not real
+    /// staleness protection (crosscheck). `Task.isCancelled` is the real check: SwiftUI cancels
+    /// this `.task(id: query)`'s Task the moment `query` changes, and this function runs AS that
+    /// task (not detached), so the flag correctly reflects whether a newer load has superseded
+    /// this one — e.g. editing the open item's title/tags mid-synthesis without navigating away
+    /// (same view identity, new `query`) must not let a slow, stale result overwrite the fresh one.
     private func load() async {
         synthesis = nil
+        hits = []
         guard let store = model.index, query.split(separator: " ").count >= 2 else {
-            hits = []; loadedQuery = query; return
+            loadedQuery = query; return
         }
         let q = query, exclude = excludePath, g = group
         let (found, rawHits) = await Task.detached(priority: .utility) { () -> ([RelatedHit], [(title: String, snippet: String)]) in
             var seen = Set<URL>()
             let scored = store.search(q, group: g, limit: 12)
-                .filter { $0.path != exclude && $0.score <= Self.relevanceFloor }
+                .filter { $0.path != exclude && $0.score <= RelatedHit.relevanceFloor }
             var built: [RelatedHit] = []
             var raw: [(title: String, snippet: String)] = []
             for hit in scored {
@@ -79,12 +73,14 @@ struct RelatedItemsPanel: View {
             return (built, raw)
         }.value
 
-        guard q == query else { return }   // query changed (fast navigation) — discard a stale load
+        guard !Task.isCancelled else { return }
         hits = found
-        loadedQuery = query
+        loadedQuery = q
         guard rawHits.count >= 2 else { return }
-        let result = await RelatedSynthesizer.synthesize(current: query, hits: rawHits)
-        guard q == query else { return }   // guard the async gap again — synthesis can take seconds
+        // The expensive step: only reachable once retrieval already confirmed ≥2 real hits, and
+        // skipped outright if a newer query already superseded this load.
+        let result = await RelatedSynthesizer.synthesize(current: q, hits: rawHits)
+        guard !Task.isCancelled else { return }
         synthesis = result
     }
 }

@@ -17,7 +17,14 @@ enum RelatedSynthesizer {
             instructions: "You connect related passages from the user's own past calls, notes, and documents into one short, grounded note. Never invent a connection that isn't genuinely there.")
         var final = ""
         do {
-            for try await snapshot in chat.stream(prompt) { final = snapshot }
+            // Bail out of iterating early on cancellation (a caller navigating away mid-stream)
+            // rather than draining an in-flight FM/network generation to its natural end for a
+            // result nobody will see — `chat.stream`'s AsyncThrowingStream tears its underlying
+            // generation down via `onTermination` once nothing is consuming it (crosscheck).
+            for try await snapshot in chat.stream(prompt) {
+                guard !Task.isCancelled else { return nil }
+                final = snapshot
+            }
         } catch {
             return nil
         }
