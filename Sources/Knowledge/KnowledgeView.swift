@@ -163,9 +163,18 @@ struct KnowledgeView: View {
             } onCommitmentsChanged: {
                 reload()
             } onOpenNote: { path in
-                if let note = NoteStore.parse(URL(fileURLWithPath: path)) { openNote = note }
+                // Re-verify group at the point of opening (crosscheck) — callsMentioning's SQL
+                // filter reads the CACHED transcripts.group column, which only refreshes on the
+                // next reconcile after a file changes. A hand-edited frontmatter `group:` field
+                // (the output folder is typically a real, directly-editable Obsidian vault) can
+                // briefly disagree with that cache; NoteStore.parse re-reads the live file, so
+                // trust that value, not the assumption the SQL scope already guaranteed it.
+                if let note = NoteStore.parse(URL(fileURLWithPath: path)), note.group == model.activeGroup {
+                    openNote = note
+                }
             } onOpenDoc: { path in
-                if let meta = DocumentImporter.parse(URL(fileURLWithPath: path)), !meta.file.isEmpty {
+                if let meta = DocumentImporter.parse(URL(fileURLWithPath: path)),
+                   meta.group == model.activeGroup, !meta.file.isEmpty {
                     NSWorkspace.shared.open(DocumentImporter.folder.appendingPathComponent(meta.file))
                 }
             }
@@ -201,10 +210,21 @@ struct KnowledgeView: View {
         switch target {
         case .note(let note):
             NoteStore.rename(note, to: newName)
-            if let store = model.index { IndexBuilder.indexNote(note.url, into: store) }
+            // Backgrounded (crosscheck): indexNote now runs a full NLTagger pass (M20), no longer
+            // the cheap frontmatter-parse-plus-upsert it was when this call was written synchronous.
+            // Safe to detach — reload() below reads the renamed FILE directly (NoteStore.rename
+            // already wrote it), not the index, so the list reflects the new name regardless of
+            // when the background re-index finishes.
+            if let store = model.index {
+                let url = note.url
+                Task.detached(priority: .utility) { IndexBuilder.indexNote(url, into: store) }
+            }
         case .doc(let mdURL, _):
             DocumentImporter.rename(mdURL: mdURL, to: newName)
-            if let store = model.index { IndexBuilder.indexDoc(mdURL, into: store) }
+            if let store = model.index {
+                let url = mdURL
+                Task.detached(priority: .utility) { IndexBuilder.indexDoc(url, into: store) }
+            }
         }
         renameTarget = nil
         reload()

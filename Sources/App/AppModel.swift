@@ -207,7 +207,13 @@ final class AppModel: ObservableObject {
         importJobs.append(job)
         do {
             let imported = try await DocumentImporter.importFile(url, group: activeGroup, linkedCall: linkedCall)
-            if let store = index { IndexBuilder.indexDoc(imported.mdURL, into: store) }
+            // Backgrounded (crosscheck): this ran synchronously on @MainActor when indexDoc was a
+            // cheap frontmatter-parse-plus-upsert; M20 added a full NLTagger pass over the whole
+            // extracted body, which would otherwise freeze the UI for the duration of every import.
+            if let store = index {
+                let mdURL = imported.mdURL
+                Task.detached(priority: .utility) { IndexBuilder.indexDoc(mdURL, into: store) }
+            }
             setJob(job.id, .done)
             NotificationManager.shared.notifyDocumentReady(
                 title: imported.title,
