@@ -269,6 +269,13 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     pattern (`ClovisDrawer`) — an FM connecting three calls must stay traceable back to them, the
     same discipline the enrich/digest prompts already hold to. Effectively Clovis's synthesis step
     running proactively instead of only on a typed question. Effort S–M.
+    **Implemented (2026-07-20), v1 scope:** the reusable pieces (`RelatedHit`, `RelatedItemsPanel`,
+    `RelatedSynthesizer`) are query-string-in/hits-out — pluggable anywhere — but only wired into
+    the transcript reader (`TranscriptDetail`, query = title + topics) for this pass; notes/docs
+    are a same-component fast-follow, not built here (disclosed scope cut, not a silent gap).
+    Synthesis reuses `EngineRouter.chatEngine(for: .ask)` (Clovis's own dispatch, one-shot off the
+    streaming API) rather than a 4th `EnrichEngine` method — that protocol already picked up a
+    grab-bag critique in M17's crosscheck; a related-but-distinct task didn't need to deepen it.
 
 19. **Entity pages** *(ratified 2026-07-20; pick #6).* Click a person/topic anywhere one appears
     today (People rail, Tags rail, Vocabulary chips) → a detail view: canonical name + aliases +

@@ -40,6 +40,11 @@ struct TranscriptDetail: View {
                         ForEach(Array(blocks.enumerated()), id: \.offset) { offset, block in
                             BlockView(block: block, highlighted: offset == flashIndex).id(offset)
                         }
+                        // Title + topics as the query: cheap, always-available, and exactly the
+                        // holistic-concept surface the index's own topic-fusion search already
+                        // leans on (M18) — no need to re-read/parse the body for a summary.
+                        RelatedItemsPanel(query: (meta.title + " " + meta.tags.joined(separator: " ")),
+                                         excludePath: meta.url.path, group: meta.group)
                     }
                     .padding(20)
                     .frame(maxWidth: .infinity, alignment: .leading)

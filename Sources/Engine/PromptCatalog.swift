@@ -124,6 +124,27 @@ enum PromptCatalog {
         return prompt
     }
 
+    /// The related-items synthesis prompt (M18): given what the user is currently looking at plus
+    /// what retrieval already found related to it, explain the connection in a couple of
+    /// sentences — the same "ground it, don't invent" discipline as every other generation prompt
+    /// here, since a wrong claimed connection is worse than no synthesis at all.
+    static func relatedSynthesisPrompt(current: String, hits: [(title: String, snippet: String)]) -> String {
+        let list = hits.enumerated()
+            .map { i, hit in "[\(i + 1)] \(hit.title): \(hit.snippet)" }
+            .joined(separator: "\n")
+        return """
+        The user is currently looking at: \(current)
+
+        These related passages turned up from their other calls, notes, and documents:
+        \(list)
+
+        In 2–3 sentences, explain how they connect to what the user is looking at now — be \
+        specific about what was said or decided, not just that they're "related." If the \
+        connection is genuinely thin, say so briefly rather than overstating it. Do not invent a \
+        connection that isn't actually there in the passages above.
+        """
+    }
+
     /// The Quick Capture cleanup prompt (M14). Intent-tier editing — self-corrections applied,
     /// nothing added — is allowed here because a capture is the user's intent, not a record;
     /// this prompt must never be pointed at transcript text.
