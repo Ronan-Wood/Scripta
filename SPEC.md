@@ -475,6 +475,48 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     `DocumentImporter`'s already-unbounded `body`; the new work is the view itself plus retargeting
     one tap gesture.
 
+25. **Rebindable hotkeys** *(ratified 2026-07-20; Ronan: "the hot keys should be rebindable no?"
+    — confirmed first, not assumed: both ⌥⌘R and ⌥⌘N are 100% hardcoded today, Carbon literal
+    constants in `HotKeyManager.swift`. `AppSettings.globalHotkeyEnabled` is on/off only, not the
+    combo; Settings' one control is a toggle plus static footer text printing the fixed combos; no
+    key-recorder UI or third-party package (KeyboardShortcuts/Sauce/HotKey/MASShortcut) exists
+    anywhere in the project).* The dispatch layer is already decoupled from the physical key — an
+    ID→closure indirection (`onTrigger`/`onNote`) — so rebinding is purely a registration-side
+    change; the action-dispatch side needs nothing.
+    - A `HotKeyCombo(keyCode: UInt32, modifiers: UInt32)` value type. `AppSettings` gains
+      `recordHotkeyCombo`/`quickCaptureHotkeyCombo`, each backed by two new UserDefaults keys
+      (keyCode + modifiers as `Int` — matching this file's existing primitive-storage convention,
+      no JSON/Codable machinery for something this simple), defaulting to the CURRENT hardcoded
+      combos so nobody's shortcut silently changes on upgrade.
+    - `HotKeyManager.register()` reads from `AppSettings` instead of literal constants; a new
+      `reregister()` (unregister then register — `register()`'s own `handlerRef == nil` guard
+      means calling it twice today is a no-op) fires whenever either combo changes in Settings.
+    - A new key-combo recorder control — click to enter a "press keys…" state, capture the next
+      keyDown via a small first-responder `NSViewRepresentable` overriding `keyDown(with:)`,
+      translate AppKit's `NSEvent.ModifierFlags` to Carbon's modifier constants. Used twice, one
+      per hotkey.
+    - **Validation, enforced before saving:** at least one modifier required (an unmodified letter
+      key would hijack ordinary typing system-wide); the two app hotkeys can't be set to the same
+      combo as each other (ambiguous, and `RegisterEventHotKey`'s behavior for a duplicate
+      registration isn't well-defined). Escape alone, while recording, cancels back to the
+      previous value rather than being captured as a binding — the same convention macOS's own
+      System Settings shortcut recorder uses.
+    - A "Reset to default" action per hotkey, back to ⌥⌘R/⌥⌘N.
+
+    **Explicitly out of scope:** proper keyboard-layout-aware key-name display via
+    `UCKeyTranslate`/Text Input Source Services — v1 uses a static keyCode→label dictionary
+    (letters/digits/common special keys), layout-independent for CAPTURE (`RegisterEventHotKey`
+    already operates on physical keycodes) but could show the wrong LETTER label on a non-QWERTY
+    layout; worth revisiting only if that turns out to matter. Detecting conflicts with OS-level or
+    other apps' shortcuts — genuinely hard to enumerate from inside a sandboxed app; a failed
+    `RegisterEventHotKey` call is the practical signal a conflict exists, not something to
+    pre-empt. A general-purpose "any future hotkey gets this for free" registry — only these two
+    existing hotkeys need it today, scoped to them, not a speculative framework. Effort M — the
+    registration-side change is small; `NSViewRepresentable` itself isn't new here (`VisualEffectView`
+    already wraps `NSVisualEffectView` for sidebar vibrancy), but every existing use wraps a passive
+    AppKit view — this is the first one that makes itself first responder and captures keyboard
+    events, genuinely new territory even though the wrapping technique isn't.
+
 **Live transcription + related-calls (2026-07-14) — implemented.** Validated `SpeechTranscriber`
 `.volatileResults` streaming in isolation (partials stream token-by-token, then `isFinal`), incl. the
 live **buffer-feed** path (`SpeechAnalyzer.bestAvailableAudioFormat` = 16 kHz mono Int16;
