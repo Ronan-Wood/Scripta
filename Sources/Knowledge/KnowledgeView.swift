@@ -17,7 +17,9 @@ struct CommitmentDisplay: Identifiable {
 
 /// Which entity's page (M19) is open, plus the name to show if the id never resolves to a real
 /// registry entity (M17's commitment-owner fallback can pass a raw surface string as the id).
-private struct EntitySheetTarget: Identifiable {
+/// Not `private` (M21) — TranscriptDetail presents EntityDetailView too now (participant clicks),
+/// and needs the same small target type rather than a near-duplicate of its own.
+struct EntitySheetTarget: Identifiable {
     let id: String
     var fallbackName: String? = nil
 }
@@ -157,26 +159,33 @@ struct KnowledgeView: View {
         } message: {
             Text("A standing note you keep adding to — it lives in Notes/ inside your transcripts folder.")
         }
-        .sheet(item: $entitySheetTarget) { target in
-            EntityDetailView(entityID: target.id, group: model.activeGroup, fallbackName: target.fallbackName) {
-                entitySheetTarget = nil
-            } onCommitmentsChanged: {
-                reload()
-            } onOpenNote: { path in
-                // Re-verify group at the point of opening (crosscheck) — callsMentioning's SQL
-                // filter reads the CACHED transcripts.group column, which only refreshes on the
-                // next reconcile after a file changes. A hand-edited frontmatter `group:` field
-                // (the output folder is typically a real, directly-editable Obsidian vault) can
-                // briefly disagree with that cache; NoteStore.parse re-reads the live file, so
-                // trust that value, not the assumption the SQL scope already guaranteed it.
-                if let note = NoteStore.parse(URL(fileURLWithPath: path)), note.group == model.activeGroup {
-                    openNote = note
-                }
-            } onOpenDoc: { path in
-                if let meta = DocumentImporter.parse(URL(fileURLWithPath: path)),
-                   meta.group == model.activeGroup, !meta.file.isEmpty {
-                    NSWorkspace.shared.open(DocumentImporter.folder.appendingPathComponent(meta.file))
-                }
+        .sheet(item: $entitySheetTarget) { target in entitySheet(target) }
+    }
+
+    // Pulled out of the `.sheet` closure inline (was inside a very long modifier chain on `body`):
+    // EntityDetailView's init got one field more complex for M21 (entityID/fallbackName became
+    // @State for in-place retargeting), which was enough to push the surrounding expression past
+    // the type checker's timeout. Isolating the construction here gives it its own inference scope.
+    @ViewBuilder
+    private func entitySheet(_ target: EntitySheetTarget) -> some View {
+        EntityDetailView(entityID: target.id, group: model.activeGroup, fallbackName: target.fallbackName) {
+            entitySheetTarget = nil
+        } onCommitmentsChanged: {
+            reload()
+        } onOpenNote: { path in
+            // Re-verify group at the point of opening (crosscheck) — callsMentioning's SQL
+            // filter reads the CACHED transcripts.group column, which only refreshes on the
+            // next reconcile after a file changes. A hand-edited frontmatter `group:` field
+            // (the output folder is typically a real, directly-editable Obsidian vault) can
+            // briefly disagree with that cache; NoteStore.parse re-reads the live file, so
+            // trust that value, not the assumption the SQL scope already guaranteed it.
+            if let note = NoteStore.parse(URL(fileURLWithPath: path)), note.group == model.activeGroup {
+                openNote = note
+            }
+        } onOpenDoc: { path in
+            if let meta = DocumentImporter.parse(URL(fileURLWithPath: path)),
+               meta.group == model.activeGroup, !meta.file.isEmpty {
+                NSWorkspace.shared.open(DocumentImporter.folder.appendingPathComponent(meta.file))
             }
         }
     }
@@ -797,7 +806,11 @@ private struct DigestCard: View {
             }
             if !row.tags.isEmpty {
                 FlexWrap(spacing: Space.x2) {
-                    ForEach(row.tags.prefix(6), id: \.self) { CarbonChip(text: $0) }
+                    ForEach(row.tags.prefix(6), id: \.self) { tag in
+                        // M21: matches the People rail's own tag chips, which already navigate —
+                        // this was the one tag surface in the hub that didn't.
+                        CarbonChip(text: tag) { model.route = .tag(tag) }
+                    }
                 }
             }
         }
