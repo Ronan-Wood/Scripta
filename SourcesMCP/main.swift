@@ -709,7 +709,7 @@ func toolDefinitions() -> [[String: Any]] {
         ],
         [
             "name": "entity_detail",
-            "description": "One person or topic's page: which calls mention them, and who/what else co-occurs with them in those calls. Look up by name — if more than one entity matches, returns a disambiguation list instead of guessing.",
+            "description": "One person or topic's page: which calls, notes, and documents mention them, and who/what else co-occurs with them across those. Look up by name — if more than one entity matches, returns a disambiguation list instead of guessing.",
             "inputSchema": [
                 "type": "object",
                 "properties": ["name": ["type": "string", "description": "The person or topic's name (or a distinctive substring)."]],

@@ -6,18 +6,20 @@ Built to replace tools like Granola / Jamie / Fathom without the account-gating,
 
 ## What it does
 
-- **Menu-bar app** — a waveform icon plus a full hub window (Home / Calls / Meetings / Ask / Settings / Docs). Start/Stop is fully manual by design (⌥⌘R global hotkey, pause/resume supported).
+- **Menu-bar app** — a waveform icon plus a full hub window (Home / Calls / Meetings / Ask / Knowledge / Settings / Docs). Start/Stop is fully manual by design — a global hotkey (⌥⌘R by default, rebindable in Settings), pause/resume supported.
 - **Captures both sides** — system audio (the other participants) via ScreenCaptureKit + your microphone via AVAudioEngine, as **separate tracks**. A **conference mode** captures a single source unlabeled for hybrid in-room/online meetings where both tracks would hear the same speech.
 - **Transcribes on-device** — Apple's `SpeechTranscriber` (macOS 26). No model download, no bundled binary. A **live transcript** streams while you record, with a related-past-calls panel beside it.
 - **Speaker labels (You / Them)** — the two tracks are transcribed *separately* and interleaved by timestamp, so attribution is physical (mic = You, system = Them), not an ML guess. When only one side has audio, labels are omitted rather than guessed.
 - **Cleans + enriches** — deterministic filler-word removal; optional on-device **title + summary + topic tags** via Apple Foundation Models (topics power concept search).
 - **Screen context** — periodically OCRs a window or display you choose at record time (tables → Markdown via `RecognizeDocumentsRequest`) and interleaves it into the transcript, timestamped. Screenshots are discarded immediately; an optional local vision model can caption charts OCR can't read (post-call only).
 - **Markdown output** — YAML frontmatter (date, time, duration, participants, tags, group, title) + timestamped body, written to a user-chosen folder. Post-record prompt names the call, pre-filled from the overlapping calendar event.
+- **Quick Capture** — a second global hotkey (⌥⌘N by default, also rebindable) opens a floating panel to type or dictate a standalone thought — no formal call, no filing decision — straight into the workspace's Captures note.
 - **Workspaces (groups)** — calendars can map to groups (work / personal / a client); retrieval, Ask, and the MCP are **hard-scoped** to the active workspace. Cross-workspace search is an explicit, non-sticky action. The MCP refuses queries when the app isn't running rather than trust a stale scope.
 - **Retrieval backend** — SQLite/FTS5 index over all transcripts (`.md` stays source of truth; the DB is a rebuildable cache). Search is **holistic**: one query matches spoken passages *and* call topics, so searching `baseball` finds a call that only ever said "home runs." An entity graph (people, companies, places extracted on-device) powers entity-anchored browsing; an FSEvents watcher keeps the index fresh against external edits.
+- **Knowledge dashboard** — a dedicated pane turns the entity graph into something to browse, not just search: at-a-glance counts, an AI-synthesized "what's important" blurb over recent activity, entity pages (every call/note/document mentioning a person or topic, plus who else co-occurs with them), open commitments resolved to a confirmed owner with one-click mark-done, standing notes, and imported documents (PDF/PPTX/DOCX/text/images, extracted on-device) read in-app as rendered Markdown or opened in the original app.
 - **Ask** — on-device Q&A over your calls (retrieve → grounded Foundation Models answer with cited sources). Claude via MCP remains the deep-reasoning tier.
 - **Local model endpoint (advanced, opt-in)** — an OpenAI-format server on loopback/LAN (Ollama / LM Studio) can take over Ask, enrichment, reranking, or embeddings per task. Public hosts are refused with no override; Apple FM is always the default and fallback.
-- **Calendar visibility** — EventKit shows upcoming Zoom/Teams/Meet events (informational only, never auto-records), with a proximity badge on the icon and a full Meetings calendar (month/week/day) unifying past calls + upcoming meetings.
+- **Calendar visibility** — EventKit shows upcoming Zoom/Teams/Meet events (informational only, never auto-records), with the menu bar mark's own color signaling proximity to the next one, and a full Meetings calendar (month/week/day) unifying past calls + upcoming meetings.
 - **Claude integration** — a bundled MCP server + a skill let Claude read, search, and reason over your transcripts (see below).
 - **Retention** — optional auto-delete of old transcripts, gated by marker AND filename shape so it only ever touches files this app created. Export to PDF/text; optional entity-stub mirror into the vault.
 
@@ -54,14 +56,21 @@ In parallel during recording: live transcription (SpeechAnalyzer volatile result
 |---|---|
 | Core package | `Core/` (local SwiftPM, statically linked) — **`ScriptaShared`** (macOS 14; the app↔MCP file/query contract) · **`ScriptaCore`** (parsing, indexing/FTS5, transcript store/writer, entities, retention) · `scripta-eval` + the unit tests (`swift test --package-path Core`) |
 | App shell | `App/` — `main.swift`, `AppDelegate` (first-run, folder grant, orphan recovery), `MenuController`, `HubView` + panes, `MCPStateFile` |
-| Capture | `Recording/` — `SystemAudioCapture` (SCStream), `MicrophoneCapture` (AVAudioEngine), `AudioConverter`, `RecordingSession`, `RecordingMode` (call/conference) |
+| Recording | `Recording/` — `SystemAudioCapture` (SCStream), `MicrophoneCapture` (AVAudioEngine), `AudioConverter`, `RecordingSession`, `RecordingMode` (call/conference) |
+| Quick Capture | `Capture/` — `CaptureView` (the floating panel), `CaptureSession`, `MicrophoneTap` (no file ever written), `CaptureStore` |
 | Transcription | `Transcription/` — `SpeechEngine`, `LiveTranscriber`, `TranscriptEnricher`, `ConceptBackfill` |
 | Screen context | `ScreenContext/` — `ScreenContextCapturer`, `FrontmostWindowResolver`, `DocumentReader`, `SnippetDeduplicator` |
 | Model engine | `Engine/` — engine protocols, `AppleFMEngine` (default), `EndpointEngine` + `OpenAIWire` (opt-in local server), `EngineRouter`, `Locality`, `Retriever`, `VLMCaptioner` |
 | Index orchestration | `Index/` — `IndexBuilder` (stays app-side: it fuses app inputs — notes, docs, embedder — into the core store) + the entity/watcher `+Live` bridges |
-| Calls UI | `Calls/` — `CallsView`, `CalendarView`, `RelatedCallsPanel`, `SnippetHighlight` |
-| Settings | `Settings/` — `AppSettings` (incl. security-scoped folder bookmark), `SettingsView` |
+| Calls UI | `Calls/` — `CallsView`, `CalendarView`, `RelatedCallsPanel`/`RelatedItemsPanel`, `RelatedSynthesizer` (FM synthesis over related hits), `SnippetHighlight` |
+| Calendar | `Calendar/` — `CalendarWatcher` (EventKit) |
+| Knowledge | `Knowledge/` — `KnowledgeView` (the dashboard), `EntityDetailView`, `NoteStore` |
+| Documents | `Documents/` — `DocumentImporter` (PDF/PPTX/DOCX/text/image import + on-device extraction) |
+| Settings | `Settings/` — `AppSettings` (incl. security-scoped folder bookmark), `SettingsView`, `HotKeyRecorder` |
 | Viewer | `Viewer/` — `TranscriptDetail`, details/metadata editors, `TranscriptExporter` |
+| Theme | `Theme/` — `CarbonTheme`/`CarbonKit`/`CarbonIcon`, the shared design system used across Knowledge/Calls/Viewer |
+| Help | `Help/` — `HelpView`, the in-app Docs pane |
+| Support | `Support/` — `NotificationManager`, `Permissions`, `RetentionPruner+Live`, `WorkspaceDeleter` |
 | MCP server | `SourcesMCP/main.swift` — separate `scripta-mcp` tool target (links `ScriptaShared`), embedded in the app |
 | Skill / Eval | `Skill/scripta/SKILL.md` (bundled) · `Eval/` — gold cases + gates for the package's eval executable (`./Eval/run.sh`) |
 
@@ -74,6 +83,7 @@ The app bundles a dependency-free **MCP server** (`scripta-mcp`, JSON-RPC over s
 - `overview` — every call's title + summary + path (bounded pages, `since`/`limit`)
 - `list_transcripts(limit, since, participant, tag)`, `get_transcript(path)`, `get_section(path, from, to)`, `search_transcripts(query)`
 - `retrieve(query, participant?, tag?, speaker?, since?, limit?)` — BM25-ranked passages with call/timestamp/speaker provenance; `people` and `tags` aggregates.
+- `commitments(owner?, limit?)` — open action items extracted from calls, who owes what and from which call. `entity_detail(name)` — one person/topic's page: which calls, notes, and documents mention them and who/what co-occurs, with disambiguation when a name is ambiguous.
 - Scoped + guarded: every tool honors the app's active workspace and refuses on a stale heartbeat; path-guarded to app-authored transcripts inside the output folder (symlinks resolved).
 
 Register it: `claude mcp add scripta -- "/Applications/Scripta.app/Contents/MacOS/scripta-mcp"` (the Docs pane shows the exact path for your machine and installs the skill with a one-time `.claude` folder grant). Then the skill teaches Claude the playbooks ("summarize my week", "action items across calls", "what did X say about Y").
@@ -121,4 +131,4 @@ See `SPEC.md` for the full log. Next:
 
 ## Status
 
-All planned milestones through the knowledge layer are built: two-track You/Them transcription (Apple `SpeechTranscriber`), live transcription, conference mode, hub UI, holistic retrieval + entity graph, workspaces with a hard privacy wall, model-engine layer (Apple FM default, opt-in local endpoint), eval harness (retrieval gates + leak check). **App Store prep phase 1 landed 2026-07-16**: sandboxed in all configs, security-scoped folder bookmark, first-launch consent notice + folder choice, App Group for shared index/state, grant-based skill install. Pending a runtime pass on a fresh recording: first-run flow, bookmark persistence across relaunch, MCP against the group container with the app running.
+All planned milestones through the knowledge layer are built: two-track You/Them transcription (Apple `SpeechTranscriber`), live transcription, conference mode, hub UI, holistic retrieval + entity graph, workspaces with a hard privacy wall, model-engine layer (Apple FM default, opt-in local endpoint), eval harness (retrieval gates + leak check). **The knowledge layer was substantially expanded 2026-07-20** (the "brain roadmap"): Quick Capture, a commitments lifecycle (extraction, owner resolution against confirmed identities, mark-done), notes and documents joining the entity graph, entity pages, a Knowledge dashboard (recent-activity synthesis plus commitments/people/topics/vocabulary browsing), an in-app Markdown document reader, and rebindable hotkeys. **App Store prep phase 1 landed 2026-07-16**: sandboxed in all configs, security-scoped folder bookmark, first-launch consent notice + folder choice, App Group for shared index/state, grant-based skill install. Pending a runtime pass on a fresh recording: first-run flow, bookmark persistence across relaunch, MCP against the group container with the app running.

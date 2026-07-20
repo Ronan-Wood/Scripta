@@ -20,6 +20,8 @@ The user runs **Scripta**, a local macOS app that records and transcribes their 
 - **`search_transcripts(query)`** — keyword search; snippets with a section label (`transcript`/`screen`/`title`) and path.
 - **`list_transcripts(limit, since, participant, tag)`** — browse or filter by date, person, or tag.
 - **`people`** / **`tags`** — aggregate indexes (name → call count) for orienting.
+- **`commitments(owner?, limit?)`** — open action items extracted from calls, who owes what and from which call. Pass `owner: "you"` for what the user owes, or a person's name for what they owe.
+- **`entity_detail(name)`** — one person or topic's page: which calls, notes, and documents mention them, and who/what else co-occurs with them across those. Returns a disambiguation list instead of guessing if the name matches more than one entity.
 
 ## Workflow
 1. **Recall / semantic** ("which call was about X", "what did Y say about Z") → `retrieve` first; if the right call is ambiguous, `overview` and reason over summaries, then `get_transcript` for detail.
@@ -28,9 +30,10 @@ The user runs **Scripta**, a local macOS app that records and transcribes their 
 
 ## Playbooks
 - **Summarize my week** → `list_transcripts(since: <date>)` (or `overview`), read each, synthesize themes, decisions, and open items.
-- **Action items across calls** → `overview` to find relevant calls → `get_transcript` each → extract owners + tasks, grouped by call.
+- **Action items across calls / what does [person] still owe me** → `commitments(owner?)` first — it's purpose-built for this. Fall back to `overview` → `get_transcript` per call only if you need more context than the commitment text itself gives.
 - **What did [person] say about [topic]** → `retrieve(query, participant:)` → `get_transcript`/`get_section` → answer **with citations**.
-- **Prep for a follow-up with [person]** → find the most recent call with them → `get_transcript` → surface open threads, commitments, and unresolved questions.
+- **Prep for a follow-up with [person]** → `entity_detail(name)` for a fast map of every call/note/document mentioning them and who/what co-occurs, then `get_transcript` on the most recent call → surface open threads, commitments, and unresolved questions.
+- **Who's connected to [person/topic]** → `entity_detail(name)` — co-occurring people and topics across everything that mentions them.
 
 ## Always
 - Tools refuse when the app isn't running, and answers are scoped to the app's **active workspace** — if refused, tell the user to open Scripta (or switch workspace) rather than guessing.
