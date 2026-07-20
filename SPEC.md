@@ -445,6 +445,36 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     Effort S–M — the synthesis primitive and its FM plumbing already exist; the new work is the
     query-building, hit-fetching, and a small rendering spot on the dashboard.
 
+24. **In-app document reader** *(ratified 2026-07-20; Ronan: "we should probably expand docs a
+    bit no?" — clicking an imported document always kicks out to an external app; notes and calls
+    both already have real in-app readers, docs is the one content type that doesn't).*
+    `DocumentImporter.DocMeta.body` is already the full, UNBOUNDED extracted text (confirmed —
+    the 60k-char cap only exists on the SQLite index's `summary` preview, `IndexBuilder.indexDoc`;
+    entity extraction already runs on the full body, not the truncated one) — the same text
+    search/Clovis/MCP already treat as the document's canonical content. A new
+    `DocumentDetailView`, modeled on `NoteDetailView` (the closer sibling — your own artifact, not
+    a call recording — confirmed a `.sheet`, 560×520, plain `Text(...).textSelection(.enabled)` in
+    a ScrollView, no Markdown rendering) rather than `TranscriptDetail` (a full hub-section pane
+    tied to Calls' own master/detail split via `AppModel.route` — doesn't fit how documents are
+    reached today, from inside Knowledge). Header: title, created date, Rename/Delete (matching
+    `NoteDetailView`'s), an explicit "Open original" action (external, reusing the same
+    `DocumentImporter.verifiedOriginalURL(...)` resolution M21's entity-page doc-mention click
+    already uses) for when the real PDF/PPTX/DOCX is actually what's wanted. `documentsSection`'s
+    row tap changes from always-external-open to presenting this sheet — consistent with tapping a
+    note or a call already meaning "view it in-app," not "hand it to another app."
+
+    **Explicitly out of scope:** a true native renderer (real PDF pages via PDFKit's `PDFView`,
+    real PPTX slides) — PDFKit is already a dependency but only for TEXT EXTRACTION
+    (`PDFDocument`); `PDFView` (the actual page-rendering view) is entirely unused today, confirmed
+    by search. Building one is a real, format-specific undertaking — worth reconsidering only if
+    extracted-text-as-prose turns out to lose too much (tables, layout, images) for real use, not
+    before. Surfacing a document's `call:` frontmatter link (written at import time when linked
+    from a call, but not currently read back into `DocMeta` at all — confirmed, the struct has no
+    field for it) — real, but a separate, small follow-up, not core to "can I read this without
+    leaving the app." Effort S — reuses `NoteDetailView`'s exact rendering pattern and
+    `DocumentImporter`'s already-unbounded `body`; the new work is the view itself plus retargeting
+    one tap gesture.
+
 **Live transcription + related-calls (2026-07-14) — implemented.** Validated `SpeechTranscriber`
 `.volatileResults` streaming in isolation (partials stream token-by-token, then `isFinal`), incl. the
 live **buffer-feed** path (`SpeechAnalyzer.bestAvailableAudioFormat` = 16 kHz mono Int16;
