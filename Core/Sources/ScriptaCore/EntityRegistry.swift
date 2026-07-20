@@ -59,6 +59,19 @@ public final class EntityRegistry {
         return entities
     }
 
+    /// Looks up one entity by id, scoped to a group (M19). One identity CAN legitimately span
+    /// workspaces (a person known across two clients' calls) — `resolve`/`confirm` match by name
+    /// globally, with no group filter, by design. But a lookup surface that's about to DISPLAY
+    /// the entity's data (aliases, gloss) is a different question than "does this id exist" —
+    /// showing a surface form only ever spoken in workspace B's private calls from inside
+    /// workspace A's UI breaks the privacy wall the moment there's a UI surface that renders
+    /// aliases at all (M19 is the first). Mirrors the group check `confirmedAliases`/
+    /// `resolveConfirmed` already enforce elsewhere in this class.
+    public func entity(id: String, group: String) -> Entity? {
+        lock.lock(); defer { lock.unlock() }
+        return entities.first { $0.id == id && ($0.groups.contains(group) || $0.groups.contains("")) }
+    }
+
     public func save() {
         lock.lock(); defer { lock.unlock() }
         saveLocked()
