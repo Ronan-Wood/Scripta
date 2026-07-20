@@ -13,12 +13,20 @@ struct CommitmentDisplay: Identifiable {
     let callTitle: String
 }
 
+/// Which entity's page (M19) is open, plus the name to show if the id never resolves to a real
+/// registry entity (M17's commitment-owner fallback can pass a raw surface string as the id).
+private struct EntitySheetTarget: Identifiable {
+    let id: String
+    var fallbackName: String? = nil
+}
+
 /// The Knowledge center: review what happened across your calls. A day-grouped digest of every
 /// call's generated note (title, summary, topics, people), with the workspace's people and
 /// topics alongside — all served from the index, so it opens instantly and never re-reads
 /// transcript files. Comments (the "add on" layer) attach per call via NoteStore.
 struct KnowledgeView: View {
     @ObservedObject var model = AppModel.shared
+    @State private var entitySheetTarget: EntitySheetTarget?
     @State private var rows: [IndexStore.DigestRow] = []
     @State private var notes: [KnowledgeNote] = []
     @State private var openNote: KnowledgeNote?
@@ -146,6 +154,11 @@ struct KnowledgeView: View {
             Button("Cancel", role: .cancel) { newNoteTitle = "" }
         } message: {
             Text("A standing note you keep adding to — it lives in Notes/ inside your transcripts folder.")
+        }
+        .sheet(item: $entitySheetTarget) { target in
+            EntityDetailView(entityID: target.id, group: model.activeGroup, fallbackName: target.fallbackName) {
+                entitySheetTarget = nil
+            }
         }
     }
 
@@ -406,16 +419,22 @@ struct KnowledgeView: View {
                     SectionHeader(title: "People")
                     VStack(spacing: 1) {
                         ForEach(scopedPeople.prefix(8), id: \.name) { person in
-                            HStack(spacing: Space.x3) {
-                                InitialsBadge(name: person.name)
-                                Text(shortName(person.name)).font(CarbonFont.medium(13))
-                                    .foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                                Spacer()
-                                Text("\(person.count) call\(person.count == 1 ? "" : "s")")
-                                    .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
-                            }
-                            .padding(Space.x4)
-                            .background(Carbon.layer)
+                            Button {
+                                let id = EntityRegistry.shared.resolveConfirmed(surface: person.name, kind: "person", group: model.activeGroup)
+                                entitySheetTarget = EntitySheetTarget(id: id ?? person.name, fallbackName: person.name)
+                            } label: {
+                                HStack(spacing: Space.x3) {
+                                    InitialsBadge(name: person.name)
+                                    Text(shortName(person.name)).font(CarbonFont.medium(13))
+                                        .foregroundStyle(Carbon.textPrimary).lineLimit(1)
+                                    Spacer()
+                                    Text("\(person.count) call\(person.count == 1 ? "" : "s")")
+                                        .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                                }
+                                .padding(Space.x4)
+                                .background(Carbon.layer)
+                                .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
                         }
                     }
                     .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
@@ -454,7 +473,9 @@ struct KnowledgeView: View {
                 ForEach(owedToYou.keys.sorted(), id: \.self) { ownerID in
                     let items = owedToYou[ownerID] ?? []
                     if let name = items.first?.ownerName {
-                        Text("\(name) owes you").font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                        Button { entitySheetTarget = EntitySheetTarget(id: ownerID, fallbackName: name) } label: {
+                            Text("\(name) owes you").font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                        }.buttonStyle(.plain)
                         ForEach(items) { commitmentRow($0) }
                     }
                 }
@@ -574,7 +595,7 @@ struct KnowledgeView: View {
             } else {
                 FlexWrap(spacing: Space.x2) {
                     ForEach(vocabTerms, id: \.id) { term in
-                        CarbonChip(text: term.name)
+                        CarbonChip(text: term.name) { entitySheetTarget = EntitySheetTarget(id: term.id, fallbackName: term.name) }
                             .help(term.gloss?.isEmpty == false ? term.gloss!
                                   : term.aliases.joined(separator: ", "))
                     }

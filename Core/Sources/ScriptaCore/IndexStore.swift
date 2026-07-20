@@ -530,6 +530,28 @@ public final class IndexStore {
         return ids
     }
 
+    /// Entities that co-occur with `entityID` — appear in at least one of the same calls (M19),
+    /// most-shared-calls first. Group-scoped the same way `entities(group:)` is (mentions carry
+    /// no group of their own; scope comes from joining each mention's call).
+    public func coOccurring(entityID: String, group: String, limit: Int = 20) -> [(id: String, name: String, kind: String, count: Int)] {
+        let unlock = acquireLock(); defer { unlock() }
+        var out: [(String, String, String, Int)] = []
+        let sql = """
+        SELECT e.id, e.name, e.kind, COUNT(DISTINCT m.path) AS n
+        FROM entity_mentions m JOIN entities e ON e.id = m.entity_id
+        JOIN transcripts t ON t.path = m.path
+        WHERE t."group" = ? AND m.entity_id != ?
+          AND m.path IN (SELECT path FROM entity_mentions WHERE entity_id = ?)
+        GROUP BY e.id ORDER BY n DESC, e.name LIMIT \(max(1, limit));
+        """
+        query(sql, bind: { stmt in
+            Self.bindStatic(stmt, 1, group); Self.bindStatic(stmt, 2, entityID); Self.bindStatic(stmt, 3, entityID)
+        }) { stmt in
+            out.append((text(stmt, 0), text(stmt, 1), text(stmt, 2), Int(sqlite3_column_int(stmt, 3))))
+        }
+        return out
+    }
+
     // MARK: - Enrichment ledger
 
     /// Records that `stage` completed for `path` at content `hash` with `model`. A later reconcile
