@@ -44,6 +44,7 @@ struct KnowledgeView: View {
     @State private var termGloss = ""
     @State private var suggestions: [String] = []
     @State private var commitments: [CommitmentDisplay] = []
+    @State private var whatsImportant: String?
     @State private var collisions: [(a: EntityRegistry.Entity, b: EntityRegistry.Entity)] = []
     @State private var docs: [(mdURL: URL, title: String, created: String, file: String)] = []
     @State private var deleteTarget: ItemTarget?
@@ -83,6 +84,7 @@ struct KnowledgeView: View {
             VStack(alignment: .leading, spacing: Space.x6) {
                 header
                 statRow
+                whatsImportantSection
                 if rows.isEmpty && notes.isEmpty {
                     emptyState
                 } else if !rows.isEmpty {
@@ -277,6 +279,45 @@ struct KnowledgeView: View {
                     return CommitmentDisplay(id: row.id, path: row.path, ownerID: row.ownerID, ownerName: name,
                                              isYou: isYou, text: row.text, callTitle: row.callTitle)
                 }
+                // Called here, not folded into the block above: rows must already be fresh before
+                // building its query, and this kicks off its own separate, slower background fetch
+                // (an FM call) rather than gating everything else in reload() behind it (M23:
+                // progressive, same discipline M18 already committed to).
+                loadWhatsImportant(rows: rows, group: group, store: store)
+            }
+        }
+    }
+
+    /// "What's important" (M23) — a short FM-synthesized note connecting recent activity to older,
+    /// related material, the other half of the dashboard alongside M22's stat tiles. Reuses
+    /// RelatedSynthesizer.synthesize (M18's own primitive, zero view dependency) pointed at several
+    /// recent calls' combined title+topics instead of one open transcript's — the same
+    /// string-concatenation TranscriptDetail already does for one call, just over N. Grounded:
+    /// synthesize() itself refuses to invent a connection below 2 real hits, so a quiet workspace
+    /// (or one where nothing recent connects to anything older) shows nothing here, not an awkward
+    /// "nothing important" placeholder.
+    private func loadWhatsImportant(rows: [IndexStore.DigestRow], group: String, store: IndexStore?) {
+        guard let store, rows.count >= 2 else { whatsImportant = nil; return }
+        let recent = Array(rows.prefix(6))
+        let current = recent.map { $0.title + " " + $0.tags.joined(separator: " ") }.joined(separator: " ")
+        let excludePaths = Set(recent.map(\.path))
+        Task.detached(priority: .utility) {
+            // Same shape as RelatedItemsPanel.load(): dedupe by path, exclude the recent set
+            // itself (a call must not "connect to" its own presence in the query), cap the hits
+            // handed to synthesis. RelatedItemsPanel's own excludePath is a single String and
+            // isn't touched — this doesn't go through the panel at all, just the bare function.
+            var seen = Set<String>()
+            var raw: [(title: String, snippet: String)] = []
+            for hit in store.search(current, group: group, limit: 12) {
+                guard !excludePaths.contains(hit.path), hit.score <= RelatedHit.relevanceFloor,
+                      seen.insert(hit.path).inserted else { continue }
+                raw.append((title: hit.title.isEmpty ? hit.date : hit.title, snippet: hit.snippet))
+                if raw.count >= 6 { break }
+            }
+            let result = await RelatedSynthesizer.synthesize(current: current, hits: raw)
+            await MainActor.run {
+                guard group == model.activeGroup else { return }   // discard a stale load after a switch
+                whatsImportant = result
             }
         }
     }
@@ -386,6 +427,21 @@ struct KnowledgeView: View {
             StatTile(label: "People tracked", value: "\(scopedPeople.count)")
             StatTile(label: "Notes", value: "\(notes.count)")
             StatTile(label: "Documents", value: "\(docs.count)")
+        }
+    }
+
+    /// "What's important" (M23) — hidden entirely when nil, same "don't show an awkward empty
+    /// state for a quiet workspace" rule `needsAttentionGroup` already follows below. Card
+    /// treatment (not a bare `Text`) matches `StatTile`'s own layer+border language just above it.
+    @ViewBuilder private var whatsImportantSection: some View {
+        if let whatsImportant {
+            Text(whatsImportant)
+                .font(CarbonFont.body(13)).foregroundStyle(Carbon.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(Space.x5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
         }
     }
 
