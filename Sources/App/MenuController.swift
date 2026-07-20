@@ -102,7 +102,13 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         case .processing:
             button.image = coloredSymbol("ellipsis.circle.fill", color: .systemOrange, description: "Processing transcript")
         case .idle:
-            if let proximity = nextCallProximity() {
+            if captureSession != nil {
+                // Quick Capture's mic is live — the app's own disclosure invariant (SPEC: "the
+                // menu-bar indicator always shows recording state") applies here too, not just
+                // to call recording. Distinct color from the red recording dot on purpose: a
+                // note capture isn't a call.
+                button.image = coloredSymbol("mic.fill", color: .systemBlue, description: "Quick Capture listening")
+            } else if let proximity = nextCallProximity() {
                 // Tint the base to the menu bar color, then badge it with the proximity dot.
                 let tint: NSColor = menuBarIsDark(button) ? .white : .black
                 button.image = badged(ScriptaMark.statusIcon(tint: tint), dotColor: proximity.color)
@@ -198,7 +204,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         if uiState == .processing { toggle.action = nil }   // disabled while working
         menu.addItem(toggle)
 
-        if uiState != .recording {
+        if uiState == .idle {
             let capture = NSMenuItem(title: "Quick Capture",
                                      action: #selector(quickCaptureFromMenu), keyEquivalent: "")
             capture.target = self
@@ -394,9 +400,13 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
     @objc private func quickCaptureFromMenu() { showCapture() }
 
     /// Shows the Quick Capture panel — already listening on arrival, zero filing decisions.
-    /// The recording guard is belt-and-suspenders for the menu path (noteHotkeyPressed routes).
+    /// Idle-only: `.processing` runs its own sequential SpeechEngine pass over the just-stopped
+    /// call, and the codebase already treats two concurrent same-locale on-device Speech
+    /// sessions as something to avoid (RecordingSession.produceTranscript's transcribe-in-order
+    /// comment). The guard is belt-and-suspenders for the menu path (noteHotkeyPressed routes,
+    /// and the menu item itself is hidden outside .idle).
     private func showCapture() {
-        guard uiState != .recording else { return }
+        guard uiState == .idle else { return }
         if let panel = capturePanel {
             NSApp.activate(ignoringOtherApps: true)
             panel.makeKeyAndOrderFront(nil)
@@ -404,6 +414,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         }
         let session = CaptureSession(group: AppSettings.activeGroup)
         captureSession = session
+        updateIcon()
         let view = CaptureView(
             session: session,
             onSave: { [weak self] in self?.finishCapture() },
@@ -584,6 +595,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             captureSession = nil
             capturePanel?.contentViewController = nil
             capturePanel = nil
+            updateIcon()   // clears the Quick Capture disclosure state
             return
         }
         guard closing === hubWindow else { return }
