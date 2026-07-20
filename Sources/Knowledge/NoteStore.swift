@@ -128,6 +128,17 @@ enum NoteStore {
 
     // MARK: - Parsing
 
+    /// Parses a note at `path` AND verifies its LIVE group matches `group` before returning it —
+    /// nil on either a parse failure or a group mismatch. Every presenter of an entity page's
+    /// "Mentioned in" note hits needs this same re-check: the SQL that produced the hit reads a
+    /// cached `transcripts.group` column that can briefly lag a hand-edited frontmatter `group:`
+    /// field until the next reconcile, so trusting that scope transitively (rather than re-parsing
+    /// and re-checking the live file here) would open a wrong-workspace note (crosscheck).
+    static func verified(atPath path: String, group: String) -> KnowledgeNote? {
+        guard let note = parse(URL(fileURLWithPath: path)), note.group == group else { return nil }
+        return note
+    }
+
     static func parse(_ url: URL) -> KnowledgeNote? {
         guard let content = try? String(contentsOf: url, encoding: .utf8),
               let split = Frontmatter.split(content) else { return nil }

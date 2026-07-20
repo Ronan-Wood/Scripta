@@ -26,11 +26,14 @@ struct EntityDetailView: View {
     /// rail's separately-loaded copy of the same rows would otherwise go stale (crosscheck).
     var onCommitmentsChanged: () -> Void
     /// Opens a mentioned note/doc (M20) — routed through the presenter since this view has no
-    /// direct access to KnowledgeView's local note/doc sheet state, unlike calls, which go
-    /// through the global `AppModel.route`. Passed the mention's raw path. Default (see `init`)
-    /// opens the raw file externally — a reasonable fallback for any presenter (M21's
-    /// TranscriptDetail, opened from a participant click) that has no richer in-app note/doc
-    /// surface of its own to hand it to; KnowledgeView overrides both with its actual sheet/opener.
+    /// direct access to any richer note/doc surface of its own, unlike calls, which go through
+    /// the global `AppModel.route`. Passed the mention's raw path. Defaults to a no-op, not an
+    /// "open it somehow" fallback (crosscheck) — the hit's SQL scope reads a cached
+    /// transcripts.group column that can briefly lag a hand-edited frontmatter field, and a doc
+    /// hit's path is an extracted-text sidecar, not the original file, so opening it correctly
+    /// needs a live-group re-check plus (for docs) resolving the real file — every presenter has
+    /// to do that itself via `NoteStore.verified`/`DocumentImporter.verifiedOriginalURL`, so a
+    /// convenient-looking default that skips it would be a silent trap for whichever one forgets.
     var onOpenNote: (String) -> Void
     var onOpenDoc: (String) -> Void
 
@@ -48,9 +51,8 @@ struct EntityDetailView: View {
     // access level from its least-visible stored property, and `@State private var` storage is
     // private) — breaking the one existing call site, which is in a different file.
     init(entityID: String, group: String, fallbackName: String? = nil, onClose: @escaping () -> Void,
-         onCommitmentsChanged: @escaping () -> Void = {},
-         onOpenNote: @escaping (String) -> Void = { NSWorkspace.shared.open(URL(fileURLWithPath: $0)) },
-         onOpenDoc: @escaping (String) -> Void = { NSWorkspace.shared.open(URL(fileURLWithPath: $0)) }) {
+         onCommitmentsChanged: @escaping () -> Void = {}, onOpenNote: @escaping (String) -> Void = { _ in },
+         onOpenDoc: @escaping (String) -> Void = { _ in }) {
         self._entityID = State(initialValue: entityID)
         self.group = group
         self._fallbackName = State(initialValue: fallbackName)
@@ -91,7 +93,11 @@ struct EntityDetailView: View {
         }
         .frame(width: 420, height: 520)
         .background(Carbon.background)
-        .task { await load() }
+        // Keyed on entityID (crosscheck): a plain `.task { }` runs once for the sheet's whole
+        // lifetime and never re-fires on a jump/back, and `jumpTo`/`goBack` calling `load()`
+        // themselves raced two in-flight loads with nothing to cancel the older one. `.task(id:)`
+        // owns re-running on every entityID change so those functions don't have to.
+        .task(id: entityID) { await load() }
     }
 
     private var displayName: String { entity?.name ?? fallbackName ?? "…" }
@@ -247,21 +253,30 @@ struct EntityDetailView: View {
     /// Retargets this same sheet to a different entity (M21) instead of closing and reopening —
     /// see `entityID`'s doc comment for why. `fallbackName` is already on hand from the chip that
     /// was tapped, so the header shows the right name immediately instead of "…" until `load()`
-    /// resolves the real entity a beat later.
+    /// resolves the real entity a beat later — which only works if `entity` is ALSO cleared here
+    /// (crosscheck): `displayName` reads `entity?.name ?? fallbackName`, so leaving the outgoing
+    /// entity in place made the header silently keep showing the person just navigated away from,
+    /// defeating the whole point of seeding `fallbackName` in the first place.
     private func jumpTo(_ id: String, fallbackName: String?) {
         history.append((entityID, self.fallbackName))
         entityID = id
         self.fallbackName = fallbackName
-        loaded = false
-        Task { await load() }
+        resetForReload()
     }
 
     private func goBack() {
         guard let previous = history.popLast() else { return }
         entityID = previous.id
         fallbackName = previous.fallbackName
+        resetForReload()
+    }
+
+    private func resetForReload() {
         loaded = false
-        Task { await load() }
+        entity = nil
+        mentions = []
+        commitments = []
+        coOccurring = []
     }
 
     private func load() async {
@@ -281,6 +296,10 @@ struct EntityDetailView: View {
             let co = IndexStore.shared?.coOccurring(entityID: id, group: g) ?? []
             return (entity, mentions, commitments, co)
         }.value
+        // A jump/back that landed while this call was still in flight already started its OWN
+        // load for the entity now current — let that one win instead of overwriting it with
+        // this now-stale result (crosscheck: race between overlapping in-flight loads).
+        guard id == entityID else { return }
         entity = foundEntity
         mentions = foundMentions
         commitments = foundCommitments

@@ -154,6 +154,16 @@ enum DocumentImporter {
                        created: field("created"), file: field("file"), body: split.body)
     }
 
+    /// Parses a doc's companion note at `path`, verifies its LIVE group matches `group`, and
+    /// resolves the ORIGINAL file's URL inside Files/ — not the sidecar itself (extracted text
+    /// plus frontmatter, not what a "Mentioned in" click should open). Same re-check-before-
+    /// trusting-a-cached-scope need as `NoteStore.verified`, plus the folder-containment guarantee
+    /// `delete(mdURL:)` already relies on elsewhere in this file (crosscheck).
+    static func verifiedOriginalURL(atPath path: String, group: String) -> URL? {
+        guard let meta = parse(URL(fileURLWithPath: path)), meta.group == group, !meta.file.isEmpty else { return nil }
+        return folder.appendingPathComponent(meta.file)
+    }
+
     // MARK: - Extraction (all on-device)
 
     static func extractText(_ url: URL) async throws -> String {

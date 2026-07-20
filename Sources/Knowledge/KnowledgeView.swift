@@ -173,19 +173,10 @@ struct KnowledgeView: View {
         } onCommitmentsChanged: {
             reload()
         } onOpenNote: { path in
-            // Re-verify group at the point of opening (crosscheck) — callsMentioning's SQL
-            // filter reads the CACHED transcripts.group column, which only refreshes on the
-            // next reconcile after a file changes. A hand-edited frontmatter `group:` field
-            // (the output folder is typically a real, directly-editable Obsidian vault) can
-            // briefly disagree with that cache; NoteStore.parse re-reads the live file, so
-            // trust that value, not the assumption the SQL scope already guaranteed it.
-            if let note = NoteStore.parse(URL(fileURLWithPath: path)), note.group == model.activeGroup {
-                openNote = note
-            }
+            if let note = NoteStore.verified(atPath: path, group: model.activeGroup) { openNote = note }
         } onOpenDoc: { path in
-            if let meta = DocumentImporter.parse(URL(fileURLWithPath: path)),
-               meta.group == model.activeGroup, !meta.file.isEmpty {
-                NSWorkspace.shared.open(DocumentImporter.folder.appendingPathComponent(meta.file))
+            if let url = DocumentImporter.verifiedOriginalURL(atPath: path, group: model.activeGroup) {
+                NSWorkspace.shared.open(url)
             }
         }
     }
