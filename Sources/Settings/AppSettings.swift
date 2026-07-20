@@ -73,9 +73,16 @@ enum AppSettings {
     /// ⌥⌘R so nobody's shortcut silently changes on upgrade.
     static var recordHotkeyCombo: HotKeyCombo {
         get {
-            HotKeyCombo(
-                keyCode: UInt32(defaults.object(forKey: Keys.recordHotkeyKeyCode) as? Int ?? Int(HotKeyCombo.defaultRecord.keyCode)),
-                modifiers: UInt32(defaults.object(forKey: Keys.recordHotkeyModifiers) as? Int ?? Int(HotKeyCombo.defaultRecord.modifiers)))
+            // UInt32(exactly:), not UInt32(_:) (crosscheck) — the plain initializer TRAPS on a
+            // stored Int outside UInt32's range (negative, or > UInt32.max). Since register() runs
+            // unconditionally at every launch when the global hotkey is enabled (the default), a
+            // single corrupted UserDefaults value — a stray `defaults write`, a botched sync — would
+            // otherwise crash-loop the whole app with no recovery short of Terminal or reinstall.
+            let keyCode = defaults.object(forKey: Keys.recordHotkeyKeyCode) as? Int ?? Int(HotKeyCombo.defaultRecord.keyCode)
+            let modifiers = defaults.object(forKey: Keys.recordHotkeyModifiers) as? Int ?? Int(HotKeyCombo.defaultRecord.modifiers)
+            return HotKeyCombo(
+                keyCode: UInt32(exactly: keyCode) ?? HotKeyCombo.defaultRecord.keyCode,
+                modifiers: UInt32(exactly: modifiers) ?? HotKeyCombo.defaultRecord.modifiers)
         }
         set {
             defaults.set(Int(newValue.keyCode), forKey: Keys.recordHotkeyKeyCode)
@@ -86,9 +93,12 @@ enum AppSettings {
     /// The Quick Capture hotkey's combo (M25). Defaults to the historical ⌥⌘N.
     static var quickCaptureHotkeyCombo: HotKeyCombo {
         get {
-            HotKeyCombo(
-                keyCode: UInt32(defaults.object(forKey: Keys.quickCaptureHotkeyKeyCode) as? Int ?? Int(HotKeyCombo.defaultQuickCapture.keyCode)),
-                modifiers: UInt32(defaults.object(forKey: Keys.quickCaptureHotkeyModifiers) as? Int ?? Int(HotKeyCombo.defaultQuickCapture.modifiers)))
+            // UInt32(exactly:) — see recordHotkeyCombo's getter for why the plain initializer isn't safe here.
+            let keyCode = defaults.object(forKey: Keys.quickCaptureHotkeyKeyCode) as? Int ?? Int(HotKeyCombo.defaultQuickCapture.keyCode)
+            let modifiers = defaults.object(forKey: Keys.quickCaptureHotkeyModifiers) as? Int ?? Int(HotKeyCombo.defaultQuickCapture.modifiers)
+            return HotKeyCombo(
+                keyCode: UInt32(exactly: keyCode) ?? HotKeyCombo.defaultQuickCapture.keyCode,
+                modifiers: UInt32(exactly: modifiers) ?? HotKeyCombo.defaultQuickCapture.modifiers)
         }
         set {
             defaults.set(Int(newValue.keyCode), forKey: Keys.quickCaptureHotkeyKeyCode)
