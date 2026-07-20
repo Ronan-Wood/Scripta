@@ -1,4 +1,5 @@
 import Foundation
+import Carbon.HIToolbox
 
 /// Central app configuration, backed by UserDefaults. Milestone 5 adds the Settings UI
 /// on top of these; for now they expose sensible defaults so the pipeline can run.
@@ -43,6 +44,10 @@ enum AppSettings {
         static let globalHotkey = "globalHotkey"
         static let liveTranscription = "liveTranscription"
         static let conversationRetentionDays = "conversationRetentionDays"
+        static let recordHotkeyKeyCode = "recordHotkeyKeyCode"
+        static let recordHotkeyModifiers = "recordHotkeyModifiers"
+        static let quickCaptureHotkeyKeyCode = "quickCaptureHotkeyKeyCode"
+        static let quickCaptureHotkeyModifiers = "quickCaptureHotkeyModifiers"
     }
 
     /// Auto-delete Clovis conversations older than this many days. 0 = keep forever (default).
@@ -61,6 +66,34 @@ enum AppSettings {
     static var globalHotkeyEnabled: Bool {
         get { defaults.object(forKey: Keys.globalHotkey) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Keys.globalHotkey) }
+    }
+
+    /// The record-toggle hotkey's combo (M25). Two plain `Int`s, not JSON/Codable — matches this
+    /// file's existing storage convention for something this small. Defaults to the historical
+    /// ⌥⌘R so nobody's shortcut silently changes on upgrade.
+    static var recordHotkeyCombo: HotKeyCombo {
+        get {
+            HotKeyCombo(
+                keyCode: UInt32(defaults.object(forKey: Keys.recordHotkeyKeyCode) as? Int ?? Int(HotKeyCombo.defaultRecord.keyCode)),
+                modifiers: UInt32(defaults.object(forKey: Keys.recordHotkeyModifiers) as? Int ?? Int(HotKeyCombo.defaultRecord.modifiers)))
+        }
+        set {
+            defaults.set(Int(newValue.keyCode), forKey: Keys.recordHotkeyKeyCode)
+            defaults.set(Int(newValue.modifiers), forKey: Keys.recordHotkeyModifiers)
+        }
+    }
+
+    /// The Quick Capture hotkey's combo (M25). Defaults to the historical ⌥⌘N.
+    static var quickCaptureHotkeyCombo: HotKeyCombo {
+        get {
+            HotKeyCombo(
+                keyCode: UInt32(defaults.object(forKey: Keys.quickCaptureHotkeyKeyCode) as? Int ?? Int(HotKeyCombo.defaultQuickCapture.keyCode)),
+                modifiers: UInt32(defaults.object(forKey: Keys.quickCaptureHotkeyModifiers) as? Int ?? Int(HotKeyCombo.defaultQuickCapture.modifiers)))
+        }
+        set {
+            defaults.set(Int(newValue.keyCode), forKey: Keys.quickCaptureHotkeyKeyCode)
+            defaults.set(Int(newValue.modifiers), forKey: Keys.quickCaptureHotkeyModifiers)
+        }
     }
 
     /// Whether the hub sidebar shows labels (true) or collapses to an icon-only rail (false).
@@ -381,4 +414,55 @@ enum RetentionUnit: String, CaseIterable, Identifiable {
         case .months: return 30
         }
     }
+}
+
+/// A hotkey binding (M25) — a Carbon virtual keycode plus modifier bit flags, stored as two plain
+/// `Int`s in `AppSettings` the same simple way every other value here persists (no JSON/Codable
+/// for something this small).
+struct HotKeyCombo: Equatable {
+    let keyCode: UInt32
+    let modifiers: UInt32
+
+    /// Readable label ("⌥⌘R") for Settings. A static keycode→symbol table, not a full
+    /// keyboard-layout-aware lookup (`UCKeyTranslate`/Text Input Source Services) — covers
+    /// letters, digits, and the common special keys a global hotkey would realistically use.
+    /// Correct regardless of layout for CAPTURE itself (`RegisterEventHotKey` operates on
+    /// physical keycodes, not characters) but could show the wrong LETTER on a non-QWERTY layout
+    /// — a disclosed v1 limitation (SPEC M25), not a silent gap.
+    var label: String {
+        var mods = ""
+        if modifiers & UInt32(controlKey) != 0 { mods += "⌃" }
+        if modifiers & UInt32(optionKey) != 0 { mods += "⌥" }
+        if modifiers & UInt32(shiftKey) != 0 { mods += "⇧" }
+        if modifiers & UInt32(cmdKey) != 0 { mods += "⌘" }
+        return mods + (Self.keyLabels[keyCode] ?? "Key \(keyCode)")
+    }
+
+    // Every constant here is copied from Carbon.HIToolbox's Events.h, verified against the SDK
+    // header directly rather than typed from memory (a transcription slip in a table this size,
+    // this mechanical, would be an easy, hard-to-notice bug — e.g. labeling a bound key "R" when
+    // it's actually "T").
+    private static let keyLabels: [UInt32: String] = [
+        UInt32(kVK_ANSI_A): "A", UInt32(kVK_ANSI_B): "B", UInt32(kVK_ANSI_C): "C", UInt32(kVK_ANSI_D): "D",
+        UInt32(kVK_ANSI_E): "E", UInt32(kVK_ANSI_F): "F", UInt32(kVK_ANSI_G): "G", UInt32(kVK_ANSI_H): "H",
+        UInt32(kVK_ANSI_I): "I", UInt32(kVK_ANSI_J): "J", UInt32(kVK_ANSI_K): "K", UInt32(kVK_ANSI_L): "L",
+        UInt32(kVK_ANSI_M): "M", UInt32(kVK_ANSI_N): "N", UInt32(kVK_ANSI_O): "O", UInt32(kVK_ANSI_P): "P",
+        UInt32(kVK_ANSI_Q): "Q", UInt32(kVK_ANSI_R): "R", UInt32(kVK_ANSI_S): "S", UInt32(kVK_ANSI_T): "T",
+        UInt32(kVK_ANSI_U): "U", UInt32(kVK_ANSI_V): "V", UInt32(kVK_ANSI_W): "W", UInt32(kVK_ANSI_X): "X",
+        UInt32(kVK_ANSI_Y): "Y", UInt32(kVK_ANSI_Z): "Z",
+        UInt32(kVK_ANSI_0): "0", UInt32(kVK_ANSI_1): "1", UInt32(kVK_ANSI_2): "2", UInt32(kVK_ANSI_3): "3",
+        UInt32(kVK_ANSI_4): "4", UInt32(kVK_ANSI_5): "5", UInt32(kVK_ANSI_6): "6", UInt32(kVK_ANSI_7): "7",
+        UInt32(kVK_ANSI_8): "8", UInt32(kVK_ANSI_9): "9",
+        UInt32(kVK_Space): "Space", UInt32(kVK_Return): "Return", UInt32(kVK_Tab): "Tab",
+        UInt32(kVK_Delete): "Delete", UInt32(kVK_Escape): "Esc",
+        UInt32(kVK_LeftArrow): "←", UInt32(kVK_RightArrow): "→", UInt32(kVK_UpArrow): "↑", UInt32(kVK_DownArrow): "↓",
+        UInt32(kVK_F1): "F1", UInt32(kVK_F2): "F2", UInt32(kVK_F3): "F3", UInt32(kVK_F4): "F4",
+        UInt32(kVK_F5): "F5", UInt32(kVK_F6): "F6", UInt32(kVK_F7): "F7", UInt32(kVK_F8): "F8",
+        UInt32(kVK_F9): "F9", UInt32(kVK_F10): "F10", UInt32(kVK_F11): "F11", UInt32(kVK_F12): "F12",
+    ]
+
+    /// The historical, hardcoded combos, preserved as the defaults so nobody's shortcut silently
+    /// changes on upgrade.
+    static let defaultRecord = HotKeyCombo(keyCode: UInt32(kVK_ANSI_R), modifiers: UInt32(cmdKey | optionKey))
+    static let defaultQuickCapture = HotKeyCombo(keyCode: UInt32(kVK_ANSI_N), modifiers: UInt32(cmdKey | optionKey))
 }

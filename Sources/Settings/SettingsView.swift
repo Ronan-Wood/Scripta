@@ -50,6 +50,8 @@ struct SettingsView: View {
     @State private var showInDock: Bool = AppSettings.showInDock
     @State private var appearance: AppAppearance = AppSettings.appearance
     @State private var globalHotkey: Bool = AppSettings.globalHotkeyEnabled
+    @State private var recordCombo: HotKeyCombo = AppSettings.recordHotkeyCombo
+    @State private var quickCaptureCombo: HotKeyCombo = AppSettings.quickCaptureHotkeyCombo
     @State private var conversationRetention: Int = AppSettings.conversationRetentionDays
     @State private var retentionEnabled: Bool = AppSettings.retentionEnabled
     @State private var retentionCount: Int = AppSettings.retentionCount
@@ -198,15 +200,27 @@ struct SettingsView: View {
         }
 
         Section {
-            Toggle("Global ⌥⌘R to start/stop recording", isOn: $globalHotkey)
+            Toggle("Enable global shortcuts", isOn: $globalHotkey)
                 .onChange(of: globalHotkey) { _, newValue in
                     AppSettings.globalHotkeyEnabled = newValue
                     HotKeyManager.shared.setEnabled(newValue)
                 }
+            LabeledContent("Start/stop recording") {
+                HotKeyRecorderButton(combo: $recordCombo, defaultCombo: .defaultRecord, conflictsWith: quickCaptureCombo) { newValue in
+                    AppSettings.recordHotkeyCombo = newValue
+                    HotKeyManager.shared.reregister()
+                }
+            }
+            LabeledContent("Quick Capture note") {
+                HotKeyRecorderButton(combo: $quickCaptureCombo, defaultCombo: .defaultQuickCapture, conflictsWith: recordCombo) { newValue in
+                    AppSettings.quickCaptureHotkeyCombo = newValue
+                    HotKeyManager.shared.reregister()
+                }
+            }
         } header: {
             Text("Shortcuts")
         } footer: {
-            Text("⌥⌘R starts or stops a recording from any app; ⌥⌘N adds a timestamped note during one.")
+            Text("Works from any app while enabled. Click a shortcut to record a new combo, then press the keys you want; Esc cancels.")
                 .font(.caption).foregroundStyle(.secondary)
         }
 
