@@ -1,9 +1,11 @@
 import SwiftUI
 
 /// The floating Quick Capture panel (idle ⌥⌘N): already listening when it appears, live
-/// dictation streams into an editable buffer — type, speak, or both. ⌘Return saves, Escape
-/// discards. The voice sibling of `QuickNoteView` — that one jots typed notes into a live
-/// recording; this one captures a standalone thought into the workspace's Captures note.
+/// dictation streams into an editable buffer — type, speak, or both. Typing works even if the
+/// mic is still starting or failed outright (`.saving` is the only state without it, since
+/// finish() has already read the buffer by then). ⌘Return saves, Escape discards. The voice
+/// sibling of `QuickNoteView` — that one jots typed notes into a live recording; this one
+/// captures a standalone thought into the workspace's Captures note.
 struct CaptureView: View {
     @ObservedObject var session: CaptureSession
     let onSave: () -> Void
@@ -37,14 +39,12 @@ struct CaptureView: View {
                 Text("⌘↩ save · esc discard")
                     .font(CarbonFont.label(11)).foregroundStyle(Carbon.textSecondary)
                 Spacer()
+                // .disabled(!canSave) already proves modifiers reach CarbonButton's inner
+                // Button (that's the same mechanism .keyboardShortcut uses), so the shortcut
+                // lives directly here — no hidden-button workaround needed.
                 CarbonButton(title: "Save", icon: "microphone", kind: .primary, action: onSave)
                     .disabled(!canSave)
-                // A bare Button owns the shortcut: CarbonButton wraps its own Button internally,
-                // so a `.keyboardShortcut` applied from outside wouldn't reach the real control.
-                // Plain Return must stay free for the editor to insert a newline, hence ⌘Return.
-                Button(action: { if canSave { onSave() } }) { EmptyView() }
                     .keyboardShortcut(.return, modifiers: .command)
-                    .hidden()
             }
         }
         .padding(Space.x4)
@@ -56,21 +56,24 @@ struct CaptureView: View {
     @ViewBuilder private var card: some View {
         VStack(alignment: .leading, spacing: Space.x1) {
             switch session.state {
-            case .starting:
-                Text("Starting microphone…")
-                    .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
-            case .failed(let message):
-                Text(message)
-                    .font(CarbonFont.body(13)).foregroundStyle(Carbon.danger)
             case .saving:
+                // The only state with no editor: finish() has already read `text` by the time
+                // this shows, so further typing here wouldn't be reflected in what gets saved.
                 Text("Cleaning & saving…")
                     .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
-            case .listening:
+            default:
+                if case .starting = session.state {
+                    Text("Starting microphone — you can type while it warms up.")
+                        .font(CarbonFont.body(12)).foregroundStyle(Carbon.textSecondary)
+                } else if case .failed(let message) = session.state {
+                    Text(message)
+                        .font(CarbonFont.body(12)).foregroundStyle(Carbon.danger)
+                }
                 // Overlay placeholder: TextEditor has no native placeholder param. Hit-testing
                 // is disabled on it so a click always reaches the editor underneath.
                 ZStack(alignment: .topLeading) {
-                    if session.text.isEmpty {
-                        Text("Listening — speak, or click here to type.")
+                    if session.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(placeholderText)
                             .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
                             .padding(.top, 8).padding(.leading, 5)
                             .allowsHitTesting(false)
@@ -99,8 +102,17 @@ struct CaptureView: View {
         }
     }
 
+    private var placeholderText: String {
+        switch session.state {
+        case .listening: return "Listening — speak, or click here to type."
+        case .starting: return "Type here — or wait for the mic."
+        case .failed: return "Microphone unavailable — you can still type."
+        case .saving: return ""
+        }
+    }
+
     private var canSave: Bool {
-        if case .listening = session.state { return session.hasText }
-        return false
+        if case .saving = session.state { return false }
+        return session.hasText
     }
 }

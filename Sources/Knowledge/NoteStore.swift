@@ -106,7 +106,7 @@ enum NoteStore {
         guard !trimmed.isEmpty,
               var content = try? String(contentsOf: note.url, encoding: .utf8) else { return nil }
 
-        var line = "- **\(now())** — \(trimmed.replacingOccurrences(of: "\n", with: " "))"
+        var line = "- **\(now())** — \(sanitizeEntryText(trimmed))"
         if let linkedCall {
             line += " ([[\(linkedCall.deletingPathExtension().lastPathComponent)]])"
         }
@@ -173,6 +173,25 @@ enum NoteStore {
     }
 
     // MARK: - Helpers
+
+    /// Neutralizes anything in freeform entry text that `parseEntry` would misread as structure
+    /// it didn't actually receive: embedded line breaks (which CommonMark/Obsidian render as a
+    /// visually separate line, forging what looks like a second `- **stamp**` entry) and a
+    /// trailing `([[...]])` shape (which `parseEntry` would extract as a real `linkedCall` the
+    /// caller never set). The link check mirrors `parseEntry`'s own detection exactly, so it
+    /// catches precisely what parsing would later misinterpret — not a narrower approximation.
+    /// Applies to every entry regardless of source (capture, typed note, an appended Ask answer):
+    /// none of them should be able to inject fake structure via the text they pass in.
+    private static func sanitizeEntryText(_ text: String) -> String {
+        var result = text
+        for lineBreak in ["\r\n", "\r", "\n", "\u{2028}", "\u{2029}", "\u{0085}"] {
+            result = result.replacingOccurrences(of: lineBreak, with: "; ")
+        }
+        if result.hasSuffix("]])"), let open = result.range(of: "([[", options: .backwards) {
+            result = String(result[..<open.lowerBound]).trimmingCharacters(in: .whitespaces)
+        }
+        return result
+    }
 
     private static func now() -> String {
         let fmt = DateFormatter()
