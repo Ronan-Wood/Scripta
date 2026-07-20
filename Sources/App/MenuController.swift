@@ -21,6 +21,7 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private var quickNotePanel: NSPanel?
     private var capturePanel: NSPanel?
     private var captureSession: CaptureSession?
+    private var captureEscMonitor: Any?
 
     private var session: RecordingSession?
     private var recordingStartedAt: Date?
@@ -438,6 +439,17 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         Task { await session.start() }
+
+        // Belt-and-suspenders for Esc-discards: the panel's TextEditor is an NSTextView, and
+        // once it has focus (which is ~always here — it auto-focuses on appear), NSTextView can
+        // route Escape through its own key-binding handling before SwiftUI's onExitCommand ever
+        // sees it. A local monitor guarantees discard fires regardless of which one wins;
+        // discardCapture() is idempotent, so a double-fire with onExitCommand is harmless.
+        captureEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.keyCode == 53, self.capturePanel?.isKeyWindow == true else { return event }
+            self.discardCapture()
+            return nil
+        }
     }
 
     /// Return path: stop listening, clean, land it in the Captures note, close. The task holds
@@ -596,6 +608,10 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
             capturePanel?.contentViewController = nil
             capturePanel = nil
             updateIcon()   // clears the Quick Capture disclosure state
+            if let monitor = captureEscMonitor {
+                NSEvent.removeMonitor(monitor)
+                captureEscMonitor = nil
+            }
             return
         }
         guard closing === hubWindow else { return }

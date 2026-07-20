@@ -791,9 +791,15 @@ private struct NoteDetailView: View {
                         VStack(alignment: .leading, spacing: Space.x1) {
                             HStack(spacing: Space.x3) {
                                 Text(entry.stamp).font(CarbonFont.monospace(11)).foregroundStyle(Carbon.textHelper)
-                                if let call = entry.linkedCall {
+                                if let call = entry.linkedCall, !call.contains("/") {
                                     Button {
                                         let url = AppSettings.outputFolder.appendingPathComponent("\(call).md")
+                                        // `call` comes from parsing freeform entry text (M14
+                                        // crosscheck, security lens): the "/" reject above blocks
+                                        // path components, this re-confirms the resolved file
+                                        // still resolves inside outputFolder before navigating.
+                                        let base = AppSettings.outputFolder.standardizedFileURL.path
+                                        guard url.standardizedFileURL.path.hasPrefix(base + "/") else { return }
                                         onClose()
                                         model.route = .call(url)
                                     } label: {

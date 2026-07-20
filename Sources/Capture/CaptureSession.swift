@@ -36,6 +36,9 @@ final class CaptureSession: ObservableObject {
     /// Set by `cancel()` even after `started` has flipped false (mid-`finish()`), so a save
     /// already in flight can still notice a late Esc and stop short of writing the note.
     private(set) var discarded = false
+    /// finish()'s own idempotency guard — separate from `started`, because finish() must now
+    /// succeed even when the mic never started (typing doesn't depend on it; see `finish()`).
+    private var finished = false
     /// How many of LiveTranscriber's (wholesale-replaced) finalized lines have already been
     /// merged into `text`, so each update appends only the delta.
     private var mergedFinalizedCount = 0
@@ -75,15 +78,24 @@ final class CaptureSession: ObservableObject {
 
     var hasText: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !partial.isEmpty }
 
-    /// Stops listening, waits for the tail to finalize, and returns the capture text (typed +
-    /// dictated) — nil when nothing usable was heard/typed, INCLUDING when a late `cancel()`
-    /// (Esc/panel close) landed while this was draining the transcriber. Idempotent via `started`.
+    /// Stops listening (if the mic ever came up), waits for the tail to finalize, and returns
+    /// the capture text (typed and/or dictated) — nil when there's nothing to save, INCLUDING
+    /// when a late `cancel()` (Esc/panel close) landed while this was draining the transcriber.
+    /// Works from `.starting`/`.failed` too: typing never depended on the mic succeeding, so a
+    /// denied/slow microphone must not strand text the user already typed. Idempotent.
     func finish() async -> String? {
-        guard started else { return nil }
-        started = false
+        guard !finished else { return nil }
+        finished = true
         state = .saving
-        tap.stop()
-        await transcriber.finish()
+        if started {
+            started = false
+            tap.stop()
+            await transcriber.finish()
+        } else {
+            // Mic never came up (still starting, or failed outright) — tell a still-in-flight
+            // start() to tear itself down the moment it resolves, same as a plain cancel.
+            cancelled = true
+        }
         guard !discarded else { return nil }
         // A leftover partial is the un-finalized tail (finalizing normally clears it via
         // onUpdate before transcriber.finish() returns) — fold it in rather than lose it.
