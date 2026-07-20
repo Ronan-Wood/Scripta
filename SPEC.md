@@ -447,33 +447,55 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
 
 24. **In-app document reader** *(ratified 2026-07-20; Ronan: "we should probably expand docs a
     bit no?" — clicking an imported document always kicks out to an external app; notes and calls
-    both already have real in-app readers, docs is the one content type that doesn't).*
-    `DocumentImporter.DocMeta.body` is already the full, UNBOUNDED extracted text (confirmed —
-    the 60k-char cap only exists on the SQLite index's `summary` preview, `IndexBuilder.indexDoc`;
-    entity extraction already runs on the full body, not the truncated one) — the same text
-    search/Clovis/MCP already treat as the document's canonical content. A new
-    `DocumentDetailView`, modeled on `NoteDetailView` (the closer sibling — your own artifact, not
-    a call recording — confirmed a `.sheet`, 560×520, plain `Text(...).textSelection(.enabled)` in
-    a ScrollView, no Markdown rendering) rather than `TranscriptDetail` (a full hub-section pane
-    tied to Calls' own master/detail split via `AppModel.route` — doesn't fit how documents are
-    reached today, from inside Knowledge). Header: title, created date, Rename/Delete (matching
-    `NoteDetailView`'s), an explicit "Open original" action (external, reusing the same
-    `DocumentImporter.verifiedOriginalURL(...)` resolution M21's entity-page doc-mention click
-    already uses) for when the real PDF/PPTX/DOCX is actually what's wanted. `documentsSection`'s
-    row tap changes from always-external-open to presenting this sheet — consistent with tapping a
-    note or a call already meaning "view it in-app," not "hand it to another app."
+    both already have real in-app readers, docs is the one content type that doesn't. Follow-up:
+    "make sure it can render the markdown too" — see below, this changed the rendering design
+    before any of it was built.)* `DocumentImporter.DocMeta.body` is already the full, UNBOUNDED
+    extracted text (confirmed — the 60k-char cap only exists on the SQLite index's `summary`
+    preview, `IndexBuilder.indexDoc`; entity extraction already runs on the full body, not the
+    truncated one) — the same text search/Clovis/MCP already treat as the document's canonical
+    content. A new `DocumentDetailView`, modeled on `NoteDetailView` (the closer sibling — your own
+    artifact, not a call recording — confirmed a `.sheet`, 560×520) rather than `TranscriptDetail`
+    (a full hub-section pane tied to Calls' own master/detail split via `AppModel.route` — doesn't
+    fit how documents are reached today, from inside Knowledge).
+
+    **Rendering — Markdown, not plain text (revised).** `DocumentImporter`'s own extraction already
+    emits real Markdown structure — `"## Page \(i)"`/`"## Slide \(i)"` section headers
+    (`DocumentImporter.swift` pdf/pptx extraction) — so plain `Text(meta.body)` would show literal
+    `"## Page 1"` instead of a heading. `NoteDetailView`'s plain-text choice was right for freeform
+    entries; wrong for extracted document prose. Design: a lightweight block-level split (blank-line-
+    or heading-prefix-delimited paragraphs — headers are trivially `hasPrefix("#")` to detect, no
+    real parser needed), each block rendered via `Text(AttributedString(markdown:))` for INLINE
+    formatting (bold/italic/code-span/links — Foundation-native, zero new dependencies) at a font
+    size keyed to the detected block type (H1/H2/paragraph). Not a full CommonMark renderer — no
+    table layout, no nested-list indentation beyond what falls out of rendering each line as its own
+    block — proportionate to what this app's own extraction actually produces (headers + prose),
+    not a speculative general-purpose Markdown engine. `AttributedString(markdown:)` alone (without
+    the block split) was considered and rejected: its `.full` parsing mode tags header structure via
+    `PresentationIntent`, but plain `Text` doesn't vary font size from that automatically — you still
+    have to do the block-level work yourself to get headers that visually look like headers.
+
+    Header: title, created date, Rename/Delete (matching `NoteDetailView`'s), an explicit "Open
+    original" action (external, reusing the same `DocumentImporter.verifiedOriginalURL(...)`
+    resolution M21's entity-page doc-mention click already uses) for when the real PDF/PPTX/DOCX is
+    actually what's wanted. `documentsSection`'s row tap changes from always-external-open to
+    presenting this sheet — consistent with tapping a note or a call already meaning "view it
+    in-app," not "hand it to another app."
 
     **Explicitly out of scope:** a true native renderer (real PDF pages via PDFKit's `PDFView`,
     real PPTX slides) — PDFKit is already a dependency but only for TEXT EXTRACTION
     (`PDFDocument`); `PDFView` (the actual page-rendering view) is entirely unused today, confirmed
     by search. Building one is a real, format-specific undertaking — worth reconsidering only if
     extracted-text-as-prose turns out to lose too much (tables, layout, images) for real use, not
-    before. Surfacing a document's `call:` frontmatter link (written at import time when linked
-    from a call, but not currently read back into `DocMeta` at all — confirmed, the struct has no
-    field for it) — real, but a separate, small follow-up, not core to "can I read this without
-    leaving the app." Effort S — reuses `NoteDetailView`'s exact rendering pattern and
-    `DocumentImporter`'s already-unbounded `body`; the new work is the view itself plus retargeting
-    one tap gesture.
+    before. A third-party Markdown package (swift-markdown-ui or similar) — would render tables/
+    nested lists properly, but this project has zero remote package dependencies today (confirmed —
+    `project.yml`/`Core/Package.swift`), and the hand-rolled block-split covers what this app's own
+    extraction actually emits; revisit only if the gap between "what we render" and "what documents
+    actually contain" turns out to matter in practice. Surfacing a document's `call:` frontmatter
+    link (written at import time when linked from a call, but not currently read back into `DocMeta`
+    at all — confirmed, the struct has no field for it) — real, but a separate, small follow-up.
+    Effort S–M (was S before the Markdown revision) — reuses `NoteDetailView`'s sheet/header/action
+    pattern and `DocumentImporter`'s already-unbounded `body`; the new work is the view, the
+    block-split renderer, and retargeting one tap gesture.
 
 25. **Rebindable hotkeys** *(ratified 2026-07-20; Ronan: "the hot keys should be rebindable no?"
     — confirmed first, not assumed: both ⌥⌘R and ⌥⌘N are 100% hardcoded today, Carbon literal
