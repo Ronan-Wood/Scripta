@@ -123,12 +123,17 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
     /// How imminent the next upcoming call is, if within the 30-minute warning window.
     private enum CallProximity {
-        case soon       // ≤30 min — white
+        case soon       // ≤30 min — blue
         case near       // ≤15 min — yellow
         case imminent   // ≤5 min  — green
         var color: NSColor {
             switch self {
-            case .soon: return .white
+            // Was .white (crosscheck): the "." now shares the icon with a tint that's ALSO
+            // .white on a dark menu bar (menuBarIsDark ? .white : .black) — same color as the
+            // "S", so the period signaled nothing at all in dark mode. .systemBlue never
+            // coincides with either tint extreme, and matches the color this app already uses
+            // elsewhere for "something's happening, not urgent" (Quick Capture's mic icon).
+            case .soon: return .systemBlue
             case .near: return .systemYellow
             case .imminent: return .systemGreen
             }
