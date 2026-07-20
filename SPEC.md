@@ -182,14 +182,18 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     right-click-Open) + auto-update via Sparkle (push versions without re-sending `.dmg`s).
     Worth it once more than a few people use it.
 
-14. **Quick Capture — standalone voice notes** *(ratified 2026-07-19; the brain's missing
-    organ — every note path today is call-anchored, and idle ⌥⌘N is a documented silent no-op.
-    Full context: vault "Brain Roadmap Candidates").* When idle, ⌥⌘N opens a floating HUD panel
-    that is already listening: mic → `MicrophoneTap` (tap-only AVAudioEngine — **no audio file;
-    raw audio never touches disk on this path**, stronger than the transcript invariant) →
+14. **Quick Capture — standalone voice + typed notes** *(ratified 2026-07-19; the brain's
+    missing organ — every note path today is call-anchored, and idle ⌥⌘N is a documented silent
+    no-op. Full context: vault "Brain Roadmap Candidates").* When idle, ⌥⌘N opens a floating HUD
+    panel that is already listening: mic → `MicrophoneTap` (tap-only AVAudioEngine — **no audio
+    file; raw audio never touches disk on this path**, stronger than the transcript invariant) →
     `LiveTranscriber` biased with the workspace vocab (domain vocabulary + confirmed aliases +
-    term vocab; unlike the live call pane, here the live text IS the artifact) → live text in
-    the panel. **Return saves, Esc discards** — zero filing decisions. On save:
+    term vocab; unlike the live call pane, here the live text IS the artifact) → an **editable**
+    text buffer in the panel — type, speak, or both. Newly finalized dictation appends at the
+    end of the buffer only, never splicing into an in-progress edit or moving the cursor; the
+    in-progress (unfinalized) recognition preview renders separately below the buffer so a live
+    update can never clobber a keystroke. **⌘Return saves, Esc discards** — zero filing
+    decisions (plain Return is left free to insert a newline). On save:
     `FillerCleaner` (deterministic, always) → FM intent cleanup (apply self-corrections, single
     paragraph — legitimate because a capture is intent, not record; transcripts stay verbatim)
     with fallback to cleaned raw when FM is unavailable → timestamped entry appended to the
