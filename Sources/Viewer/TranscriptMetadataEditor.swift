@@ -128,17 +128,20 @@ enum TranscriptMetadataEditor {
         try result.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    /// Marks one open commitment resolved (M17 follow-up), matched by its TEXT portion (the
-    /// description after "owner: ") — commitment descriptions are FM-extracted and specific
-    /// enough to be unique within one call in practice, and matching this way needs nothing extra
-    /// threaded from the DB read side (which already has `text`, not the original raw owner
-    /// spelling). Appends a `" [done]"` suffix to the matching frontmatter entry rather than
-    /// updating the DB directly: `IndexBuilder` rebuilds `action_items` from this SAME frontmatter
-    /// on every re-index (reconcile, a metadata edit), so a DB-only status would be silently
+    /// Marks one open commitment resolved (M17 follow-up), matched by owner + text together —
+    /// text alone isn't enough: two different people can have identically-worded commitments in
+    /// the same call, and a text-only match would silently resolve both (crosscheck). Each
+    /// frontmatter entry's raw owner string is resolved via the SAME `EntityRegistry.
+    /// resolveCommitmentOwner` helper `IndexBuilder` used to build the `action_items` row in the
+    /// first place, so a match here can never drift from how the row being targeted was actually
+    /// built. Appends a `" [done]"` suffix to the matching frontmatter entry rather than updating
+    /// the DB directly: `IndexBuilder` rebuilds `action_items` from this SAME frontmatter on
+    /// every re-index (reconcile, a metadata edit), so a DB-only status would be silently
     /// reverted the next time that happens — the frontmatter has to be where "done" lives, same
-    /// as the commitment text itself. A no-op (not an error) if nothing matches, already done, or
-    /// the call has no commitments — the caller doesn't need to distinguish those cases.
-    static func markCommitmentDone(url: URL, commitmentText: String) throws {
+    /// as the commitment text itself. Only the first qualifying entry is ever marked. A no-op
+    /// (not an error) if nothing matches, already done, or the call has no commitments — the
+    /// caller doesn't need to distinguish those cases.
+    static func markCommitmentDone(url: URL, group: String, ownerID: String, commitmentText: String) throws {
         let content = try String(contentsOf: url, encoding: .utf8)
         guard let split = Frontmatter.split(content), Frontmatter.hasOwnerMarker(split.frontmatter) else {
             throw EditError(message: "This isn’t a Scripta transcript.")
@@ -146,8 +149,11 @@ enum TranscriptMetadataEditor {
         let existing = Frontmatter.list(split.frontmatter, "commitments")
         var changed = false
         let updated = existing.map { entry -> String in
-            guard !entry.hasSuffix(" [done]"), let range = entry.range(of: ": ") else { return entry }
-            guard String(entry[range.upperBound...]) == commitmentText else { return entry }
+            guard !changed, !entry.hasSuffix(" [done]"), let range = entry.range(of: ": ") else { return entry }
+            let rawOwner = String(entry[..<range.lowerBound])
+            let text = String(entry[range.upperBound...])
+            guard text == commitmentText,
+                  EntityRegistry.resolveCommitmentOwner(rawOwner, group: group) == ownerID else { return entry }
             changed = true
             return entry + " [done]"
         }

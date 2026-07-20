@@ -1076,7 +1076,10 @@ public final class IndexStore {
     /// name needs the registry, which this layer deliberately doesn't depend on (matches
     /// `people()`/`tags()`: IndexStore returns raw aggregates, callers cross-reference identity).
     /// `path` is the owning call's file, needed to mark a commitment done (rewrites that file's
-    /// frontmatter — see `TranscriptMetadataEditor.markCommitmentDone`).
+    /// frontmatter — see `TranscriptMetadataEditor.markCommitmentDone`). `id` includes `ownerID`
+    /// so two different people's identically-worded commitments in one call never collide
+    /// (crosscheck) — a collision would corrupt both the SwiftUI diffing and the optimistic
+    /// removal on mark-done.
     public struct CommitmentRow: Identifiable {
         public let id: String
         public let path: String
@@ -1085,18 +1088,25 @@ public final class IndexStore {
         public let callTitle: String
     }
 
-    public func commitments(group: String, limit: Int = 200) -> [CommitmentRow] {
+    /// `ownerID`, when passed, filters in SQL before the LIMIT — a caller scoped to one person
+    /// (the entity page) must not lose their older commitments to a client-side filter applied
+    /// after the workspace-wide cap already truncated the result (crosscheck).
+    public func commitments(group: String, ownerID: String? = nil, limit: Int = 200) -> [CommitmentRow] {
         let unlock = acquireLock(); defer { unlock() }
         var out: [CommitmentRow] = []
+        let ownerClause = ownerID != nil ? " AND a.owner_id = ?" : ""
         query("""
             SELECT a.path, a.owner_id, a.text, t.title FROM action_items a
             JOIN transcripts t ON t.path = a.path
-            WHERE t."group" = ? AND t.kind = 'call' AND a.status = 'open'
+            WHERE t."group" = ? AND t.kind = 'call' AND a.status = 'open'\(ownerClause)
             ORDER BY t.date DESC, t.time DESC LIMIT \(max(1, limit));
             """,
-              bind: { Self.bindStatic($0, 1, group) }) { stmt in
+              bind: { stmt in
+            Self.bindStatic(stmt, 1, group)
+            if let ownerID { Self.bindStatic(stmt, 2, ownerID) }
+        }) { stmt in
             let path = text(stmt, 0), owner = text(stmt, 1), txt = text(stmt, 2), title = text(stmt, 3)
-            out.append(CommitmentRow(id: "\(path)|\(txt)", path: path, ownerID: owner, text: txt, callTitle: title))
+            out.append(CommitmentRow(id: "\(path)|\(owner)|\(txt)", path: path, ownerID: owner, text: txt, callTitle: title))
         }
         return out
     }

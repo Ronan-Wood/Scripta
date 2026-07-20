@@ -42,4 +42,14 @@ extension EntityRegistry {
             + EntityRegistry.shared.termVocab(group: group)
         return Array(Set(raw.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }))
     }
+
+    /// Resolves a commitment's raw frontmatter owner string the SAME way for every caller
+    /// (`IndexBuilder` when building `action_items`, `TranscriptMetadataEditor` when matching an
+    /// entry to mark done) — shared so a mark-done match can never silently drift from how the
+    /// row it's targeting was actually built. "you" is a sentinel, never resolved; anything else
+    /// resolves ONLY against a CONFIRMED person (never allocates), falling back to the raw string.
+    static func resolveCommitmentOwner(_ raw: String, group: String) -> String {
+        raw.caseInsensitiveCompare("you") == .orderedSame
+            ? "you" : (EntityRegistry.shared.resolveConfirmed(surface: raw, kind: "person", group: group) ?? raw)
+    }
 }

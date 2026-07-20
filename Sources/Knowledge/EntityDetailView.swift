@@ -15,6 +15,10 @@ struct EntityDetailView: View {
     /// show a blank "…" header for a name the caller already had in hand.
     var fallbackName: String? = nil
     let onClose: () -> Void
+    /// Invoked after a commitment here is marked done, so the presenting view (KnowledgeView's
+    /// rail) can refresh — this sheet's own `commitments` state already updates itself, but the
+    /// rail's separately-loaded copy of the same rows would otherwise go stale (crosscheck).
+    var onCommitmentsChanged: () -> Void = {}
 
     @State private var entity: EntityRegistry.Entity?
     @State private var mentions: [SearchHit] = []
@@ -161,15 +165,20 @@ struct EntityDetailView: View {
     }
 
     /// Same frontmatter-is-source-of-truth path as KnowledgeView's markCommitmentDone — see that
-    /// one's doc comment for why this can't be a DB-only status flip.
+    /// one's doc comment for why this can't be a DB-only status flip. `ownerID` prevents
+    /// cross-resolving two people's identically-worded commitments (crosscheck); the callback
+    /// lets the presenting rail refresh its own separately-loaded copy of these rows.
     private func markDone(_ item: IndexStore.CommitmentRow) {
         guard let store = IndexStore.shared else { return }
         commitments.removeAll { $0.id == item.id }
         let url = URL(fileURLWithPath: item.path)
         let text = item.text
+        let g = group
+        let ownerID = item.ownerID
         Task.detached(priority: .utility) {
-            try? TranscriptMetadataEditor.markCommitmentDone(url: url, commitmentText: text)
+            try? TranscriptMetadataEditor.markCommitmentDone(url: url, group: g, ownerID: ownerID, commitmentText: text)
             IndexBuilder.index(url, into: store)
+            await MainActor.run { onCommitmentsChanged() }
         }
     }
 
@@ -194,10 +203,10 @@ struct EntityDetailView: View {
             // correctly SQL-scoped; this closes the one unscoped read.
             let entity = EntityRegistry.shared.entity(id: id, group: g)
             let mentions = IndexStore.shared?.callsMentioning(entityID: id, group: g) ?? []
-            // No dedicated "commitments for one owner" query — commitments(group:) is already
-            // bounded (200), so filtering client-side avoids a near-duplicate SQL function for
-            // one extra WHERE clause.
-            let commitments = (IndexStore.shared?.commitments(group: g) ?? []).filter { $0.ownerID == id }
+            // SQL-level owner filter (crosscheck): filtering client-side after commitments(group:)'s
+            // workspace-wide 200-row cap already applied could silently drop this person's older
+            // commitments once the workspace had enough total volume.
+            let commitments = IndexStore.shared?.commitments(group: g, ownerID: id) ?? []
             let co = IndexStore.shared?.coOccurring(entityID: id, group: g) ?? []
             return (entity, mentions, commitments, co)
         }.value
