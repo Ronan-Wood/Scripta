@@ -230,7 +230,7 @@ print("\nRegistry privacy wall")
 let regURL = URL(fileURLWithPath: NSTemporaryDirectory())
     .appendingPathComponent("scripta-eval-registry-\(UUID().uuidString).json")
 let reg = EntityRegistry(url: regURL)
-reg.resolve(surface: "Alice Alpha", kind: "person", group: "Alpha")
+let aliceID = reg.resolve(surface: "Alice Alpha", kind: "person", group: "Alpha")
 reg.confirm(surface: "Alice Alpha", group: "Alpha")
 let bobID = reg.resolve(surface: "Bob Beta", kind: "person", group: "Beta")
 reg.confirm(surface: "Bob Beta", group: "Beta")
@@ -249,6 +249,10 @@ var regTotal = 0
 func regCheck(_ ok: Bool, _ msg: String) { regTotal += 1; if !ok { regFails += 1; print("  FAIL: \(msg)") } }
 regCheck(!reg.confirmedAliases(group: "Alpha").contains("Bob Beta")
       && !reg.confirmedAliases(group: "Beta").contains("Alice Alpha"), "confirmed aliases crossed groups")
+regCheck(reg.resolveConfirmed(surface: "Alice Alpha", kind: "person", group: "Alpha") == aliceID,
+         "resolveConfirmed missed a confirmed match in its own group")
+regCheck(reg.resolveConfirmed(surface: "Alice Alpha", kind: "person", group: "Beta") == nil,
+         "resolveConfirmed leaked a confirmed match across groups — M17 commitment-owner matching depends on this wall")
 let alphaTerms = reg.terms(group: "Alpha").map(\.name)
 let betaTerms = reg.terms(group: "Beta").map(\.name)
 regCheck(!betaTerms.contains("TIM"), "Alpha-scoped term visible in Beta")
@@ -265,6 +269,10 @@ regCheck(reg.allEntities().first { $0.name == "Carol Cross" }?.groups == ["Alpha
 let carolResolved = reg.resolve(surface: "Carol Cross", kind: "person", group: "Alpha")
 regCheck(reg.allEntities().contains { $0.id == carolResolved },
          "resolve followed a dangling verdict to a purged id")
+regCheck(reg.entity(id: carolResolved, group: "Alpha")?.name == "Carol Cross",
+         "entity(id:group:) missed a match in the entity's own surviving group")
+regCheck(reg.entity(id: carolResolved, group: "Beta") == nil,
+         "entity(id:group:) leaked a purged-group entity across groups — M19's display surfaces depend on this wall")
 let regPass = regFails == 0
 print("  \(regTotal - regFails)/\(regTotal) registry checks passed")
 print("  → \(regPass ? "PASS — registry wall holds" : "FAIL — registry leak")")
