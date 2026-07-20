@@ -539,6 +539,35 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     AppKit view — this is the first one that makes itself first responder and captures keyboard
     events, genuinely new territory even though the wrapping technique isn't.
 
+26. **Documentation refresh — README + skill catch up to M14–M25** *(ratified 2026-07-20;
+    Ronan: "ok lets do it make sure it can render the markdown too then we will expand
+    documentation so it covers the full capabilities of the app" — the second half of that
+    instruction, deferred until the M23→M25 queue finished. Confirmed stale, not assumed:
+    `HubView.swift:322` has a real Knowledge pane (7 panes total: Home/Calls/Meetings/Ask/
+    Knowledge/Settings/Docs) that `README.md:9` doesn't list; `SourcesMCP/main.swift:700,711`
+    register real `commitments`/`entity_detail` MCP tools that neither `README.md`'s tool list
+    (`README.md:74-77`) nor `Skill/scripta/SKILL.md`'s mentions. Both docs predate this
+    session's entire M14–M25 arc — Quick Capture, notes, the commitments lifecycle, the
+    entity graph, the Knowledge dashboard, the in-app document reader, and rebindable
+    hotkeys are all unmentioned in either file.)*
+    - `README.md`: add Knowledge to the pane list; new/expanded feature bullets for Quick
+      Capture (standalone voice capture, plus a timestamped note during one), the
+      commitments lifecycle (extraction, owner disambiguation, mark-done), the entity graph
+      + Knowledge dashboard (entity pages, recent-activity synthesis, in-app document
+      reader), and rebindable hotkeys (⌥⌘N alongside ⌥⌘R, both now user-configurable in
+      Settings rather than fixed); extend the MCP tool list with `commitments`/
+      `entity_detail`; bring the Status section current.
+    - `Skill/scripta/SKILL.md`: add `commitments`/`entity_detail` to the tools list, same
+      one-line style as the existing seven; one new playbook exercising them (e.g. "what
+      does X still owe me" / "who's connected to Y").
+    - Scope: prose only, no code changes. SPEC.md itself already tracks the implementation
+      history in detail — README/SKILL are the user/agent-facing surfaces that had drifted.
+
+    **Explicitly out of scope:** a from-scratch rewrite of either file — both are
+    fundamentally sound, this is a catch-up pass on what's now stale, not a redesign. The
+    in-app Docs pane's own content (separate from these two files) — not audited here, a
+    follow-up if it's also found stale. Effort S.
+
 **Live transcription + related-calls (2026-07-14) — implemented.** Validated `SpeechTranscriber`
 `.volatileResults` streaming in isolation (partials stream token-by-token, then `isFinal`), incl. the
 live **buffer-feed** path (`SpeechAnalyzer.bestAvailableAudioFormat` = 16 kHz mono Int16;
