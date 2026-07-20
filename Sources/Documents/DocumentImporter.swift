@@ -84,7 +84,12 @@ enum DocumentImporter {
         if let linkedCall {
             frontmatter += "\ncall: \"[[\(sanitize(linkedCall.deletingPathExtension().lastPathComponent))]]\""
         }
-        frontmatter += "\n---\n\n# \(title)\n\n\(trimmed)\n"
+        // No embedded "# Title" heading here (crosscheck) — `DocMeta.title` (frontmatter, above)
+        // is already every consumer's source of truth; a second copy baked into the body just
+        // duplicated it in `DocumentDetailView`'s reader, and did so with the unsanitized `title`
+        // against the frontmatter's `sanitize(title)`, so the two could literally read different
+        // text for a source filename containing a `"`.
+        frontmatter += "\n---\n\n\(trimmed)\n"
 
         let mdURL = uniqueURL(for: "\(title) — extracted.md")
         try frontmatter.write(to: mdURL, atomically: true, encoding: .utf8)
