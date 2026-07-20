@@ -31,14 +31,20 @@ public enum Frontmatter {
         frontmatter.components(separatedBy: "\n").contains(where: isOwnerMarkerLine)
     }
 
-    /// Matches the owner-marker line, tolerating YAML quoting (`app: "call-transcriber"` or
-    /// `'call-transcriber'`) that Obsidian's properties editor adds — those are still our files.
-    /// Safe to accept broadly: the retention pruner also gates on the transcript filename shape.
-    public static func isOwnerMarkerLine(_ line: String) -> Bool {
+    /// Matches an `app:` marker line for the given marker value, tolerating YAML quoting
+    /// (`app: "value"` / `'value'`) that Obsidian's properties editor adds — those are still our
+    /// files. Shared by the transcript owner marker and the entity-mirror stub marker.
+    public static func isMarkerLine(_ line: String, marker: String) -> Bool {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard trimmed.hasPrefix("app:") else { return false }
         let value = trimmed.dropFirst(4).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
-        return value == OwnerMarker.value
+        return value == marker
+    }
+
+    /// The transcript owner-marker line. Safe to accept quoting broadly: the retention pruner
+    /// also gates on the transcript filename shape.
+    public static func isOwnerMarkerLine(_ line: String) -> Bool {
+        isMarkerLine(line, marker: OwnerMarker.value)
     }
 
     // MARK: - Field access (shared by the app's TranscriptStore and the MCP)

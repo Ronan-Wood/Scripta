@@ -15,14 +15,18 @@ import ScriptaCore
 /// this stays the single call site.
 enum WorkspaceDeleter {
     /// Files that would be deleted for `group` ("" = ungrouped) — drives the confirmation count.
-    static func candidates(group: String) -> [URL] {
-        TranscriptStore.list().filter { $0.group == group }.map(\.url)
+    static func candidates(group: String, in vault: URL = AppSettings.outputFolder) -> [URL] {
+        TranscriptStore.list(in: vault).filter { $0.group == group }.map(\.url)
     }
 
     @discardableResult
     static func delete(group: String) -> Int {
+        // Capture BOTH switchable globals once: a vault switch (repoint) landing mid-cascade must
+        // not split the halves — files from vault A but stubs/registry purged in vault B.
+        let vault = AppSettings.outputFolder
+        let registry = EntityRegistry.shared
         var deleted = 0
-        for url in candidates(group: group) {
+        for url in candidates(group: group, in: vault) {
             try? FileManager.default.removeItem(at: url)
             IndexStore.shared?.remove(path: url.path)   // cascade: transcript row + chunks + FTS
             deleted += 1
@@ -33,12 +37,9 @@ enum WorkspaceDeleter {
         // destroy global vocabulary that feeds every workspace's ASR bias. Ungrouped files still
         // delete above; only the registry/mirror halves are skipped.
         if !group.isEmpty {
-            // One registry snapshot for the whole cascade (the snapshot-per-pass rule): a
-            // concurrent vault switch must not split purge and mirror across two registries.
-            let registry = EntityRegistry.shared
             registry.purge(group: group)
             // Vault stubs (Entities/<group>/) go too, toggle or no toggle — marker-gated inside.
-            EntityMirror.purge(group: group, vault: AppSettings.outputFolder)
+            EntityMirror.purge(group: group, vault: vault)
             if let store = IndexStore.shared {
                 IndexBuilder.syncTerms(store: store, registry: registry)
             }

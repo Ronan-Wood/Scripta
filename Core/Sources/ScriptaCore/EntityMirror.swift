@@ -42,22 +42,32 @@ public enum EntityMirror {
     /// only files carrying this app's entity marker are touched, so a user note sharing the
     /// folder or a name survives; the folder is removed only if left empty.
     public static func purge(group: String, vault: URL) {
-        guard !group.isEmpty else { return }
+        let safe = safeName(group)
+        guard !group.isEmpty, !safe.isEmpty, safe != ".", safe != ".." else { return }
         let folder = vault.appendingPathComponent("Entities", isDirectory: true)
-            .appendingPathComponent(safeName(group), isDirectory: true)
+            .appendingPathComponent(safe, isDirectory: true)
         let fm = FileManager.default
         for url in (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] {
             guard url.pathExtension == "md",
                   let content = try? String(contentsOf: url, encoding: .utf8),
-                  let split = Frontmatter.split(content),
-                  split.frontmatter.components(separatedBy: "\n").contains(where: {
-                      $0.trimmingCharacters(in: .whitespaces) == "app: \(marker)"
-                  }) else { continue }
+                  isOwnStub(content) else { continue }
             try? fm.removeItem(at: url)
         }
-        if let remaining = try? fm.contentsOfDirectory(atPath: folder.path), remaining.isEmpty {
-            try? fm.removeItem(at: folder)
-        }
+        // Atomic "remove only if empty": rmdir(2) fails on a non-empty directory, so a file
+        // landing after the stub sweep (sync client, user save) can never be swept up the way a
+        // recursive removeItem could. Finder metadata is cleared first so a browsed-but-otherwise
+        // empty folder still goes (a surviving folder would leak the wiped workspace's name).
+        try? fm.removeItem(at: folder.appendingPathComponent(".DS_Store"))
+        _ = rmdir(folder.path)
+    }
+
+    /// The ownership predicate shared by the write path (overwrite safety) and the wipe path
+    /// (delete safety). Quote-tolerant because Obsidian's properties editor re-serializes
+    /// `app: marker` as `app: "marker"` — those are still our stubs, for updating AND for wiping.
+    static func isOwnStub(_ content: String) -> Bool {
+        guard let split = Frontmatter.split(content) else { return false }
+        return split.frontmatter.components(separatedBy: "\n")
+            .contains { Frontmatter.isMarkerLine($0, marker: marker) }
     }
 
     private static func writeStub(at url: URL, entity: (id: String, name: String, kind: String, count: Int),
@@ -67,10 +77,7 @@ public enum EntityMirror {
 
         if let existing = try? String(contentsOf: url, encoding: .utf8) {
             // Only touch our own stubs; a user note that happens to share the name is left alone.
-            guard let split = Frontmatter.split(existing),
-                  split.frontmatter.components(separatedBy: "\n").contains(where: {
-                      $0.trimmingCharacters(in: .whitespaces) == "app: \(marker)"
-                  }) else { return }
+            guard isOwnStub(existing) else { return }
             let updated = replaceRegion(in: existing, with: region)
             if updated != existing { try? updated.write(to: url, atomically: true, encoding: .utf8) }
         } else {
