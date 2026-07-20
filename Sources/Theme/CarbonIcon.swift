@@ -1,6 +1,21 @@
 import SwiftUI
 import AppKit
 
+extension NSColor {
+    /// An appearance-aware Carbon color for AppKit contexts (the menu bar icon), which can't use
+    /// the SwiftUI `Carbon` tokens directly. Same mechanism `CarbonTheme.swift`'s private `dyn`
+    /// already uses (`NSColor(name:)` re-evaluated per-appearance, `NSColor(hex:)` underneath) —
+    /// duplicated here rather than exposed from `Carbon` itself, since `dyn` returns a SwiftUI
+    /// `Color` and this is the one AppKit-only call site. Pass hex pairs copied verbatim from the
+    /// `Carbon` token they should match, same rule as `Carbon`'s own source-of-truth comment.
+    static func carbonDynamic(light: UInt32, dark: UInt32) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSColor(hex: isDark ? dark : light)
+        }
+    }
+}
+
 /// The colophon "S." as a status-bar mark. Template by default (the menu bar recolors it);
 /// pass a tint for a flat-colored variant. `dotColor`, when set, colors ONLY the period —
 /// the mark's own "." doubling as a status indicator (e.g. call-proximity color) instead of
