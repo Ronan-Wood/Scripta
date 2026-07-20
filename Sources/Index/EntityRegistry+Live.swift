@@ -31,4 +31,15 @@ extension EntityRegistry {
     private static func registryURL(in folder: URL) -> URL {
         folder.appendingPathComponent(".calltranscriber-registry.json")
     }
+
+    /// The one place the confirmed-only ASR recognition bias set is composed: domain vocabulary
+    /// (user-entered jargon) + confirmed aliases + term vocab, scoped to the workspace, trimmed
+    /// and deduped. Recording and Quick Capture both call this — never assemble it inline, or a
+    /// vocab source added here (M15's correction loop) won't reach every caller.
+    static func recognitionVocab(group: String) -> [String] {
+        let raw = AppSettings.domainVocabulary
+            + EntityRegistry.shared.confirmedAliases(group: group)
+            + EntityRegistry.shared.termVocab(group: group)
+        return Array(Set(raw.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }))
+    }
 }
