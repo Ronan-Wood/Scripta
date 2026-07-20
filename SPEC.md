@@ -39,6 +39,11 @@ frontmatter, written to a user-configured folder (typically inside an Obsidian v
 - Consent stays the user's responsibility; the app discloses nothing to other parties. Amended
   2026-07-16 (App Store prep): a one-time first-launch notice states this and the menu-bar
   indicator always shows recording state — but there is still no per-recording consent UI.
+- FM-driven features (digest, notes-merge, commitment extraction (M17), related-items synthesis
+  (M18)) are bounded generation only — the model identifies/summarizes/lists, it never acts on
+  the world (no messages sent, no events created, nothing pushed to another system). The one
+  user-facing mutation among them, marking a commitment done, is a deterministic, user-triggered
+  UI action on already-extracted data, not the FM acting agentically.
 
 ## Knowledge center + Clovis (2026-07-16, from Ronan's Scripta.dc.html render)
 
@@ -126,12 +131,20 @@ frontmatter, written to a user-configured folder (typically inside an Obsidian v
      `claude mcp add calltranscriber -- /Applications/CallTranscriber.app/Contents/MacOS/calltranscriber-mcp`
    - Resolves the output folder from the app's UserDefaults domain
      (`com.ronanwood.CallTranscriber`); errors cleanly if unconfigured.
-   - **Read-only toolset (v1):**
+   - **Read-only toolset (v1):** *(corrected 2026-07-20 — this list had drifted from what
+     `SourcesMCP/main.swift` actually registers: `get_recording_status` was never built, and
+     five tools added since M8 was first written were never added here.)*
+     - `overview(limit?, since?, compact?)` → recent calls newest-first with title/date/
+       participants/summary — the recommended first call, before `get_transcript`
      - `list_transcripts(limit, since?, participant?, tag?)` → frontmatter metadata + paths
-     - `get_transcript(path)` → full markdown
+     - `get_transcript(path)` → full markdown (truncated ~24k chars on very long calls, with
+       a pointer to `retrieve`/`get_section` for the rest)
      - `search_transcripts(query)` → matches with surrounding context lines
-     - `get_recording_status()` → idle / recording + session start (via a state file the
-       app maintains)
+     - `retrieve(query, participant?, tag?, since?, speaker?, limit?)` → BM25-ranked passages
+       over the indexed chunks — the same ranking Clovis/Ask uses
+     - `get_section(path, start, end?)` → spoken lines within one time window, instead of the
+       whole file
+     - `people()` / `tags()` → cross-call aggregates (names / topic tags) for filter discovery
    - Serves ONLY app-authored files (frontmatter marker check) — it must not become a
      second door into the rest of a vault the output folder happens to live in.
    - **No start/stop-recording tools in v1** — preserves the manual-trigger invariant.
