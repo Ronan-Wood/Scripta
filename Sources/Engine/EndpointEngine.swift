@@ -52,6 +52,23 @@ final class EndpointEngine: ChatEngine, EnrichEngine {
         }
     }
 
+    func extractCommitments(transcript: String, sizeClass: SizeClass) async -> [ExtractedCommitment]? {
+        let user = PromptCatalog.commitmentsPrompt(transcript: transcript, sizeClass: sizeClass,
+                                                    jsonSchema: PromptCatalog.commitmentsJSONSchema)
+        do {
+            let raw = try await wire.complete(
+                model: model,
+                messages: [["role": "system", "content": "You extract explicit commitments from a transcript. Respond with JSON only."],
+                           ["role": "user", "content": user]],
+                jsonMode: true, timeout: 240)
+            let json = Self.extractJSON(raw)
+            guard let dto = try? JSONDecoder().decode(CommitmentsDTO.self, from: Data(json.utf8)) else { return nil }
+            return dto.commitments.map { ExtractedCommitment(owner: $0.owner, text: $0.text) }
+        } catch {
+            return nil
+        }
+    }
+
     /// Parameter-count heuristic on the model id — default `.capable`, but obviously small models
     /// get the compact (strict) prompts.
     static func inferSizeClass(_ model: String) -> SizeClass {

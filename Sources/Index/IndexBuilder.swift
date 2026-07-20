@@ -39,7 +39,20 @@ enum IndexBuilder {
             IndexedChunk(startMs: $0.startMs, endMs: $0.endMs, speaker: $0.speaker,
                          text: Indexing.stripControlChars($0.text))
         }
-        store.upsert(transcript, chunks: chunks)
+        // Commitments (M17): "<owner>: <text>" frontmatter entries, split on the first ": ".
+        // "you" is a sentinel, not a trackable identity; any other owner resolves through the
+        // SAME registry entity extraction already uses, so a commitment rollup and the
+        // People rail agree on who's who (no separate name-matching invented here).
+        let actionItems: [IndexedActionItem] = meta.commitments.compactMap { line in
+            guard let range = line.range(of: ": ") else { return nil }
+            let owner = String(line[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
+            let text = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+            guard !owner.isEmpty, !text.isEmpty else { return nil }
+            let ownerID = owner.caseInsensitiveCompare("you") == .orderedSame
+                ? "you" : registry.resolve(surface: owner, kind: "person", group: meta.group)
+            return IndexedActionItem(ownerID: ownerID, text: text)
+        }
+        store.upsert(transcript, chunks: chunks, actionItems: actionItems)
         let hash = Indexing.contentHash(chunks)
         store.recordStage(path: url.path, stage: "chunk", hash: hash, model: "chunker-v1")
 

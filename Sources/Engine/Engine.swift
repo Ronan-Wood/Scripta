@@ -35,12 +35,13 @@ protocol ChatEngine {
 
 /// A title/summary/topics generator (concrete return type — sidesteps the Generable-vs-Codable
 /// generic-dispatch problem: Apple FM builds it via @Generable, the endpoint via JSON decode).
-/// Also the notes-merge (M16) generator — same "per-call AI enrichment" bucket, same assigned
-/// model/settings, just a different-shaped call on the same engine.
+/// Also the notes-merge (M16) and commitment-extraction (M17) generators — same "per-call AI
+/// enrichment" bucket, same assigned model/settings, just different-shaped calls on the engine.
 protocol EnrichEngine {
     var label: String { get }
     func digest(transcript: String, sizeClass: SizeClass) async -> TranscriptDigest?
     func mergeNotes(transcript: String, notes: String, sizeClass: SizeClass) async -> String?
+    func extractCommitments(transcript: String, sizeClass: SizeClass) async -> [ExtractedCommitment]?
 }
 
 /// Plain decodable shape the endpoint parses JSON-mode output into (TranscriptDigest itself is
@@ -49,6 +50,14 @@ struct DigestDTO: Decodable {
     let title: String
     let summary: String
     let topics: [String]
+}
+
+/// Plain decodable shape the endpoint parses commitment-extraction JSON-mode output into
+/// (ExtractedCommitment itself is @Generable, which doesn't give us Codable) — converted to
+/// `[ExtractedCommitment]` before returning, so the protocol's return type stays engine-agnostic.
+struct CommitmentsDTO: Decodable {
+    struct Item: Decodable { let owner: String; let text: String }
+    let commitments: [Item]
 }
 
 /// Plain decodable shape the endpoint parses notes-merge JSON-mode output into.

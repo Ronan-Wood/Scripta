@@ -536,6 +536,20 @@ final class RecordingSession {
                 if let store = IndexStore.shared { IndexBuilder.indexNote(saved.url, into: store) }
             }
         }
+
+        // Commitment extraction (M17): patches the transcript's OWN frontmatter (not a new
+        // file), so — unlike notes-merge — it belongs under the same disclosure/toggle as
+        // title/summary, not its own. Always backgrounded regardless of deferEnrichment: it's a
+        // second, independent FM call, not part of the digest call above.
+        if AppSettings.summarizeEnabled {
+            Task.detached(priority: .utility) {
+                let commitments = await CommitmentExtractor.extract(transcript: plain)
+                guard !commitments.isEmpty else { return }
+                try? TranscriptMetadataEditor.applyCommitments(url: url, commitments: commitments)
+                if let store = IndexStore.shared { IndexBuilder.index(url, into: store) }
+                await MainActor.run { AppModel.shared.reloadCalls() }
+            }
+        }
         return url
     }
 

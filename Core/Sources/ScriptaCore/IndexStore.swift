@@ -50,6 +50,18 @@ public struct IndexedChunk {
     }
 }
 
+/// A commitment extracted from one transcript (M17). `ownerID` is an `EntityRegistry` id when
+/// the owner resolved to a known person, or the literal `"you"` sentinel when the recording's own
+/// user owes it — never empty (an unresolvable owner still gets an id via `EntityRegistry.resolve`,
+/// which allocates one rather than failing).
+public struct IndexedActionItem {
+    public let ownerID: String
+    public let text: String
+    public init(ownerID: String, text: String) {
+        self.ownerID = ownerID; self.text = text
+    }
+}
+
 /// A full passage retrieved for on-device answering.
 public struct ContextChunk {
     public let path: String
@@ -272,7 +284,7 @@ public final class IndexStore {
 
     /// Replaces a transcript's row + chunks wholesale (delete then insert), keeping FTS in sync
     /// via the triggers. Called on write and on any metadata edit.
-    public func upsert(_ t: IndexedTranscript, chunks: [IndexedChunk]) {
+    public func upsert(_ t: IndexedTranscript, chunks: [IndexedChunk], actionItems: [IndexedActionItem] = []) {
         let unlock = acquireLock(); defer { unlock() }
         guard exec("BEGIN;") else { return }
         var ok = removeRows(path: t.path)
@@ -300,6 +312,13 @@ public final class IndexStore {
                     sqlite3_bind_int64(stmt, 2, Int64(c.startMs)); sqlite3_bind_int64(stmt, 3, Int64(c.endMs))
                     if let sp = c.speaker { bind(stmt, 4, sp) } else { sqlite3_bind_null(stmt, 4) }
                     bind(stmt, 5, c.text)
+                }) else { ok = false; break }
+            }
+        }
+        if ok {
+            for a in actionItems {
+                guard run("INSERT INTO action_items(path,owner_id,text,status) VALUES(?,?,?,?)", bind: { stmt in
+                    bind(stmt, 1, t.path); bind(stmt, 2, a.ownerID); bind(stmt, 3, a.text); bind(stmt, 4, "open")
                 }) else { ok = false; break }
             }
         }
@@ -1022,6 +1041,25 @@ public final class IndexStore {
     /// All participants across transcripts with a call count, most-frequent first.
     public func people() -> [(name: String, count: Int)] {
         aggregateList(column: "participants")
+    }
+
+    /// Open commitments in one workspace (M17), newest call first. `ownerID` is either the
+    /// `"you"` sentinel or an `EntityRegistry` id — resolving that to a display name needs the
+    /// registry, which this layer deliberately doesn't depend on (matches `people()`/`tags()`:
+    /// IndexStore returns raw aggregates, callers cross-reference identity).
+    public func commitments(group: String) -> [(ownerID: String, text: String, callTitle: String)] {
+        let unlock = acquireLock(); defer { unlock() }
+        var out: [(String, String, String)] = []
+        query("""
+            SELECT a.owner_id, a.text, t.title FROM action_items a
+            JOIN transcripts t ON t.path = a.path
+            WHERE t."group" = ? AND t.kind = 'call' AND a.status = 'open'
+            ORDER BY t.date DESC, t.time DESC
+            """,
+              bind: { Self.bindStatic($0, 1, group) }) { stmt in
+            out.append((text(stmt, 0), text(stmt, 1), text(stmt, 2)))
+        }
+        return out
     }
 
     /// All tags across transcripts (excluding the owner marker) with a count, most-frequent first.

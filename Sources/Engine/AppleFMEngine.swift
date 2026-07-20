@@ -39,6 +39,20 @@ final class AppleFMEngine: ChatEngine, EnrichEngine {
             return nil
         }
     }
+
+    /// Extracts commitments/action items (M17). nil on any failure — CommitmentExtractor treats
+    /// that the same as "found none," never as an error worth surfacing (extraction is additive).
+    func extractCommitments(transcript: String, sizeClass: SizeClass) async -> [ExtractedCommitment]? {
+        guard TranscriptEnricher.isAvailable else { return nil }
+        let prompt = PromptCatalog.commitmentsPrompt(transcript: transcript, sizeClass: sizeClass)
+        do {
+            let session = LanguageModelSession()
+            let result = try await session.respond(to: prompt, generating: ExtractedCommitments.self).content
+            return result.commitments
+        } catch {
+            return nil
+        }
+    }
 }
 
 /// One Apple FM conversation. Streams cumulative snapshots and recovers from a context-window

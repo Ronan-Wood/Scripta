@@ -1,6 +1,15 @@
 import SwiftUI
 import ScriptaCore
 
+/// One commitment, resolved to a display-ready owner name (M17).
+struct CommitmentDisplay: Identifiable {
+    let id = UUID()
+    let ownerName: String
+    let isYou: Bool
+    let text: String
+    let callTitle: String
+}
+
 /// The Knowledge center: review what happened across your calls. A day-grouped digest of every
 /// call's generated note (title, summary, topics, people), with the workspace's people and
 /// topics alongside — all served from the index, so it opens instantly and never re-reads
@@ -19,6 +28,7 @@ struct KnowledgeView: View {
     @State private var termAliases = ""
     @State private var termGloss = ""
     @State private var suggestions: [String] = []
+    @State private var commitments: [CommitmentDisplay] = []
     @State private var collisions: [(a: EntityRegistry.Entity, b: EntityRegistry.Entity)] = []
     @State private var docs: [(mdURL: URL, title: String, created: String, file: String)] = []
     @State private var deleteTarget: ItemTarget?
@@ -195,11 +205,21 @@ struct KnowledgeView: View {
             let rows = store?.digest(group: group) ?? []
             let notes = NoteStore.list(group: group)
             let docs = DocumentImporter.list(group: group)
+            let rawCommitments = store?.commitments(group: group) ?? []
             await MainActor.run {
                 guard group == model.activeGroup else { return }   // discard a stale load after a switch
                 self.rows = rows
                 self.notes = notes
                 self.docs = docs
+                // ownerID → display name: a cheap in-memory registry scan (same "cheap, inline"
+                // reasoning as vocabTerms/collisions above), done here rather than in the
+                // detached task so it always sees the freshest registry state at display time.
+                let entities = EntityRegistry.shared.allEntities()
+                self.commitments = rawCommitments.map { row in
+                    let isYou = row.ownerID == "you"
+                    let name = isYou ? "You" : (entities.first { $0.id == row.ownerID }?.name ?? "Someone")
+                    return CommitmentDisplay(ownerName: name, isYou: isYou, text: row.text, callTitle: row.callTitle)
+                }
             }
         }
     }
@@ -395,6 +415,7 @@ struct KnowledgeView: View {
                     .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
                 }
             }
+            commitmentsSection
             if !scopedTopics.isEmpty {
                 VStack(alignment: .leading, spacing: Space.x3) {
                     SectionHeader(title: "Topics")
@@ -406,6 +427,38 @@ struct KnowledgeView: View {
                 }
             }
         }
+    }
+
+    /// Per-person commitment rollup (M17): what you owe, and what's owed to you, grouped by
+    /// person — workspace-wide (via IndexStore.commitments), not scoped to what's currently
+    /// rendered in `rows`, matching how the Vocabulary section is workspace-wide too.
+    @ViewBuilder private var commitmentsSection: some View {
+        let owedByYou = commitments.filter(\.isYou)
+        let owedToYou = Dictionary(grouping: commitments.filter { !$0.isYou }, by: \.ownerName)
+        if !owedByYou.isEmpty || !owedToYou.isEmpty {
+            VStack(alignment: .leading, spacing: Space.x3) {
+                SectionHeader(title: "Commitments")
+                if !owedByYou.isEmpty {
+                    Text("You owe").font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                    ForEach(owedByYou) { commitmentRow($0) }
+                }
+                ForEach(owedToYou.keys.sorted(), id: \.self) { person in
+                    Text("\(person) owes you").font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                    ForEach(owedToYou[person] ?? []) { commitmentRow($0) }
+                }
+            }
+        }
+    }
+
+    private func commitmentRow(_ item: CommitmentDisplay) -> some View {
+        HStack(alignment: .top, spacing: Space.x2) {
+            CarbonIcon(name: "checkmark", size: 10, color: Carbon.textHelper)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.text).font(CarbonFont.body(12)).foregroundStyle(Carbon.textPrimary)
+                Text(item.callTitle).font(CarbonFont.label(10)).foregroundStyle(Carbon.textHelper)
+            }
+        }
+        .padding(.leading, Space.x1)
     }
 
     /// Imported files, newest first — click opens the original.

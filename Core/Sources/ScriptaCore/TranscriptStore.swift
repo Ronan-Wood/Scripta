@@ -10,6 +10,10 @@ public struct TranscriptMeta: Identifiable, Hashable {
     public let duration: String
     public let participants: [String]
     public let tags: [String]
+    /// Extracted commitments (M17), each "<owner>: <text>" — "you" or a participant name as the
+    /// FM named them. Empty until extraction runs (gated on `summarizeEnabled`, deferred like
+    /// digest) or if the call had none.
+    public var commitments: [String] = []
     /// Recorded in Conference mode (single source, unlabeled) rather than a two-party call.
     public var isConference: Bool = false
     /// The privacy/workspace partition this call belongs to. "" = ungrouped.
@@ -100,6 +104,7 @@ public enum TranscriptStore {
             duration: field("duration"),
             participants: list("participants"),
             tags: list("tags").filter { $0 != TranscriptWriter.ownerMarker },
+            commitments: list("commitments"),
             isConference: field("mode") == "conference",
             group: field("group")
         )
