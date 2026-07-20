@@ -145,15 +145,17 @@ private final class EndpointChat: ChatConversing {
                         final = snapshot
                         continuation.yield(snapshot)
                     }
-                    if !final.isEmpty { messages.append(["role": "assistant", "content": final]) }
+                    // A cancelled loop exits here too (gracefully, not via catch), with `final`
+                    // holding only a partial snapshot — must not commit that into history as if it
+                    // were a complete reply (crosscheck).
+                    if !Task.isCancelled, !final.isEmpty { messages.append(["role": "assistant", "content": final]) }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
             }
-            // Consumer stopped iterating → cancel, same as OpenAIWire.stream(). Without this the
-            // cancellation never reaches wire.stream()'s own onTermination, so the underlying HTTP
-            // request to the local/LAN endpoint kept running until the server finished on its own.
+            // Consumer stopped iterating → cancel, cascading into wire.stream()'s own onTermination
+            // instead of leaking the HTTP request until the server finishes on its own (audit L10).
             continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
