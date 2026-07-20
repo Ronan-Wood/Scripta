@@ -57,6 +57,7 @@ struct KnowledgeView: View {
     @State private var suggestions: [String] = []
     @State private var commitments: [CommitmentDisplay] = []
     @State private var whatsImportant: String?
+    @State private var whatsImportantGeneration = 0
     @State private var collisions: [(a: EntityRegistry.Entity, b: EntityRegistry.Entity)] = []
     @State private var docs: [(mdURL: URL, title: String, created: String, file: String)] = []
     @State private var deleteTarget: ItemTarget?
@@ -330,6 +331,17 @@ struct KnowledgeView: View {
         // which can take real wall-clock time — a private-content leak across the switch, not
         // just a stale-UI cosmetic issue.
         whatsImportant = nil
+        // Generation token (crosscheck), same shape as AppModel.reloadCalls()'s own
+        // callsReloadGeneration and for the same reason: reload() re-runs on every model.calls
+        // change (recording finishes, index reconcile, import — not just a group switch), so two
+        // overlapping loadWhatsImportant calls for the SAME group are a real, reachable case a
+        // bare `group == model.activeGroup` check can't catch — that check passes for BOTH the
+        // older and newer call alike. Latest-wins: an older, slower FM synthesis finishing after a
+        // newer one already landed must not overwrite it. Bumped unconditionally, even on the
+        // early-return path below, so a stale in-flight load from a PRIOR call gets superseded
+        // even when THIS call has nothing of its own to load.
+        whatsImportantGeneration &+= 1
+        let generation = whatsImportantGeneration
         guard let store, rows.count >= 2 else { return }
         let recent = Array(rows.prefix(6))
         let current = recent.map { $0.title + " " + $0.tags.joined(separator: " ") }.joined(separator: " ")
@@ -349,7 +361,11 @@ struct KnowledgeView: View {
             }
             let result = await RelatedSynthesizer.synthesize(current: current, hits: raw)
             await MainActor.run {
-                guard group == model.activeGroup else { return }   // discard a stale load after a switch
+                // Supersedes the plain `group == model.activeGroup` check this line used to have:
+                // that passes for TWO overlapping same-group loads alike, which is exactly the
+                // race above. A group switch also always bumps this generation (reload() runs on
+                // every .onChange(of: model.activeGroup)), so this one check covers both cases.
+                guard generation == whatsImportantGeneration else { return }
                 whatsImportant = result
             }
         }
