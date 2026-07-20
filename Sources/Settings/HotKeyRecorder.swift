@@ -20,19 +20,8 @@ struct HotKeyRecorderButton: View {
             ZStack {
                 Text(isRecording ? "Press keys…" : combo.label)
                     .frame(minWidth: 96)
-                HotKeyRecorderField(isRecording: $isRecording) { newCombo in
-                    // Reject a combo matching the OTHER hotkey (SPEC M25 validation) — beep and
-                    // stay in recording state so the user can immediately try something else,
-                    // rather than accept it and only flag it after the fact.
-                    guard newCombo != conflictsWith else {
-                        NSSound.beep()
-                        return false
-                    }
-                    combo = newCombo
-                    onChange(newCombo)
-                    return true
-                }
-                .frame(width: 0, height: 0)
+                HotKeyRecorderField(isRecording: $isRecording) { newCombo in apply(newCombo) }
+                    .frame(width: 0, height: 0)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
@@ -41,20 +30,33 @@ struct HotKeyRecorderButton: View {
             .onTapGesture { isRecording = true }
 
             if combo == conflictsWith {
-                // Unreachable through this control's own recording flow (capture rejects a
-                // colliding combo above) — a defensive display in case the two ever coincide via
-                // externally-edited UserDefaults, so a bad persisted state is at least visible.
+                // Reachable, not just defensive (crosscheck): rebind A off its default, rebind B
+                // onto A's now-vacated default, then Reset A — see `apply(_:)`'s comment.
                 Text("Conflicts with the other shortcut")
                     .font(.caption).foregroundStyle(.red)
             } else if combo != defaultCombo {
-                Button("Reset") {
-                    combo = defaultCombo
-                    onChange(defaultCombo)
-                }
-                .buttonStyle(.link)
-                .font(.caption)
+                Button("Reset") { apply(defaultCombo) }
+                    .buttonStyle(.link)
+                    .font(.caption)
             }
         }
+    }
+
+    /// The one place a new combo gets written — used by both the recorder's capture-accept path
+    /// and Reset, so "can't collide with the sibling hotkey" (SPEC M25) is enforced exactly once.
+    /// Crosscheck: Reset used to bypass this check entirely (it just assigned `defaultCombo`
+    /// directly), so rebinding hotkey A away from its default, then rebinding hotkey B onto A's
+    /// now-vacated default, then clicking Reset on A, landed both hotkeys on the identical combo
+    /// with no UI path back out except re-recording one of them from scratch.
+    @discardableResult
+    private func apply(_ newCombo: HotKeyCombo) -> Bool {
+        guard newCombo != conflictsWith else {
+            NSSound.beep()
+            return false
+        }
+        combo = newCombo
+        onChange(newCombo)
+        return true
     }
 }
 
