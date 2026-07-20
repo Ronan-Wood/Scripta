@@ -133,9 +133,13 @@ enum IndexBuilder {
     }
 
     /// Indexes one knowledge note (schema v8): the note's entries become its searchable
-    /// "summary", so topic fusion surfaces it in Ask context and MCP retrieve. No chunks, no
-    /// ledger, no entity pass — notes are the user's own words, already curated.
-    static func indexNote(_ url: URL, into store: IndexStore) {
+    /// "summary", so topic fusion surfaces it in Ask context and MCP retrieve. Also
+    /// entity-extracted, one chunk per entry (M20) — notes are the brain's freeform half, and a
+    /// note mentioning someone must land on their entity page the same as a call does, or the
+    /// graph has a hole exactly where freeform capture (Quick Capture, M14) put it. No real
+    /// per-entry clock exists the way a call has one, so startMs/endMs are 0 — chunking by entry
+    /// is for extraction locality (keeps NLTagger's input reasonably sized), not jump-to-timestamp.
+    static func indexNote(_ url: URL, into store: IndexStore, registry: EntityRegistry = EntityRegistry.shared) {
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate?.timeIntervalSince1970 ?? 0
         guard let note = NoteStore.parse(url) else {
@@ -149,11 +153,22 @@ enum IndexBuilder {
             path: url.path, title: note.title, date: String(note.updated.prefix(10)), time: "",
             duration: "", participants: [], tags: [], summary: entriesText, mtime: mtime,
             mode: "", group: note.group, kind: "note"), chunks: [])
+
+        let chunks = note.entries.map {
+            IndexedChunk(startMs: 0, endMs: 0, speaker: nil, text: Indexing.stripControlChars($0.text))
+        }
+        let hash = Indexing.contentHash(chunks)
+        if store.stageHash(path: url.path, stage: "extract") != hash {
+            extractEntities(url: url, group: note.group, attendees: [], chunks: chunks, store: store, registry: registry)
+            store.recordStage(path: url.path, stage: "extract", hash: hash, model: "nltagger-v1")
+        }
     }
 
     /// Indexes one imported document's companion note as `kind: 'doc'` — retrievable by search,
-    /// Clovis, and the MCP; invisible to every call surface. Extracted text is the searchable body.
-    static func indexDoc(_ url: URL, into store: IndexStore) {
+    /// Clovis, and the MCP; invisible to every call surface. Extracted text is the searchable
+    /// body. Also entity-extracted as a single chunk (M20) — same reasoning as `indexNote`, but a
+    /// document has no entry structure to split on.
+    static func indexDoc(_ url: URL, into store: IndexStore, registry: EntityRegistry = EntityRegistry.shared) {
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate?.timeIntervalSince1970 ?? 0
         guard let doc = DocumentImporter.parse(url) else {
@@ -166,6 +181,15 @@ enum IndexBuilder {
             path: url.path, title: doc.title, date: String(doc.created.prefix(10)), time: "",
             duration: "", participants: [], tags: [], summary: String(cleanBody.prefix(60_000)),
             mtime: mtime, mode: "", group: doc.group, kind: "doc"), chunks: [])
+
+        // Unlike the summary above, extraction runs over the FULL body, not the 60k-char
+        // preview — a mention past that point should still land the doc on the person's page.
+        let chunks = [IndexedChunk(startMs: 0, endMs: 0, speaker: nil, text: cleanBody)]
+        let hash = Indexing.contentHash(chunks)
+        if store.stageHash(path: url.path, stage: "extract") != hash {
+            extractEntities(url: url, group: doc.group, attendees: [], chunks: chunks, store: store, registry: registry)
+            store.recordStage(path: url.path, stage: "extract", hash: hash, model: "nltagger-v1")
+        }
     }
 
     static func reconcile(store: IndexStore) {
@@ -202,8 +226,8 @@ enum IndexBuilder {
             }
         }
         sweep(transcripts) { index($0, into: $1, registry: registry) }
-        sweep(notes, indexNote)
-        sweep(docs, indexDoc)
+        sweep(notes) { indexNote($0, into: $1, registry: registry) }
+        sweep(docs) { indexDoc($0, into: $1, registry: registry) }
         let ms = Int(Date().timeIntervalSince(start) * 1000)
         log.info("reconcile: \(transcripts.count)+\(notes.count)+\(docs.count) on disk, \(reindexed) indexed, \(removed) removed, \(unchanged) unchanged, \(ms)ms")
 

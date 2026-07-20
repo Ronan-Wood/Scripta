@@ -84,7 +84,9 @@ public struct ContextChunk {
     }
 }
 
-/// A ranked search result pointing back into a transcript.
+/// A ranked search result pointing back into a transcript. `kind` defaults to "call" — every
+/// existing caller only ever produces call hits; `callsMentioning` (M20) is the one that sets it
+/// explicitly, since it can now also return note/doc hits a click needs to route differently.
 public struct SearchHit: Identifiable {
     public let id = UUID()
     public let path: String
@@ -94,6 +96,13 @@ public struct SearchHit: Identifiable {
     public let speaker: String?
     public let snippet: String
     public let score: Double
+    public let kind: String
+
+    public init(path: String, title: String, date: String, startMs: Int, speaker: String?,
+                snippet: String, score: Double, kind: String = "call") {
+        self.path = path; self.title = title; self.date = date; self.startMs = startMs
+        self.speaker = speaker; self.snippet = snippet; self.score = score; self.kind = kind
+    }
 }
 
 /// The local retrieval backend: a SQLite database (system SQLite, FTS5) holding a derived index
@@ -484,12 +493,15 @@ public final class IndexStore {
         if !exec("COMMIT;") { exec("ROLLBACK;") }
     }
 
-    /// Calls that mention an entity, newest first — the entity-anchored retrieval rail (mode 3).
-    /// Group-scoped by joining transcripts (a mention's group IS its call's group).
+    /// Items that mention an entity, newest first — the entity-anchored retrieval rail (mode 3).
+    /// Group-scoped by joining transcripts (a mention's group IS its call's/note's/doc's group).
+    /// Calls, notes, and docs can all appear here since M20 populates entity_mentions for all
+    /// three — `kind` (defaults "call" pre-M20) is what the click handler branches on to route to
+    /// the right opener; `t.time` is empty for notes/docs, so it sorts after same-day calls.
     public func callsMentioning(entityID: String, group: String?, limit: Int = 50) -> [SearchHit] {
         let unlock = acquireLock(); defer { unlock() }
         var sql = """
-        SELECT DISTINCT t.path, t.title, t.date, MIN(m.start_ms)
+        SELECT DISTINCT t.path, t.title, t.date, MIN(m.start_ms), IFNULL(t.kind,'call')
         FROM entity_mentions m JOIN transcripts t ON t.path = m.path
         WHERE m.entity_id = ?
         """
@@ -502,7 +514,7 @@ public final class IndexStore {
         }) { stmt in
             hits.append(SearchHit(path: text(stmt, 0), title: text(stmt, 1), date: text(stmt, 2),
                                   startMs: Int(sqlite3_column_int64(stmt, 3)), speaker: nil,
-                                  snippet: "mentions this entity", score: 0))
+                                  snippet: "mentions this entity", score: 0, kind: text(stmt, 4)))
         }
         return hits
     }
