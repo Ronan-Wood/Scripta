@@ -123,19 +123,18 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
 
     /// How imminent the next upcoming call is, if within the 30-minute warning window.
     private enum CallProximity {
-        case soon       // ≤30 min — blue
-        case near       // ≤15 min — yellow
-        case imminent   // ≤5 min  — green
+        case soon       // ≤30 min — Carbon interactive blue
+        case near       // ≤15 min — Carbon warning yellow
+        case imminent   // ≤5 min  — Carbon success green
         var color: NSColor {
             switch self {
-            // Was .white (crosscheck): the "." now shares the icon with a tint that's ALSO
-            // .white on a dark menu bar (menuBarIsDark ? .white : .black) — same color as the
-            // "S", so the period signaled nothing at all in dark mode. .systemBlue never
-            // coincides with either tint extreme, and matches the color this app already uses
-            // elsewhere for "something's happening, not urgent" (Quick Capture's mic icon).
-            case .soon: return .systemBlue
-            case .near: return .systemYellow
-            case .imminent: return .systemGreen
+            // Carbon's own tokens, not raw NSColor.system* — the menu bar should read as
+            // Scripta's palette, not generic macOS accent colors. Hex pairs copied verbatim from
+            // CarbonTheme.swift's `interactive`/`warning`/`success` (its own source-of-truth rule:
+            // re-extract from there if these ever drift, don't eyeball-adjust here).
+            case .soon: return .carbonDynamic(light: 0x0F62FE, dark: 0x4589FF)       // Carbon.interactive
+            case .near: return .carbonDynamic(light: 0xF1C21B, dark: 0xF1C21B)       // Carbon.warning
+            case .imminent: return .carbonDynamic(light: 0x24A148, dark: 0x42BE65)   // Carbon.success
             }
         }
     }
