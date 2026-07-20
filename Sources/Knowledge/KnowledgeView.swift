@@ -323,7 +323,14 @@ struct KnowledgeView: View {
     /// (or one where nothing recent connects to anything older) shows nothing here, not an awkward
     /// "nothing important" placeholder.
     private func loadWhatsImportant(rows: [IndexStore.DigestRow], group: String, store: IndexStore?) {
-        guard let store, rows.count >= 2 else { whatsImportant = nil; return }
+        // Eager reset (crosscheck) — RelatedItemsPanel.load(), the pattern this function claims
+        // to mirror, clears its own state BEFORE the guard for exactly this reason: without it, a
+        // group switch left the OUTGOING workspace's synthesized blurb (built from ITS real call
+        // content) visible for the whole duration of the new workspace's search+FM round trip —
+        // which can take real wall-clock time — a private-content leak across the switch, not
+        // just a stale-UI cosmetic issue.
+        whatsImportant = nil
+        guard let store, rows.count >= 2 else { return }
         let recent = Array(rows.prefix(6))
         let current = recent.map { $0.title + " " + $0.tags.joined(separator: " ") }.joined(separator: " ")
         let excludePaths = Set(recent.map(\.path))
