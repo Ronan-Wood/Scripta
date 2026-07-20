@@ -7,30 +7,58 @@ import ScriptaCore
 /// brain ≠ editor holds here same as everywhere else; this only displays identity data other
 /// features (the registry, extraction, the correction loop) already own and write.
 struct EntityDetailView: View {
-    let entityID: String
+    /// `@State`, not `let` (M21) — co-occurring chips retarget this same sheet in place rather
+    /// than closing and reopening a new one per hop, so exploring several connections in a row
+    /// doesn't chain sheet-dismiss/present animations. `group`/`onClose`/the callbacks stay fixed
+    /// for the sheet's lifetime; only the entity being shown changes.
+    @State private var entityID: String
     let group: String
     /// Shown until (or instead of, if it never resolves) the real registry entity loads — needed
     /// because M17's commitment-owner fallback can pass an `entityID` that's a raw surface string
     /// rather than a real registry id when nothing confirmed matched, and this view shouldn't
-    /// show a blank "…" header for a name the caller already had in hand.
-    var fallbackName: String? = nil
+    /// show a blank "…" header for a name the caller already had in hand. Also `@State` for the
+    /// same reason as `entityID` — a jump seeds it from data already on screen (a co-occurring
+    /// chip's own name) so the header doesn't flash blank while the fresh load resolves.
+    @State private var fallbackName: String? = nil
     let onClose: () -> Void
     /// Invoked after a commitment here is marked done, so the presenting view (KnowledgeView's
     /// rail) can refresh — this sheet's own `commitments` state already updates itself, but the
     /// rail's separately-loaded copy of the same rows would otherwise go stale (crosscheck).
-    var onCommitmentsChanged: () -> Void = {}
+    var onCommitmentsChanged: () -> Void
     /// Opens a mentioned note/doc (M20) — routed through the presenter since this view has no
     /// direct access to KnowledgeView's local note/doc sheet state, unlike calls, which go
-    /// through the global `AppModel.route`. Passed the mention's raw path; the presenter
-    /// resolves/parses it into whatever it needs (a `KnowledgeNote`, an original file to open).
-    var onOpenNote: (String) -> Void = { _ in }
-    var onOpenDoc: (String) -> Void = { _ in }
+    /// through the global `AppModel.route`. Passed the mention's raw path. Default (see `init`)
+    /// opens the raw file externally — a reasonable fallback for any presenter (M21's
+    /// TranscriptDetail, opened from a participant click) that has no richer in-app note/doc
+    /// surface of its own to hand it to; KnowledgeView overrides both with its actual sheet/opener.
+    var onOpenNote: (String) -> Void
+    var onOpenDoc: (String) -> Void
 
+    /// Where `jumpTo` came from, for the back button (M21). Not `[String]` — carries each stop's
+    /// `fallbackName` too, so going back can seed the header instantly the same way jumping
+    /// forward does, instead of only jumping forward getting the flash-free treatment.
+    @State private var history: [(id: String, fallbackName: String?)] = []
     @State private var entity: EntityRegistry.Entity?
     @State private var mentions: [SearchHit] = []
     @State private var commitments: [IndexStore.CommitmentRow] = []
     @State private var coOccurring: [(id: String, name: String, kind: String, count: Int)] = []
     @State private var loaded = false
+
+    // Explicit init: the synthesized memberwise one would be `private` (Swift derives an init's
+    // access level from its least-visible stored property, and `@State private var` storage is
+    // private) — breaking the one existing call site, which is in a different file.
+    init(entityID: String, group: String, fallbackName: String? = nil, onClose: @escaping () -> Void,
+         onCommitmentsChanged: @escaping () -> Void = {},
+         onOpenNote: @escaping (String) -> Void = { NSWorkspace.shared.open(URL(fileURLWithPath: $0)) },
+         onOpenDoc: @escaping (String) -> Void = { NSWorkspace.shared.open(URL(fileURLWithPath: $0)) }) {
+        self._entityID = State(initialValue: entityID)
+        self.group = group
+        self._fallbackName = State(initialValue: fallbackName)
+        self.onClose = onClose
+        self.onCommitmentsChanged = onCommitmentsChanged
+        self.onOpenNote = onOpenNote
+        self.onOpenDoc = onOpenDoc
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -70,6 +98,14 @@ struct EntityDetailView: View {
 
     private var header: some View {
         HStack(spacing: Space.x3) {
+            if !history.isEmpty {
+                Button(action: goBack) {
+                    // No dedicated left-chevron asset — chevron-right, mirrored, matches this
+                    // app's existing icon set instead of introducing a new one for one button.
+                    CarbonIcon(name: "chevron-right", size: 14, color: Carbon.iconSecondary)
+                        .rotationEffect(.degrees(180))
+                }.buttonStyle(.plain)
+            }
             InitialsBadge(name: displayName)
             VStack(alignment: .leading, spacing: 1) {
                 Text(displayName).font(CarbonFont.medium(16)).foregroundStyle(Carbon.textPrimary)
@@ -202,10 +238,30 @@ struct EntityDetailView: View {
             SectionHeader(title: "Appears alongside")
             FlexWrap(spacing: Space.x2) {
                 ForEach(coOccurring, id: \.id) { co in
-                    CarbonChip(text: "\(co.name) · \(co.count)")
+                    CarbonChip(text: "\(co.name) · \(co.count)") { jumpTo(co.id, fallbackName: co.name) }
                 }
             }
         }
+    }
+
+    /// Retargets this same sheet to a different entity (M21) instead of closing and reopening —
+    /// see `entityID`'s doc comment for why. `fallbackName` is already on hand from the chip that
+    /// was tapped, so the header shows the right name immediately instead of "…" until `load()`
+    /// resolves the real entity a beat later.
+    private func jumpTo(_ id: String, fallbackName: String?) {
+        history.append((entityID, self.fallbackName))
+        entityID = id
+        self.fallbackName = fallbackName
+        loaded = false
+        Task { await load() }
+    }
+
+    private func goBack() {
+        guard let previous = history.popLast() else { return }
+        entityID = previous.id
+        fallbackName = previous.fallbackName
+        loaded = false
+        Task { await load() }
     }
 
     private func load() async {

@@ -22,6 +22,8 @@ struct TranscriptDetail: View {
     // Parsed once per transcript (off the main thread) and cached — re-reading + re-parsing the
     // whole file inside `body` on every invalidation was a large part of the long-transcript lag.
     @State private var blocks: [TranscriptBlock] = []
+    /// A clicked participant's entity page (M21).
+    @State private var entitySheetTarget: EntitySheetTarget?
 
     var body: some View {
         // In-pane action row (not a native `.toolbar`): the hub draws its own in-window title bar
@@ -92,6 +94,17 @@ struct TranscriptDetail: View {
         } message: {
             Text("This permanently deletes the transcript file. This can't be undone.")
         }
+        .sheet(item: $entitySheetTarget) { target in entitySheet(target) }
+    }
+
+    // Extracted (not inline in the modifier chain above): a very similar addition to KnowledgeView
+    // pushed its own already-long `body` past the type checker's timeout — isolating the
+    // construction here keeps this chain from risking the same thing.
+    @ViewBuilder
+    private func entitySheet(_ target: EntitySheetTarget) -> some View {
+        EntityDetailView(entityID: target.id, group: meta.group, fallbackName: target.fallbackName) {
+            entitySheetTarget = nil
+        }
     }
 
     /// Reads + parses the transcript off the main thread, then swaps the cached blocks in. Runs
@@ -152,15 +165,19 @@ struct TranscriptDetail: View {
             }
             HStack(spacing: 10) {
                 if !meta.duration.isEmpty { label("clock", meta.duration) }
-                if !meta.participants.isEmpty { label("person.2", meta.participants.joined(separator: ", ")) }
+                if !meta.participants.isEmpty { participantsRow }
             }
             if !meta.tags.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(meta.tags, id: \.self) { tag in
-                        Text(tag)
-                            .font(.caption2)
-                            .padding(.horizontal, 7).padding(.vertical, 2)
-                            .background(.quaternary, in: Capsule())
+                        // M21: matches the People rail's tag chips, which already navigate — this
+                        // was the one tag surface left that didn't.
+                        Button { AppModel.shared.route = .tag(tag) } label: {
+                            Text(tag)
+                                .font(.caption2)
+                                .padding(.horizontal, 7).padding(.vertical, 2)
+                                .background(.quaternary, in: Capsule())
+                        }.buttonStyle(.plain)
                     }
                 }
             }
@@ -169,6 +186,33 @@ struct TranscriptDetail: View {
 
     private func label(_ symbol: String, _ text: String) -> some View {
         Label(text, systemImage: symbol).font(.caption).foregroundStyle(.secondary)
+    }
+
+    /// Participants, individually clickable to their entity page (M21) — the gap M19 itself
+    /// disclosed and deferred at the time. Keeps the same icon-plus-comma-separated LOOK the
+    /// single joined Label had, just per-name now, so each is its own tap target instead of one
+    /// opaque string.
+    private var participantsRow: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "person.2").font(.caption).foregroundStyle(.secondary)
+            ForEach(Array(meta.participants.enumerated()), id: \.offset) { index, name in
+                Button { openParticipant(name) } label: {
+                    Text(index == meta.participants.count - 1 ? name : "\(name),")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// Resolves a participant's name to their registry entity, matching the fallback shape used
+    /// everywhere else this pattern already exists (e.g. KnowledgeView's People rail) — never
+    /// allocates (`resolveConfirmed`), since this is a read-only surface, not a place that should
+    /// mint a new identity from a name it merely displays. Falls back to opening the page by raw
+    /// name when nothing confirmed matches — the page still shows correctly (M17's own commitment-
+    /// owner fallback already exercises this exact path), it just won't resolve to a tracked entity.
+    private func openParticipant(_ name: String) {
+        let id = EntityRegistry.shared.resolveConfirmed(surface: name, kind: "person", group: meta.group) ?? name
+        entitySheetTarget = EntitySheetTarget(id: id, fallbackName: name)
     }
 
     // MARK: - Action row (matches the hub's 40pt in-window bar treatment)
