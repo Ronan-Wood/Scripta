@@ -62,7 +62,6 @@ struct SettingsView: View {
     @State private var calendarAuthorized: Bool = CalendarWatcher.shared.isAuthorized
     @State private var calendars: [EKCalendar] = []
     @State private var watchedIDs: Set<String> = Set(AppSettings.watchedCalendarIDs)
-    @State private var calendarGroups: [String: String] = AppSettings.calendarGroups
     @State private var indexStats: (calls: Int, passages: Int, bytes: Int) = (0, 0, 0)
     @State private var rebuilding = false
     @State private var backfillPending = 0
@@ -391,6 +390,11 @@ struct SettingsView: View {
                     if calendars.isEmpty {
                         Text("No calendars found.").foregroundStyle(.secondary)
                     } else {
+                        // Computed once for the whole list, not per row: availableGroups() reads
+                        // through to a lock-acquiring SQL query, and every other derived list in
+                        // this file (calendars, terms, endpointModels) is already fetched once
+                        // rather than inside a ForEach.
+                        let workspaces = AppModel.shared.availableGroups()
                         ForEach(calendars, id: \.calendarIdentifier) { calendar in
                             VStack(alignment: .leading, spacing: 6) {
                                 Toggle(isOn: watchBinding(for: calendar.calendarIdentifier)) {
@@ -414,8 +418,8 @@ struct SettingsView: View {
                                     // or a casing mismatch — see groupBinding). New workspaces are
                                     // still created in one place: the sidebar's "New workspace…".
                                     Picker("Workspace", selection: groupBinding(for: calendar.calendarIdentifier)) {
-                                        Text("None").tag("")
-                                        ForEach(AppModel.shared.availableGroups(), id: \.self) { Text($0).tag($0) }
+                                        Text("Ungrouped").tag("")
+                                        ForEach(workspaces, id: \.self) { Text($0).tag($0) }
                                     }
                                     .labelsHidden()
                                     .padding(.leading, 18)
@@ -689,18 +693,22 @@ struct SettingsView: View {
         watchedIDs.isEmpty || watchedIDs.contains(id)
     }
 
-    /// Two-way binding for a calendar's workspace, persisted to AppSettings. Values only ever
-    /// come from the Picker's own tags (existing workspace names, exactly as `availableGroups()`
-    /// returns them, or "" for none) — never re-typed, so this must NOT re-normalize the string.
-    /// (It used to lowercase on write, which silently diverged from workspace names created via
-    /// the sidebar's "New workspace…" flow — e.g. "Property Prism" elsewhere vs. "property prism"
-    /// here — an exact-match group scope would then never see the two as the same workspace.)
+    /// Two-way binding for a calendar's workspace, persisted to AppSettings. Reads/writes
+    /// `AppSettings.calendarGroups` directly (no locally-cached snapshot, unlike most other
+    /// bindings in this file) because the sidebar's own "Assign calendars to <workspace>" menu
+    /// (HubView.groupSwitcher) can write the same dictionary while Settings is open — a cached
+    /// copy would go stale, and worse, a later edit here would clobber the sidebar's change on
+    /// write-back (crosscheck: this is exactly what the old cached version did). Values only
+    /// ever come from the Picker's own tags — existing workspace names, or "" for none — never
+    /// re-typed, so this must NOT re-normalize the string (it used to lowercase on write, which
+    /// silently diverged from workspace names created via the sidebar's "New workspace…" flow).
     private func groupBinding(for id: String) -> Binding<String> {
         Binding(
-            get: { calendarGroups[id] ?? "" },
+            get: { AppSettings.calendarGroups[id] ?? "" },
             set: { value in
-                calendarGroups[id] = value.isEmpty ? nil : value
-                AppSettings.calendarGroups = calendarGroups
+                var groups = AppSettings.calendarGroups
+                groups[id] = value.isEmpty ? nil : value
+                AppSettings.calendarGroups = groups
             }
         )
     }

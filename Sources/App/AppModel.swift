@@ -57,6 +57,29 @@ final class AppModel: ObservableObject {
         return set.sorted()
     }
 
+    /// Launch-time repair (crosscheck, Settings calendar Picker): a calendar assignment saved by
+    /// the old free-text Settings field was force-lowercased on write, silently diverging from
+    /// the real (properly-cased) workspace name everywhere else — every exact-match group scope
+    /// (search, notes, the privacy-wipe deleter) then treats "property prism" and "Property
+    /// Prism" as two unrelated workspaces. Folds a stored value back onto its real-cased
+    /// counterpart when exactly one case-insensitive match exists; ambiguous (two workspaces
+    /// that are already only-case-different) is left alone rather than guessed at. Idempotent,
+    /// so it's safe to just run on every launch rather than gating it behind a one-time flag.
+    func reconcileCalendarGroupCasing() {
+        var canonical = Set((IndexStore.shared?.groups() ?? []).map(\.name))
+        if !activeGroup.isEmpty { canonical.insert(activeGroup) }
+        var groups = AppSettings.calendarGroups
+        var changed = false
+        for (id, value) in groups where !canonical.contains(value) {
+            let matches = canonical.filter { $0.caseInsensitiveCompare(value) == .orderedSame }
+            if matches.count == 1, let match = matches.first {
+                groups[id] = match
+                changed = true
+            }
+        }
+        if changed { AppSettings.calendarGroups = groups }
+    }
+
     // High-frequency recording surfaces, split out of this object (see M12): observing
     // AppModel must not mean re-rendering at mic-buffer rate.
     let meter = MicMeterModel()
