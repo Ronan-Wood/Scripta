@@ -277,19 +277,34 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     streaming API) rather than a 4th `EnrichEngine` method — that protocol already picked up a
     grab-bag critique in M17's crosscheck; a related-but-distinct task didn't need to deepen it.
 
-19. **Entity pages** *(ratified 2026-07-20; pick #6).* Click a person/topic anywhere one appears
-    today (People rail, Tags rail, Vocabulary chips) → a detail view: canonical name + aliases +
-    gloss (`EntityRegistry.Entity`, already the trust layer — merge verdicts, privacy walls,
-    provenance — Mem's version of this pattern lacked), a mention timeline across calls/notes/docs,
-    and co-occurring people/topics. **Storage is already reserved and unpopulated** — `IndexStore`'s
-    `entity_mentions` table (`entity_id, path, start_ms, surface`) has existed since scaffolding
-    with no writer or reader yet; this is the first consumer, so — like `action_items` above — it's
-    population + queries, not a schema bump. Complementary to `EntityMirror`'s vault stubs, not
-    redundant with them: the mirror is the Obsidian-side (external) surface, this is the in-app
-    read surface over the same identity data. Read-only, no new mutation path (brain ≠ editor holds
-    — same invariant as everything else on this list). Effort M–L, mostly in mention-indexing (a
-    reconcile-time pass populating `entity_mentions` from each transcript/note/doc) rather than the
-    detail view itself.
+19. **Entity pages** *(ratified 2026-07-20; pick #6 — **corrected 2026-07-20**, see below).* Click
+    a person/topic anywhere one appears today (People rail, Tags rail, Vocabulary chips) → a
+    detail view: canonical name + aliases + gloss (`EntityRegistry.Entity`, already the trust
+    layer — merge verdicts, privacy walls, provenance — Mem's version of this pattern lacked), a
+    mention timeline across calls, and co-occurring people/topics. Read-only, no new mutation path
+    (brain ≠ editor holds — same invariant as everything else on this list).
+
+    **Correction:** this entry originally claimed `entity_mentions` was reserved-but-unpopulated,
+    "like `action_items`." That was wrong — checked before implementing (the M15 lesson: grep
+    first) and found the OPPOSITE of M15's surprise. `IndexBuilder.extractEntities` already writes
+    `entity_mentions` on every call reconcile (`IndexStore.setEntities`, landed pre-branch via "P4a:
+    entity graph"), and two of three query functions already exist and are already used —
+    `entities(group:)` and `callsMentioning(entityID:group:)` back `CallsView`'s entity filter
+    (comment: "mode 3"). What's genuinely missing, confirmed by search: a detail PAGE (the filter
+    only narrows the call list, shows no aliases/gloss/co-occurrence), a co-occurrence query (no
+    backend exists for this piece at all), and every stated entry point except the filter menu —
+    People/Vocabulary/Commitments rows aren't clickable today. `entityIDs(forPath:)` exists,
+    reads correctly, and has zero callers anywhere in the repo — dead code its own doc comment
+    promised for transcript entity chips that were never built. Effort scoped down to what's
+    actually missing: the view + co-occurrence query + entry points, not full-stack population.
+
+    **Implemented (2026-07-20):** `EntityDetailView` (aliases, gloss, mention timeline via
+    `callsMentioning`, co-occurrence via a new `IndexStore.coOccurring(entityID:group:)`), wired
+    as a sheet from three real entry points — People rail, Vocabulary chips, the Commitments
+    rail's "X owes you" rows (M17) — each now clickable for the first time. Read-only throughout.
+    **Disclosed scope cut:** `entityIDs(forPath:)` stays unwired — a 4th entry point (transcript
+    entity chips, its own doc comment's original promise) is a natural, small follow-up using
+    the same sheet pattern, not built in this pass.
 
 **Live transcription + related-calls (2026-07-14) — implemented.** Validated `SpeechTranscriber`
 `.volatileResults` streaming in isolation (partials stream token-by-token, then `isFinal`), incl. the
