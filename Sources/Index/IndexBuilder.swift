@@ -40,16 +40,18 @@ enum IndexBuilder {
                          text: Indexing.stripControlChars($0.text))
         }
         // Commitments (M17): "<owner>: <text>" frontmatter entries, split on the first ": ".
-        // "you" is a sentinel, not a trackable identity; any other owner resolves through the
-        // SAME registry entity extraction already uses, so a commitment rollup and the
-        // People rail agree on who's who (no separate name-matching invented here).
+        // "you" is a sentinel, not a trackable identity; any other owner resolves ONLY against a
+        // CONFIRMED person (resolveConfirmed never allocates) — an FM's unreviewed guess at a
+        // name must not mint a new permanent registry entity, per the ratified design (SPEC M17).
+        // Falls back to the raw surface string when nothing confirmed matches, same as the spec's
+        // own fallback — the commitment is still shown, just not tied to a tracked identity.
         let actionItems: [IndexedActionItem] = meta.commitments.compactMap { line in
             guard let range = line.range(of: ": ") else { return nil }
-            let owner = String(line[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
-            let text = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+            let owner = Indexing.stripControlChars(String(line[..<range.lowerBound]).trimmingCharacters(in: .whitespaces))
+            let text = Indexing.stripControlChars(String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces))
             guard !owner.isEmpty, !text.isEmpty else { return nil }
             let ownerID = owner.caseInsensitiveCompare("you") == .orderedSame
-                ? "you" : registry.resolve(surface: owner, kind: "person", group: meta.group)
+                ? "you" : (registry.resolveConfirmed(surface: owner, kind: "person", group: meta.group) ?? owner)
             return IndexedActionItem(ownerID: ownerID, text: text)
         }
         store.upsert(transcript, chunks: chunks, actionItems: actionItems)

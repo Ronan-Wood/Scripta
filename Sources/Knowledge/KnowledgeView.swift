@@ -1,9 +1,12 @@
 import SwiftUI
 import ScriptaCore
 
-/// One commitment, resolved to a display-ready owner name (M17).
+/// One commitment, resolved to a display-ready owner name (M17). Grouping/keying uses `ownerID`,
+/// never `ownerName` — two different people can share a display name, and merging their
+/// commitments under one name silently misattributes them (crosscheck finding).
 struct CommitmentDisplay: Identifiable {
     let id = UUID()
+    let ownerID: String
     let ownerName: String
     let isYou: Bool
     let text: String
@@ -214,11 +217,15 @@ struct KnowledgeView: View {
                 // ownerID → display name: a cheap in-memory registry scan (same "cheap, inline"
                 // reasoning as vocabTerms/collisions above), done here rather than in the
                 // detached task so it always sees the freshest registry state at display time.
+                // ownerID is "you", a confirmed entity id, OR (IndexBuilder's fallback when no
+                // confirmed person matched) the raw name string itself — in that last case it IS
+                // already the display name, not a lookup miss, so there's no "Someone" fallback.
                 let entities = EntityRegistry.shared.allEntities()
                 self.commitments = rawCommitments.map { row in
                     let isYou = row.ownerID == "you"
-                    let name = isYou ? "You" : (entities.first { $0.id == row.ownerID }?.name ?? "Someone")
-                    return CommitmentDisplay(ownerName: name, isYou: isYou, text: row.text, callTitle: row.callTitle)
+                    let name = isYou ? "You" : (entities.first { $0.id == row.ownerID }?.name ?? row.ownerID)
+                    return CommitmentDisplay(ownerID: row.ownerID, ownerName: name, isYou: isYou,
+                                             text: row.text, callTitle: row.callTitle)
                 }
             }
         }
@@ -434,7 +441,9 @@ struct KnowledgeView: View {
     /// rendered in `rows`, matching how the Vocabulary section is workspace-wide too.
     @ViewBuilder private var commitmentsSection: some View {
         let owedByYou = commitments.filter(\.isYou)
-        let owedToYou = Dictionary(grouping: commitments.filter { !$0.isYou }, by: \.ownerName)
+        // Keyed by ownerID, not the display name — two different people can share a name, and
+        // grouping by string would silently merge their commitments (crosscheck finding).
+        let owedToYou = Dictionary(grouping: commitments.filter { !$0.isYou }, by: \.ownerID)
         if !owedByYou.isEmpty || !owedToYou.isEmpty {
             VStack(alignment: .leading, spacing: Space.x3) {
                 SectionHeader(title: "Commitments")
@@ -442,9 +451,12 @@ struct KnowledgeView: View {
                     Text("You owe").font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
                     ForEach(owedByYou) { commitmentRow($0) }
                 }
-                ForEach(owedToYou.keys.sorted(), id: \.self) { person in
-                    Text("\(person) owes you").font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
-                    ForEach(owedToYou[person] ?? []) { commitmentRow($0) }
+                ForEach(owedToYou.keys.sorted(), id: \.self) { ownerID in
+                    let items = owedToYou[ownerID] ?? []
+                    if let name = items.first?.ownerName {
+                        Text("\(name) owes you").font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                        ForEach(items) { commitmentRow($0) }
+                    }
                 }
             }
         }

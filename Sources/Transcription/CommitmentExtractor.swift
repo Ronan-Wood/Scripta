@@ -28,8 +28,15 @@ enum CommitmentExtractor {
     /// nothing to extract or FM is unavailable — the caller's own emptiness check gates the write.
     static func extract(transcript: String) async -> [String] {
         guard let commitments = await EngineRouter.extractCommitments(transcript: transcript) else { return [] }
-        return commitments
-            .map { "\($0.owner.trimmingCharacters(in: .whitespaces)): \($0.text.trimmingCharacters(in: .whitespaces))" }
-            .filter { !$0.hasPrefix(":") && !$0.hasSuffix(": ") }
+        return commitments.compactMap { item in
+            let owner = item.owner.trimmingCharacters(in: .whitespaces)
+            let text = item.text.trimmingCharacters(in: .whitespaces)
+            // IndexBuilder decodes by splitting on the FIRST ": " — an owner that itself contains
+            // that delimiter (e.g. a hallucinated "Name: Title") would silently corrupt the split,
+            // truncating the owner and bleeding the rest into the shown commitment text. Drop
+            // rather than mangle: a lost extraction is much cheaper than a misattributed one.
+            guard !owner.isEmpty, !text.isEmpty, !owner.contains(": ") else { return nil }
+            return "\(owner): \(text)"
+        }
     }
 }
