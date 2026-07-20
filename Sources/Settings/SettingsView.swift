@@ -45,6 +45,7 @@ struct SettingsView: View {
     @State private var terms: [String] = AppSettings.domainVocabulary
     @State private var newTerm: String = ""
     @State private var summarizeEnabled: Bool = AppSettings.summarizeEnabled
+    @State private var notesMergeEnabled: Bool = AppSettings.notesMergeEnabled
     @State private var promptForDetails: Bool = AppSettings.promptForDetails
     @State private var showInDock: Bool = AppSettings.showInDock
     @State private var appearance: AppAppearance = AppSettings.appearance
@@ -280,6 +281,17 @@ struct SettingsView: View {
             Text("Intelligence")
         } footer: {
             Text("Generates a descriptive title and short summary for each transcript, on-device. Filler words (um, uh) are always removed. Your transcript wording is never rewritten — only the title and summary are AI-generated.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        Section {
+            Toggle("Merge mid-call notes into a linked note", isOn: $notesMergeEnabled)
+                .onChange(of: notesMergeEnabled) { _, v in AppSettings.notesMergeEnabled = v }
+        } header: {
+            Text("Notes Merge")
+        } footer: {
+            Text("After a call with notes you jotted down while recording, merges them with the transcript into a new note (same on-device model as summaries), linked back to the call. Off by default: creates a new file in your folder each time.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

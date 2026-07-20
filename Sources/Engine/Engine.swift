@@ -35,9 +35,12 @@ protocol ChatEngine {
 
 /// A title/summary/topics generator (concrete return type — sidesteps the Generable-vs-Codable
 /// generic-dispatch problem: Apple FM builds it via @Generable, the endpoint via JSON decode).
+/// Also the notes-merge (M16) generator — same "per-call AI enrichment" bucket, same assigned
+/// model/settings, just a different-shaped call on the same engine.
 protocol EnrichEngine {
     var label: String { get }
     func digest(transcript: String, sizeClass: SizeClass) async -> TranscriptDigest?
+    func mergeNotes(transcript: String, notes: String, sizeClass: SizeClass) async -> String?
 }
 
 /// Plain decodable shape the endpoint parses JSON-mode output into (TranscriptDigest itself is
@@ -46,6 +49,11 @@ struct DigestDTO: Decodable {
     let title: String
     let summary: String
     let topics: [String]
+}
+
+/// Plain decodable shape the endpoint parses notes-merge JSON-mode output into.
+struct MergeNotesDTO: Decodable {
+    let body: String
 }
 
 // MARK: - Reranking + embeddings (gated experiments — see P10 / design phases E, F)

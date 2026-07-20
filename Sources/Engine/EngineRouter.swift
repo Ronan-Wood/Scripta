@@ -32,6 +32,19 @@ enum EngineRouter {
     /// enrichment in that case (the endpoint's 60–240s digest must not delay the write).
     static var enrichmentIsDeferred: Bool { endpointEngine(for: .enrich) != nil }
 
+    /// Notes-merge (M16): same task bucket, model, and fallback as `enrich` — a user's assigned
+    /// "capable" local model applies here too, not just to title/summary. Always backgrounded by
+    /// the caller (a separate note file, not the transcript write), so no defer-flag is needed.
+    static func mergeNotes(transcript: String, notes: String) async -> String? {
+        if let endpoint = endpointEngine(for: .enrich) {
+            if let body = await endpoint.mergeNotes(transcript: transcript, notes: notes, sizeClass: endpoint.sizeClass) {
+                return body
+            }
+        }
+        let apple = AppleFMEngine()
+        return await apple.mergeNotes(transcript: transcript, notes: notes, sizeClass: apple.sizeClass)
+    }
+
     /// The reranker (gated experiment). nil unless rerank is enabled AND an endpoint model is
     /// assigned for Ask — Apple FM deliberately doesn't rerank (measured too weak).
     static func rerankEngine() -> RerankEngine? {
