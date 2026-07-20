@@ -128,6 +128,50 @@ enum TranscriptMetadataEditor {
         try result.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// Marks one open commitment resolved (M17 follow-up), matched by its TEXT portion (the
+    /// description after "owner: ") — commitment descriptions are FM-extracted and specific
+    /// enough to be unique within one call in practice, and matching this way needs nothing extra
+    /// threaded from the DB read side (which already has `text`, not the original raw owner
+    /// spelling). Appends a `" [done]"` suffix to the matching frontmatter entry rather than
+    /// updating the DB directly: `IndexBuilder` rebuilds `action_items` from this SAME frontmatter
+    /// on every re-index (reconcile, a metadata edit), so a DB-only status would be silently
+    /// reverted the next time that happens — the frontmatter has to be where "done" lives, same
+    /// as the commitment text itself. A no-op (not an error) if nothing matches, already done, or
+    /// the call has no commitments — the caller doesn't need to distinguish those cases.
+    static func markCommitmentDone(url: URL, commitmentText: String) throws {
+        let content = try String(contentsOf: url, encoding: .utf8)
+        guard let split = Frontmatter.split(content), Frontmatter.hasOwnerMarker(split.frontmatter) else {
+            throw EditError(message: "This isn’t a Scripta transcript.")
+        }
+        let existing = Frontmatter.list(split.frontmatter, "commitments")
+        var changed = false
+        let updated = existing.map { entry -> String in
+            guard !entry.hasSuffix(" [done]"), let range = entry.range(of: ": ") else { return entry }
+            guard String(entry[range.upperBound...]) == commitmentText else { return entry }
+            changed = true
+            return entry + " [done]"
+        }
+        guard changed else { return }
+
+        let list = updated.map(TranscriptWriter.sanitizeScalar).map { "\"\($0)\"" }.joined(separator: ", ")
+        let commitmentsLine = "commitments: [\(list)]"
+        var lines = split.frontmatter.components(separatedBy: "\n")
+        lines.removeAll { $0.trimmingCharacters(in: .whitespaces).hasPrefix("commitments:") }
+        var rebuilt: [String] = []
+        var inserted = false
+        for line in lines {
+            rebuilt.append(line)
+            if !inserted, line.trimmingCharacters(in: .whitespaces).hasPrefix("duration:") {
+                rebuilt.append(commitmentsLine)
+                inserted = true
+            }
+        }
+        if !inserted { rebuilt.append(commitmentsLine) }
+
+        let result = "---\n" + rebuilt.joined(separator: "\n") + "\n---\n" + split.body
+        try result.write(to: url, atomically: true, encoding: .utf8)
+    }
+
     /// Replaces the first Markdown H1 (`# …`) line, leaving surrounding whitespace intact.
     private static func replacingFirstHeading(in body: String, with heading: String) -> String {
         var lines = body.components(separatedBy: "\n")

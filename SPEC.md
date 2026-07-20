@@ -252,6 +252,23 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     [[CallTranscriber/2026-07-14 - Decisions - Model Strategy]] in the vault). Effort M, mostly in
     the owner-resolution matching, not the schema (already there).
 
+    **Follow-up (2026-07-20, from a review pass over M14-M19 as a whole):** three real gaps
+    closed. (1) A commitment could never be marked resolved — `action_items.status` was written
+    once as `"open"` and never changed anywhere; `commitments(group:)` also had no `LIMIT`, unlike
+    every sibling query. Fixed with a genuine resolve path: a `" [done]"` suffix round-trips
+    through the SAME frontmatter `commitments:` field the text itself lives in (not a DB-only
+    status flip — `IndexBuilder` rebuilds `action_items` from that frontmatter on every re-index,
+    so a DB-only status would silently revert on the next reconcile or metadata edit), surfaced as
+    a checkmark button in both the Commitments rail and the entity page. (2) `EntityDetailView`
+    never showed the commitments a person actually owes — an obvious connection between two
+    already-shipped features that wasn't made when either landed; wired in by filtering the same
+    `commitments(group:)` data by `ownerID`. (3) The SAME unscoped cross-group entity lookup M19's
+    own crosscheck found and fixed in `EntityDetailView` was still sitting in `KnowledgeView`'s
+    commitment-owner name resolution — closed with the same `EntityRegistry.entity(id:group:)`.
+    Also: `summarizeEnabled`'s footer no longer claimed only title/summary are AI-generated (it
+    silently governs commitment extraction too), and Home gained an "Open commitments" stat tile,
+    closing the "digest card" this entry always said it wanted.
+
 18. **Related-items everywhere, with FM synthesis** *(ratified 2026-07-20; pick #5, expanded from
     the original "generalize the live panel" scope after discussion — Ronan wanted the connection
     itself explained, not just a list of raw hits).* `RelatedCallsPanel` today only exists during

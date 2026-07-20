@@ -18,6 +18,7 @@ struct EntityDetailView: View {
 
     @State private var entity: EntityRegistry.Entity?
     @State private var mentions: [SearchHit] = []
+    @State private var commitments: [IndexStore.CommitmentRow] = []
     @State private var coOccurring: [(id: String, name: String, kind: String, count: Int)] = []
     @State private var loaded = false
 
@@ -43,6 +44,7 @@ struct EntityDetailView: View {
                             if let gloss = entity.gloss, !gloss.isEmpty { glossSection(gloss) }
                         }
                         mentionsSection
+                        if !commitments.isEmpty { commitmentsSection }
                         if !coOccurring.isEmpty { coOccurringSection }
                     }
                     .padding(Space.x6)
@@ -130,6 +132,47 @@ struct EntityDetailView: View {
         }
     }
 
+    /// What this person owes you (M17 data, filtered to this entity's own commitments — the
+    /// obvious connection between M17 and M19 that wasn't made when either shipped: the rollup
+    /// already exists, this page already loads by entityID+group, they just weren't wired
+    /// together). Same mark-done affordance as the Commitments rail, since it's the same
+    /// underlying frontmatter-backed action.
+    private var commitmentsSection: some View {
+        VStack(alignment: .leading, spacing: Space.x3) {
+            SectionHeader(title: "Owes you")
+            VStack(spacing: 1) {
+                ForEach(commitments) { item in
+                    HStack(alignment: .top, spacing: Space.x2) {
+                        Button { markDone(item) } label: {
+                            CarbonIcon(name: "checkmark", size: 10, color: Carbon.textHelper)
+                        }.buttonStyle(.plain).help("Mark done")
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(item.text).font(CarbonFont.body(12)).foregroundStyle(Carbon.textPrimary)
+                            Text(item.callTitle).font(CarbonFont.label(10)).foregroundStyle(Carbon.textHelper)
+                        }
+                    }
+                    .padding(Space.x3)
+                    .background(Carbon.layer)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
+        }
+    }
+
+    /// Same frontmatter-is-source-of-truth path as KnowledgeView's markCommitmentDone — see that
+    /// one's doc comment for why this can't be a DB-only status flip.
+    private func markDone(_ item: IndexStore.CommitmentRow) {
+        guard let store = IndexStore.shared else { return }
+        commitments.removeAll { $0.id == item.id }
+        let url = URL(fileURLWithPath: item.path)
+        let text = item.text
+        Task.detached(priority: .utility) {
+            try? TranscriptMetadataEditor.markCommitmentDone(url: url, commitmentText: text)
+            IndexBuilder.index(url, into: store)
+        }
+    }
+
     private var coOccurringSection: some View {
         VStack(alignment: .leading, spacing: Space.x3) {
             SectionHeader(title: "Appears alongside")
@@ -143,7 +186,7 @@ struct EntityDetailView: View {
 
     private func load() async {
         let id = entityID, g = group
-        let (foundEntity, foundMentions, foundCoOccurring) = await Task.detached(priority: .userInitiated) {
+        let (foundEntity, foundMentions, foundCommitments, foundCoOccurring) = await Task.detached(priority: .userInitiated) {
             // Group-scoped (crosscheck, security lens): one identity can legitimately span
             // workspaces by design, but this is the first UI surface that DISPLAYS an entity's
             // aliases — an unscoped lookup would show surface forms only ever spoken in a
@@ -151,11 +194,16 @@ struct EntityDetailView: View {
             // correctly SQL-scoped; this closes the one unscoped read.
             let entity = EntityRegistry.shared.entity(id: id, group: g)
             let mentions = IndexStore.shared?.callsMentioning(entityID: id, group: g) ?? []
+            // No dedicated "commitments for one owner" query — commitments(group:) is already
+            // bounded (200), so filtering client-side avoids a near-duplicate SQL function for
+            // one extra WHERE clause.
+            let commitments = (IndexStore.shared?.commitments(group: g) ?? []).filter { $0.ownerID == id }
             let co = IndexStore.shared?.coOccurring(entityID: id, group: g) ?? []
-            return (entity, mentions, co)
+            return (entity, mentions, commitments, co)
         }.value
         entity = foundEntity
         mentions = foundMentions
+        commitments = foundCommitments
         coOccurring = foundCoOccurring
         loaded = true
     }

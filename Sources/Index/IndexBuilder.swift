@@ -45,14 +45,21 @@ enum IndexBuilder {
         // name must not mint a new permanent registry entity, per the ratified design (SPEC M17).
         // Falls back to the raw surface string when nothing confirmed matches, same as the spec's
         // own fallback — the commitment is still shown, just not tied to a tracked identity.
-        let actionItems: [IndexedActionItem] = meta.commitments.compactMap { line in
+        // A trailing " [done]" (written by TranscriptMetadataEditor.markCommitmentDone) is status,
+        // stripped before the owner/text split — round-tripped through frontmatter, not the DB
+        // alone, since re-indexing rebuilds this table from scratch on every reconcile/metadata
+        // edit and a DB-only status would silently revert.
+        let actionItems: [IndexedActionItem] = meta.commitments.compactMap { rawLine in
+            var line = rawLine
+            let done = line.hasSuffix(" [done]")
+            if done { line.removeLast(" [done]".count) }
             guard let range = line.range(of: ": ") else { return nil }
             let owner = Indexing.stripControlChars(String(line[..<range.lowerBound]).trimmingCharacters(in: .whitespaces))
             let text = Indexing.stripControlChars(String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces))
             guard !owner.isEmpty, !text.isEmpty else { return nil }
             let ownerID = owner.caseInsensitiveCompare("you") == .orderedSame
                 ? "you" : (registry.resolveConfirmed(surface: owner, kind: "person", group: meta.group) ?? owner)
-            return IndexedActionItem(ownerID: ownerID, text: text)
+            return IndexedActionItem(ownerID: ownerID, text: text, status: done ? "done" : "open")
         }
         store.upsert(transcript, chunks: chunks, actionItems: actionItems)
         let hash = Indexing.contentHash(chunks)

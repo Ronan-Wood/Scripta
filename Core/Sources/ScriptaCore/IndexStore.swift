@@ -50,15 +50,19 @@ public struct IndexedChunk {
     }
 }
 
-/// A commitment extracted from one transcript (M17). `ownerID` is an `EntityRegistry` id when
-/// the owner resolved to a known person, or the literal `"you"` sentinel when the recording's own
-/// user owes it — never empty (an unresolvable owner still gets an id via `EntityRegistry.resolve`,
-/// which allocates one rather than failing).
+/// A commitment extracted from one transcript (M17). `ownerID` is a CONFIRMED `EntityRegistry`
+/// id, the literal `"you"` sentinel, or the raw surface string when nothing confirmed matched
+/// (`resolveConfirmed` never allocates — see `IndexBuilder`). `status` round-trips through the
+/// transcript's own frontmatter (a `" [done]"` suffix on the encoded entry) rather than living
+/// DB-only: the DB is a rebuildable cache, and re-indexing re-parses the same frontmatter and
+/// rebuilds this table from scratch, so a DB-only status would silently revert on the next
+/// reconcile or metadata edit.
 public struct IndexedActionItem {
     public let ownerID: String
     public let text: String
-    public init(ownerID: String, text: String) {
-        self.ownerID = ownerID; self.text = text
+    public let status: String
+    public init(ownerID: String, text: String, status: String = "open") {
+        self.ownerID = ownerID; self.text = text; self.status = status
     }
 }
 
@@ -318,7 +322,7 @@ public final class IndexStore {
         if ok {
             for a in actionItems {
                 guard run("INSERT INTO action_items(path,owner_id,text,status) VALUES(?,?,?,?)", bind: { stmt in
-                    bind(stmt, 1, t.path); bind(stmt, 2, a.ownerID); bind(stmt, 3, a.text); bind(stmt, 4, "open")
+                    bind(stmt, 1, t.path); bind(stmt, 2, a.ownerID); bind(stmt, 3, a.text); bind(stmt, 4, a.status)
                 }) else { ok = false; break }
             }
         }
@@ -1065,23 +1069,47 @@ public final class IndexStore {
         aggregateList(column: "participants")
     }
 
-    /// Open commitments in one workspace (M17), newest call first. `ownerID` is either the
-    /// `"you"` sentinel or an `EntityRegistry` id — resolving that to a display name needs the
-    /// registry, which this layer deliberately doesn't depend on (matches `people()`/`tags()`:
-    /// IndexStore returns raw aggregates, callers cross-reference identity).
-    public func commitments(group: String) -> [(ownerID: String, text: String, callTitle: String)] {
+    /// Open commitments in one workspace (M17/follow-up), newest call first, bounded like every
+    /// sibling read here (`digest`: 400, `entities`: 200, `callsMentioning`: 50) — the original
+    /// version had no LIMIT at all. `ownerID` is the `"you"` sentinel, an `EntityRegistry` id, or
+    /// a raw surface string (resolveConfirmed's no-match fallback) — resolving an id to a display
+    /// name needs the registry, which this layer deliberately doesn't depend on (matches
+    /// `people()`/`tags()`: IndexStore returns raw aggregates, callers cross-reference identity).
+    /// `path` is the owning call's file, needed to mark a commitment done (rewrites that file's
+    /// frontmatter — see `TranscriptMetadataEditor.markCommitmentDone`).
+    public struct CommitmentRow: Identifiable {
+        public let id: String
+        public let path: String
+        public let ownerID: String
+        public let text: String
+        public let callTitle: String
+    }
+
+    public func commitments(group: String, limit: Int = 200) -> [CommitmentRow] {
         let unlock = acquireLock(); defer { unlock() }
-        var out: [(String, String, String)] = []
+        var out: [CommitmentRow] = []
         query("""
-            SELECT a.owner_id, a.text, t.title FROM action_items a
+            SELECT a.path, a.owner_id, a.text, t.title FROM action_items a
             JOIN transcripts t ON t.path = a.path
             WHERE t."group" = ? AND t.kind = 'call' AND a.status = 'open'
-            ORDER BY t.date DESC, t.time DESC
+            ORDER BY t.date DESC, t.time DESC LIMIT \(max(1, limit));
             """,
               bind: { Self.bindStatic($0, 1, group) }) { stmt in
-            out.append((text(stmt, 0), text(stmt, 1), text(stmt, 2)))
+            let path = text(stmt, 0), owner = text(stmt, 1), txt = text(stmt, 2), title = text(stmt, 3)
+            out.append(CommitmentRow(id: "\(path)|\(txt)", path: path, ownerID: owner, text: txt, callTitle: title))
         }
         return out
+    }
+
+    /// Count of open commitments in a workspace — for a stat tile, without fetching full rows.
+    public func commitmentCount(group: String) -> Int {
+        let unlock = acquireLock(); defer { unlock() }
+        var n = 0
+        query("""
+            SELECT COUNT(*) FROM action_items a JOIN transcripts t ON t.path = a.path
+            WHERE t."group" = ? AND t.kind = 'call' AND a.status = 'open'
+            """, bind: { Self.bindStatic($0, 1, group) }) { n = Int(sqlite3_column_int($0, 0)) }
+        return n
     }
 
     /// All tags across transcripts (excluding the owner marker) with a count, most-frequent first.

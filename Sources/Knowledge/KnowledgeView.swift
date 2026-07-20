@@ -3,9 +3,11 @@ import ScriptaCore
 
 /// One commitment, resolved to a display-ready owner name (M17). Grouping/keying uses `ownerID`,
 /// never `ownerName` — two different people can share a display name, and merging their
-/// commitments under one name silently misattributes them (crosscheck finding).
+/// commitments under one name silently misattributes them (crosscheck finding). `path` is the
+/// owning call's file — needed to mark the commitment done.
 struct CommitmentDisplay: Identifiable {
-    let id = UUID()
+    let id: String
+    let path: String
     let ownerID: String
     let ownerName: String
     let isYou: Bool
@@ -227,18 +229,22 @@ struct KnowledgeView: View {
                 self.rows = rows
                 self.notes = notes
                 self.docs = docs
-                // ownerID → display name: a cheap in-memory registry scan (same "cheap, inline"
+                // ownerID → display name: a cheap in-memory registry lookup (same "cheap, inline"
                 // reasoning as vocabTerms/collisions above), done here rather than in the
                 // detached task so it always sees the freshest registry state at display time.
-                // ownerID is "you", a confirmed entity id, OR (IndexBuilder's fallback when no
-                // confirmed person matched) the raw name string itself — in that last case it IS
-                // already the display name, not a lookup miss, so there's no "Someone" fallback.
-                let entities = EntityRegistry.shared.allEntities()
+                // Group-scoped via EntityRegistry.entity(id:group:) — the same unscoped
+                // allEntities().first{} pattern M19's crosscheck found and fixed in EntityDetailView
+                // was still sitting here too: one entity id can legitimately span workspaces, so an
+                // unscoped lookup risked showing a name only ever confirmed in a DIFFERENT
+                // workspace's calls (crosscheck follow-up). ownerID is "you", a group-visible
+                // confirmed entity id, OR (IndexBuilder's fallback when no confirmed person
+                // matched) the raw name string itself — in that last case it IS already the
+                // display name, not a lookup miss, so there's no "Someone" fallback.
                 self.commitments = rawCommitments.map { row in
                     let isYou = row.ownerID == "you"
-                    let name = isYou ? "You" : (entities.first { $0.id == row.ownerID }?.name ?? row.ownerID)
-                    return CommitmentDisplay(ownerID: row.ownerID, ownerName: name, isYou: isYou,
-                                             text: row.text, callTitle: row.callTitle)
+                    let name = isYou ? "You" : (EntityRegistry.shared.entity(id: row.ownerID, group: group)?.name ?? row.ownerID)
+                    return CommitmentDisplay(id: row.id, path: row.path, ownerID: row.ownerID, ownerName: name,
+                                             isYou: isYou, text: row.text, callTitle: row.callTitle)
                 }
             }
         }
@@ -485,13 +491,32 @@ struct KnowledgeView: View {
 
     private func commitmentRow(_ item: CommitmentDisplay) -> some View {
         HStack(alignment: .top, spacing: Space.x2) {
-            CarbonIcon(name: "checkmark", size: 10, color: Carbon.textHelper)
+            Button { markCommitmentDone(item) } label: {
+                CarbonIcon(name: "checkmark", size: 10, color: Carbon.textHelper)
+            }.buttonStyle(.plain).help("Mark done")
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.text).font(CarbonFont.body(12)).foregroundStyle(Carbon.textPrimary)
                 Text(item.callTitle).font(CarbonFont.label(10)).foregroundStyle(Carbon.textHelper)
             }
         }
         .padding(.leading, Space.x1)
+    }
+
+    /// Marks a commitment resolved: rewrites the owning call's frontmatter (the source of truth —
+    /// `TranscriptMetadataEditor.markCommitmentDone` — re-indexing rebuilds `action_items` from
+    /// it, so a DB-only status would silently revert) and re-indexes, then reloads. Removed from
+    /// the list optimistically first: the write + re-index round-trip is real file I/O, and a
+    /// tapped checkmark should disappear immediately, not after a visible delay.
+    private func markCommitmentDone(_ item: CommitmentDisplay) {
+        guard let store = model.index else { return }
+        commitments.removeAll { $0.id == item.id }
+        let url = URL(fileURLWithPath: item.path)
+        let text = item.text
+        Task.detached(priority: .utility) {
+            try? TranscriptMetadataEditor.markCommitmentDone(url: url, commitmentText: text)
+            IndexBuilder.index(url, into: store)
+            await MainActor.run { reload() }
+        }
     }
 
     /// Imported files, newest first — click opens the original.
