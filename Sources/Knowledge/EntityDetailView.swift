@@ -32,8 +32,16 @@ struct EntityDetailView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: Space.x5) {
-                        if let entity, !entity.aliases.isEmpty { aliasesSection(entity) }
-                        if let entity, let gloss = entity.gloss, !gloss.isEmpty { glossSection(gloss) }
+                        if let entity {
+                            // Filtered once, gated on the filtered result — not on raw
+                            // entity.aliases, which every freshly-resolved entity already
+                            // contains (its own normalized name) even with zero real alternate
+                            // spellings, which rendered an empty "Also known as" heading for the
+                            // common case (crosscheck).
+                            let extraAliases = entity.aliases.filter { $0 != EntityRegistry.normalize(entity.name) }
+                            if !extraAliases.isEmpty { aliasesSection(extraAliases) }
+                            if let gloss = entity.gloss, !gloss.isEmpty { glossSection(gloss) }
+                        }
                         mentionsSection
                         if !coOccurring.isEmpty { coOccurringSection }
                     }
@@ -66,11 +74,11 @@ struct EntityDetailView: View {
         .padding(Space.x5)
     }
 
-    private func aliasesSection(_ entity: EntityRegistry.Entity) -> some View {
+    private func aliasesSection(_ aliases: [String]) -> some View {
         VStack(alignment: .leading, spacing: Space.x3) {
             SectionHeader(title: "Also known as")
             FlexWrap(spacing: Space.x2) {
-                ForEach(entity.aliases.filter { $0 != EntityRegistry.normalize(entity.name) }, id: \.self) { alias in
+                ForEach(aliases, id: \.self) { alias in
                     CarbonChip(text: alias)
                 }
             }
@@ -88,7 +96,15 @@ struct EntityDetailView: View {
         VStack(alignment: .leading, spacing: Space.x3) {
             SectionHeader(title: "Mentioned in")
             if mentions.isEmpty {
-                Text("No calls yet.").font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
+                // "No calls yet" would be a flat false claim for the M17 commitment-owner
+                // fallback path: the person WAS just mentioned, in the call the user opened this
+                // page from — there's simply no tracked identity for them yet, a different and
+                // more honest thing to say (crosscheck).
+                Text(entity == nil && fallbackName != nil
+                     ? "\(fallbackName!) isn't a tracked contact yet — not yet confirmed as a call participant."
+                     : "No calls yet.")
+                    .font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 VStack(spacing: 1) {
                     ForEach(mentions) { hit in
@@ -128,7 +144,12 @@ struct EntityDetailView: View {
     private func load() async {
         let id = entityID, g = group
         let (foundEntity, foundMentions, foundCoOccurring) = await Task.detached(priority: .userInitiated) {
-            let entity = EntityRegistry.shared.allEntities().first { $0.id == id }
+            // Group-scoped (crosscheck, security lens): one identity can legitimately span
+            // workspaces by design, but this is the first UI surface that DISPLAYS an entity's
+            // aliases — an unscoped lookup would show surface forms only ever spoken in a
+            // DIFFERENT workspace's private calls. Mentions/co-occurrence below are already
+            // correctly SQL-scoped; this closes the one unscoped read.
+            let entity = EntityRegistry.shared.entity(id: id, group: g)
             let mentions = IndexStore.shared?.callsMentioning(entityID: id, group: g) ?? []
             let co = IndexStore.shared?.coOccurring(entityID: id, group: g) ?? []
             return (entity, mentions, co)
