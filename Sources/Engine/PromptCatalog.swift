@@ -63,4 +63,19 @@ enum PromptCatalog {
 
     /// The JSON shape the endpoint is asked to emit for enrichment.
     static let digestJSONSchema = #"{"title": string, "summary": string, "topics": [string]}"#
+
+    /// The Quick Capture cleanup prompt (M14). Intent-tier editing — self-corrections applied,
+    /// nothing added — is allowed here because a capture is the user's intent, not a record;
+    /// this prompt must never be pointed at transcript text.
+    static func captureCleanPrompt(_ text: String) -> String {
+        """
+        Below is a note someone dictated out loud. Clean it up: when the speaker revises \
+        themselves ("actually", "wait", "no, make that"), keep only their final version. Remove \
+        filler words and false starts. Fix punctuation and capitalization. Keep their own \
+        wording and every detail — do not summarize, do not add anything, do not comment. \
+        Return it as a single paragraph.
+
+        \(text)
+        """
+    }
 }
