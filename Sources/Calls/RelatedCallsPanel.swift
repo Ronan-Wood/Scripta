@@ -1,14 +1,42 @@
 import SwiftUI
 
 /// One related-item hit, shared by `RelatedCallsPanel` (live, during recording) and
-/// `RelatedItemsPanel` (M18 — any open transcript/note/doc) so both render identical cards from
-/// the same data shape rather than duplicating it.
+/// `RelatedItemsPanel` (M18 — any open transcript/note/doc).
 struct RelatedHit: Identifiable {
     let id = UUID()
     let url: URL
     let title: String
     let snippet: AttributedString
     let startMs: Int
+
+    /// FTS5 bm25 is negative (lower = stronger); below this floor a hit is too weak to show. An
+    /// empty panel costs less trust than four irrelevant cards. Shared so the two panels can't
+    /// silently drift to different thresholds (crosscheck: this used to be duplicated).
+    static let relevanceFloor = -0.5
+}
+
+/// The card both panels render for one hit — actually shared (crosscheck: the previous version
+/// claimed this via `RelatedHit` alone while the ~11-line card view stayed copy-pasted in both
+/// files). A visual change here reaches every related-item surface, including the notes/docs one
+/// SPEC.md defers, without a second copy to keep in sync.
+struct RelatedHitCard: View {
+    let hit: RelatedHit
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(alignment: .leading, spacing: Space.x1) {
+                Text(hit.title).font(CarbonFont.medium(13)).foregroundStyle(Carbon.interactive).lineLimit(1)
+                Text(hit.snippet).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary).lineLimit(3)
+            }
+            .padding(Space.x3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: Radius.control, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 /// Live "from your other calls" panel: every few seconds it searches the index with the recent
@@ -17,10 +45,6 @@ struct RelatedCallsPanel: View {
     @ObservedObject private var model = AppModel.shared
     @State private var related: [RelatedHit] = []
     @State private var timer: Timer?
-
-    /// FTS5 bm25 is negative (lower = stronger); below this floor a hit is too weak to show. An
-    /// empty panel costs less trust than four irrelevant cards. Tune empirically.
-    private static let relevanceFloor = -0.5
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.x3) {
@@ -31,17 +55,7 @@ struct RelatedCallsPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 ForEach(related) { hit in
-                    Button { model.route = .call(hit.url, ms: hit.startMs) } label: {
-                        VStack(alignment: .leading, spacing: Space.x1) {
-                            Text(hit.title).font(CarbonFont.medium(13)).foregroundStyle(Carbon.interactive).lineLimit(1)
-                            Text(hit.snippet).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary).lineLimit(3)
-                        }
-                        .padding(Space.x3)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
-                        .overlay { RoundedRectangle(cornerRadius: Radius.control, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
-                        .contentShape(Rectangle())
-                    }.buttonStyle(.plain)
+                    RelatedHitCard(hit: hit) { model.route = .call(hit.url, ms: hit.startMs) }
                 }
             }
             Spacer(minLength: 0)
@@ -65,7 +79,7 @@ struct RelatedCallsPanel: View {
             // Passage-only (a real spoken moment) and above the relevance floor — show nothing
             // rather than weak topic/filler cards fed by raw live speech.
             let hits = store.search(recent, group: AppSettings.activeGroup, limit: 12)
-                .filter { $0.startMs > 0 && $0.score <= Self.relevanceFloor }
+                .filter { $0.startMs > 0 && $0.score <= RelatedHit.relevanceFloor }
             await MainActor.run {
                 var seen = Set<URL>()
                 related = hits.compactMap { hit in
