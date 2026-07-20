@@ -98,13 +98,19 @@ struct KnowledgeView: View {
                 header
                 statRow
                 whatsImportantSection
-                if rows.isEmpty && notes.isEmpty {
-                    emptyState
-                } else if !rows.isEmpty {
-                    HStack(alignment: .top, spacing: Space.x6) {
+                // `rail` (needs-attention + browse) is now a permanent HStack member, not nested
+                // inside the `!rows.isEmpty` branch (M22 crosscheck) — commitments, identity
+                // collisions, and vocabulary are never derived from `rows` (calls-only; entities
+                // also come from notes/docs since M20), so they shouldn't disappear whenever the
+                // call digest happens to be empty. Restores the pre-M22 invariant that vocabulary/
+                // identity-check were "never gated on having calls."
+                HStack(alignment: .top, spacing: Space.x6) {
+                    if rows.isEmpty && notes.isEmpty {
+                        emptyState
+                    } else if !rows.isEmpty {
                         digestColumn.frame(maxWidth: .infinity, alignment: .leading)
-                        rail.frame(width: 300)
                     }
+                    rail.frame(width: 300)
                 }
                 notesShelf
                 documentsSection      // jobs + imported files — visible with or without calls
