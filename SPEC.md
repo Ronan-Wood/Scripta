@@ -222,6 +222,68 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     recording path and `CaptureSession` call, so a term taught via either existing UI now biases
     calls AND captures identically. Nothing left to build.
 
+16. **Notes-merge** *(ratified 2026-07-20; vault "Brain Roadmap Candidates" pick #3).* When a
+    call had CallNote fragments (the `session.addNote` skeleton typed mid-call — `RecordingSession`
+    already threads `notes: [CallNote]` into `produceTranscript`/`TranscriptWriter`), the post-record
+    pipeline gains a second FM pass alongside the existing digest generation: transcript body + the
+    user's own fragments → a structured note that expands what the user flagged, grounded in the
+    transcript (same "don't invent details" discipline as the enrich prompt). **Written as a new,
+    auto-created note linked to the call** (`NoteStore.create` + `IndexBuilder.indexNote`,
+    `kind='note'`) — never into the transcript itself (verbatim invariant untouched) and distinct
+    from Quick Capture's rolling **Captures** note (this is per-call structured output, not a
+    miscellaneous-thoughts stream). Skipped entirely when a call has no CallNote fragments — this
+    is not "summarize the transcript," which the existing summary field already covers. Reuses:
+    the `TranscriptEnricher`/`EngineRouter` FM-call shape, `NoteStore`, index-on-write. New: one
+    `PromptCatalog` prompt, one hook beside `TranscriptEnricher.enrich` in
+    `RecordingSession.produceTranscript`. Effort M.
+
+17. **Commitments extraction + per-person rollup** *(ratified 2026-07-20; pick #4).* Post-record,
+    alongside digest generation: FM bounded generation ("name the commitments/action items and
+    who owns each") over the transcript. **Storage is already reserved and unpopulated** —
+    `IndexStore`'s `action_items` table (`path, owner_id, text, status`) has existed in the schema
+    since it was scaffolded but nothing writes or reads it yet; this milestone is the first to use
+    it, so no schema/version bump is needed, only population + queries. Owner resolution is the
+    real sub-problem: match the FM's named owner against `EntityRegistry`'s confirmed people to
+    get a stable `owner_id` (ties commitments to the same identity People-rail/entity-page surfaces
+    already use); when no confirmed entity resolves, fall back to storing the bare surface string
+    rather than blocking the whole extraction on a match. Rollup surfaces in the People rail
+    (per-person: what's owed to you / what you owe) and a digest card. **Extraction only — no
+    agentic follow-through, ever** (deterministic-first rule,
+    [[CallTranscriber/2026-07-14 - Decisions - Model Strategy]] in the vault). Effort M, mostly in
+    the owner-resolution matching, not the schema (already there).
+
+18. **Related-items everywhere, with FM synthesis** *(ratified 2026-07-20; pick #5, expanded from
+    the original "generalize the live panel" scope after discussion — Ronan wanted the connection
+    itself explained, not just a list of raw hits).* `RelatedCallsPanel` today only exists during
+    live recording, querying the index with the in-progress speech every 5s. Generalized: the same
+    retrieval (`IndexStore.search`) becomes available on any open transcript/note/doc, querying
+    with that item's own content (title + summary/topics, or a body excerpt) instead of live
+    speech. **New layer on top:** when retrieval returns ≥2 hits, one additional FM call —
+    identical shape to Clovis's own retrieve-then-synthesize pipeline (`EngineRouter`/
+    `AppleFMEngine`, a new `PromptCatalog` prompt) — turns the raw hits into 2–3 sentences of
+    connective prose ("this connects to two earlier calls about X, where Y was raised and never
+    resolved"). **Progressive, not blocking:** raw snippets render immediately from retrieval (as
+    today); the synthesized line fills in a beat later once the FM call resolves — opening a
+    transcript must never wait on an LLM call. **Grounded, not just asserted:** the raw source
+    snippets stay visible beneath the synthesized line, same as Clovis's answer-plus-sources
+    pattern (`ClovisDrawer`) — an FM connecting three calls must stay traceable back to them, the
+    same discipline the enrich/digest prompts already hold to. Effectively Clovis's synthesis step
+    running proactively instead of only on a typed question. Effort S–M.
+
+19. **Entity pages** *(ratified 2026-07-20; pick #6).* Click a person/topic anywhere one appears
+    today (People rail, Tags rail, Vocabulary chips) → a detail view: canonical name + aliases +
+    gloss (`EntityRegistry.Entity`, already the trust layer — merge verdicts, privacy walls,
+    provenance — Mem's version of this pattern lacked), a mention timeline across calls/notes/docs,
+    and co-occurring people/topics. **Storage is already reserved and unpopulated** — `IndexStore`'s
+    `entity_mentions` table (`entity_id, path, start_ms, surface`) has existed since scaffolding
+    with no writer or reader yet; this is the first consumer, so — like `action_items` above — it's
+    population + queries, not a schema bump. Complementary to `EntityMirror`'s vault stubs, not
+    redundant with them: the mirror is the Obsidian-side (external) surface, this is the in-app
+    read surface over the same identity data. Read-only, no new mutation path (brain ≠ editor holds
+    — same invariant as everything else on this list). Effort M–L, mostly in mention-indexing (a
+    reconcile-time pass populating `entity_mentions` from each transcript/note/doc) rather than the
+    detail view itself.
+
 **Live transcription + related-calls (2026-07-14) — implemented.** Validated `SpeechTranscriber`
 `.volatileResults` streaming in isolation (partials stream token-by-token, then `isFinal`), incl. the
 live **buffer-feed** path (`SpeechAnalyzer.bestAvailableAudioFormat` = 16 kHz mono Int16;
