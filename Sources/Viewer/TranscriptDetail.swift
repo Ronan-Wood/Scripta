@@ -104,6 +104,18 @@ struct TranscriptDetail: View {
     private func entitySheet(_ target: EntitySheetTarget) -> some View {
         EntityDetailView(entityID: target.id, group: meta.group, fallbackName: target.fallbackName) {
             entitySheetTarget = nil
+        } onOpenNote: { path in
+            // Same group re-check KnowledgeView's own onOpenNote does (crosscheck) — this sheet
+            // has no in-app note surface to open into, but "no richer surface" isn't a reason to
+            // skip the check, just a reason the resulting action is "open externally" instead of
+            // "present a sheet."
+            if let note = NoteStore.verified(atPath: path, group: meta.group) {
+                NSWorkspace.shared.open(note.url)
+            }
+        } onOpenDoc: { path in
+            if let url = DocumentImporter.verifiedOriginalURL(atPath: path, group: meta.group) {
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 
