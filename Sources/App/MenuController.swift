@@ -307,9 +307,11 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 let group = AppSettings.recordingGroup(forCalendarID: meeting?.calendarID)
                 // Bias ASR toward names known for this workspace (the contextualStrings loop —
                 // free, source-level fix for mangled names) plus the vocabulary's jargon.
-                // Confirmed-only, so unreviewed junk never steers future transcription.
-                let vocab = EntityRegistry.shared.confirmedAliases(group: group)
-                    + EntityRegistry.shared.termVocab(group: group)
+                // Confirmed-only, so unreviewed junk never steers future transcription. Same
+                // assembler Quick Capture uses (EntityRegistry.recognitionVocab) — SpeechEngine
+                // re-adding domainVocabulary on top is harmless, Set-deduped overlap, not a
+                // second composition of the policy.
+                let vocab = EntityRegistry.recognitionVocab(group: group)
                 try await newSession.start(mode: mode, screenSource: screenSource, group: group, extraVocab: vocab)
                 session = newSession
                 tiedMeeting = meeting
@@ -434,6 +436,9 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         Task { @MainActor in
             guard let raw = await session.finish() else { self.closeCapture(); return }
             let cleaned = await CaptureCleaner.clean(raw)
+            // Esc can land after finish() already returned text but while the FM pass is still
+            // running — re-check discarded so a late discard still wins over an in-flight save.
+            guard !session.discarded else { self.closeCapture(); return }
             if !CaptureStore.save(cleaned, group: session.group) {
                 self.presentAlert(title: "Couldn't Save Capture",
                                   message: "The Captures note couldn't be written to the output folder.")

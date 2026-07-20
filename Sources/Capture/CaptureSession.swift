@@ -28,6 +28,9 @@ final class CaptureSession: ObservableObject {
     private let transcriber = LiveTranscriber()
     private var started = false
     private var cancelled = false
+    /// Set by `cancel()` even after `started` has flipped false (mid-`finish()`), so a save
+    /// already in flight can still notice a late Esc and stop short of writing the note.
+    private(set) var discarded = false
 
     init(group: String) {
         self.group = group
@@ -35,16 +38,7 @@ final class CaptureSession: ObservableObject {
 
     func start() async {
         do {
-            // Same confirmed-only bias set the recording path uses (MenuController's start):
-            // unreviewed junk never steers recognition. Domain vocabulary rides along because
-            // this path bypasses SpeechEngine.transcribe, which normally adds it.
-            let vocab = Array(Set(
-                (AppSettings.domainVocabulary
-                    + EntityRegistry.shared.confirmedAliases(group: group)
-                    + EntityRegistry.shared.termVocab(group: group))
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-            ))
+            let vocab = EntityRegistry.recognitionVocab(group: group)
             transcriber.onUpdate = { [weak self] finalized, partial in
                 guard let self else { return }
                 if let finalized { self.finalized = finalized }
@@ -58,6 +52,11 @@ final class CaptureSession: ObservableObject {
             started = true
             state = .listening
         } catch {
+            // `started` is still false here, so cancel()/finish() would no-op — tear the
+            // transcriber down ourselves, or a tap.start() failure after a successful
+            // transcriber.start() leaks a live speech session for the rest of the app's life.
+            // Safe to call unconditionally: stop() is a no-op against an unstarted transcriber.
+            await transcriber.stop()
             state = .failed(error.localizedDescription)
         }
     }
@@ -65,13 +64,15 @@ final class CaptureSession: ObservableObject {
     var hasText: Bool { !finalized.isEmpty || !partial.isEmpty }
 
     /// Stops listening, waits for the tail to finalize, and returns the raw dictated text —
-    /// nil when nothing usable was heard. Idempotent via `started`.
+    /// nil when nothing usable was heard, INCLUDING when a late `cancel()` (Esc/panel close)
+    /// landed while this was draining the transcriber. Idempotent via `started`.
     func finish() async -> String? {
         guard started else { return nil }
         started = false
         state = .saving
         tap.stop()
         await transcriber.finish()
+        guard !discarded else { return nil }
         // A leftover partial is the un-finalized tail (a finalized line clears it), so keep it.
         let text = (finalized + (partial.isEmpty ? [] : [partial]))
             .joined(separator: " ")
@@ -79,9 +80,12 @@ final class CaptureSession: ObservableObject {
         return text.isEmpty ? nil : text
     }
 
-    /// Discards the capture. Safe to call in any state, including mid-`start()`.
+    /// Discards the capture. Safe to call in any state, including mid-`start()` or mid-`finish()`
+    /// — `discarded` is unconditional so a save already past the `finish()` gate (into cleanup)
+    /// can still be caught by the caller via `discarded` before it writes anything.
     func cancel() {
         cancelled = true
+        discarded = true
         guard started else { return }
         started = false
         tap.stop()
