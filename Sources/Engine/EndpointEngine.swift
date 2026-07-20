@@ -138,7 +138,7 @@ private final class EndpointChat: ChatConversing {
         messages.append(["role": "user", "content": prompt])
         let outgoing = messages
         return AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 var final = ""
                 do {
                     for try await snapshot in wire.stream(model: model, messages: outgoing) {
@@ -151,6 +151,10 @@ private final class EndpointChat: ChatConversing {
                     continuation.finish(throwing: error)
                 }
             }
+            // Consumer stopped iterating → cancel, same as OpenAIWire.stream(). Without this the
+            // cancellation never reaches wire.stream()'s own onTermination, so the underlying HTTP
+            // request to the local/LAN endpoint kept running until the server finished on its own.
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
 }
