@@ -17,7 +17,12 @@ final class CaptureSession: ObservableObject {
     }
 
     @Published var state: State = .starting
-    @Published var finalized: [String] = []
+    /// The capture buffer: freely editable (type, speak, or both — Save takes this verbatim).
+    /// Newly finalized dictation is appended at the END, never splicing into wherever the user
+    /// is editing, so a live update can't clobber an in-progress edit or cursor position.
+    @Published var text = ""
+    /// The in-progress (not-yet-finalized) recognition preview — shown separately from `text`,
+    /// never merged into it until it finalizes (or `finish()` folds a genuine trailing tail).
     @Published var partial = ""
 
     /// Workspace snapshotted at open — the record-time-capture rule: a mid-capture workspace
@@ -31,6 +36,9 @@ final class CaptureSession: ObservableObject {
     /// Set by `cancel()` even after `started` has flipped false (mid-`finish()`), so a save
     /// already in flight can still notice a late Esc and stop short of writing the note.
     private(set) var discarded = false
+    /// How many of LiveTranscriber's (wholesale-replaced) finalized lines have already been
+    /// merged into `text`, so each update appends only the delta.
+    private var mergedFinalizedCount = 0
 
     init(group: String) {
         self.group = group
@@ -41,7 +49,11 @@ final class CaptureSession: ObservableObject {
             let vocab = EntityRegistry.recognitionVocab(group: group)
             transcriber.onUpdate = { [weak self] finalized, partial in
                 guard let self else { return }
-                if let finalized { self.finalized = finalized }
+                if let finalized, finalized.count > self.mergedFinalizedCount {
+                    let addition = finalized[self.mergedFinalizedCount...].joined(separator: " ")
+                    self.text += (self.text.isEmpty ? "" : " ") + addition
+                    self.mergedFinalizedCount = finalized.count
+                }
                 self.partial = partial
             }
             try await transcriber.start(contextualStrings: vocab)
@@ -61,11 +73,11 @@ final class CaptureSession: ObservableObject {
         }
     }
 
-    var hasText: Bool { !finalized.isEmpty || !partial.isEmpty }
+    var hasText: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !partial.isEmpty }
 
-    /// Stops listening, waits for the tail to finalize, and returns the raw dictated text —
-    /// nil when nothing usable was heard, INCLUDING when a late `cancel()` (Esc/panel close)
-    /// landed while this was draining the transcriber. Idempotent via `started`.
+    /// Stops listening, waits for the tail to finalize, and returns the capture text (typed +
+    /// dictated) — nil when nothing usable was heard/typed, INCLUDING when a late `cancel()`
+    /// (Esc/panel close) landed while this was draining the transcriber. Idempotent via `started`.
     func finish() async -> String? {
         guard started else { return nil }
         started = false
@@ -73,11 +85,14 @@ final class CaptureSession: ObservableObject {
         tap.stop()
         await transcriber.finish()
         guard !discarded else { return nil }
-        // A leftover partial is the un-finalized tail (a finalized line clears it), so keep it.
-        let text = (finalized + (partial.isEmpty ? [] : [partial]))
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
+        // A leftover partial is the un-finalized tail (finalizing normally clears it via
+        // onUpdate before transcriber.finish() returns) — fold it in rather than lose it.
+        if !partial.isEmpty {
+            text += (text.isEmpty ? "" : " ") + partial
+            partial = ""
+        }
+        let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.isEmpty ? nil : result
     }
 
     /// Discards the capture. Safe to call in any state, including mid-`start()` or mid-`finish()`
