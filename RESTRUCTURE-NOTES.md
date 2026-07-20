@@ -105,3 +105,15 @@ and delete this file.
 - Eval/run.sh builds `-c release` while `swift test` builds debug → package compiles twice in two
   configs and the edit-ranking→re-run-eval loop pays a WMO rebuild each time. Old script was
   -Onone. Consider dropping to debug unless measured eval wall-time argues otherwise.
+
+## Final-round below-bar residue (R4, all three lenses CLEAN — logged, not applied)
+
+- Hidden files other than .DS_Store (.localized, sync-client markers) still block the wiped
+  folder's rmdir → name residue; .DS_Store-only was the agreed scope.
+- A directory literally named ".DS_Store" would be recursively removed (contrivance-tier).
+- `Entities/Ungrouped/` stubs: skipped by "" wipes by design, and collide with a user group
+  literally named "Ungrouped" (pre-existing).
+- Confirmation-count vs delete-time vault race: inherent to any confirm flow; capture narrows it.
+- Zero-write reconcile passes defer pre-existing orphan pruning to the next writing pass.
+- NoteStore/DocumentImporter still use strict (quote-intolerant) markers — different subsystem,
+  outside the agreed unification; candidate for the same isMarkerLine treatment someday.
