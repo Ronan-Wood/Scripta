@@ -348,24 +348,51 @@ func clockStamp(_ ms: Int) -> String {
 
 struct MCPCommitment { let ownerID, ownerName, text, callTitle, date, path: String }
 
-/// Open commitments in the active workspace, newest call first. Owner display name comes from the
-/// entities cache when owner_id resolved to a real identity; "you" and an unresolved raw surface
-/// string both pass through IFNULL unchanged (mirrors IndexStore.commitments).
-func mcpCommitments(group: String, limit: Int = 200) -> [MCPCommitment]? {
+/// Open commitments in the active workspace, newest call first. `owner`, when non-empty, filters
+/// in SQL before the LIMIT — mirrors IndexStore.commitments(group:ownerID:limit:)'s fix (this same
+/// session, commit d3c88eb) for filtering-after-the-cap silently losing a person's older
+/// commitments (crosscheck). `"you"` matches the sentinel exactly; anything else is a
+/// case-insensitive substring against the resolved display name.
+///
+/// Owner display name only comes from the entities cache when that entity actually has a mention
+/// in THIS group (the nested SELECT) — NOT a bare `LEFT JOIN entities e ON e.id = a.owner_id`.
+/// owner_id is written via `resolveConfirmed`, which DOES check the group at the initial surface
+/// match — but it then calls `applyMerges`, which chases confirmed "same" verdicts transitively
+/// with ZERO group awareness. Two individually-normal collision-review confirmations (one in this
+/// group, one in a completely different one) can chain owner_id to an entity that was never
+/// confirmed or mentioned here at all. The app's own UI is protected because its display-time
+/// lookup (`EntityRegistry.entity(id:group:)`) re-checks group membership independently of
+/// resolveConfirmed's write-time check — this query now does the same thing the only way this
+/// process can (it can't see the registry file, only this cache), by requiring an actual mention
+/// in-group rather than trusting the id blindly (crosscheck, blocker: this exact join, unscoped,
+/// reopened the cross-group leak M19's crosscheck already found and fixed once on the app side).
+func mcpCommitments(group: String, owner: String?, limit: Int) -> [MCPCommitment]? {
     guard let db = openIndex() else { return nil }
     defer { sqlite3_close(db) }
+    let trimmedOwner = owner?.isEmpty == false ? owner! : nil
+    let ownerIsYou = trimmedOwner == "you"
+    let ownerClause = trimmedOwner == nil ? "" : (ownerIsYou ? " AND a.owner_id = ?" : " AND lower(IFNULL(e.name, a.owner_id)) LIKE ? ESCAPE '\\'")
     let sql = """
     SELECT a.owner_id, IFNULL(e.name, a.owner_id), a.text, t.title, t.date, a.path
     FROM action_items a
     JOIN transcripts t ON t.path = a.path
-    LEFT JOIN entities e ON e.id = a.owner_id
-    WHERE t."group" = ? AND IFNULL(t.kind,'call') = 'call' AND a.status = 'open'
+    LEFT JOIN (
+        SELECT DISTINCT en.id, en.name
+        FROM entities en JOIN entity_mentions m ON m.entity_id = en.id
+        JOIN transcripts t2 ON t2.path = m.path
+        WHERE t2."group" = ?
+    ) e ON e.id = a.owner_id
+    WHERE t."group" = ? AND IFNULL(t.kind,'call') = 'call' AND a.status = 'open'\(ownerClause)
     ORDER BY t.date DESC, t.time DESC LIMIT \(max(1, limit));
     """
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, group, -1, SQLITE_TRANSIENT_MCP)
+    var i: Int32 = 1
+    func bind(_ s: String) { sqlite3_bind_text(stmt, i, s, -1, SQLITE_TRANSIENT_MCP); i += 1 }
+    bind(group)   // scopes the entities subquery
+    bind(group)   // scopes the main WHERE
+    if let trimmedOwner { bind(ownerIsYou ? "you" : likeSubstring(trimmedOwner)) }
     func col(_ n: Int32) -> String { sqlite3_column_text(stmt, n).map { String(cString: $0) } ?? "" }
     var out: [MCPCommitment] = []
     while sqlite3_step(stmt) == SQLITE_ROW {
@@ -386,15 +413,18 @@ func likeSubstring(_ value: String) -> String {
 
 /// Entities (people/terms) in the active workspace whose name contains `name` — group-scoped by
 /// joining through entity_mentions/transcripts (mentions carry no group of their own), the same
-/// shape as IndexStore.entities(group:).
-func matchingEntities(name: String, group: String) -> [(id: String, name: String, kind: String)] {
+/// shape as IndexStore.entities(group:). Capped like every other list-returning query in this file
+/// (crosscheck: this was the one exception) — an unqualified single-letter query has no other
+/// bound on how many entities it could match in a mature workspace.
+func matchingEntities(name: String, group: String, limit: Int = 25) -> [(id: String, name: String, kind: String)] {
     guard let db = openIndex() else { return [] }
     defer { sqlite3_close(db) }
     let sql = """
     SELECT DISTINCT e.id, e.name, e.kind
     FROM entities e JOIN entity_mentions m ON m.entity_id = e.id
     JOIN transcripts t ON t.path = m.path
-    WHERE t."group" = ? AND lower(e.name) LIKE ? ESCAPE '\\';
+    WHERE t."group" = ? AND lower(e.name) LIKE ? ESCAPE '\\'
+    LIMIT \(max(1, limit));
     """
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
@@ -841,15 +871,11 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         return textResult(entries.map { "• \($0.name) — \($0.count) call\($0.count == 1 ? "" : "s")" }.joined(separator: "\n"))
 
     case "commitments":
-        guard let rows = mcpCommitments(group: group) else {
+        let owner = (args["owner"] as? String)?.trimmingCharacters(in: .whitespaces).lowercased()
+        let limit = min(200, max(1, (args["limit"] as? Int) ?? 50))
+        guard let items = mcpCommitments(group: group, owner: owner, limit: limit) else {
             return textResult("The retrieval index isn't built yet. Open Scripta once to build it.", isError: true)
         }
-        var items = rows
-        if let owner = (args["owner"] as? String)?.trimmingCharacters(in: .whitespaces).lowercased(), !owner.isEmpty {
-            items = items.filter { owner == "you" ? $0.ownerID == "you" : $0.ownerName.lowercased().contains(owner) }
-        }
-        let limit = min(200, max(1, (args["limit"] as? Int) ?? 50))
-        items = Array(items.prefix(limit))
         if items.isEmpty { return textResult("No open commitments found.") }
         let lines = items.map { c -> String in
             let title = c.callTitle.isEmpty ? c.date : c.callTitle
@@ -865,7 +891,9 @@ func handleToolCall(_ name: String, _ args: [String: Any]) -> [String: Any] {
         if matches.isEmpty { return textResult("No one or nothing named \"\(name)\" found in this workspace.") }
         if matches.count > 1 {
             let lines = matches.map { "• \($0.name) (\($0.kind))" }
-            return textResult("Multiple matches for \"\(name)\" — be more specific:\n" + lines.joined(separator: "\n"))
+            var msg = "Multiple matches for \"\(name)\" — be more specific:\n" + lines.joined(separator: "\n")
+            if matches.count >= 25 { msg += "\n\n— showing the first 25; narrow the name to see the rest." }
+            return textResult(msg)
         }
         let entity = matches[0]
         let mentions = entityMentions(entityID: entity.id, group: group)
