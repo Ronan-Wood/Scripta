@@ -160,6 +160,8 @@ struct KnowledgeView: View {
         .sheet(item: $entitySheetTarget) { target in
             EntityDetailView(entityID: target.id, group: model.activeGroup, fallbackName: target.fallbackName) {
                 entitySheetTarget = nil
+            } onCommitmentsChanged: {
+                reload()
             }
         }
     }
@@ -512,8 +514,10 @@ struct KnowledgeView: View {
         commitments.removeAll { $0.id == item.id }
         let url = URL(fileURLWithPath: item.path)
         let text = item.text
+        let group = model.activeGroup
+        let ownerID = item.ownerID
         Task.detached(priority: .utility) {
-            try? TranscriptMetadataEditor.markCommitmentDone(url: url, commitmentText: text)
+            try? TranscriptMetadataEditor.markCommitmentDone(url: url, group: group, ownerID: ownerID, commitmentText: text)
             IndexBuilder.index(url, into: store)
             await MainActor.run { reload() }
         }

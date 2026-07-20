@@ -57,8 +57,7 @@ enum IndexBuilder {
             let owner = Indexing.stripControlChars(String(line[..<range.lowerBound]).trimmingCharacters(in: .whitespaces))
             let text = Indexing.stripControlChars(String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces))
             guard !owner.isEmpty, !text.isEmpty else { return nil }
-            let ownerID = owner.caseInsensitiveCompare("you") == .orderedSame
-                ? "you" : (registry.resolveConfirmed(surface: owner, kind: "person", group: meta.group) ?? owner)
+            let ownerID = EntityRegistry.resolveCommitmentOwner(owner, group: meta.group)
             return IndexedActionItem(ownerID: ownerID, text: text, status: done ? "done" : "open")
         }
         store.upsert(transcript, chunks: chunks, actionItems: actionItems)
