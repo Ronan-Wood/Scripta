@@ -64,20 +64,32 @@ enum PromptCatalog {
     /// The JSON shape the endpoint is asked to emit for enrichment.
     static let digestJSONSchema = #"{"title": string, "summary": string, "topics": [string]}"#
 
+    /// The JSON shape the endpoint is asked to emit for notes-merge.
+    static let mergeNotesJSONSchema = #"{"body": string}"#
+
     /// The notes-merge prompt (M16): expands the user's own mid-call fragments into a structured
     /// note, grounded in the transcript. Additive only, like enrichment — never rewrites the
     /// transcript itself, so this must never be pointed at the transcript as something to alter.
-    static func notesMergePrompt(transcript: String, notes: String, sizeClass: SizeClass) -> String {
-        let cap = sizeClass == .capable ? 24_000 : 8_000
-        let capped = String(transcript.prefix(cap))
-        return """
+    /// Single flowing paragraph, not bullets/multi-paragraph: the output lands as one timestamped
+    /// entry via `NoteStore.append`, which stores (and `sanitizeEntryText` collapses) a single
+    /// logical line — asking for structure the storage layer can't represent would come back
+    /// mangled (list markers surviving as stray characters after line breaks are flattened).
+    static func notesMergePrompt(transcript: String, notes: String, sizeClass: SizeClass, jsonSchema: String? = nil) -> String {
+        let capped = String(transcript.prefix(enrichCharCap(sizeClass)))
+        var prompt = """
         Below are two things: notes someone jotted down DURING a call (rough, incomplete — just \
         what they flagged as worth remembering), and the call's transcript. Expand the notes into \
-        a clear, structured note: for each point flagged, add the relevant detail from the \
-        transcript. Short paragraphs or bullet points, whichever fits the content. Stay grounded \
-        in what the transcript actually says — do not invent details, decisions, or numbers that \
-        aren't there. If a jotted note doesn't clearly map to anything in the transcript, keep it \
-        as written rather than guessing at what it meant.
+        a clear note: for each point flagged, add the relevant detail from the transcript. Write it \
+        as ONE flowing paragraph (no bullet points, no line breaks — this is stored as a single \
+        line). Stay grounded in what the transcript actually says — do not invent details, \
+        decisions, or numbers that aren't there. If a jotted note doesn't clearly map to anything \
+        in the transcript, keep it as written rather than guessing at what it meant.
+        """
+        if let jsonSchema {
+            prompt += "\n\nRespond with ONLY a JSON object of this shape, no prose:\n\(jsonSchema)"
+        }
+        prompt += """
+
 
         NOTES:
         \(notes)
@@ -85,6 +97,7 @@ enum PromptCatalog {
         TRANSCRIPT:
         \(capped)
         """
+        return prompt
     }
 
     /// The Quick Capture cleanup prompt (M14). Intent-tier editing — self-corrections applied,

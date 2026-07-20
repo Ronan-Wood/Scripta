@@ -34,6 +34,24 @@ final class EndpointEngine: ChatEngine, EnrichEngine {
         }
     }
 
+    func mergeNotes(transcript: String, notes: String, sizeClass: SizeClass) async -> String? {
+        let user = PromptCatalog.notesMergePrompt(transcript: transcript, notes: notes, sizeClass: sizeClass,
+                                                   jsonSchema: PromptCatalog.mergeNotesJSONSchema)
+        do {
+            let raw = try await wire.complete(
+                model: model,
+                messages: [["role": "system", "content": "You merge rough notes with a transcript into one grounded paragraph. Respond with JSON only."],
+                           ["role": "user", "content": user]],
+                jsonMode: true, timeout: 240)
+            let json = Self.extractJSON(raw)
+            guard let dto = try? JSONDecoder().decode(MergeNotesDTO.self, from: Data(json.utf8)) else { return nil }
+            let body = dto.body.trimmingCharacters(in: .whitespacesAndNewlines)
+            return body.isEmpty ? nil : body
+        } catch {
+            return nil
+        }
+    }
+
     /// Parameter-count heuristic on the model id — default `.capable`, but obviously small models
     /// get the compact (strict) prompts.
     static func inferSizeClass(_ model: String) -> SizeClass {

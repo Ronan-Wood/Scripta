@@ -2,10 +2,10 @@ import Foundation
 import FoundationModels
 import ScriptaCore
 
-/// A generated, structured note body merging mid-call fragments with the transcript.
+/// A generated note body merging mid-call fragments with the transcript.
 @Generable
 struct MergedNote {
-    @Guide(description: "The expanded, structured note — short paragraphs or bullet points, grounded strictly in the transcript. No invented details.")
+    @Guide(description: "The expanded note as ONE flowing paragraph — no bullet points, no line breaks. Grounded strictly in the transcript, no invented details.")
     let body: String
 }
 
@@ -22,7 +22,6 @@ enum NotesMerger {
         let notesText = notes
             .map { "[\(TranscriptWriter.formatClock(Double($0.startMs) / 1000.0))] \($0.text)" }
             .joined(separator: "\n")
-        let apple = AppleFMEngine()
-        return await apple.mergeNotes(transcript: transcript, notes: notesText, sizeClass: apple.sizeClass)
+        return await EngineRouter.mergeNotes(transcript: transcript, notes: notesText)
     }
 }

@@ -24,6 +24,7 @@ enum AppSettings {
         static let calendarGroups = "calendarGroups"
         static let activeGroup = "activeGroup"
         static let summarizeEnabled = "summarizeEnabled"
+        static let notesMergeEnabled = "notesMergeEnabled"
         static let promptForDetails = "promptForDetails"
         static let showInDock = "showInDock"
         static let appearance = "appearance"
@@ -243,6 +244,15 @@ enum AppSettings {
     static var summarizeEnabled: Bool {
         get { defaults.object(forKey: Keys.summarizeEnabled) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Keys.summarizeEnabled) }
+    }
+
+    /// Merge mid-call notes with the transcript into a new, call-linked note (M16). Off by
+    /// default — like `mirrorEnabled`, this writes a new file into the user's folder each time,
+    /// which deserves an explicit opt-in rather than riding along on `summarizeEnabled` (a toggle
+    /// whose own description never mentions creating files).
+    static var notesMergeEnabled: Bool {
+        get { defaults.bool(forKey: Keys.notesMergeEnabled) }
+        set { defaults.set(newValue, forKey: Keys.notesMergeEnabled) }
     }
 
     /// After a recording finishes, prompt to name the call and its participants. On by default;

@@ -509,14 +509,30 @@ final class RecordingSession {
 
         // Notes-merge (M16): a separate note artifact, so — unlike the digest above — it never
         // competes with the write for time; always backgrounded regardless of deferEnrichment.
+        // Own toggle (not summarizeEnabled): unlike title/summary, this writes a new file into
+        // the user's folder, which deserves its own explicit opt-in (off by default).
         // NotesMerger.merge is itself a no-op when `notes` is empty, so this only ever does
         // anything for a call the user actually annotated mid-recording.
-        if AppSettings.summarizeEnabled {
+        if AppSettings.notesMergeEnabled {
             Task.detached(priority: .utility) {
                 guard let merged = await NotesMerger.merge(transcript: plain, notes: notes) else { return }
-                let title = "Call notes — \(startedAt.formatted(date: .abbreviated, time: .shortened))"
-                guard let note = NoteStore.create(title: title, group: group),
-                      let saved = NoteStore.append(merged, linkedCall: url, to: note) else { return }
+                // Seconds-precision, POSIX-locked (matches TranscriptWriter/NoteStore elsewhere —
+                // a non-Gregorian system calendar must not stamp titles with a different era/year
+                // than everything else in the app) — also narrows the window for two notes-merge
+                // tasks racing NoteStore's unsynchronized create-then-append on a title collision
+                // to same-second rather than same-displayed-minute.
+                let fmt = DateFormatter()
+                fmt.locale = Locale(identifier: "en_US_POSIX")
+                fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                let title = "Call notes — \(fmt.string(from: startedAt))"
+                guard let note = NoteStore.create(title: title, group: group) else { return }
+                guard let saved = NoteStore.append(merged, linkedCall: url, to: note) else {
+                    // create() already wrote an empty note to disk — don't leave it behind.
+                    NoteStore.delete(note)
+                    Logger(subsystem: "com.ronanwood.Scripta", category: "NotesMerge")
+                        .error("notes-merge: append failed after create succeeded, deleted orphaned note")
+                    return
+                }
                 if let store = IndexStore.shared { IndexBuilder.indexNote(saved.url, into: store) }
             }
         }
