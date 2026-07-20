@@ -100,6 +100,30 @@ enum PromptCatalog {
         return prompt
     }
 
+    /// The JSON shape the endpoint is asked to emit for commitment extraction.
+    static let commitmentsJSONSchema = #"{"commitments": [{"owner": string, "text": string}]}"#
+
+    /// The commitment-extraction prompt (M17): bounded generation, extraction only — never asked
+    /// to act on what it finds (deterministic-first rule). `owner` must resolve either to the
+    /// literal "you" or a name `EntityRegistry.resolve` can match against known people; asking
+    /// for exact transcript wording rather than a paraphrase keeps that match reliable.
+    static func commitmentsPrompt(transcript: String, sizeClass: SizeClass, jsonSchema: String? = nil) -> String {
+        let capped = String(transcript.prefix(enrichCharCap(sizeClass)))
+        var prompt = """
+        Below is a call transcript. List every commitment, promise, or action item someone \
+        explicitly agreed to or said they would do — not things that were merely discussed or \
+        might happen. For each one, give the owner (the literal word "you" if the transcript's \
+        own user — the "You:" speaker — owes it, otherwise the other person's name exactly as it \
+        appears in the transcript) and a short, specific description of what was promised. If \
+        there are none, return an empty list — do not invent commitments that weren't stated.
+        """
+        if let jsonSchema {
+            prompt += "\n\nRespond with ONLY a JSON object of this shape, no prose:\n\(jsonSchema)"
+        }
+        prompt += "\n\n\(capped)"
+        return prompt
+    }
+
     /// The Quick Capture cleanup prompt (M14). Intent-tier editing — self-corrections applied,
     /// nothing added — is allowed here because a capture is the user's intent, not a record;
     /// this prompt must never be pointed at transcript text.

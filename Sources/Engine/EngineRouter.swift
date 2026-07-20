@@ -45,6 +45,18 @@ enum EngineRouter {
         return await apple.mergeNotes(transcript: transcript, notes: notes, sizeClass: apple.sizeClass)
     }
 
+    /// Commitment extraction (M17): same task bucket, model, and fallback as `enrich`. Always
+    /// backgrounded by the caller (a frontmatter patch after the write, not the write itself).
+    static func extractCommitments(transcript: String) async -> [ExtractedCommitment]? {
+        if let endpoint = endpointEngine(for: .enrich) {
+            if let items = await endpoint.extractCommitments(transcript: transcript, sizeClass: endpoint.sizeClass) {
+                return items
+            }
+        }
+        let apple = AppleFMEngine()
+        return await apple.extractCommitments(transcript: transcript, sizeClass: apple.sizeClass)
+    }
+
     /// The reranker (gated experiment). nil unless rerank is enabled AND an endpoint model is
     /// assigned for Ask — Apple FM deliberately doesn't rerank (measured too weak).
     static func rerankEngine() -> RerankEngine? {

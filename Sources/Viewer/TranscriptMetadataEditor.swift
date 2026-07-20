@@ -96,6 +96,38 @@ enum TranscriptMetadataEditor {
         try result.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// Applies extracted commitments (M17) to an already-written transcript's frontmatter — a
+    /// `commitments:` flow list, each entry "<owner>: <text>", same encoding `TranscriptStore`
+    /// reads back via `Frontmatter.list`. Additive only, like `applyDigest`: never touches the
+    /// body. A no-op if the call already has a commitments line — extraction runs once, and a
+    /// re-run (e.g. a later manual reconcile) must not silently overwrite a field the app itself
+    /// generated once already (unlike title, there's no user-edit path to defer to here either).
+    static func applyCommitments(url: URL, commitments: [String]) throws {
+        guard !commitments.isEmpty else { return }
+        let content = try String(contentsOf: url, encoding: .utf8)
+        guard let split = Frontmatter.split(content), Frontmatter.hasOwnerMarker(split.frontmatter),
+              Frontmatter.rawValue(split.frontmatter, "commitments").isEmpty else { return }
+
+        let list = commitments.map(TranscriptWriter.sanitizeScalar).filter { !$0.isEmpty }
+            .map { "\"\($0)\"" }.joined(separator: ", ")
+        let commitmentsLine = "commitments: [\(list)]"
+
+        let lines = split.frontmatter.components(separatedBy: "\n")
+        var rebuilt: [String] = []
+        var inserted = false
+        for line in lines {
+            rebuilt.append(line)
+            if !inserted, line.trimmingCharacters(in: .whitespaces).hasPrefix("duration:") {
+                rebuilt.append(commitmentsLine)
+                inserted = true
+            }
+        }
+        if !inserted { rebuilt.append(commitmentsLine) }
+
+        let result = "---\n" + rebuilt.joined(separator: "\n") + "\n---\n" + split.body
+        try result.write(to: url, atomically: true, encoding: .utf8)
+    }
+
     /// Replaces the first Markdown H1 (`# …`) line, leaving surrounding whitespace intact.
     private static func replacingFirstHeading(in body: String, with heading: String) -> String {
         var lines = body.components(separatedBy: "\n")
