@@ -169,10 +169,7 @@ enum IndexBuilder {
         for path in indexed.keys where !livePaths.contains(path) {
             store.remove(path: path); removed += 1
         }
-        // Removed files orphan their mentions' entity-cache rows; pruning here covers every
-        // removal flow — retention, external deletes, vault switches — not just the wipe cascade
-        // (which prunes for itself rather than depend on a later reconcile).
-        if removed > 0 { store.pruneOrphanedEntities() }
+
         // Index anything new or modified since it was last indexed.
         var reindexed = 0, unchanged = 0
         func sweep(_ urls: [URL], _ indexOne: (URL, IndexStore) -> Void) {
@@ -191,6 +188,13 @@ enum IndexBuilder {
 
         // End of the write pass: fold this pass's writes out of the WAL and truncate it, so the -wal file
         // can't grow across passes and slow the read-only MCP opener. Only when the pass actually wrote.
-        if reindexed > 0 || removed > 0 { store.checkpoint() }
+        // Prune orphaned entity-cache rows before the checkpoint: removals happen both in the
+        // loop above AND inside the sweeps (files that stop parsing call store.remove; a re-index
+        // can drop a path's last mention) — so the trigger must include reindexed. Covers every
+        // removal flow (retention, external deletes, vault switches); the wipe prunes for itself.
+        if reindexed > 0 || removed > 0 {
+            store.pruneOrphanedEntities()
+            store.checkpoint()
+        }
     }
 }

@@ -45,6 +45,9 @@ and delete this file.
 
 ## Decisions parked
 
+- **WAL checkpoint under a concurrent MCP read is best-effort** (crosscheck R3): busy → the WAL
+  survives until the next write pass, logged only. In-contract per the method's own doc; if the
+  wipe path should retry, decide alongside the free-pages item below.
 - **Byte-level scrubbing of main-DB free pages** (crosscheck R2, both lenses): the wipe now
   checkpoints (WAL truncated), but DELETEd content survives in index.db free pages until
   overwritten. If the bar is byte-level, the options are `PRAGMA secure_delete=ON` for the wipe
