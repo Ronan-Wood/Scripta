@@ -2,9 +2,11 @@ import SwiftUI
 import AppKit
 
 /// The colophon "S." as a status-bar mark. Template by default (the menu bar recolors it);
-/// pass a tint for a flat-colored variant used by the proximity-badge compositing path.
+/// pass a tint for a flat-colored variant. `dotColor`, when set, colors ONLY the period —
+/// the mark's own "." doubling as a status indicator (e.g. call-proximity color) instead of
+/// a separate badge dot composited elsewhere on the icon.
 enum ScriptaMark {
-    static func statusIcon(tint: NSColor? = nil) -> NSImage {
+    static func statusIcon(tint: NSColor? = nil, dotColor: NSColor? = nil) -> NSImage {
         let font = NSFont(name: "IBMPlexSans-SemiBold", size: 13) ?? .systemFont(ofSize: 13, weight: .semibold)
         let color = tint ?? .black
         let str = NSAttributedString(string: "S", attributes: [.font: font, .foregroundColor: color])
@@ -18,10 +20,10 @@ enum ScriptaMark {
                                                        y: textY + abs(font.descender),
                                                        width: square, height: square),
                                    xRadius: 1, yRadius: 1)
-            color.setFill(); dot.fill()
+            (dotColor ?? color).setFill(); dot.fill()
             return true
         }
-        image.isTemplate = (tint == nil)
+        image.isTemplate = (tint == nil && dotColor == nil)
         image.accessibilityDescription = "Scripta"
         return image
     }
