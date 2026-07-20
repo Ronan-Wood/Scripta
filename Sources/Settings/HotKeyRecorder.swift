@@ -35,9 +35,16 @@ struct HotKeyRecorderButton: View {
                 Text("Conflicts with the other shortcut")
                     .font(.caption).foregroundStyle(.red)
             } else if combo != defaultCombo {
-                Button("Reset") { apply(defaultCombo) }
-                    .buttonStyle(.link)
-                    .font(.caption)
+                Button("Reset") {
+                    // Also leaves recording state (crosscheck): Reset's own visibility doesn't
+                    // depend on `isRecording`, so clicking it mid-recording used to finalize the
+                    // combo while the field kept showing "Press keys…" and stayed first responder
+                    // — the next stray keystroke would then silently overwrite what Reset just set.
+                    isRecording = false
+                    apply(defaultCombo)
+                }
+                .buttonStyle(.link)
+                .font(.caption)
             }
         }
     }
@@ -132,9 +139,12 @@ private final class RecorderNSView: NSView {
             return
         }
         let modifiers = event.modifierFlags.carbonModifiers
-        // At least one modifier required (SPEC M25) — an unmodified letter key would hijack
-        // ordinary typing system-wide the moment this became a registered global hotkey.
-        guard modifiers != 0 else {
+        // Command or Control required, not just "any modifier" (crosscheck): Shift-alone or
+        // Option-alone doesn't prevent hijacking ordinary typing the way SPEC M25's rationale
+        // intends — Shift+letter types a capital letter, Option+letter composes an accented/
+        // special character on most layouts, so either alone would still register as a global
+        // hotkey that also fires during normal text entry.
+        guard modifiers & UInt32(cmdKey | controlKey) != 0 else {
             NSSound.beep()
             return
         }
