@@ -19,6 +19,12 @@ struct EntityDetailView: View {
     /// rail) can refresh — this sheet's own `commitments` state already updates itself, but the
     /// rail's separately-loaded copy of the same rows would otherwise go stale (crosscheck).
     var onCommitmentsChanged: () -> Void = {}
+    /// Opens a mentioned note/doc (M20) — routed through the presenter since this view has no
+    /// direct access to KnowledgeView's local note/doc sheet state, unlike calls, which go
+    /// through the global `AppModel.route`. Passed the mention's raw path; the presenter
+    /// resolves/parses it into whatever it needs (a `KnowledgeNote`, an original file to open).
+    var onOpenNote: (String) -> Void = { _ in }
+    var onOpenDoc: (String) -> Void = { _ in }
 
     @State private var entity: EntityRegistry.Entity?
     @State private var mentions: [SearchHit] = []
@@ -105,10 +111,11 @@ struct EntityDetailView: View {
                 // "No calls yet" would be a flat false claim for the M17 commitment-owner
                 // fallback path: the person WAS just mentioned, in the call the user opened this
                 // page from — there's simply no tracked identity for them yet, a different and
-                // more honest thing to say (crosscheck).
+                // more honest thing to say (crosscheck). "No mentions" (not "no calls") since M20:
+                // this section can now also be empty of notes/docs that mention them.
                 Text(entity == nil && fallbackName != nil
                      ? "\(fallbackName!) isn't a tracked contact yet — not yet confirmed as a call participant."
-                     : "No calls yet.")
+                     : "No mentions yet.")
                     .font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -116,13 +123,21 @@ struct EntityDetailView: View {
                     ForEach(mentions) { hit in
                         Button {
                             onClose()
-                            AppModel.shared.route = .call(URL(fileURLWithPath: hit.path), ms: hit.startMs)
+                            // M20: entity_mentions now spans calls/notes/docs, so the click target
+                            // has to match — routing every hit to .call(...) would try to open a
+                            // note/doc's path as if it were a call transcript.
+                            switch hit.kind {
+                            case "note": onOpenNote(hit.path)
+                            case "doc": onOpenDoc(hit.path)
+                            default: AppModel.shared.route = .call(URL(fileURLWithPath: hit.path), ms: hit.startMs)
+                            }
                         } label: {
                             HStack {
                                 Text(hit.title.isEmpty ? hit.date : hit.title)
                                     .font(CarbonFont.medium(13)).foregroundStyle(Carbon.interactive).lineLimit(1)
                                 Spacer()
-                                Text(hit.date).font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
+                                Text(hit.kind == "call" ? hit.date : "\(hit.date) · \(hit.kind)")
+                                    .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
                             }
                             .padding(Space.x3)
                             .background(Carbon.layer)

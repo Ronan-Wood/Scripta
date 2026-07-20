@@ -162,6 +162,12 @@ struct KnowledgeView: View {
                 entitySheetTarget = nil
             } onCommitmentsChanged: {
                 reload()
+            } onOpenNote: { path in
+                if let note = NoteStore.parse(URL(fileURLWithPath: path)) { openNote = note }
+            } onOpenDoc: { path in
+                if let meta = DocumentImporter.parse(URL(fileURLWithPath: path)), !meta.file.isEmpty {
+                    NSWorkspace.shared.open(DocumentImporter.folder.appendingPathComponent(meta.file))
+                }
             }
         }
     }
