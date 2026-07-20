@@ -732,7 +732,14 @@ struct KnowledgeView: View {
                             }
                             Spacer()
                             ItemMenu(
-                                open: { NSWorkspace.shared.open(DocumentImporter.folder.appendingPathComponent(doc.file)) },
+                                open: {
+                                    // verifiedOriginalURL, not a raw folder.appendingPathComponent
+                                    // (crosscheck) — matches the other three resolution call sites
+                                    // in this file instead of hand-rolling a fourth, unverified one.
+                                    if let url = DocumentImporter.verifiedOriginalURL(atPath: doc.mdURL.path, group: model.activeGroup) {
+                                        NSWorkspace.shared.open(url)
+                                    }
+                                },
                                 openLabel: "Open original",
                                 onRename: { startRename(.doc(mdURL: doc.mdURL, title: doc.title)) },
                                 onDelete: { deleteTarget = .doc(mdURL: doc.mdURL, title: doc.title) })
@@ -744,7 +751,13 @@ struct KnowledgeView: View {
                             // M24: view in-app, matching notes/calls — was always-external-open.
                             // "•••" → "Open original" (untouched, line ~686) still opens
                             // externally for when the real file is actually what's wanted.
-                            if let meta = DocumentImporter.parse(doc.mdURL) {
+                            // Re-verify the LIVE group before opening (crosscheck): `docs` can
+                            // still show the outgoing workspace's rows for the duration of
+                            // reload()'s async re-fetch after a group switch, and a bare parse()
+                            // here would let a stale row open another workspace's document inside
+                            // this one's UI (and its delete button then feeds that same mdURL to a
+                            // group-agnostic delete).
+                            if let meta = DocumentImporter.parse(doc.mdURL), meta.group == model.activeGroup {
                                 openDoc = OpenDocTarget(meta: meta, mdURL: doc.mdURL)
                             }
                         }
@@ -1202,6 +1215,7 @@ private func markdownBlocks(_ body: String) -> [MarkdownBlock] {
 /// own master/detail pane). Renders Markdown, not plain text — see `markdownBlocks` above for why
 /// (Ronan: "make sure it can render the markdown too").
 private struct DocumentDetailView: View {
+    @ObservedObject var model = AppModel.shared
     let doc: DocumentImporter.DocMeta
     let mdURL: URL
     let onClose: () -> Void
@@ -1216,12 +1230,12 @@ private struct DocumentDetailView: View {
                 }
                 Spacer()
                 Button {
-                    // Same resolution EntityDetailView's onOpenDoc uses (verifiedOriginalURL) —
-                    // this reader's own group is already trusted (it only ever opens from a
-                    // group-scoped `docs` row), but reusing the shared resolver over hand-rolling
-                    // `DocumentImporter.folder.appendingPathComponent(doc.file)` again keeps the
-                    // "original file, not the sidecar" logic in one place.
-                    if let url = DocumentImporter.verifiedOriginalURL(atPath: mdURL.path, group: doc.group) {
+                    // Same resolution EntityDetailView's onOpenDoc uses (verifiedOriginalURL),
+                    // checked against the LIVE `model.activeGroup` rather than `doc.group` (the
+                    // value captured at sheet-open time) — crosscheck flagged the latter as a
+                    // tautological check that can't catch a workspace switch while this sheet is
+                    // still open, unlike the sibling call sites that all key off a live model.
+                    if let url = DocumentImporter.verifiedOriginalURL(atPath: mdURL.path, group: model.activeGroup) {
                         NSWorkspace.shared.open(url)
                     }
                 } label: {
