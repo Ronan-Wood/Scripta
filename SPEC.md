@@ -207,12 +207,20 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     panel is open (SPEC's "indicator always shows recording state" invariant applies to capture,
     not just call recording).
 
-15. **Correction → vocabulary loop** *(ratified 2026-07-19).* Fix a mishear once and it stays
-    fixed at the source: a correction affordance registers the correct form (+ the misheard
-    alias) as a confirmed group-scoped term in `EntityRegistry`, so `contextualStrings` biases
-    every future call AND capture; `syncTerms` refreshes the index cache. No transcript-body
-    mutation — the record stays verbatim; the fix applies from the next recognition onward.
-    (Wispr's "correct once, saved forever", grafted onto the registry.)
+15. ✅ **Correction → vocabulary loop** *(ratified 2026-07-19 — found already implemented,
+    predating this branch: the Knowledge redesign's "Vocabulary (the correction loop's front
+    door)" section, `KnowledgeView.swift`, plus a matching "Add to vocabulary" action in the
+    transcript reader, `TranscriptDetail.swift`. Both call the same `EntityRegistry.addTerm`,
+    confirmed by definition. `KnowledgeView` additionally mines deterministic acronym
+    suggestions from the workspace's own calls — frequent ALL-CAPS tokens the registry doesn't
+    know yet — as one-tap "teach this" chips, going beyond what this entry originally specced.
+    No transcript-body mutation, group-scoped, `syncTerms` refreshes the index cache — matches
+    the Wispr "correct once, saved forever" idea point for point.* The one actually-missing
+    piece — captures didn't exist before M14, so nothing fed them this bias — closed as a side
+    effect of M14's own crosscheck fix, not new work here: `EntityRegistry.recognitionVocab`
+    (extracted to kill a 3-way vocab-assembly duplication) is what both `MenuController`'s
+    recording path and `CaptureSession` call, so a term taught via either existing UI now biases
+    calls AND captures identically. Nothing left to build.
 
 **Live transcription + related-calls (2026-07-14) — implemented.** Validated `SpeechTranscriber`
 `.volatileResults` streaming in isolation (partials stream token-by-token, then `isFinal`), incl. the
