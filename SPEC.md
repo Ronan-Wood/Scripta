@@ -182,6 +182,29 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     right-click-Open) + auto-update via Sparkle (push versions without re-sending `.dmg`s).
     Worth it once more than a few people use it.
 
+14. **Quick Capture — standalone voice notes** *(ratified 2026-07-19; the brain's missing
+    organ — every note path today is call-anchored, and idle ⌥⌘N is a documented silent no-op.
+    Full context: vault "Brain Roadmap Candidates").* When idle, ⌥⌘N opens a floating HUD panel
+    that is already listening: mic → `MicrophoneTap` (tap-only AVAudioEngine — **no audio file;
+    raw audio never touches disk on this path**, stronger than the transcript invariant) →
+    `LiveTranscriber` biased with the workspace vocab (domain vocabulary + confirmed aliases +
+    term vocab; unlike the live call pane, here the live text IS the artifact) → live text in
+    the panel. **Return saves, Esc discards** — zero filing decisions. On save:
+    `FillerCleaner` (deterministic, always) → FM intent cleanup (apply self-corrections, single
+    paragraph — legitimate because a capture is intent, not record; transcripts stay verbatim)
+    with fallback to cleaned raw when FM is unavailable → timestamped entry appended to the
+    workspace's rolling **"Captures"** note (find-or-create, `call-transcriber-note` marker) →
+    `IndexBuilder.indexNote` immediately (`kind='note'`: Clovis/search/MCP see it in seconds).
+    During recording, ⌥⌘N keeps its call-note meaning — the two panels are state-gated
+    complements. Menu shows "Quick Capture" when idle. Mic TCC is the only permission touched.
+
+15. **Correction → vocabulary loop** *(ratified 2026-07-19).* Fix a mishear once and it stays
+    fixed at the source: a correction affordance registers the correct form (+ the misheard
+    alias) as a confirmed group-scoped term in `EntityRegistry`, so `contextualStrings` biases
+    every future call AND capture; `syncTerms` refreshes the index cache. No transcript-body
+    mutation — the record stays verbatim; the fix applies from the next recognition onward.
+    (Wispr's "correct once, saved forever", grafted onto the registry.)
+
 **Live transcription + related-calls (2026-07-14) — implemented.** Validated `SpeechTranscriber`
 `.volatileResults` streaming in isolation (partials stream token-by-token, then `isFinal`), incl. the
 live **buffer-feed** path (`SpeechAnalyzer.bestAvailableAudioFormat` = 16 kHz mono Int16;
