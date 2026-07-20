@@ -21,6 +21,17 @@ final class HotKeyManager {
         enabled ? register() : unregister()
     }
 
+    /// Re-registers both hotkeys against their CURRENT `AppSettings` combos (M25) — call after
+    /// either combo changes in Settings. `register()`'s own `handlerRef == nil` guard makes
+    /// calling it a second time a no-op, so refreshing needs an explicit unregister first, not
+    /// just another `register()` call. A no-op while hotkeys are currently disabled — nothing to
+    /// refresh; the new combo is simply what gets registered next time the user re-enables them.
+    func reregister() {
+        guard handlerRef != nil else { return }
+        unregister()
+        register()
+    }
+
     private func register() {
         guard handlerRef == nil else { return }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: OSType(kEventHotKeyPressed))
@@ -37,10 +48,12 @@ final class HotKeyManager {
         }, 1, &spec, nil, &handlerRef)
 
         let sig = fourCharCode("CTrx")
-        RegisterEventHotKey(UInt32(kVK_ANSI_R), UInt32(cmdKey | optionKey),
+        let recordCombo = AppSettings.recordHotkeyCombo
+        let noteCombo = AppSettings.quickCaptureHotkeyCombo
+        RegisterEventHotKey(recordCombo.keyCode, recordCombo.modifiers,
                             EventHotKeyID(signature: sig, id: Self.recordID),
                             GetApplicationEventTarget(), 0, &recordRef)
-        RegisterEventHotKey(UInt32(kVK_ANSI_N), UInt32(cmdKey | optionKey),
+        RegisterEventHotKey(noteCombo.keyCode, noteCombo.modifiers,
                             EventHotKeyID(signature: sig, id: Self.noteID),
                             GetApplicationEventTarget(), 0, &noteRef)
     }
