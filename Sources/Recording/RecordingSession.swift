@@ -506,6 +506,20 @@ final class RecordingSession {
                 await MainActor.run { AppModel.shared.reloadCalls() }
             }
         }
+
+        // Notes-merge (M16): a separate note artifact, so — unlike the digest above — it never
+        // competes with the write for time; always backgrounded regardless of deferEnrichment.
+        // NotesMerger.merge is itself a no-op when `notes` is empty, so this only ever does
+        // anything for a call the user actually annotated mid-recording.
+        if AppSettings.summarizeEnabled {
+            Task.detached(priority: .utility) {
+                guard let merged = await NotesMerger.merge(transcript: plain, notes: notes) else { return }
+                let title = "Call notes — \(startedAt.formatted(date: .abbreviated, time: .shortened))"
+                guard let note = NoteStore.create(title: title, group: group),
+                      let saved = NoteStore.append(merged, linkedCall: url, to: note) else { return }
+                if let store = IndexStore.shared { IndexBuilder.indexNote(saved.url, into: store) }
+            }
+        }
         return url
     }
 

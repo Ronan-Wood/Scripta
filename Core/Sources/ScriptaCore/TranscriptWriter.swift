@@ -131,7 +131,7 @@ public enum TranscriptWriter {
     }
 
     /// Seconds → M:SS or H:MM:SS.
-    private static func formatClock(_ seconds: TimeInterval) -> String {
+    public static func formatClock(_ seconds: TimeInterval) -> String {
         let total = Int(seconds.rounded())
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return h > 0

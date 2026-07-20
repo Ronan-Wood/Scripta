@@ -24,6 +24,21 @@ final class AppleFMEngine: ChatEngine, EnrichEngine {
             return nil
         }
     }
+
+    /// Merges mid-call notes with the transcript into a structured note body (M16). nil on any
+    /// failure or empty output — NotesMerger treats that as "nothing to add," same as digest.
+    func mergeNotes(transcript: String, notes: String, sizeClass: SizeClass) async -> String? {
+        guard TranscriptEnricher.isAvailable else { return nil }
+        let prompt = PromptCatalog.notesMergePrompt(transcript: transcript, notes: notes, sizeClass: sizeClass)
+        do {
+            let session = LanguageModelSession()
+            let merged = try await session.respond(to: prompt, generating: MergedNote.self).content
+            let body = merged.body.trimmingCharacters(in: .whitespacesAndNewlines)
+            return body.isEmpty ? nil : body
+        } catch {
+            return nil
+        }
+    }
 }
 
 /// One Apple FM conversation. Streams cumulative snapshots and recovers from a context-window
