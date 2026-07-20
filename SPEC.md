@@ -385,6 +385,66 @@ M1–M8 + distribution (`.dmg`) shipped 2026-07-13. Candidates to beef it up, pr
     merged into opening a detail page (deep dive) — two legitimate, different actions on the same
     data, matching the tag-vs-identity principle above.
 
+22. **Knowledge dashboard shell** *(ratified 2026-07-20; Ronan: "you need like a dashboard sorta
+    see like all that then also like a related to recent / a whats important").* KnowledgeView's
+    `body` (confirmed by re-reading it, not assumed) is one flat vertical stack in build order, not
+    priority order: `header, notesShelf, documentsSection, (digestColumn | rail), vocabularySection`
+    — with `identityCheck` (the collision-review queue) buried as the LAST child inside
+    `vocabularySection`, not its own section. Six distinct concerns — your own recent notes,
+    imported files, the call log, cross-cutting rollups (commitments/people/topics), the
+    vocabulary/correction loop, and a maintenance queue — stacked with no visual hierarchy between
+    "here's what happened" and "here's what needs you." Regrouped by purpose instead of shipping
+    order:
+    - **At-a-glance row**: `StatTile` (already a shared component, `Sources/Theme/CarbonKit.swift`
+      — reused as-is, not reimplemented; `HomeView` already proves the pattern with 4 tiles).
+      Knowledge's own tiles: open commitments, people tracked, notes count, documents count —
+      Knowledge-specific numbers, not a duplicate of Home's calls/hours tiles.
+    - **Recent** (the primary content): `digestColumn`, unchanged internally, just no longer
+      competing for top billing with notes/documents above it.
+    - **Browse**: People + Topics + Vocabulary consolidated — three "look something up by facet"
+      surfaces that were previously split across the side rail and a separate bottom section.
+    - **Needs attention**: Commitments + Identity check consolidated — both are "only you can
+      resolve this," previously scattered (commitments mid-rail, collisions buried at the very
+      bottom under Vocabulary where nothing suggested they were related).
+    - Notes/Documents become their own area rather than sitting above the actual content.
+
+    **Deliberately staying a single scrollable view, not sub-tabs.** Considered tabs under
+    Knowledge (mirroring the hub's own top-level Home/Calls/Knowledge/Settings sections one layer
+    down) and rejected for now — this app's dense/scannable single-scroll idiom (Home, Calls) is
+    already the established pattern, and a second navigational layer inside one hub section risks
+    solving "too much stuff" by hiding it rather than organizing it. Reconsider only if the
+    regrouped single scroll still feels overwhelming once it's actually built and used. Effort M —
+    structural (grouping existing sections under clearer headers, minimal new visual chrome) plus
+    wiring the stat-tile data, not new capability.
+
+23. **"What's important" — recent-activity synthesis** *(ratified 2026-07-20; the other half of
+    Ronan's dashboard ask — M22 organizes what's already there, this surfaces what the FM notices
+    connecting across it).* `RelatedSynthesizer.synthesize(current: String, hits: [(title: String,
+    snippet: String)]) async -> String?` (confirmed: zero view dependency, already used exactly
+    once, by `TranscriptDetail` for one open transcript's connections) generalizes directly: build
+    `current` from several recent `IndexStore.digest(group:)` rows' `title + " " + tags` (the same
+    string-concatenation `TranscriptDetail` already does for one call, just over N), retrieve hits
+    for that combined query the normal way, exclude the source paths from the hit set (plain Swift
+    filtering against a `Set<String>` in the caller — `RelatedItemsPanel`'s own `excludePath` is a
+    single String and isn't touched or extended, since this doesn't go through `RelatedItemsPanel`
+    at all, just the bare synthesis function it already calls), then render the resulting sentence
+    as a short blurb — no `RelatedHitCard` list, no panel chrome, since `synthesize` has no view
+    dependency to drag in. One or two sentences: "The CPA deal came up in 3 of your last 5 calls,"
+    not a wall of cards — the digest log right below already IS the detailed view.
+    Same discipline M18 already committed to: **progressive, not blocking** (the dashboard's other
+    sections render immediately; this fills in a beat later), and **grounded, not just asserted**
+    (the FM never invents a connection — `synthesize` only ever describes hits it was actually
+    handed, and returns nil below 2 hits rather than force a sentence out of nothing, so a quiet
+    workspace shows nothing here instead of an awkward "nothing important" placeholder).
+    Deliberately NOT extending `digest(group:)` to cover notes/docs in this pass — it's hard-filtered
+    to `kind = 'call'` today; folding notes/docs into "recent activity" is a real fast-follow, not
+    built here (same disclosed-cut pattern M18 used for its own notes/docs deferral). Deliberately
+    keeping this separate from the at-a-glance stat tiles (M22) rather than one combined FM call —
+    exact counts (open commitments, etc.) are deterministic reads, and asking an FM to also produce
+    numbers risks it inventing slightly-wrong ones for something that was never actually ambiguous.
+    Effort S–M — the synthesis primitive and its FM plumbing already exist; the new work is the
+    query-building, hit-fetching, and a small rendering spot on the dashboard.
+
 **Live transcription + related-calls (2026-07-14) — implemented.** Validated `SpeechTranscriber`
 `.volatileResults` streaming in isolation (partials stream token-by-token, then `isFinal`), incl. the
 live **buffer-feed** path (`SpeechAnalyzer.bestAvailableAudioFormat` = 16 kHz mono Int16;
