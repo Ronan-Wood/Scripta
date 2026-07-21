@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from substrate.retrieve.retriever import retrieve
 from substrate.store.index_store import Hit, IndexStore
 
 K = 5
@@ -98,7 +99,7 @@ def resolve_docs(store: IndexStore) -> dict[str, str]:
     return out
 
 
-def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K) -> CaseResult:
+def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, route: bool = True) -> CaseResult:
     # Three case shapes:
     #   doc         — search within one document (the answer's location is the question)
     #   expect_doc  — search EVERYTHING; the right source must win (cross-document)
@@ -110,12 +111,12 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K) ->
     if target and doc_id is None:
         return CaseResult(id=case["id"], query=case["query"], note=f"doc {target!r} not indexed")
 
-    hits = store.search(
-        case["query"],
-        k=k,
-        kind=case.get("kind", "passage"),
-        doc_id=doc_id if scoped else None,
-    )
+    if case.get("kind") == "outline":
+        hits = store.search(case["query"], k=k, kind="outline", doc_id=doc_id if scoped else None)
+    else:
+        hits, _ = retrieve(
+            store, case["query"], k=k, doc_id=doc_id if scoped else None, route=route
+        )
 
     res = CaseResult(id=case["id"], query=case["query"])
     if hits:
@@ -153,14 +154,14 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K) ->
     return res
 
 
-def run(db: str, gold_path: Path, k: int = K) -> tuple[Summary, dict]:
+def run(db: str, gold_path: Path, k: int = K, route: bool = True) -> tuple[Summary, dict]:
     gold = json.loads(gold_path.read_text("utf-8"))
     summary = Summary()
     t0 = time.monotonic()
     with IndexStore(db) as store:
         docs = resolve_docs(store)
         for case in gold["cases"]:
-            summary.cases.append(run_case(store, case, docs, k=k))
+            summary.cases.append(run_case(store, case, docs, k=k, route=route))
     summary.elapsed_ms = (time.monotonic() - t0) * 1000
     return summary, gold
 
@@ -192,13 +193,30 @@ def report(summary: Summary, gold: dict, baseline: dict | None) -> bool:
             print(f"      top: {c.top_path[:88] or '(nothing)'}")
         print()
 
-    if semantic and any(not c.passed for c in semantic):
-        print("  SEMANTIC GAP (what an embedder would have to fix)")
+    if semantic:
+        # Report a GRADIENT, not three binary flags. Section-aware ranking measurably
+        # improved retrieval while the pass count stayed at 4/7 — the progress was visible
+        # only in the failure notes. A continuous signal is what the remaining work climbs.
+        base_cases = (baseline or {}).get("cases", {})
+        sem_mrr = sum(1.0 / c.both_rank for c in semantic if c.both_rank) / len(semantic)
+        base_mrr = (baseline or {}).get("semantic_mrr")
+        delta = f"  ({sem_mrr - base_mrr:+.3f})" if base_mrr is not None else ""
+        print(f"  SEMANTIC COHORT — mrr {sem_mrr:.3f}{delta}   (ungated; Phase 3 target)")
         for c in semantic:
+            was = base_cases.get(c.id, {}).get("rank")
+            now = c.both_rank
+            if now and was:
+                mark = "=" if now == was else ("↑" if now < was else "↓")
+                move = f"rank {now} (was {was}) {mark}"
+            elif now:
+                move = f"rank {now} (was miss) ↑"
+            elif was:
+                move = f"MISS (was rank {was}) ↓"
+            else:
+                move = f"miss — {c.note}"
+            print(f"    {'PASS' if c.passed else 'gap '}  {c.id:<26} {move}")
             if not c.passed:
-                print(f"    {c.id:<26} {c.note}")
-                print(f"      q: {c.query[:74]}")
-                print(f"      top: {c.top_path[:88] or '(nothing)'}")
+                print(f"          top: {c.top_path[:80] or '(nothing)'}")
         print()
 
     print("  METRICS")

@@ -1,0 +1,161 @@
+"""Retriever — retrieval STRATEGY over the IndexStore facade.
+
+Split deliberately: IndexStore owns SQL, this owns how results are combined. Same division
+Scripta uses (Retriever.swift over ScriptaCore.IndexStore), and it is what lets fusion change
+without touching the store.
+
+The idea worth stating: **the outline layer is a routing signal.** A query phrased in plain
+language often shares no vocabulary with any individual passage ("what happens when the main
+machine dies and another has to take over" vs a passage about failover), yet the SECTION's
+orientation record — path, lede, child headings, summary — is a compact description of what
+that section covers and matches much better. Hitting the outline, then pulling passages
+beneath it, reaches content that direct passage search cannot, with no embedder involved.
+
+Fusion is Reciprocal Rank Fusion: parameter-free, scale-free, and it does not require the
+two result lists to have comparable scores (BM25 over passages and BM25 over outline records
+are not on the same scale). Same choice, and same k=60, as Scripta's RRF.
+
+## MEASURED RESULT: routing is OFF by default. It did not pay for itself.
+
+Kept, with its measurement, so the idea is not re-litigated from scratch — the reasoning is
+sound and it may well pay on a corpus with weaker lexical overlap or a larger k.
+
+    config                          lexical    semantic mrr
+    direct only                     28/28      0.207
+    RRF fusion, equal weight        27/28  X   0.219
+    RRF fusion, routed x0.45        27/28  X   0.250
+    backfill (cannot displace)      28/28      0.207   (no-op)
+
+Two failure modes, and they are mutually exclusive:
+
+  * FUSION DISPLACES. Routed passages were retrieved because their SECTION matched, not
+    because they did. Interleaving them floods top-k with section-mates and pushes the exact
+    answer out — a real lexical regression, not a metric artifact. Down-weighting to 0.45
+    reduced but did not remove it.
+  * BACKFILL IS INERT. Restricting routed results to slots direct retrieval did not earn is
+    safe by construction, but BM25 always returns k results, so there is never a free slot.
+    Zero cost, zero effect.
+
+The genuine gain was concentrated in ONE case (sem-copies-machines, rank 5 -> 1) while two
+others regressed. That is not a technique earning its place; that is variance.
+
+The remaining semantic gap is genuine semantic distance ("reserving the same seat" vs "write
+skew" share no vocabulary), which is what the vector slot exists for. Routing was worth
+measuring first precisely so vectors cannot take credit for something structural.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from substrate.store.index_store import Hit, IndexStore
+
+RRF_K = 60
+OUTLINE_ROUTES = 3      # how many outline records may route
+ROUTE_DEPTH = 12        # passages pulled per routed section
+DIRECT_WEIGHT = 1.0
+ROUTE_WEIGHT = 0.45     # recall aid, must not outvote a precise direct hit
+
+
+@dataclass
+class Trace:
+    """Why a result set looks the way it does — retrieval must be explainable."""
+
+    direct: int = 0
+    routed: int = 0
+    routes: list[str] = None
+    fused: int = 0
+
+    def __post_init__(self) -> None:
+        if self.routes is None:
+            self.routes = []
+
+
+def _rrf(
+    ranked_lists: list[tuple[float, list[Hit]]], k: int = RRF_K
+) -> list[tuple[float, Hit]]:
+    """Weighted RRF. Weights are not cosmetic here.
+
+    Routed passages are a RECALL aid, not equal-authority evidence: they were retrieved
+    because their SECTION matched, not because they did. Fusing them at parity floods top-k
+    with section-mates and displaces the precise direct hit — measured as a lexical
+    regression (28/28 -> 27/28) where routing found the right section and pushed the exact
+    answer out of the window.
+    """
+    scores: dict[str, float] = {}
+    best: dict[str, Hit] = {}
+    for weight, hits in ranked_lists:
+        for rank, h in enumerate(hits, start=1):
+            scores[h.chunk_id] = scores.get(h.chunk_id, 0.0) + weight / (k + rank)
+            best.setdefault(h.chunk_id, h)
+    return sorted(((s, best[cid]) for cid, s in scores.items()), key=lambda x: -x[0])
+
+
+def retrieve(
+    store: IndexStore,
+    query: str,
+    *,
+    k: int = 5,
+    doc_id: str | None = None,
+    document_class: str | None = None,
+    route: bool = False,
+    expand: bool = False,
+) -> tuple[list[Hit], Trace]:
+    """Passage retrieval, optionally routed through the outline layer."""
+    trace = Trace()
+
+    direct = store.search(
+        query, k=k * 3, kind="passage", doc_id=doc_id, document_class=document_class
+    )
+    trace.direct = len(direct)
+    lists: list[tuple[float, list[Hit]]] = [(DIRECT_WEIGHT, direct)]
+
+    if route:
+        outlines = store.search(
+            query, k=OUTLINE_ROUTES, kind="outline", doc_id=doc_id,
+            document_class=document_class,
+        )
+        for o in outlines:
+            if not o.path_str:
+                continue
+            # RELEVANCE-ranked within the section, not document order. Fusing a
+            # position-ordered list into RRF is wrong: RRF reads rank as relevance, so
+            # document order hands high weight to whatever happens to sit first. Measured
+            # +0.012 MRR with two cases regressing before this was scoped as a search.
+            under = store.search(
+                query, k=ROUTE_DEPTH, kind="passage", doc_id=o.doc_id,
+                path_prefix=o.path_str,
+            )
+            if under:
+                trace.routes.append(o.path_str)
+                trace.routed += len(under)
+                lists.append((ROUTE_WEIGHT, under))
+
+    # BACKFILL, not interleave. Weighted RRF still displaced a precise direct hit out of
+    # top-k (lexical 28/28 -> 27/28): routing found the right SECTION and its section-mates
+    # crowded out the exact answer. Letting routed results fill only the slots direct
+    # retrieval did not earn makes routing incapable of harming precision by construction —
+    # it can add recall, never subtract it.
+    fused = list(direct[:k])
+    seen_ids = {h.chunk_id for h in fused}
+    if route and len(fused) < k:
+        for _, h in _rrf(lists[1:]):
+            if h.chunk_id not in seen_ids:
+                seen_ids.add(h.chunk_id)
+                fused.append(h)
+            if len(fused) >= k:
+                break
+    fused.extend(h for _, h in _rrf(lists) if h.chunk_id not in seen_ids)
+    trace.fused = len(fused)
+
+    if expand and fused:
+        seen = {h.chunk_id for h in fused[:k]}
+        extra: list[Hit] = []
+        for h in fused[:k]:
+            for n in store.neighbours(h.chunk_id, window=1):
+                if n.chunk_id not in seen:
+                    seen.add(n.chunk_id)
+                    extra.append(n)
+        fused = fused[:k] + extra
+
+    return fused[:k], trace

@@ -231,7 +231,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     baseline_path = Path(args.baseline).expanduser()
     baseline = json.loads(baseline_path.read_text("utf-8")) if baseline_path.exists() else None
 
-    summary, gold = run(args.db, gold_path, k=args.k)
+    summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route)
     ok = report(summary, gold, baseline)
 
     if ok and args.update_baseline:
@@ -239,8 +239,18 @@ def cmd_eval(args: argparse.Namespace) -> int:
             json.dumps(
                 {
                     "metrics": summary.metrics,
+                    "semantic_mrr": round(
+                        sum(
+                            1.0 / c.both_rank
+                            for c in summary.cases
+                            if c.cohort == "semantic" and c.both_rank
+                        )
+                        / max(sum(1 for c in summary.cases if c.cohort == "semantic"), 1),
+                        4,
+                    ),
                     "cases": {
-                        c.id: {"passed": c.passed, "rank": c.both_rank} for c in summary.cases
+                        c.id: {"passed": c.passed, "rank": c.both_rank, "cohort": c.cohort}
+                        for c in summary.cases
                     },
                 },
                 indent=2,
@@ -289,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--baseline", default="eval/.baseline.json")
     ev.add_argument("--k", type=int, default=5)
     ev.add_argument("--update-baseline", action="store_true")
+    ev.add_argument("--no-route", action="store_true", help="disable outline routing (A/B)")
     ev.set_defaults(func=cmd_eval)
 
     rev = sub.add_parser("review")
