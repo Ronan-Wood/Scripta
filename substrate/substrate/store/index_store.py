@@ -331,6 +331,83 @@ class IndexStore:
             (chunk_id, blob, model, len(vector)),
         )
 
+    def chunks_missing_vectors(self, model: str, limit: int = 100000) -> list[tuple[str, str]]:
+        """Chunks with no vector in the CURRENT model's space. This is the embed cache.
+
+        Keyed on (chunk_id, embed_model), so re-running embed is a no-op and a model change
+        re-embeds everything rather than silently mixing two spaces.
+        """
+        rows = self.db.execute(
+            "SELECT c.chunk_id, c.text_with_path FROM chunks c "
+            "LEFT JOIN chunk_vectors v ON v.chunk_id = c.chunk_id AND v.embed_model = ? "
+            "WHERE v.chunk_id IS NULL LIMIT ?",
+            (model, limit),
+        ).fetchall()
+        return [(r["chunk_id"], r["text_with_path"]) for r in rows]
+
+    def store_vectors(self, pairs: list[tuple[str, list[float]]], model: str) -> int:
+        self.db.execute("BEGIN")
+        try:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO chunk_vectors(chunk_id, vector, embed_model, dim) "
+                "VALUES(?,?,?,?)",
+                [
+                    (cid, struct.pack(f"{len(v)}f", *v), model, len(v))
+                    for cid, v in pairs
+                ],
+            )
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        return len(pairs)
+
+    def vector_search(
+        self,
+        query_vec: list[float],
+        model: str,
+        *,
+        k: int = 10,
+        kind: str | None = None,
+        doc_id: str | None = None,
+        document_class: str | None = None,
+    ) -> list[Hit]:
+        """Brute-force cosine. Vectors are L2-normalized, so a dot product IS cosine.
+
+        No ANN index: at personal-corpus scale this is instant and there is no index to
+        rebuild or drift. sqlite-vec becomes worthwhile only when this stops being true.
+        """
+        import numpy as np
+
+        where = ["v.embed_model = ?"]
+        args: list[Any] = [model]
+        for col, val in (("c.kind", kind), ("c.doc_id", doc_id),
+                         ("c.document_class", document_class)):
+            if val is not None:
+                where.append(f"{col} = ?")
+                args.append(val)
+
+        rows = self.db.execute(
+            "SELECT c.*, d.title AS title, v.vector AS vector "
+            "FROM chunks c JOIN documents d ON d.doc_id = c.doc_id "
+            "JOIN chunk_vectors v ON v.chunk_id = c.chunk_id "
+            f"WHERE {' AND '.join(where)}",
+            args,
+        ).fetchall()
+        if not rows:
+            return []
+
+        dim = len(query_vec)
+        keep = [r for r in rows if len(r["vector"]) == dim * 4]  # never compare across spaces
+        if not keep:
+            return []
+
+        mat = np.frombuffer(b"".join(r["vector"] for r in keep), dtype=np.float32)
+        mat = mat.reshape(len(keep), dim)
+        sims = mat @ np.asarray(query_vec, dtype=np.float32)
+        top = np.argsort(-sims)[:k]
+        return [_row_to_hit(keep[i], float(sims[i])) for i in top]
+
     def drop_vectors(self, keeping_model: str) -> int:
         """A model change invalidates the whole space — spaces are never mixed."""
         cur = self.db.execute(
