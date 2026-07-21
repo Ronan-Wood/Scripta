@@ -263,7 +263,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         cand = (
             AppleFMExpander(cache=vc)
             if args.hyde_model in ("apple", "apple-fm")
-            else HyDE(model=args.hyde_model, cache=vc)
+            else HyDE(model=args.hyde_model, cache=vc, prompt_id=args.hyde_prompt)
         )
         expander = cand if cand.available() else None
         print(f"  expansion: {'HyDE via ' + args.hyde_model if expander else 'unavailable'}")
@@ -404,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--embed-model", default="nomic-embed-text")
     ev.add_argument("--no-hyde", action="store_true", help="disable query expansion (A/B)")
     ev.add_argument("--hyde-model", default="qwen2.5:7b")
+    ev.add_argument("--hyde-prompt", default="canonical", choices=["canonical", "distinctive"])
     ev.add_argument("--cache", default="out/vector-cache.db")
     ev.set_defaults(func=cmd_eval)
 
