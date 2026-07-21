@@ -1,0 +1,166 @@
+{
+  "_doc": [
+    "Gold cases assert a known correct ANSWER, not retrieval shape.",
+    "",
+    "Written from independent knowledge of these documents BEFORE running retrieval, then",
+    "checked against the corpus. Cases derived from current output would be tautological:",
+    "they would have confirmed all three of Phase 0's all-green-but-wrong states, because",
+    "the expectations would have been read off the wrong answers.",
+    "",
+    "  answer   - a phrase the genuinely correct passage must contain. The SEMANTIC gate.",
+    "             Chosen to be specific enough that a wrong passage cannot satisfy it.",
+    "  path     - fragments the returned chunk's structural path must contain. The",
+    "             ATTRIBUTION gate. This is what caught 'page 328 says CHAPTER 2'.",
+    "  pages    - optional [lo,hi] sanity bound on where the answer physically lives.",
+    "",
+    "A case passes only if ONE returned chunk satisfies answer AND path together. Satisfying",
+    "either alone is the failure mode this harness exists to catch."
+  ],
+
+  "gates": {
+    "answer_at_5": 0.85,
+    "answer_at_1": 0.55,
+    "attribution_at_5": 0.85,
+    "mrr": 0.65
+  },
+
+  "cases": [
+    {
+      "id": "ddia-write-skew",
+      "query": "what is write skew and how does it differ from a lost update",
+      "doc": "ddia-2e",
+      "answer": ["write skew"],
+      "path": ["Transactions"],
+      "pages": [300, 370]
+    },
+    {
+      "id": "ddia-quorum",
+      "query": "quorum reads and writes w + r > n in leaderless replication",
+      "doc": "ddia-2e",
+      "answer": ["quorum"],
+      "path": ["Replication"],
+      "pages": [220, 275]
+    },
+    {
+      "id": "ddia-lsm-vs-btree",
+      "query": "LSM-tree versus B-tree storage engine tradeoffs",
+      "doc": "ddia-2e",
+      "answer": ["B-tree"],
+      "path": ["Storage"],
+      "pages": [139, 185]
+    },
+    {
+      "id": "ddia-sstable",
+      "query": "SSTables and sorted string tables compaction",
+      "doc": "ddia-2e",
+      "answer": ["SSTable"],
+      "path": ["Storage"],
+      "pages": [139, 185]
+    },
+    {
+      "id": "ddia-avro",
+      "query": "Avro schema evolution writer schema and reader schema",
+      "doc": "ddia-2e",
+      "answer": ["Avro"],
+      "path": ["Encoding"],
+      "pages": [185, 222]
+    },
+    {
+      "id": "ddia-linearizability",
+      "query": "what does linearizability mean for a distributed register",
+      "doc": "ddia-2e",
+      "answer": ["lineariz"],
+      "path": ["Consistency"],
+      "pages": [425, 476]
+    },
+    {
+      "id": "ddia-two-phase-commit",
+      "query": "two-phase commit coordinator and participants atomic commit",
+      "doc": "ddia-2e",
+      "answer": ["two-phase commit"],
+      "path": ["Transactions"],
+      "pages": [300, 370]
+    },
+    {
+      "id": "ddia-sharding",
+      "query": "how are keys assigned to shards by hash range partitioning",
+      "doc": "ddia-2e",
+      "answer": ["shard"],
+      "path": ["Sharding"],
+      "pages": [275, 302]
+    },
+    {
+      "id": "ddia-mapreduce",
+      "query": "MapReduce mapper reducer batch job workflow",
+      "doc": "ddia-2e",
+      "answer": ["MapReduce"],
+      "path": ["Batch Processing"],
+      "pages": [475, 512]
+    },
+    {
+      "id": "ddia-cdc",
+      "query": "change data capture from a database into a stream",
+      "doc": "ddia-2e",
+      "answer": ["change data capture"],
+      "path": ["Stream Processing"],
+      "pages": [511, 563]
+    },
+    {
+      "id": "ddia-stream-joins",
+      "query": "stream-stream joins and windowing in stream processors",
+      "doc": "ddia-2e",
+      "answer": ["join"],
+      "path": ["Stream Processing"],
+      "pages": [511, 563]
+    },
+    {
+      "id": "go-goroutine",
+      "query": "go statement starts a goroutine concurrent execution",
+      "doc": "go-spec",
+      "answer": ["goroutine"],
+      "path": ["Go statements"]
+    },
+    {
+      "id": "go-select",
+      "query": "select statement chooses among communication operations",
+      "doc": "go-spec",
+      "answer": ["select"],
+      "path": ["Select statements"]
+    },
+    {
+      "id": "go-defer",
+      "query": "defer statement runs a function when the surrounding function returns",
+      "doc": "go-spec",
+      "answer": ["defer"],
+      "path": ["Defer statements"]
+    },
+    {
+      "id": "go-slice-expr",
+      "query": "slice expressions low high capacity bounds",
+      "doc": "go-spec",
+      "answer": ["slice"],
+      "path": ["Slice expressions"]
+    },
+    {
+      "id": "go-type-assertion",
+      "query": "type assertion on an interface value",
+      "doc": "go-spec",
+      "answer": ["type assertion"],
+      "path": ["Type assertions"]
+    },
+    {
+      "id": "paper-constitutional-ai",
+      "query": "constitutional AI case study using a constitution of principles",
+      "doc": "paper-moral",
+      "answer": ["Constitutional AI"],
+      "path": ["Constitutional AI"]
+    },
+    {
+      "id": "paper-topdown-bottomup",
+      "query": "top-down versus bottom-up approaches to machine morality",
+      "doc": "paper-moral",
+      "answer": ["op-down"],
+      "path": ["Learning Morality in Machines"]
+    }
+  ]
+}

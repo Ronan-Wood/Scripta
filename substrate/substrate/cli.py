@@ -224,6 +224,33 @@ def cmd_query(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval(args: argparse.Namespace) -> int:
+    from substrate.eval.runner import report, run
+
+    gold_path = Path(args.gold).expanduser()
+    baseline_path = Path(args.baseline).expanduser()
+    baseline = json.loads(baseline_path.read_text("utf-8")) if baseline_path.exists() else None
+
+    summary, gold = run(args.db, gold_path, k=args.k)
+    ok = report(summary, gold, baseline)
+
+    if ok and args.update_baseline:
+        baseline_path.write_text(
+            json.dumps(
+                {
+                    "metrics": summary.metrics,
+                    "cases": {
+                        c.id: {"passed": c.passed, "rank": c.both_rank} for c in summary.cases
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"  baseline updated -> {baseline_path}")
+    return 0 if ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="substrate")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -255,6 +282,14 @@ def main(argv: list[str] | None = None) -> int:
     qry.add_argument("--chars", type=int, default=200)
     qry.add_argument("--expand", action="store_true")
     qry.set_defaults(func=cmd_query)
+
+    ev = sub.add_parser("eval")
+    ev.add_argument("--db", default="out/substrate.db")
+    ev.add_argument("--gold", default="eval/gold.json")
+    ev.add_argument("--baseline", default="eval/.baseline.json")
+    ev.add_argument("--k", type=int, default=5)
+    ev.add_argument("--update-baseline", action="store_true")
+    ev.set_defaults(func=cmd_eval)
 
     rev = sub.add_parser("review")
     rev.add_argument("dir")

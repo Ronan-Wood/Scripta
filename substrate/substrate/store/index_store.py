@@ -197,21 +197,31 @@ class IndexStore:
         doc_id: str | None = None,
         min_path_depth: int | None = None,
     ) -> list[Hit]:
-        """Lexical search, precision-first with a recall fallback.
+        """Lexical search, precision-first with a recall TOP-UP.
 
-        AND first; if it returns nothing, retry with OR. Ranking is bm25 (lower is better in
-        SQLite, so it is negated to make a larger score mean a better hit).
+        AND hits rank first, then OR fills the remainder. The fallback deliberately does not
+        wait for zero results: an eval case looking for "top-down versus bottom-up" returned
+        exactly one weak AND hit, and a fires-only-on-empty fallback let that single hit
+        suppress every better OR match. The document spells it "topdown", so `"down"*` never
+        matches even though `"top"*` does — one unmatched term is enough to starve AND while
+        the right passages sit one query away.
         """
+        kw = dict(
+            kind=kind, document_class=document_class, doc_id=doc_id,
+            min_path_depth=min_path_depth,
+        )
+        seen: set[str] = set()
+        out: list[Hit] = []
         for expr in (fts.and_expression(query), fts.or_expression(query)):
-            if not expr:
+            if not expr or len(out) >= k:
                 continue
-            hits = self._match(
-                expr, k=k, kind=kind, document_class=document_class,
-                doc_id=doc_id, min_path_depth=min_path_depth,
-            )
-            if hits:
-                return hits
-        return []
+            for h in self._match(expr, k=k, **kw):
+                if h.chunk_id not in seen:
+                    seen.add(h.chunk_id)
+                    out.append(h)
+                if len(out) >= k:
+                    break
+        return out[:k]
 
     def _match(self, expr: str, **kw: Any) -> list[Hit]:
         where = ["chunks_fts MATCH ?"]
