@@ -95,25 +95,27 @@ final class MicrophoneCapture {
     func stop() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        // processingQueue is serial FIFO, so this empty block only returns once every write
+        // already enqueued from the tap has completed — without it, the file could still be
+        // mid-write for the last buffer(s) when a caller reads it right after stop() returns.
+        processingQueue.sync {}
         audioFile = nil
     }
 
     /// Deep-copies a tap buffer so it can outlive the tap callback (Apple's docs: the buffer is
-    /// only valid for the duration of the block). Handles the common formats a mic tap can
-    /// deliver; returns nil for anything else so the buffer is dropped rather than mishandled.
+    /// only valid for the duration of the block). Copies via the raw AudioBufferList rather than
+    /// the typed (float/int16/int32) channel-data accessors so it's correct for interleaved
+    /// formats too — those accessors return one pointer regardless of channel count, so indexing
+    /// per-channel against them for an interleaved buffer reads/writes out of bounds.
     private static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameCapacity) else { return nil }
         copy.frameLength = buffer.frameLength
-        let frames = Int(buffer.frameLength)
-        let channels = Int(buffer.format.channelCount)
-        if let src = buffer.floatChannelData, let dst = copy.floatChannelData {
-            for c in 0..<channels { dst[c].update(from: src[c], count: frames) }
-        } else if let src = buffer.int16ChannelData, let dst = copy.int16ChannelData {
-            for c in 0..<channels { dst[c].update(from: src[c], count: frames) }
-        } else if let src = buffer.int32ChannelData, let dst = copy.int32ChannelData {
-            for c in 0..<channels { dst[c].update(from: src[c], count: frames) }
-        } else {
-            return nil
+        let src = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        let dst = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+        guard src.count == dst.count else { return nil }
+        for i in 0..<src.count {
+            guard let srcData = src[i].mData, let dstData = dst[i].mData else { return nil }
+            dstData.copyMemory(from: srcData, byteCount: Int(min(src[i].mDataByteSize, dst[i].mDataByteSize)))
         }
         return copy
     }
