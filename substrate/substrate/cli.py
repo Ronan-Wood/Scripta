@@ -180,6 +180,50 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_index(args: argparse.Namespace) -> int:
+    from substrate.store.index_store import IndexStore
+    from substrate.store.reconcile import reconcile
+
+    root = Path(args.out_root).expanduser()
+    with IndexStore(args.db) as store:
+        if store.rebuilt:
+            print("schema version changed -> index dropped and rebuilt from markdown")
+        if args.rebuild:
+            store.clear()
+            print("cleared index (markdown is the source of truth)")
+        rep = reconcile(store, root)
+        s = store.stats()
+
+    print(
+        f"  added {len(rep.added)} · updated {len(rep.updated)} · "
+        f"unchanged {len(rep.unchanged)} · removed {len(rep.removed)}"
+    )
+    print(f"  {s['documents']} documents · {s['passages']} passages · {s['outlines']} outlines")
+    print(f"  db: {args.db} (schema v{s['schema_version']})")
+    return 0
+
+
+def cmd_query(args: argparse.Namespace) -> int:
+    from substrate.store.index_store import IndexStore
+
+    with IndexStore(args.db) as store:
+        hits = store.search(
+            args.text, k=args.k, kind=args.kind, document_class=args.doc_class
+        )
+        if not hits:
+            print("  (no results)")
+            return 0
+        for h in hits:
+            print(f"\n  [{h.kind}] {h.citation}")
+            body = " ".join(h.text.split())
+            print(f"    {body[:args.chars]}{'…' if len(body) > args.chars else ''}")
+            if args.expand and h.kind == "passage":
+                out = store.outline_for(h.chunk_id)
+                if out:
+                    print(f"    ↳ orientation: {out.path_str}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="substrate")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -195,6 +239,22 @@ def main(argv: list[str] | None = None) -> int:
     ver = sub.add_parser("verify")
     ver.add_argument("dir")
     ver.set_defaults(func=cmd_verify)
+
+    idx = sub.add_parser("index")
+    idx.add_argument("--out-root", default="out")
+    idx.add_argument("--db", default="out/substrate.db")
+    idx.add_argument("--rebuild", action="store_true", help="drop the cache and rebuild")
+    idx.set_defaults(func=cmd_index)
+
+    qry = sub.add_parser("query")
+    qry.add_argument("text")
+    qry.add_argument("--db", default="out/substrate.db")
+    qry.add_argument("--k", type=int, default=5)
+    qry.add_argument("--kind", choices=["passage", "outline"], default=None)
+    qry.add_argument("--doc-class", default=None)
+    qry.add_argument("--chars", type=int, default=200)
+    qry.add_argument("--expand", action="store_true")
+    qry.set_defaults(func=cmd_query)
 
     rev = sub.add_parser("review")
     rev.add_argument("dir")
