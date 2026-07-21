@@ -247,7 +247,10 @@ def cmd_eval(args: argparse.Namespace) -> int:
     if not args.no_vector:
         from substrate.embed.engine import OllamaEmbedder
 
-        cand = OllamaEmbedder(model=args.embed_model)
+        from substrate.embed.engine import AppleEmbedder
+
+        cand = (AppleEmbedder() if args.embed_model.startswith("apple")
+                else OllamaEmbedder(model=args.embed_model))
         embedder = cand if cand.available() else None
         print(f"  retrieval: {'hybrid (lexical + vector)' if embedder else 'lexical only'}")
     expander = None
@@ -300,7 +303,10 @@ def cmd_embed(args: argparse.Namespace) -> int:
     from substrate.embed.engine import EmbeddingError, OllamaEmbedder
     from substrate.store.index_store import IndexStore
 
-    eng = OllamaEmbedder(model=args.model, host=args.host)
+    from substrate.embed.engine import AppleEmbedder
+
+    eng = (AppleEmbedder() if args.model.startswith("apple")
+           else OllamaEmbedder(model=args.model, host=args.host))
     if not eng.available():
         print(f"FATAL: {args.model!r} not available at {args.host}. "
               "Start `ollama serve` (OLLAMA_MODELS must point at the drive).", file=sys.stderr)
