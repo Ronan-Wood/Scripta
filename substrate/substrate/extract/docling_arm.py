@@ -158,6 +158,10 @@ class DoclingExtractor:
 
         # Heading levels are INFERRED — docling reports every heading as level 1 with a
         # flat parent tree, so the hierarchy has to come from glyph geometry.
+        # Verify docling's DOCUMENT_INDEX claim before acting on it — it mislabels
+        # chapter-opening pages, which silently corrupts every downstream path.
+        reclaimed = headings.reclaim_titles(blocks)
+
         toc_pages = {b.page for b in blocks if b.kind is Kind.INDEX and b.page}
         toc_pages |= toc.contents_pages(blocks)
         ladder = headings.build(blocks, toc_pages=toc_pages)
@@ -187,6 +191,7 @@ class DoclingExtractor:
                 "furniture_claimed": len(claimed),
                 "furniture_honored": len(verdict.honored),
                 "furniture_readmitted": len(verdict.readmitted),
+                "titles_reclaimed_from_index": reclaimed,
                 "toc_blocks_marked": toc_report.blocks_marked,
                 "toc_by_label": toc_report.by_label,
                 "toc_by_structure": toc_report.by_structure,
