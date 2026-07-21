@@ -4,6 +4,10 @@ Every retrieval experiment run, its result, and the verdict. Kept because commit
 chronological and mixed with implementation detail, so they answer "what changed" but not
 "what did we try and what did we learn".
 
+> The dominant failure shape of this project is written up separately in
+> **[PRINCIPLES.md](PRINCIPLES.md)** — five incidents where information existed but did not
+> cross the boundary to its consumer. Four of the entries below are instances of it.
+
 **Rule for this file: a rejected experiment is as valuable as an accepted one, and a retracted
 measurement is more valuable than either.** Most of the cost in this project has gone into
 techniques that sounded right and did not survive measurement.
@@ -213,6 +217,9 @@ whose correct answer is not in the corpus (consistent hashing) get deleted, not 
 | 6 | Reranking — qwen2.5:7b vs Bonsai-27B ternary | arguably should move ahead of #4 |
 | — | Adaptive multi-query (fallback only on low confidence) | needs a confidence signal the retriever does not expose |
 | — | qwen3 instruction format | **unanswered** — first attempt retracted |
+| — | Result contract (snippet-first, graduated capability + measured cost, version-stamped) | the cure for PRINCIPLES.md; precedes any transport choice |
+| — | Extract engine to its own repo | relocate BEFORE wiring consumers — do not wire through the weld |
+| — | Claude access: skill+CLI primary, MCP only if Desktop/web reach is real | trivial once the contract exists |
 
 ### Runbook: qwen3-embedding 4b / 8b
 
