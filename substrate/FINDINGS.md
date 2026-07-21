@@ -1,5 +1,10 @@
 # Substrate Engine — Findings
 
+> **Scope:** ingestion and document-structure findings from Phase 0–1.
+> Retrieval experiments (embedders, query expansion, fusion, reranking) and their verdicts
+> live in **[EXPERIMENTS.md](EXPERIMENTS.md)**, which is the running log and the place to
+> look for "what have we tried and what did we learn".
+
 Empirical results from building Phase 0–1 (2026-07-20/21). Everything here was **measured**
 on real files, not reasoned about. Git history says what changed; this says what we learned,
 so the next person (or the next model) does not re-derive it.
