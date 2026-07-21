@@ -363,8 +363,17 @@ def cmd_eval(args: argparse.Namespace) -> int:
         mq = cand if cand.available() else None
         print(f"  multi-query: {args.multi_query} variants" if mq else "  multi-query: unavailable")
 
+    rr = None
+    if not args.no_rerank:
+        from substrate.embed.cache import VectorCache as _VC2
+        from substrate.retrieve.rerank import LLMReranker
+
+        cand = LLMReranker(model=args.rerank_model, pool=args.rerank_pool, cache=_VC2(args.cache))
+        rr = cand if cand.available() else None
+        print(f"  rerank: {args.rerank_model} pool={args.rerank_pool}" if rr else "  rerank: unavailable")
+
     summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route,
-                        embedder=embedder, expander=expander, multiquery=mq)
+                        embedder=embedder, expander=expander, multiquery=mq, reranker=rr)
     ok = report(summary, gold, baseline)
 
     if ok and args.update_baseline:
@@ -509,6 +518,9 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--hyde-model", default="qwen2.5:7b")
     ev.add_argument("--hyde-prompt", default="canonical", choices=["canonical", "distinctive"])
     ev.add_argument("--multi-query", type=int, default=0, metavar="N")
+    ev.add_argument("--no-rerank", action="store_true")
+    ev.add_argument("--rerank-model", default="qwen2.5:7b")
+    ev.add_argument("--rerank-pool", type=int, default=20)
     ev.add_argument("--cache", default="out/vector-cache.db")
     ev.set_defaults(func=cmd_eval)
 
