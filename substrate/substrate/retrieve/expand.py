@@ -212,3 +212,93 @@ class AppleFMExpander:
         if self.cache is not None:
             self.cache.put_expansion(query, self.model, out)
         return out
+
+
+MULTIQUERY_PROMPT = (
+    "Rewrite the question below {n} different ways, each phrased as someone with different "
+    "expertise would ask it. Vary the vocabulary REGISTER: at least one using the precise "
+    "technical terminology of the field, at least one in plain everyday words, at least one "
+    "phrased as the situation or symptom rather than the concept.\n"
+    "Each rewrite on its own line. No numbering, no preamble, nothing else.\n\n"
+    "Question: {q}\n\nRewrites:"
+)
+
+
+@dataclass
+class MultiQuery:
+    """Generate register-varied paraphrases and retrieve with all of them.
+
+    Motivated by the measured evidence rather than by fashion: HyDE was the single biggest
+    win (+0.150), which says the dominant problem is the gap between how a question is
+    phrased and how the corpus words the answer. HyDE attacks that by making the query
+    document-shaped. Multi-query attacks it differently — by covering several phrasings at
+    once, so a hit only has to match ONE of them.
+
+    MEASURED — default OFF. Stacked on HyDE over 44 semantic cases:
+
+        config                     semantic mrr    p50 latency
+        HyDE only                  0.603           397ms
+        HyDE + multi-query(3)      0.637  +0.034   1996ms  (5x)
+
+    The net is positive but it is a REDISTRIBUTION, not an improvement: 11 cases improved,
+    10 regressed, and 3 that were passing broke entirely. Structurally the same failure as
+    outline routing — extra candidate lists rescue misses while displacing precise hits, so
+    rank-1 answers slide to 2-3. Paying 5x latency for ~1.5 cases of contested net gain is
+    not a trade worth making by default.
+
+    It IS a genuine recall tool though: sem-leader-crash finally passed (miss -> rank 4),
+    rescued by a variant that used the word "failover" — the exact domain term the original
+    query lacked. That suggests the right use is ADAPTIVE rather than always-on: fall back to
+    multi-query only when primary retrieval returns nothing confident, paying the latency
+    only when the cheap path has already failed. Untested; needs a confidence signal.
+
+    ONE generation call produces all variants. N separate calls would multiply the dominant
+    cost (LLM latency) for no extra diversity.
+    """
+
+    model: str = DEFAULT_MODEL
+    host: str = DEFAULT_HOST
+    n: int = 3
+    cache: object | None = None
+    prompt_id: str = "multiquery"
+
+    @property
+    def cache_key(self) -> str:
+        return f"{self.model}#{self.prompt_id}{self.n}"
+
+    def available(self) -> bool:
+        return HyDE(model=self.model, host=self.host).available()
+
+    def variants(self, query: str) -> list[str]:
+        """Return paraphrases (NOT including the original). Empty list on any failure."""
+        if self.cache is not None:
+            hit = self.cache.get_expansion(query, self.cache_key)
+            if hit is not None:
+                return [ln for ln in hit.split("\n") if ln.strip()]
+
+        payload = {
+            "model": self.model,
+            "prompt": MULTIQUERY_PROMPT.format(n=self.n, q=query),
+            "stream": False,
+            "options": {"temperature": 0.0, "num_predict": 200},
+        }
+        req = urllib.request.Request(
+            f"{self.host}/api/generate",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                text = (json.loads(r.read()).get("response") or "").strip()
+        except Exception:
+            return []
+
+        out: list[str] = []
+        for line in text.splitlines():
+            line = line.strip().lstrip("0123456789.)-• ").strip()
+            if len(line) > 8 and line.lower() != query.lower():
+                out.append(line)
+        out = out[: self.n]
+        if out and self.cache is not None:
+            self.cache.put_expansion(query, self.cache_key, "\n".join(out))
+        return out

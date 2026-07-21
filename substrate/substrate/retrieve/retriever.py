@@ -56,6 +56,7 @@ ROUTE_DEPTH = 12        # passages pulled per routed section
 DIRECT_WEIGHT = 1.0
 VECTOR_WEIGHT = 1.0     # equal footing; RRF is scale-free so no calibration is implied
 ROUTE_WEIGHT = 0.45     # recall aid, must not outvote a precise direct hit
+VARIANT_WEIGHT = 0.6    # paraphrases are coverage, not the question actually asked
 
 
 @dataclass
@@ -65,6 +66,7 @@ class Trace:
     direct: int = 0
     vector: int = 0
     routed: int = 0
+    variants: int = 0
     degraded: str = ""
     expanded: bool = False
     routes: list[str] = None
@@ -106,15 +108,47 @@ def retrieve(
     expand: bool = False,
     embedder=None,
     expander=None,
+    multiquery=None,
 ) -> tuple[list[Hit], Trace]:
     """Passage retrieval, optionally routed through the outline layer."""
     trace = Trace()
+
+    # Query set: the original, plus register-varied paraphrases. A relevant chunk only has
+    # to match ONE phrasing, which is the point.
+    queries = [query]
+    if multiquery is not None:
+        try:
+            extra = multiquery.variants(query)
+            queries += extra
+            trace.variants = len(extra)
+        except Exception as e:  # noqa: BLE001 — fail open to the bare query
+            trace.degraded = str(e)[:120]
 
     direct = store.search(
         query, k=k * 3, kind="passage", doc_id=doc_id, document_class=document_class
     )
     trace.direct = len(direct)
     lists: list[tuple[float, list[Hit]]] = [(DIRECT_WEIGHT, direct)]
+
+    # Paraphrases contribute at a lower weight than the question actually asked: they are a
+    # coverage aid, not equal evidence. Same reasoning that stopped routed passages from
+    # displacing precise hits.
+    for variant in queries[1:]:
+        vlist = store.search(variant, k=k * 2, kind="passage", doc_id=doc_id,
+                             document_class=document_class)
+        if vlist:
+            lists.append((VARIANT_WEIGHT, vlist))
+        if embedder is not None:
+            try:
+                vv = store.vector_search(
+                    embedder.embed_query(variant),
+                    getattr(embedder, "key", embedder.model),
+                    k=k * 2, kind="passage", doc_id=doc_id, document_class=document_class,
+                )
+                if vv:
+                    lists.append((VARIANT_WEIGHT, vv))
+            except Exception:
+                pass
 
     # Hybrid: lexical AND vector, fused by RRF. RRF is used rather than a score blend
     # precisely because BM25 and cosine are not on a comparable scale, so no weighting
@@ -168,7 +202,7 @@ def retrieve(
     # crowded out the exact answer. Letting routed results fill only the slots direct
     # retrieval did not earn makes routing incapable of harming precision by construction —
     # it can add recall, never subtract it.
-    if embedder is not None:
+    if embedder is not None or len(lists) > 1:
         fused = [h for _, h in _rrf(lists)]
         trace.fused = len(fused)
         return fused[:k], trace
