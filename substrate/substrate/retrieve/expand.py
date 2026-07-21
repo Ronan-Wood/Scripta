@@ -62,12 +62,43 @@ DEFAULT_MODEL = "qwen2.5:7b"
 DEFAULT_HOST = "http://127.0.0.1:11434"
 TIMEOUT = 45
 
-PROMPT = (
-    "Write one short factual paragraph, in precise technical language, that would appear in "
-    "a reference book and would directly answer this question. Use the domain's standard "
-    "terminology. Do not preamble, do not hedge, do not mention the question.\n\n"
-    "Question: {q}\n\nParagraph:"
-)
+# Two objectives, deliberately different. See the "canonical vs distinctive" note below.
+PROMPTS = {
+    # v1 CANONICAL — asks for the most TYPICAL passage on the topic.
+    "canonical": (
+        "Write one short factual paragraph, in precise technical language, that would appear "
+        "in a reference book and would directly answer this question. Use the domain's "
+        "standard terminology. Do not preamble, do not hedge, do not mention the question."
+        "\n\nQuestion: {q}\n\nParagraph:"
+    ),
+    # v2 DISTINCTIVE — MEASURED WORSE. Kept as a recorded negative result.
+    #
+    #     qwen2.5:7b  canonical    0.531
+    #     qwen2.5:7b  distinctive  0.445
+    #
+    # The theory was that a canonical paragraph sits at the topic centroid, which is exactly
+    # where the near-misses live, so targeting separation should beat targeting typicality.
+    # That theory predicted an improvement and got a 0.086 regression instead.
+    #
+    # Two candidate reasons, NOT separated because the experiment was stopped early:
+    #   1. CONFOUNDED. It changed the objective AND the output length at once (a named term
+    #      plus 2-3 sentences, versus a full paragraph), so less text to embed may be doing
+    #      the damage rather than the objective.
+    #   2. VARIANCE. Committing to one named concept is a high-variance bet: excellent when
+    #      the model names the right concept, worse than a diffuse paragraph when it does
+    #      not. Canonical prose is robust precisely because it is unfocused.
+    #
+    # If revisited, vary length and objective SEPARATELY.
+    "distinctive": (
+        "Name the single most specific concept that answers this question, then write 2-3 "
+        "sentences that could ONLY describe that concept and not its general topic.\n"
+        "Use the exact technical term, not a description of it. Include the distinguishing "
+        "mechanism, condition, or failure mode that separates it from adjacent concepts.\n"
+        "Omit background, motivation and anything true of the wider subject area.\n"
+        "No preamble. Do not mention the question.\n\nQuestion: {q}\n\nAnswer:"
+    ),
+}
+PROMPT = PROMPTS["canonical"]
 
 
 @dataclass
@@ -76,6 +107,14 @@ class HyDE:
     host: str = DEFAULT_HOST
     max_tokens: int = 160
     cache: object | None = None
+    prompt_id: str = "canonical"
+
+    @property
+    def cache_key(self) -> str:
+        """Cache identity MUST include the prompt. Keying on (query, model) alone would
+        serve generations produced by a different prompt — a silent staleness bug that would
+        have invalidated the very A/B this exists to run."""
+        return f"{self.model}#{self.prompt_id}"
 
     def available(self) -> bool:
         try:
@@ -90,13 +129,13 @@ class HyDE:
     def expand(self, query: str) -> str:
         """Return `query + hypothetical passage`, or the bare query on any failure."""
         if self.cache is not None:
-            hit = self.cache.get_expansion(query, self.model)
+            hit = self.cache.get_expansion(query, self.cache_key)
             if hit is not None:
                 return hit
 
         payload = {
             "model": self.model,
-            "prompt": PROMPT.format(q=query),
+            "prompt": PROMPTS[self.prompt_id].format(q=query),
             "stream": False,
             "options": {"temperature": 0.0, "num_predict": self.max_tokens},
         }
@@ -116,7 +155,7 @@ class HyDE:
         # supplies what was actually asked. Dropping the query loses the user's specifics.
         out = f"{query}\n\n{text}"
         if self.cache is not None:
-            self.cache.put_expansion(query, self.model, out)
+            self.cache.put_expansion(query, self.cache_key, out)
         return out
 
 
@@ -157,7 +196,7 @@ class AppleFMExpander:
 
     def expand(self, query: str) -> str:
         if self.cache is not None:
-            hit = self.cache.get_expansion(query, self.model)
+            hit = self.cache.get_expansion(query, self.cache_key)
             if hit is not None:
                 return hit
         try:
