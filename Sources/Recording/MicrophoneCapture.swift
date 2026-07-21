@@ -19,9 +19,18 @@ final class MicrophoneCapture {
     /// AVAudioConverter/AVAudioEngine on the tap thread itself.
     private let processingQueue = DispatchQueue(label: "com.ronanwood.Scripta.MicrophoneCapture.processing")
 
+    /// Tracks every tap invocation from entry to the completion of its processingQueue work, so
+    /// `stop()` can wait for all of it to drain. Entering synchronously on the tap thread (before
+    /// any async hop) means the count reflects invocations that have started, not just work
+    /// that's already been handed to processingQueue — draining `processingQueue` alone can't make
+    /// that same distinction.
+    private let inFlight = DispatchGroup()
+
     private var audioFile: AVAudioFile?
 
-    /// Called on the audio thread with the peak amplitude (0–1) of each captured buffer.
+    /// Called on `processingQueue`, not the tap/audio thread — see that property's comment. Must
+    /// not call `stop()` synchronously: `stop()` waits on `inFlight`, which this closure's own
+    /// invocation holds open, and a synchronous call back in would deadlock.
     var onLevel: ((Float) -> Void)?
 
     /// When paused, buffers are dropped (not written) so the track simply omits that interval.
@@ -32,14 +41,20 @@ final class MicrophoneCapture {
     }
     private let pausedFlag = OSAllocatedUnfairLock(initialState: false)
 
-    /// Called on the audio thread with each captured buffer (for live transcription). Locked:
-    /// live transcription attaches this while capture is already running (its setup can include
-    /// a model download, so it comes up in the background).
+    /// Called on `processingQueue`, not the tap/audio thread — see that property's comment, and
+    /// `onLevel`'s for why this must not call `stop()` synchronously. Locked: live transcription
+    /// attaches this while capture is already running (its setup can include a model download,
+    /// so it comes up in the background).
     var onBuffer: ((AVAudioPCMBuffer) -> Void)? {
         get { bufferCallback.withLock { $0 } }
         set { bufferCallback.withLock { $0 = newValue } }
     }
     private let bufferCallback = OSAllocatedUnfairLock<((AVAudioPCMBuffer) -> Void)?>(initialState: nil)
+
+    /// Diagnostic only — logs when processingQueue falls behind capture instead of throttling it,
+    /// since blocking the tap thread to apply backpressure is the exact pattern that caused the
+    /// crash this queue exists to avoid.
+    private let pendingCount = OSAllocatedUnfairLock(initialState: 0)
 
     init(outputURL: URL) {
         self.outputURL = outputURL
@@ -66,10 +81,21 @@ final class MicrophoneCapture {
         //
         // The tap block itself only copies the buffer (the original is only valid for the
         // duration of this call) and hops to processingQueue — see that property's comment for
-        // why nothing heavier can run here.
+        // why nothing heavier can run here. inFlight.enter() happens before anything else so
+        // stop() can't finish waiting until this invocation is accounted for, however far it gets.
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            guard let self, !self.isPaused, let copy = Self.copy(buffer) else { return }
+            guard let self else { return }
+            self.inFlight.enter()
+            guard !self.isPaused, let copy = Self.copy(buffer) else {
+                self.inFlight.leave()
+                return
+            }
+            let depth = self.pendingCount.withLock { $0 += 1; return $0 }
+            if depth == 200 || (depth > 200 && depth.isMultiple(of: 200)) {
+                self.log.warning("mic processingQueue backlog at \(depth, privacy: .public) buffers — disk or live-transcription feed is falling behind capture")
+            }
             self.processingQueue.async {
+                defer { self.pendingCount.withLock { $0 -= 1 }; self.inFlight.leave() }
                 do {
                     try file.write(from: copy)
                 } catch {
@@ -95,10 +121,10 @@ final class MicrophoneCapture {
     func stop() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        // processingQueue is serial FIFO, so this empty block only returns once every write
-        // already enqueued from the tap has completed — without it, the file could still be
-        // mid-write for the last buffer(s) when a caller reads it right after stop() returns.
-        processingQueue.sync {}
+        // Waits for every tap invocation entered so far — including one still on its synchronous
+        // portion when removeTap() was called above — to finish its processingQueue work, so the
+        // file is guaranteed complete once this returns.
+        inFlight.wait()
         audioFile = nil
     }
 
