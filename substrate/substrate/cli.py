@@ -300,8 +300,17 @@ def cmd_eval(args: argparse.Namespace) -> int:
         expander = cand if cand.available() else None
         print(f"  expansion: {'HyDE via ' + args.hyde_model if expander else 'unavailable'}")
 
+    mq = None
+    if args.multi_query:
+        from substrate.embed.cache import VectorCache as _VC
+        from substrate.retrieve.expand import MultiQuery
+
+        cand = MultiQuery(model=args.hyde_model, n=args.multi_query, cache=_VC(args.cache))
+        mq = cand if cand.available() else None
+        print(f"  multi-query: {args.multi_query} variants" if mq else "  multi-query: unavailable")
+
     summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route,
-                        embedder=embedder, expander=expander)
+                        embedder=embedder, expander=expander, multiquery=mq)
     ok = report(summary, gold, baseline)
 
     if ok and args.update_baseline:
@@ -438,6 +447,7 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--no-hyde", action="store_true", help="disable query expansion (A/B)")
     ev.add_argument("--hyde-model", default="qwen2.5:7b")
     ev.add_argument("--hyde-prompt", default="canonical", choices=["canonical", "distinctive"])
+    ev.add_argument("--multi-query", type=int, default=0, metavar="N")
     ev.add_argument("--cache", default="out/vector-cache.db")
     ev.set_defaults(func=cmd_eval)
 

@@ -100,7 +100,7 @@ def resolve_docs(store: IndexStore) -> dict[str, str]:
     return out
 
 
-def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, route: bool = True, embedder=None, expander=None) -> CaseResult:
+def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, route: bool = True, embedder=None, expander=None, multiquery=None) -> CaseResult:
     # Three case shapes:
     #   doc         — search within one document (the answer's location is the question)
     #   expect_doc  — search EVERYTHING; the right source must win (cross-document)
@@ -118,7 +118,7 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, ro
     else:
         hits, _ = retrieve(
             store, case["query"], k=k, doc_id=doc_id if scoped else None, route=route,
-            embedder=embedder, expander=expander,
+            embedder=embedder, expander=expander, multiquery=multiquery,
         )
 
     _elapsed = (time.monotonic() - _t0) * 1000
@@ -158,14 +158,14 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, ro
     return res
 
 
-def run(db: str, gold_path: Path, k: int = K, route: bool = True, embedder=None, expander=None) -> tuple[Summary, dict]:
+def run(db: str, gold_path: Path, k: int = K, route: bool = True, embedder=None, expander=None, multiquery=None) -> tuple[Summary, dict]:
     gold = json.loads(gold_path.read_text("utf-8"))
     summary = Summary()
     t0 = time.monotonic()
     with IndexStore(db) as store:
         docs = resolve_docs(store)
         for case in gold["cases"]:
-            summary.cases.append(run_case(store, case, docs, k=k, route=route, embedder=embedder, expander=expander))
+            summary.cases.append(run_case(store, case, docs, k=k, route=route, embedder=embedder, expander=expander, multiquery=multiquery))
     summary.elapsed_ms = (time.monotonic() - t0) * 1000
     return summary, gold
 
