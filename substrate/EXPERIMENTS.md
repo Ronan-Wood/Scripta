@@ -68,6 +68,32 @@ noise and then crowns it.
 | **bge-m3 / snowflake / mxbai** | 0.527 / 0.536 / n/a | Wash, noise-with-a-regression, and disqualified respectively |
 | **Multi-query fusion (3)** | +0.034 at **5× latency** | 11 up, 10 down, 3 newly broken. Redistribution, not improvement |
 | **Per-class chunk geometry** | +0.012 | Below resolution. **Shipped anyway on principle**, explicitly not on evidence |
+| **Chunk granularity sweep** | see below | Current geometry already at/near optimum |
+
+### Chunk granularity (the axis that had never been varied)
+
+Re-cut from `blocks.jsonl` without re-parsing the PDFs — the property the offset-mapped
+blocks were built for, exercised here for the first time and it reproduced the original
+ingest exactly (1051/252/74 passages, identical p50 and coverage) in seconds instead of ~4
+minutes. That is what made this axis affordable to test at all.
+
+| target | semantic mrr | lexical | p50 | notes |
+|---|---|---|---|---|
+| 700 | 0.547 (−0.056) | **27/28** | 640ms | fragments reappear (4/1/2) |
+| ~1500 class-driven | **0.603** | 28/28 | 397ms | current |
+| 2500 | 0.591 (−0.012) | 28/28 | **248ms** | statistically a wash, 1.6× faster |
+
+**Verdict: keep current.** Small is decisively worse — denser chunks fragment concepts and
+cost a gated regression. Large is *statistically indistinguishable* (−0.012 is under the
+0.023 quantum) and meaningfully faster, so it is a real option if latency ever dominates.
+
+Kept current anyway for a reason MRR cannot express: **MRR scores "did we find it", not "how
+much noise came with it".** A 2500-char chunk containing the answer scores identically to a
+1500-char one, but hands a reasoner 66% more surrounding text to wade through. Chunk size is
+a precision-of-citation decision as well as a retrieval one, and the eval is blind to that
+half.
+
+---
 
 ## Retracted — measurements that were not measurements
 

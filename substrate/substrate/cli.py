@@ -180,6 +180,60 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rechunk(args: argparse.Namespace) -> int:
+    """Re-cut chunks from blocks.jsonl WITHOUT re-parsing the PDF.
+
+    This is the property the offset-mapped blocks were built for and it had never been
+    exercised: re-extraction costs ~3 minutes and a pinned model, re-chunking should cost
+    milliseconds. It is also what makes chunk geometry testable as an eval axis at all —
+    a granularity sweep that re-parsed every PDF would cost 20 minutes instead of 2.
+    """
+    from substrate.chunk.chunker import chunk as _chunk
+    from substrate.models import Block, Chunk, Document, Kind
+
+    out = Path(args.dir).expanduser()
+    run = json.loads((out / "run.json").read_text("utf-8"))
+    cls = run.get("class", {})
+
+    blocks = []
+    for line in (out / "blocks.jsonl").read_text("utf-8").splitlines():
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        b = Block(id=r["id"], kind=Kind(r["kind"]), text=r["text"], page=r["page"],
+                  label=r["label"], level=r["level"], lang=r["lang"],
+                  height=r["height"], left=r["left"])
+        b.char_start, b.char_end = r["char_start"], r["char_end"]
+        b.furniture_claimed, b.furniture_honored = r["furniture_claimed"], r["furniture_honored"]
+        blocks.append(b)
+
+    doc = Document(
+        doc_id=run["doc_id"], source_path=run["source"], source_sha256=run["source_sha256"],
+        source_pages=run["pages"], document_class=cls.get("document_class", "reference-frozen"),
+        blocks=blocks, title=cls.get("title"), version=cls.get("version"),
+        version_date=cls.get("version_date"),
+        extractor=run.get("extract", {}).get("extractor", ""),
+        extractor_arm="docling", layout_model="docling-layout-heron",
+    )
+
+    override = None
+    if args.target:
+        override = (args.target, args.max_chars or args.target * 2, args.min_chars or args.target // 3)
+
+    chunks, cstats = _chunk(doc, override=override)
+    _write_jsonl(out / "chunks.jsonl", [c.to_json() for c in chunks])
+
+    body_chars = run["emit"]["body_chars"]
+    run["chunk"] = cstats
+    run["coverage"] = round(cstats["sum_chunk_chars"] / max(body_chars, 1), 4)
+    run["chunk_override"] = override
+    (out / "run.json").write_text(json.dumps(run, indent=2, ensure_ascii=False), "utf-8")
+
+    print(f"  {out.name}: {cstats['passages']} passages · p50 {cstats['chars_p50']} · "
+          f"coverage {run['coverage']} · fragments {cstats['short_fragments']}")
+    return 0
+
+
 def cmd_index(args: argparse.Namespace) -> int:
     from substrate.store.index_store import IndexStore
     from substrate.store.reconcile import reconcile
@@ -416,6 +470,13 @@ def main(argv: list[str] | None = None) -> int:
     ver = sub.add_parser("verify")
     ver.add_argument("dir")
     ver.set_defaults(func=cmd_verify)
+
+    rc = sub.add_parser("rechunk")
+    rc.add_argument("dir")
+    rc.add_argument("--target", type=int, default=0)
+    rc.add_argument("--max-chars", type=int, default=0)
+    rc.add_argument("--min-chars", type=int, default=0)
+    rc.set_defaults(func=cmd_rechunk)
 
     idx = sub.add_parser("index")
     idx.add_argument("--out-root", default="out")
