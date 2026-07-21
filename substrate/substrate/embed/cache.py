@@ -24,6 +24,14 @@ import struct
 from pathlib import Path
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS expansions(
+    query_sha  TEXT NOT NULL,
+    model      TEXT NOT NULL,
+    expanded   TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY(query_sha, model)
+);
+
 CREATE TABLE IF NOT EXISTS vectors(
     content_sha TEXT NOT NULL,
     model       TEXT NOT NULL,
@@ -77,6 +85,22 @@ class VectorCache:
             [(sha, model, len(v), struct.pack(f"{len(v)}f", *v)) for sha, v in items],
         )
         return len(items)
+
+    def get_expansion(self, query: str, model: str) -> str | None:
+        r = self.db.execute(
+            "SELECT expanded FROM expansions WHERE query_sha=? AND model=?",
+            (content_sha(query), model),
+        ).fetchone()
+        return r["expanded"] if r else None
+
+    def put_expansion(self, query: str, model: str, expanded: str) -> None:
+        """Generation is deterministic at temperature 0, so the same question always yields
+        the same hypothetical — which makes it cacheable, and turns HyDE from a ~10s/query
+        cost into a one-time cost per distinct question."""
+        self.db.execute(
+            "INSERT OR REPLACE INTO expansions(query_sha, model, expanded) VALUES(?,?,?)",
+            (content_sha(query), model, expanded),
+        )
 
     def stats(self) -> dict:
         r = self.db.execute(

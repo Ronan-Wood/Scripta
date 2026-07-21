@@ -250,7 +250,18 @@ def cmd_eval(args: argparse.Namespace) -> int:
         cand = OllamaEmbedder(model=args.embed_model)
         embedder = cand if cand.available() else None
         print(f"  retrieval: {'hybrid (lexical + vector)' if embedder else 'lexical only'}")
-    summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route, embedder=embedder)
+    expander = None
+    if not args.no_hyde:
+        from substrate.retrieve.expand import HyDE
+
+        from substrate.embed.cache import VectorCache
+
+        cand = HyDE(model=args.hyde_model, cache=VectorCache(args.cache))
+        expander = cand if cand.available() else None
+        print(f"  expansion: {'HyDE via ' + args.hyde_model if expander else 'unavailable'}")
+
+    summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route,
+                        embedder=embedder, expander=expander)
     ok = report(summary, gold, baseline)
 
     if ok and args.update_baseline:
@@ -380,6 +391,9 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--no-route", action="store_true", help="disable outline routing (A/B)")
     ev.add_argument("--no-vector", action="store_true", help="force lexical-only (A/B)")
     ev.add_argument("--embed-model", default="nomic-embed-text")
+    ev.add_argument("--no-hyde", action="store_true", help="disable query expansion (A/B)")
+    ev.add_argument("--hyde-model", default="qwen2.5:7b")
+    ev.add_argument("--cache", default="out/vector-cache.db")
     ev.set_defaults(func=cmd_eval)
 
     emb = sub.add_parser("embed")
