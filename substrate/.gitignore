@@ -8,3 +8,6 @@ __pycache__/
 # gets its document.md committed deliberately once the emitter lands (it is the diffable
 # regression artifact), not swept in as scratch.
 out/
+
+# eval baseline — local, derived from the corpus; regenerate with ./run.sh --update-baseline
+eval/.baseline.json
