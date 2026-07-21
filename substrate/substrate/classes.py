@@ -34,12 +34,33 @@ HEAD_BLOCKS = 40
 
 
 @dataclass
+class ChunkPolicy:
+    """Chunk geometry per document class.
+
+    Class drives chunking rather than one global setting because the classes have genuinely
+    different shapes. A language spec is dense, clause-structured and largely self-contained
+    per section — smaller chunks keep a clause whole and avoid dragging in an unrelated one.
+    A textbook is flowing argument where a passage stripped of its surroundings loses the
+    thread, so it wants more context per chunk.
+
+    These are close to what the two corpora produced NATURALLY (Go spec p50 996, DDIA p50
+    1490) — the policy makes an emergent property explicit and stable rather than imposing
+    something new.
+    """
+
+    target: int = 1400
+    max_chars: int = 2600
+    min_chars: int = 400
+
+
+@dataclass
 class ClassPolicy:
     name: str
     requires_version: bool = False
     frozen: bool = True
     description: str = ""
     required_fields: list[str] = field(default_factory=list)
+    chunk: ChunkPolicy = field(default_factory=ChunkPolicy)
 
 
 POLICIES: dict[str, ClassPolicy] = {
@@ -49,6 +70,7 @@ POLICIES: dict[str, ClassPolicy] = {
         frozen=True,
         description="A published edition that will not change (textbook).",
         required_fields=["title", "source_sha256"],
+        chunk=ChunkPolicy(target=1500, max_chars=2800, min_chars=450),
     ),
     "reference-versioned": ClassPolicy(
         "reference-versioned",
@@ -56,6 +78,7 @@ POLICIES: dict[str, ClassPolicy] = {
         frozen=False,
         description="A living spec whose passages are only true for a stated version.",
         required_fields=["title", "source_sha256", "version"],
+        chunk=ChunkPolicy(target=1000, max_chars=2000, min_chars=300),
     ),
 }
 
