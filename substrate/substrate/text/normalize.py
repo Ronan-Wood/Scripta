@@ -67,6 +67,18 @@ def ligature_residue(text: str) -> int:
     return len(_LIG.findall(body))
 
 
+def clean_block(text: str) -> str:
+    """Per-block cleaning, applied BEFORE assembly.
+
+    C0 removal deletes characters, so doing it globally after offsets are computed would
+    shift every block after the first control byte and silently rot blocks.jsonl. Applying
+    it per block keeps the offset map exact by construction.
+    """
+    text = unicodedata.normalize("NFC", text)
+    text = _C0.sub("", text)
+    return text.replace(" ", " ")
+
+
 def normalize(text: str) -> str:
     """NFC, drop C0 controls, collapse runs of blank lines. Typography is preserved.
 

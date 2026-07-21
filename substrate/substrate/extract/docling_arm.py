@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from substrate.extract import headings
+from substrate.extract import headings, toc
 from substrate.extract.base import doc_id_for, sha256_file
 from substrate.extract.furniture import validate
 from substrate.models import LABEL_MAP, Block, Document, Kind
@@ -159,8 +159,13 @@ class DoclingExtractor:
         # Heading levels are INFERRED — docling reports every heading as level 1 with a
         # flat parent tree, so the hierarchy has to come from glyph geometry.
         toc_pages = {b.page for b in blocks if b.kind is Kind.INDEX and b.page}
+        toc_pages |= toc.contents_pages(blocks)
         ladder = headings.build(blocks, toc_pages=toc_pages)
         hstats = headings.assign(blocks, ladder)
+
+        # Contents lists must be marked AFTER heading levels exist — the detector works by
+        # matching a block's text against the document's own heading vocabulary.
+        toc_report = toc.mark(blocks)
 
         doc = Document(
             doc_id=doc_id_for(pdf),
@@ -182,6 +187,10 @@ class DoclingExtractor:
                 "furniture_claimed": len(claimed),
                 "furniture_honored": len(verdict.honored),
                 "furniture_readmitted": len(verdict.readmitted),
+                "toc_blocks_marked": toc_report.blocks_marked,
+                "toc_by_label": toc_report.by_label,
+                "toc_by_structure": toc_report.by_structure,
+                "toc_coverage": toc_report.coverage,
                 "heading_tiers": ladder.tiers,
                 "heading_tier_counts": {str(k): v for k, v in ladder.counts.items()},
                 **{f"headings_{k}": v for k, v in hstats.items()},
