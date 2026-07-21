@@ -401,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--update-baseline", action="store_true")
     ev.add_argument("--no-route", action="store_true", help="disable outline routing (A/B)")
     ev.add_argument("--no-vector", action="store_true", help="force lexical-only (A/B)")
-    ev.add_argument("--embed-model", default="nomic-embed-text")
+    ev.add_argument("--embed-model", default="qwen3-embedding:0.6b")
     ev.add_argument("--no-hyde", action="store_true", help="disable query expansion (A/B)")
     ev.add_argument("--hyde-model", default="qwen2.5:7b")
     ev.add_argument("--hyde-prompt", default="canonical", choices=["canonical", "distinctive"])
@@ -410,7 +410,7 @@ def main(argv: list[str] | None = None) -> int:
 
     emb = sub.add_parser("embed")
     emb.add_argument("--db", default="out/substrate.db")
-    emb.add_argument("--model", default="nomic-embed-text")
+    emb.add_argument("--model", default="qwen3-embedding:0.6b")
     emb.add_argument("--host", default="http://127.0.0.1:11434")
     emb.add_argument("--cache", default="out/vector-cache.db",
                      help="durable content-addressed cache; survives index rebuilds")
