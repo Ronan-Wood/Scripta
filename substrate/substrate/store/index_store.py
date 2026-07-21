@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from substrate.models import Chunk, Document
-from substrate.store import fts, schema
+from substrate.store import fts, schema, sections
 
 
 @dataclass
@@ -135,15 +135,15 @@ class IndexStore:
             )
             db.executemany(
                 """INSERT INTO chunks(
-                    chunk_id, doc_id, kind, seq, text, text_with_path, path_str, path_depth,
+                    chunk_id, doc_id, kind, seq, text, text_with_path, path_str, path_depth, section_kind,
                     level, char_start, char_end, page_start, page_end, page_label_start,
                     n_chars, part_index, part_count, oversize, prev_id, next_id,
                     document_class, version, source_sha256, confidence, superseded_by)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         c.chunk_id, c.doc_id, c.kind, i, c.text, c.text_with_path,
-                        c.path_str, len(c.path), c.level, c.char_start, c.char_end,
+                        c.path_str, len(c.path), sections.classify(c.path_str), c.level, c.char_start, c.char_end,
                         c.page_start, c.page_end, c.page_label(c.page_start), c.n_chars,
                         c.part_index, c.part_count, int(bool(c.oversize)), c.prev_id,
                         c.next_id, c.document_class, c.version, c.source_sha256, None, None,
@@ -242,7 +242,7 @@ class IndexStore:
         sql = (
             f"{_SELECT} JOIN chunks_fts ON chunks_fts.rowid = c.rowid "
             f"WHERE {' AND '.join(where)} "
-            "ORDER BY bm25(chunks_fts) LIMIT ?"
+            f"ORDER BY bm25(chunks_fts) * {sections.weight_sql()} LIMIT ?"
         )
         rows = self.db.execute(sql, args).fetchall()
         return [_row_to_hit(r, -float(i)) for i, r in enumerate(rows)]

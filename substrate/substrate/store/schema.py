@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # v1 (2026-07-21) initial: documents, chunks, chunks_fts (external-content), chunk_vectors.
+# v2 (2026-07-21) chunks.section_kind — references sections were acting as retrieval
+#     attractors; ranking weights them down. Derived from path_str, so no re-ingest.
 DDL = """
 CREATE TABLE IF NOT EXISTS documents(
     doc_id            TEXT PRIMARY KEY,
@@ -54,6 +56,7 @@ CREATE TABLE IF NOT EXISTS chunks(
     text_with_path   TEXT NOT NULL,
     path_str         TEXT,
     path_depth       INTEGER,
+    section_kind     TEXT NOT NULL DEFAULT 'body',
     level            INTEGER,
     char_start       INTEGER,
     char_end         INTEGER,
