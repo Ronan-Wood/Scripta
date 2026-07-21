@@ -54,6 +54,7 @@ RRF_K = 60
 OUTLINE_ROUTES = 3      # how many outline records may route
 ROUTE_DEPTH = 12        # passages pulled per routed section
 DIRECT_WEIGHT = 1.0
+VECTOR_WEIGHT = 1.0     # equal footing; RRF is scale-free so no calibration is implied
 ROUTE_WEIGHT = 0.45     # recall aid, must not outvote a precise direct hit
 
 
@@ -62,7 +63,9 @@ class Trace:
     """Why a result set looks the way it does — retrieval must be explainable."""
 
     direct: int = 0
+    vector: int = 0
     routed: int = 0
+    degraded: str = ""
     routes: list[str] = None
     fused: int = 0
 
@@ -100,6 +103,7 @@ def retrieve(
     document_class: str | None = None,
     route: bool = False,
     expand: bool = False,
+    embedder=None,
 ) -> tuple[list[Hit], Trace]:
     """Passage retrieval, optionally routed through the outline layer."""
     trace = Trace()
@@ -109,6 +113,27 @@ def retrieve(
     )
     trace.direct = len(direct)
     lists: list[tuple[float, list[Hit]]] = [(DIRECT_WEIGHT, direct)]
+
+    # Hybrid: lexical AND vector, fused by RRF. RRF is used rather than a score blend
+    # precisely because BM25 and cosine are not on a comparable scale, so no weighting
+    # calibration is implied or needed.
+    if embedder is not None:
+        # FAIL OPEN. If the embedder is unreachable, retrieval degrades to pure lexical
+        # rather than failing — the same contract Scripta's Embedder honours. An engine that
+        # stops answering because a local daemon is down is worse than one that answers
+        # slightly less well.
+        try:
+            qv = embedder.embed_query(query)
+            vhits = store.vector_search(
+                qv, embedder.model, k=k * 3, kind="passage", doc_id=doc_id,
+                document_class=document_class,
+            )
+            trace.vector = len(vhits)
+            if vhits:
+                lists.append((VECTOR_WEIGHT, vhits))
+        except Exception as e:  # noqa: BLE001 — degrade on ANY embedder failure, by design
+            trace.degraded = str(e)[:120]
+            embedder = None
 
     if route:
         outlines = store.search(
@@ -136,6 +161,11 @@ def retrieve(
     # crowded out the exact answer. Letting routed results fill only the slots direct
     # retrieval did not earn makes routing incapable of harming precision by construction —
     # it can add recall, never subtract it.
+    if embedder is not None:
+        fused = [h for _, h in _rrf(lists)]
+        trace.fused = len(fused)
+        return fused[:k], trace
+
     fused = list(direct[:k])
     seen_ids = {h.chunk_id for h in fused}
     if route and len(fused) < k:

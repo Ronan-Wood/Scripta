@@ -206,10 +206,19 @@ def cmd_index(args: argparse.Namespace) -> int:
 def cmd_query(args: argparse.Namespace) -> int:
     from substrate.store.index_store import IndexStore
 
+    from substrate.embed.engine import OllamaEmbedder
+    from substrate.retrieve.retriever import retrieve
+
+    cand = OllamaEmbedder()
+    embedder = None if args.no_vector else (cand if cand.available() else None)
+
     with IndexStore(args.db) as store:
-        hits = store.search(
-            args.text, k=args.k, kind=args.kind, document_class=args.doc_class
-        )
+        if args.kind == "outline":
+            hits = store.search(args.text, k=args.k, kind="outline", document_class=args.doc_class)
+        else:
+            hits, _ = retrieve(
+                store, args.text, k=args.k, document_class=args.doc_class, embedder=embedder
+            )
         if not hits:
             print("  (no results)")
             return 0
@@ -231,7 +240,17 @@ def cmd_eval(args: argparse.Namespace) -> int:
     baseline_path = Path(args.baseline).expanduser()
     baseline = json.loads(baseline_path.read_text("utf-8")) if baseline_path.exists() else None
 
-    summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route)
+    # Hybrid when the embedder is reachable, pure lexical when it is not. Auto-detected
+    # rather than flagged, mirroring Scripta's Embedder.isConfigured: the engine should not
+    # need a different command line depending on whether a local daemon happens to be up.
+    embedder = None
+    if not args.no_vector:
+        from substrate.embed.engine import OllamaEmbedder
+
+        cand = OllamaEmbedder(model=args.embed_model)
+        embedder = cand if cand.available() else None
+        print(f"  retrieval: {'hybrid (lexical + vector)' if embedder else 'lexical only'}")
+    summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route, embedder=embedder)
     ok = report(summary, gold, baseline)
 
     if ok and args.update_baseline:
@@ -259,6 +278,46 @@ def cmd_eval(args: argparse.Namespace) -> int:
         )
         print(f"  baseline updated -> {baseline_path}")
     return 0 if ok else 1
+
+
+def cmd_embed(args: argparse.Namespace) -> int:
+    from substrate.embed.engine import EmbeddingError, OllamaEmbedder
+    from substrate.store.index_store import IndexStore
+
+    eng = OllamaEmbedder(model=args.model, host=args.host)
+    if not eng.available():
+        print(f"FATAL: {args.model!r} not available at {args.host}. "
+              "Start `ollama serve` (OLLAMA_MODELS must point at the drive).", file=sys.stderr)
+        return 2
+
+    with IndexStore(args.db) as store:
+        dropped = store.drop_vectors(keeping_model=args.model)
+        if dropped:
+            print(f"  dropped {dropped} vectors from other model spaces")
+        pending = store.chunks_missing_vectors(args.model)
+        print(f"  {len(pending)} chunks to embed with {args.model}")
+        if not pending:
+            print("  nothing to do (cache hit)")
+            return 0
+
+        t0 = time.monotonic()
+        done = 0
+        for i in range(0, len(pending), 256):
+            batch = pending[i : i + 256]
+            try:
+                vecs = eng.embed_documents([t for _, t in batch])
+            except EmbeddingError as e:
+                print(f"FATAL: {e}", file=sys.stderr)
+                return 3
+            done += store.store_vectors(
+                [(cid, v) for (cid, _), v in zip(batch, vecs, strict=True)], args.model
+            )
+            print(f"    {done}/{len(pending)}", end="\r", flush=True)
+        store.checkpoint()
+        el = time.monotonic() - t0
+        print(f"\n  embedded {done} chunks (dim {eng.dim}) in {el:.1f}s "
+              f"({done / max(el, 0.001):.0f}/s)")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -291,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
     qry.add_argument("--doc-class", default=None)
     qry.add_argument("--chars", type=int, default=200)
     qry.add_argument("--expand", action="store_true")
+    qry.add_argument("--no-vector", action="store_true")
     qry.set_defaults(func=cmd_query)
 
     ev = sub.add_parser("eval")
@@ -300,7 +360,15 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--k", type=int, default=5)
     ev.add_argument("--update-baseline", action="store_true")
     ev.add_argument("--no-route", action="store_true", help="disable outline routing (A/B)")
+    ev.add_argument("--no-vector", action="store_true", help="force lexical-only (A/B)")
+    ev.add_argument("--embed-model", default="nomic-embed-text")
     ev.set_defaults(func=cmd_eval)
+
+    emb = sub.add_parser("embed")
+    emb.add_argument("--db", default="out/substrate.db")
+    emb.add_argument("--model", default="nomic-embed-text")
+    emb.add_argument("--host", default="http://127.0.0.1:11434")
+    emb.set_defaults(func=cmd_embed)
 
     rev = sub.add_parser("review")
     rev.add_argument("dir")
