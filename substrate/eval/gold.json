@@ -418,6 +418,133 @@
       "query": "checking whether the system actually behaves the way we wanted it to",
       "doc": "paper-moral", "cohort": "semantic",
       "answer": ["valuat"], "path": ["Evaluating"]
+    }    ,
+    {
+      "_class": "Cohort expanded 24 -> 45 (2026-07-21). At 24 cases MRR moves in quanta of",
+      "_class2": "1/24 = 0.042 per case, so anything under ~0.04 is SUB-SINGLE-CASE — a",
+      "_class3": "non-effect, not a small one. Multi-factor work (query transforms x chunk",
+      "_class4": "granularity x embedder x rerank) searches a far larger space, and picking a",
+      "_class5": "max over many configs against few cases selects luck. More cases before any",
+      "_class6": "stacked winner is trusted.",
+      "id": "sem-lookup-other-key",
+      "query": "finding records by something other than their main identifier",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["secondary index"], "path": ["Storage"]
+    },
+    {
+      "id": "sem-columns-not-rows",
+      "query": "storing values column by column instead of row by row to speed up analytics",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["column"], "path": ["Storage"]
+    },
+    {
+      "id": "sem-definitely-not-here",
+      "query": "a cheap check that tells you definitely-absent or maybe-present",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["Bloom"], "path": ["Storage"]
+    },
+    {
+      "id": "sem-fix-stale-on-read",
+      "query": "repairing an out-of-date copy at the moment somebody reads it",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["read repair"], "path": ["Replication"]
+    },
+    {
+      "id": "sem-two-sites-both-writing",
+      "query": "two separate sites that both accept changes at the same time",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["multi-leader"], "path": ["Replication"]
+    },
+    {
+      "id": "sem-frozen-picture",
+      "query": "each transaction seeing a frozen picture of the data as it was when it began",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["napshot"], "path": ["Transactions"]
+    },
+    {
+      "id": "sem-each-waiting-other",
+      "query": "two operations each stuck waiting for the other one to let go",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["deadlock"], "path": ["Transactions"]
+    },
+    {
+      "id": "sem-old-boss-still-giving-orders",
+      "query": "a replaced node that does not realise it was replaced and keeps issuing commands",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["fencing"], "path": ["Distributed Systems"]
+    },
+    {
+      "id": "sem-not-processed-twice",
+      "query": "making sure the same message does not take effect twice",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["idempot"], "path": ["Streaming"]
+    },
+    {
+      "id": "sem-reclaim-old-versions",
+      "query": "cleaning up superseded versions of records to win back disk space",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["compact"], "path": ["Storage"]
+    },
+    {
+      "id": "sem-log-before-applying",
+      "query": "writing down what you are about to do before you actually do it",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["log"], "path": ["Transactions"]
+    },
+    {
+      "id": "sem-dump-raw-first",
+      "query": "dumping raw data somewhere central before deciding what shape it should take",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["data lake"], "path": ["Data Systems"]
+    },
+    {
+      "id": "sem-one-big-table-plus-lookups",
+      "query": "one enormous table of events surrounded by smaller descriptive tables",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["star schema"], "path": ["Data Models"]
+    },
+    {
+      "id": "sem-cache-in-front",
+      "query": "keeping recently used answers close by so you do not recompute them",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["cache"], "path": ["Storage"]
+    },
+    {
+      "id": "sem-lookup-by-key",
+      "query": "a collection where each value is fetched using its own key",
+      "doc": "go-spec", "cohort": "semantic",
+      "answer": ["map"], "path": ["Map types"]
+    },
+    {
+      "id": "sem-inherit-methods",
+      "query": "putting one type inside another so the outer one gains its methods",
+      "doc": "go-spec", "cohort": "semantic",
+      "answer": ["embedded"], "path": ["Struct types"]
+    },
+    {
+      "id": "sem-which-methods-count",
+      "query": "which methods a type is considered to have for interface purposes",
+      "doc": "go-spec", "cohort": "semantic",
+      "answer": ["method set"], "path": ["Method sets"]
+    },
+    {
+      "id": "sem-one-function-many-types",
+      "query": "writing a single function that works across many different types",
+      "doc": "go-spec", "cohort": "semantic",
+      "answer": ["type parameter"], "path": ["Type"]
+    },
+    {
+      "id": "sem-step-through-collection",
+      "query": "stepping through every element of a collection one at a time",
+      "doc": "go-spec", "cohort": "semantic",
+      "answer": ["range"], "path": ["For statements"]
+    },
+    {
+      "id": "sem-runs-before-main",
+      "query": "code that runs automatically before the program proper begins",
+      "doc": "go-spec", "cohort": "semantic",
+      "answer": ["init"], "path": ["initialization"]
     }
+
   ]
 }
