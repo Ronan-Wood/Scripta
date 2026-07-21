@@ -250,8 +250,40 @@ def cmd_eval(args: argparse.Namespace) -> int:
         from substrate.embed.engine import AppleEmbedder
 
         cand = (AppleEmbedder() if args.embed_model.startswith("apple")
-                else OllamaEmbedder(model=args.embed_model))
+                else OllamaEmbedder(model=args.embed_model, prefix_style=args.embed_style))
         embedder = cand if cand.available() else None
+        # GUARD: a vector config with no stored vectors degrades silently to lexical-only and
+        # still prints a plausible MRR. That has invalidated three measurements, every time
+        # because a key change orphaned the vectors. Refuse to report rather than mislead.
+        if embedder is not None:
+            from substrate.store.index_store import IndexStore as _IS
+
+            with _IS(args.db) as _s:
+                _n = _s.db.execute(
+                    "SELECT COUNT(*) FROM chunk_vectors WHERE embed_model=?", (embedder.key,)
+                ).fetchone()[0]
+            if _n == 0:
+                print(f"FATAL: no vectors for {embedder.key!r}. Run:  substrate embed "
+                      f"--model {args.embed_model} --embed-style {args.embed_style}",
+                      file=sys.stderr)
+                return 2
+            print(f"  vectors : {_n} under {embedder.key}")
+        # GUARD: a vector config with no vectors silently degrades to lexical-only and
+        # reports a plausible number. That has now invalidated three measurements — every
+        # time, because a key change orphaned the stored vectors. Refuse to report instead.
+        if embedder is not None:
+            from substrate.store.index_store import IndexStore as _IS
+
+            with _IS(args.db) as _s:
+                _n = _s.db.execute(
+                    "SELECT COUNT(*) FROM chunk_vectors WHERE embed_model=?", (embedder.key,)
+                ).fetchone()[0]
+            if _n == 0:
+                print(f"FATAL: no vectors stored for {embedder.key!r}. "
+                      f"Run: substrate embed --model {args.embed_model} "
+                      f"--embed-style {args.embed_style}", file=sys.stderr)
+                return 2
+            print(f"  vectors: {_n} under {embedder.key}")
         print(f"  retrieval: {'hybrid (lexical + vector)' if embedder else 'lexical only'}")
     expander = None
     if not args.no_hyde:
@@ -306,7 +338,7 @@ def cmd_embed(args: argparse.Namespace) -> int:
     from substrate.embed.engine import AppleEmbedder
 
     eng = (AppleEmbedder() if args.model.startswith("apple")
-           else OllamaEmbedder(model=args.model, host=args.host))
+           else OllamaEmbedder(model=args.model, host=args.host, prefix_style=args.embed_style))
     if not eng.available():
         print(f"FATAL: {args.model!r} not available at {args.host}. "
               "Start `ollama serve` (OLLAMA_MODELS must point at the drive).", file=sys.stderr)
@@ -316,11 +348,11 @@ def cmd_embed(args: argparse.Namespace) -> int:
 
     t0 = time.monotonic()
     with IndexStore(args.db) as store, VectorCache(args.cache) as cache:
-        dropped = store.drop_vectors(keeping_model=args.model)
+        dropped = store.drop_vectors(keeping_model=eng.key)
         if dropped:
             print(f"  dropped {dropped} vectors from other model spaces")
 
-        pending = store.chunks_missing_vectors(args.model)
+        pending = store.chunks_missing_vectors(eng.key)
         if not pending:
             print("  index already fully embedded")
             return 0
@@ -328,7 +360,7 @@ def cmd_embed(args: argparse.Namespace) -> int:
         # Content-addressed lookup FIRST. A chunker change renumbers every chunk_id, so
         # without this the whole corpus re-embeds even when the text is largely unchanged.
         shas = {cid: content_sha(text) for cid, text in pending}
-        cached = cache.get_many(sorted(set(shas.values())), args.model)
+        cached = cache.get_many(sorted(set(shas.values())), eng.key)
 
         hits = [(cid, cached[shas[cid]]) for cid, _ in pending if shas[cid] in cached]
         misses = [(cid, text) for cid, text in pending if shas[cid] not in cached]
@@ -336,7 +368,7 @@ def cmd_embed(args: argparse.Namespace) -> int:
               f"{len(hits)} from cache · {len(misses)} to embed")
 
         if hits:
-            store.store_vectors(hits, args.model)
+            store.store_vectors(hits, eng.key)
 
         done = 0
         for i in range(0, len(misses), 256):
@@ -347,8 +379,8 @@ def cmd_embed(args: argparse.Namespace) -> int:
                 print(f"FATAL: {e}", file=sys.stderr)
                 return 3
             pairs = list(zip(batch, vecs, strict=True))
-            store.store_vectors([(cid, v) for (cid, _), v in pairs], args.model)
-            cache.put_many([(shas[cid], v) for (cid, _), v in pairs], args.model)
+            store.store_vectors([(cid, v) for (cid, _), v in pairs], eng.key)
+            cache.put_many([(shas[cid], v) for (cid, _), v in pairs], eng.key)
             done += len(pairs)
             print(f"    embedded {done}/{len(misses)}", end="\r", flush=True)
 
@@ -402,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--no-route", action="store_true", help="disable outline routing (A/B)")
     ev.add_argument("--no-vector", action="store_true", help="force lexical-only (A/B)")
     ev.add_argument("--embed-model", default="qwen3-embedding:0.6b")
+    ev.add_argument("--embed-style", default="auto", choices=["auto","nomic","none","qwen3"])
     ev.add_argument("--no-hyde", action="store_true", help="disable query expansion (A/B)")
     ev.add_argument("--hyde-model", default="qwen2.5:7b")
     ev.add_argument("--hyde-prompt", default="canonical", choices=["canonical", "distinctive"])
@@ -411,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
     emb = sub.add_parser("embed")
     emb.add_argument("--db", default="out/substrate.db")
     emb.add_argument("--model", default="qwen3-embedding:0.6b")
+    emb.add_argument("--embed-style", default="auto", choices=["auto","nomic","none","qwen3"])
     emb.add_argument("--host", default="http://127.0.0.1:11434")
     emb.add_argument("--cache", default="out/vector-cache.db",
                      help="durable content-addressed cache; survives index rebuilds")

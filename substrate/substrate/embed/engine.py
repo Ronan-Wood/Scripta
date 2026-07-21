@@ -61,6 +61,32 @@ def _l2(v: list[float]) -> list[float]:
     return [x / n for x in v] if n else v
 
 
+# Task-prefix conventions are MODEL-SPECIFIC, not universal. Applying nomic's to every
+# model was a latent bug: qwen3-embedding was scoring 0.642 while being fed a convention
+# that belongs to a different model family.
+#   nomic  — "search_document:" / "search_query:" on both sides (nomic's documented usage)
+#   none   — raw text both sides
+#   qwen3  — raw DOCUMENTS, instruction on the QUERY only (qwen3-embedding's documented usage)
+# MEASURED on qwen3-embedding:0.6b, 24 semantic cases:
+#     nomic prefixes both sides          0.642
+#     none  (raw both sides)             0.642   <- default
+#     qwen3 native instruction on query  0.303   <- CATASTROPHIC
+#
+# The model's OWN documented format is the worst option here, and the reason matters: it is
+# an ASYMMETRIC format ("Given a question, retrieve the passage that answers it") and by the
+# time we embed, HyDE has already turned the query into a hypothetical PASSAGE. We would be
+# declaring "this is a short question" while passing a paragraph, against documents embedded
+# with no instruction at all — mismatched spaces.
+#
+# Generalizes: once query expansion makes the query document-shaped, retrieval is SYMMETRIC,
+# and instruction-tuned asymmetric formats become actively harmful. Documented best practice
+# for a model assumes a bare query; it does not survive HyDE.
+PREFIX_STYLES = ("nomic", "none", "qwen3")
+QWEN3_QUERY_INSTRUCT = (
+    "Instruct: Given a question, retrieve the reference passage that answers it\nQuery: "
+)
+
+
 @dataclass
 class OllamaEmbedder:
     """Local Ollama embeddings. Loopback only — never carries the corpus off the machine."""
@@ -68,14 +94,34 @@ class OllamaEmbedder:
     model: str = DEFAULT_MODEL
     host: str = DEFAULT_HOST
     dim: int = 0
+    prefix_style: str = "auto"
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: D105
         host = self.host.split("//")[-1].split(":")[0]
         if host not in LOOPBACK:
             raise EmbeddingError(
                 f"refusing non-loopback embedding host {self.host!r}. Embedding sends the "
                 "corpus to the endpoint; this engine is local-only by design."
             )
+        if self.prefix_style == "auto":
+            # Task prefixes are a per-family convention, not a universal one. nomic wants
+            # them; nothing else measured benefits, and qwen3's own format is worse.
+            self.prefix_style = "nomic" if self.model.startswith("nomic-embed") else "none"
+
+    @property
+    def key(self) -> str:
+        """Storage identity. MUST include the prefix style.
+
+        Vectors built with different task prefixes are different vectors, so keying on the
+        model name alone silently reuses the wrong ones — the same bug the HyDE prompt cache
+        had. Anything that changes the output belongs in the key.
+
+        Only the DOCUMENT-side treatment belongs here though: query prefixing does not change
+        what is stored. So "none" and "qwen3" share one embedding space (both embed documents
+        raw) and differ only at query time, which makes comparing them free.
+        """
+        doc_side = "nomic" if self.prefix_style == "nomic" else "raw"
+        return f"{self.model}#{doc_side}"
 
     def _post(self, path: str, payload: dict) -> dict:
         req = urllib.request.Request(
@@ -116,10 +162,16 @@ class OllamaEmbedder:
         return out
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return self._embed([f"search_document: {t}" for t in texts])
+        if self.prefix_style == "nomic":
+            texts = [f"search_document: {t}" for t in texts]
+        return self._embed(texts)
 
     def embed_query(self, text: str) -> list[float]:
-        return self._embed([f"search_query: {text}"])[0]
+        if self.prefix_style == "nomic":
+            text = f"search_query: {text}"
+        elif self.prefix_style == "qwen3":
+            text = QWEN3_QUERY_INSTRUCT + text
+        return self._embed([text])[0]
 
     def available(self) -> bool:
         try:
@@ -146,6 +198,11 @@ class AppleEmbedder:
     binary: str = "bin/embed-apple"
     model: str = "apple-nlcontextual"
     dim: int = 0
+
+    @property
+    def key(self) -> str:
+        return self.model
+
     _proc: object | None = None
 
     def available(self) -> bool:

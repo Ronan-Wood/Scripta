@@ -37,6 +37,7 @@ class CaseResult:
     note: str = ""
     max_rank: int | None = None
     cohort: str = "lexical"
+    ms: float = 0.0
 
     @property
     def passed(self) -> bool:
@@ -111,6 +112,7 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, ro
     if target and doc_id is None:
         return CaseResult(id=case["id"], query=case["query"], note=f"doc {target!r} not indexed")
 
+    _t0 = time.monotonic()
     if case.get("kind") == "outline":
         hits = store.search(case["query"], k=k, kind="outline", doc_id=doc_id if scoped else None)
     else:
@@ -119,7 +121,8 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, ro
             embedder=embedder, expander=expander,
         )
 
-    res = CaseResult(id=case["id"], query=case["query"])
+    _elapsed = (time.monotonic() - _t0) * 1000
+    res = CaseResult(id=case["id"], query=case["query"], ms=_elapsed)
     if hits:
         res.top_path, res.top_page = hits[0].path_str, hits[0].page_start
 
@@ -241,6 +244,18 @@ def report(summary: Summary, gold: dict, baseline: dict | None) -> bool:
         if regressed:
             ok = False
             print(f"\n  REGRESSED (passed in baseline, fail now): {', '.join(regressed)}")
+
+    # LATENCY IS A SCORED AXIS. A local engine scoring 0.65 at 8s/query is worse in practice
+    # than 0.62 at 1s — a config is only "best" if it is affordable to run on every query.
+    # Reporting it beside MRR keeps that visible instead of buried in a commit message.
+    lat = sorted(c.ms for c in summary.cases if c.ms)
+    if lat:
+        p50 = lat[len(lat) // 2]
+        p95 = lat[min(int(len(lat) * 0.95), len(lat) - 1)]
+        print(
+            f"\n  LATENCY  p50 {p50:.0f}ms   p95 {p95:.0f}ms   max {lat[-1]:.0f}ms"
+            "   (per query; expansions cached)"
+        )
 
     print(f"\n  {'PASS' if ok else 'FAIL'}")
     return ok
