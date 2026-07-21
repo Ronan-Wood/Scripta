@@ -11,3 +11,6 @@ out/
 
 # eval baseline — local, derived from the corpus; regenerate with ./run.sh --update-baseline
 eval/.baseline.json
+
+# durable vector cache — expensive to regenerate, content-addressed so never stale
+out/vector-cache.db*

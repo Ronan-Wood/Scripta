@@ -290,33 +290,51 @@ def cmd_embed(args: argparse.Namespace) -> int:
               "Start `ollama serve` (OLLAMA_MODELS must point at the drive).", file=sys.stderr)
         return 2
 
-    with IndexStore(args.db) as store:
+    from substrate.embed.cache import VectorCache, content_sha
+
+    t0 = time.monotonic()
+    with IndexStore(args.db) as store, VectorCache(args.cache) as cache:
         dropped = store.drop_vectors(keeping_model=args.model)
         if dropped:
             print(f"  dropped {dropped} vectors from other model spaces")
+
         pending = store.chunks_missing_vectors(args.model)
-        print(f"  {len(pending)} chunks to embed with {args.model}")
         if not pending:
-            print("  nothing to do (cache hit)")
+            print("  index already fully embedded")
             return 0
 
-        t0 = time.monotonic()
+        # Content-addressed lookup FIRST. A chunker change renumbers every chunk_id, so
+        # without this the whole corpus re-embeds even when the text is largely unchanged.
+        shas = {cid: content_sha(text) for cid, text in pending}
+        cached = cache.get_many(sorted(set(shas.values())), args.model)
+
+        hits = [(cid, cached[shas[cid]]) for cid, _ in pending if shas[cid] in cached]
+        misses = [(cid, text) for cid, text in pending if shas[cid] not in cached]
+        print(f"  {len(pending)} chunks missing vectors · "
+              f"{len(hits)} from cache · {len(misses)} to embed")
+
+        if hits:
+            store.store_vectors(hits, args.model)
+
         done = 0
-        for i in range(0, len(pending), 256):
-            batch = pending[i : i + 256]
+        for i in range(0, len(misses), 256):
+            batch = misses[i : i + 256]
             try:
                 vecs = eng.embed_documents([t for _, t in batch])
             except EmbeddingError as e:
                 print(f"FATAL: {e}", file=sys.stderr)
                 return 3
-            done += store.store_vectors(
-                [(cid, v) for (cid, _), v in zip(batch, vecs, strict=True)], args.model
-            )
-            print(f"    {done}/{len(pending)}", end="\r", flush=True)
+            pairs = list(zip(batch, vecs, strict=True))
+            store.store_vectors([(cid, v) for (cid, _), v in pairs], args.model)
+            cache.put_many([(shas[cid], v) for (cid, _), v in pairs], args.model)
+            done += len(pairs)
+            print(f"    embedded {done}/{len(misses)}", end="\r", flush=True)
+
         store.checkpoint()
         el = time.monotonic() - t0
-        print(f"\n  embedded {done} chunks (dim {eng.dim}) in {el:.1f}s "
-              f"({done / max(el, 0.001):.0f}/s)")
+        cs = cache.stats()
+        print(f"\n  {len(hits)} reused · {done} embedded in {el:.1f}s")
+        print(f"  cache: {cs['vectors']} vectors, {cs['bytes'] / 1e6:.1f} MB -> {args.cache}")
     return 0
 
 
@@ -368,6 +386,8 @@ def main(argv: list[str] | None = None) -> int:
     emb.add_argument("--db", default="out/substrate.db")
     emb.add_argument("--model", default="nomic-embed-text")
     emb.add_argument("--host", default="http://127.0.0.1:11434")
+    emb.add_argument("--cache", default="out/vector-cache.db",
+                     help="durable content-addressed cache; survives index rebuilds")
     emb.set_defaults(func=cmd_embed)
 
     rev = sub.add_parser("review")

@@ -219,6 +219,22 @@ def _outline_records(doc: Document, sections: list[Section], seq: int) -> tuple[
 
 
 def chunk(doc: Document) -> tuple[list[Chunk], dict]:
+    # Geometry is class-driven. Module-level TARGET/MAX/MIN remain the defaults for any
+    # class that does not override them.
+    global TARGET, MAX, MIN
+    from substrate.classes import POLICIES
+
+    pol = POLICIES.get(doc.document_class)
+    saved = (TARGET, MAX, MIN)
+    if pol is not None:
+        TARGET, MAX, MIN = pol.chunk.target, pol.chunk.max_chars, pol.chunk.min_chars
+    try:
+        return _chunk(doc)
+    finally:
+        TARGET, MAX, MIN = saved
+
+
+def _chunk(doc: Document) -> tuple[list[Chunk], dict]:
     sections = leaf_sections(doc.blocks)
 
     passages: list[Chunk] = []
