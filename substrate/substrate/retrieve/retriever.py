@@ -132,7 +132,7 @@ def retrieve(
             trace.expanded = len(vquery) > len(query)
             qv = embedder.embed_query(vquery)
             vhits = store.vector_search(
-                qv, embedder.model, k=k * 3, kind="passage", doc_id=doc_id,
+                qv, getattr(embedder, 'key', embedder.model), k=k * 3, kind="passage", doc_id=doc_id,
                 document_class=document_class,
             )
             trace.vector = len(vhits)
