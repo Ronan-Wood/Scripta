@@ -62,7 +62,10 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     chunks, cstats = chunk(doc)
 
     (out / "document.md").write_text(frontmatter(doc, {"version_source": None}) + body, "utf-8")
-    _write_jsonl(out / "blocks.jsonl", [b.to_json() for b in doc.blocks if b.char_start >= 0])
+    # EVERY block, including furniture we dropped and contents we excluded (char_start=-1).
+    # Retaining them is what makes the drop auditable — a silently discarded block cannot be
+    # distinguished from one that was never extracted.
+    _write_jsonl(out / "blocks.jsonl", [b.to_json() for b in doc.blocks])
     _write_jsonl(out / "chunks.jsonl", [c.to_json() for c in chunks])
 
     run = {
@@ -128,6 +131,17 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def cmd_review(args: argparse.Namespace) -> int:
+    from substrate.report.review import build
+
+    rev = build(Path(args.dir).expanduser(), samples=args.sample, seed=args.seed)
+    for f in sorted(rev.iterdir()):
+        print(f"  {f.name:<24} {f.stat().st_size:>8,} bytes")
+    print(f"\nreview packet -> {rev}")
+    print("Start with 00-summary.md; reds are listed first.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="substrate")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -143,6 +157,12 @@ def main(argv: list[str] | None = None) -> int:
     ver = sub.add_parser("verify")
     ver.add_argument("dir")
     ver.set_defaults(func=cmd_verify)
+
+    rev = sub.add_parser("review")
+    rev.add_argument("dir")
+    rev.add_argument("--sample", type=int, default=15)
+    rev.add_argument("--seed", type=int, default=7)
+    rev.set_defaults(func=cmd_review)
 
     args = ap.parse_args(argv)
     return args.func(args)
