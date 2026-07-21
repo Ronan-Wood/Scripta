@@ -1,0 +1,11 @@
+[project]
+name = "substrate"
+version = "0.1.0"
+description = "Language-neutral knowledge substrate engine — structure-aware ingestion + retrieval"
+requires-python = ">=3.10"
+dependencies = [
+    "docling",
+]
+
+[tool.uv]
+package = false

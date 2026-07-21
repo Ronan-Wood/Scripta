@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Ingestion outputs. Regenerable from the PDFs + a pinned extractor; the run that matters
+# gets its document.md committed deliberately once the emitter lands (it is the diffable
+# regression artifact), not swept in as scratch.
+out/
