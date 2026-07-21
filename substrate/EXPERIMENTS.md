@@ -31,9 +31,48 @@ rerank    listwise via qwen2.5:7b, ADAPTIVE (skipped when the top hit is already
 
 ---
 
+## The cumulative arc — READ THE SCALES
+
+Every published delta below is valid **within its cohort**. The arc as a whole is NOT five
+measurements on one instrument: the gold set was expanded twice, and a cohort change is a
+harness change, not a result.
+
+```
+7-case cohort
+  0.207   lexical only
+  0.369   + hybrid vectors            +0.162   within-scale
+  0.381   + per-class chunk geometry  +0.012   below resolution
+
+──  harness change: cohort 7 → 24  (NOT a measurement)  ──
+
+24-case cohort
+  0.375   same stack, re-measured on the larger set
+  0.531   + HyDE (qwen2.5:7b)         +0.156   within-scale
+  0.642   + qwen3-embedding:0.6b      +0.110   within-scale
+
+──  harness change: cohort 24 → 44  (NOT a measurement)  ──
+
+44-case cohort
+  0.603   same stack, re-measured on the larger set
+  0.698   + adaptive listwise rerank  +0.095   within-scale
+```
+
+**0.642 → 0.603 is not a regression.** It is the identical configuration scored against a
+harder, larger set. Reading the arc as one continuous line would treat two harness changes as
+if they were results, and would make the rerank step look like +0.056 when it is +0.095.
+
+Numbers from different cohorts are not comparable to each other and must never be subtracted.
+Any figure quoted from this file should carry its cohort size — this is the provenance rule
+the substrate applies to retrieved passages, applied to its own measurement history.
+
+---
+
 ## Measurement resolution — read before trusting any delta
 
-With 44 semantic cases, MRR moves in quanta of **1/44 = 0.023 per case**. A case moving
+With 44 semantic cases, MRR moves in quanta of **1/44 = 0.023 per case**. (At the earlier
+24-case scale it was 0.042, and at 7 cases 0.143 — which is why nothing measured in the
+7-case era below ~0.15 should be trusted at all, including the +0.012 chunk-geometry result
+that was shipped on principle rather than evidence.) A case moving
 rank 2→1 shifts it 0.011.
 
 - **< 0.023** — sub-single-case. Not a small effect, a **non-effect**.
