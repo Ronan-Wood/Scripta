@@ -161,6 +161,154 @@
       "doc": "paper-moral",
       "answer": ["op-down"],
       "path": ["Learning Morality in Machines"]
+    },
+
+    {
+      "_class": "CROSS-DOCUMENT — no doc filter. The wrong book is a plausible answer, so",
+      "_class2": "this measures whether the right SOURCE wins, not just the right passage.",
+      "id": "xdoc-go-select",
+      "query": "select statement choosing among channel send and receive operations",
+      "expect_doc": "go-spec",
+      "answer": ["select"],
+      "path": ["Select statements"]
+    },
+    {
+      "id": "xdoc-sql-declarative",
+      "query": "declarative query language where you specify the pattern not the algorithm",
+      "expect_doc": "ddia-2e",
+      "answer": ["declarative"],
+      "path": ["Data Models"]
+    },
+    {
+      "id": "xdoc-go-unicode",
+      "query": "source code is Unicode text encoded in UTF-8",
+      "expect_doc": "go-spec",
+      "answer": ["UTF-8"],
+      "path": ["Source code representation"]
+    },
+    {
+      "id": "xdoc-paper-intrinsic-rewards",
+      "query": "reinforcement learning agents with intrinsic moral rewards",
+      "expect_doc": "paper-moral",
+      "answer": ["ntrinsic"],
+      "path": ["Moral"]
+    },
+
+    {
+      "_class": "STRICT RANK — the answer must be rank 1, not merely top-5. This is what",
+      "_class2": "catches recall dilution: an OR top-up that over-recalls pushes the precise",
+      "_class3": "answer down while every top-5 metric stays flat.",
+      "id": "rank1-write-skew",
+      "query": "characterizing write skew",
+      "doc": "ddia-2e",
+      "answer": ["write skew"],
+      "path": ["Write Skew"],
+      "max_rank": 1
+    },
+    {
+      "id": "rank1-sstable",
+      "query": "SSTable segment compaction and merging",
+      "doc": "ddia-2e",
+      "answer": ["SSTable"],
+      "path": ["Storage"],
+      "max_rank": 1
+    },
+    {
+      "id": "rank1-go-defer",
+      "query": "defer statement invokes a function deferred until the surrounding function returns",
+      "doc": "go-spec",
+      "answer": ["defer"],
+      "path": ["Defer statements"],
+      "max_rank": 1
+    },
+
+    {
+      "_class": "OUTLINE LAYER — orientation, not passage lookup. These fail if the two-speed",
+      "_class2": "model is broken or if outline records carry no useful content.",
+      "id": "outline-transactions",
+      "query": "transactions isolation levels and concurrency control",
+      "doc": "ddia-2e",
+      "kind": "outline",
+      "answer": ["Transactions"],
+      "path": ["Transactions"]
+    },
+    {
+      "id": "outline-stream-processing",
+      "query": "stream processing event streams and message brokers",
+      "doc": "ddia-2e",
+      "kind": "outline",
+      "answer": ["Stream"],
+      "path": ["Stream Processing"]
+    },
+    {
+      "id": "outline-go-types",
+      "query": "type system composite types and type identity",
+      "doc": "go-spec",
+      "kind": "outline",
+      "answer": ["ypes"],
+      "path": ["Types"]
+    },
+
+    {
+      "_class": "SEMANTIC COHORT — paraphrases with near-zero lexical overlap with the answer.",
+      "_class2": "These are EXPECTED to strain lexical BM25. They are excluded from the CI gates",
+      "_class3": "and reported separately, because they are the scoreboard Phase 3 has to move:",
+      "_class4": "the spec gates vectors on 'an embedder passing eval', and you cannot gate on an",
+      "_class5": "eval that lexical retrieval already aces. A failure here is a measurement, not a bug.",
+      "id": "sem-double-booking",
+      "query": "stopping two people from reserving the same seat at the same moment",
+      "doc": "ddia-2e",
+      "cohort": "semantic",
+      "answer": ["skew"],
+      "path": ["Transactions"]
+    },
+    {
+      "id": "sem-leader-crash",
+      "query": "what happens when the main machine dies and another has to take over",
+      "doc": "ddia-2e",
+      "cohort": "semantic",
+      "answer": ["ailover"],
+      "path": ["Replication"]
+    },
+    {
+      "id": "sem-copies-machines",
+      "query": "keeping the same information on several computers so it survives a failure",
+      "doc": "ddia-2e",
+      "cohort": "semantic",
+      "answer": ["replic"],
+      "path": ["Replication"]
+    },
+    {
+      "id": "sem-split-dataset",
+      "query": "breaking one enormous dataset into pieces spread over many machines",
+      "doc": "ddia-2e",
+      "cohort": "semantic",
+      "answer": ["shard"],
+      "path": ["Sharding"]
+    },
+    {
+      "id": "sem-cleanup-on-exit",
+      "query": "running cleanup code automatically right before you leave a function",
+      "doc": "go-spec",
+      "cohort": "semantic",
+      "answer": ["defer"],
+      "path": ["Defer statements"]
+    },
+    {
+      "id": "sem-wait-many-channels",
+      "query": "waiting on whichever of several communications becomes ready first",
+      "doc": "go-spec",
+      "cohort": "semantic",
+      "answer": ["select"],
+      "path": ["Select statements"]
+    },
+    {
+      "id": "sem-learn-by-example",
+      "query": "teaching a system right from wrong by letting it learn from examples",
+      "doc": "paper-moral",
+      "cohort": "semantic",
+      "answer": ["ottomup"],
+      "path": ["Bottomup"]
     }
   ]
 }

@@ -34,10 +34,14 @@ class CaseResult:
     top_path: str = ""
     top_page: int | None = None
     note: str = ""
+    max_rank: int | None = None
+    cohort: str = "lexical"
 
     @property
     def passed(self) -> bool:
-        return self.both_rank is not None and self.both_rank <= K
+        if self.both_rank is None:
+            return False
+        return self.both_rank <= (self.max_rank or K)
 
 
 @dataclass
@@ -95,10 +99,23 @@ def resolve_docs(store: IndexStore) -> dict[str, str]:
 
 
 def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K) -> CaseResult:
-    doc_id = docs.get(case["doc"])
-    if doc_id is None:
-        return CaseResult(id=case["id"], query=case["query"], note=f"doc {case['doc']!r} not indexed")
-    hits = store.search(case["query"], k=k, kind="passage", doc_id=doc_id)
+    # Three case shapes:
+    #   doc         — search within one document (the answer's location is the question)
+    #   expect_doc  — search EVERYTHING; the right source must win (cross-document)
+    #   max_rank    — the answer must be at rank N, not merely inside k
+    scoped = case.get("doc")
+    expect_doc = case.get("expect_doc")
+    target = scoped or expect_doc
+    doc_id = docs.get(target) if target else None
+    if target and doc_id is None:
+        return CaseResult(id=case["id"], query=case["query"], note=f"doc {target!r} not indexed")
+
+    hits = store.search(
+        case["query"],
+        k=k,
+        kind=case.get("kind", "passage"),
+        doc_id=doc_id if scoped else None,
+    )
 
     res = CaseResult(id=case["id"], query=case["query"])
     if hits:
@@ -111,6 +128,8 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K) ->
     for i, h in enumerate(hits, start=1):
         a = _has_answer(h, answer)
         p = _has_path(h, path) and _in_pages(h, pages)
+        if expect_doc and h.doc_id != doc_id:
+            p = False  # right content from the WRONG SOURCE is not a pass
         if a and res.answer_rank is None:
             res.answer_rank = i
         if p and res.attrib_rank is None:
@@ -118,13 +137,19 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K) ->
         if a and p and res.both_rank is None:
             res.both_rank = i
 
+    res.max_rank = case.get("max_rank")
+    res.cohort = case.get("cohort", "lexical")
     if res.both_rank is None:
         if res.answer_rank and not res.attrib_rank:
-            res.note = "content found, WRONG ATTRIBUTION"
+            res.note = (
+                "content found, WRONG SOURCE" if expect_doc else "content found, WRONG ATTRIBUTION"
+            )
         elif res.attrib_rank and not res.answer_rank:
             res.note = "right section, content missing"
         else:
             res.note = "not found"
+    elif res.max_rank and res.both_rank > res.max_rank:
+        res.note = f"found at rank {res.both_rank}, required rank {res.max_rank}"
     return res
 
 
@@ -141,12 +166,23 @@ def run(db: str, gold_path: Path, k: int = K) -> tuple[Summary, dict]:
 
 
 def report(summary: Summary, gold: dict, baseline: dict | None) -> bool:
-    m = summary.metrics
+    # The semantic cohort is the IMPROVEMENT TARGET, not the CI line. Gates are computed on
+    # the lexical cohort so a known-hard paraphrase set cannot mask a real regression, and a
+    # real regression cannot hide behind a hard set that was always failing.
+    lexical = Summary([c for c in summary.cases if c.cohort == "lexical"], summary.elapsed_ms)
+    semantic = [c for c in summary.cases if c.cohort == "semantic"]
+
+    m = lexical.metrics
     gates = gold["gates"]
 
-    failed = [c for c in summary.cases if not c.passed]
-    print(f"  {len(summary.cases) - len(failed)}/{len(summary.cases)} cases pass "
-          f"({summary.elapsed_ms:.0f}ms)\n")
+    failed = [c for c in lexical.cases if not c.passed]
+    print(f"  LEXICAL  {len(lexical.cases) - len(failed)}/{len(lexical.cases)} pass "
+          f"({summary.elapsed_ms:.0f}ms)")
+    if semantic:
+        sp = sum(1 for c in semantic if c.passed)
+        print(f"  SEMANTIC {sp}/{len(semantic)} pass   (paraphrase cohort — Phase 3 target, "
+              "not gated)")
+    print()
 
     if failed:
         print("  FAILING CASES")
@@ -154,6 +190,15 @@ def report(summary: Summary, gold: dict, baseline: dict | None) -> bool:
             print(f"    {c.id:<26} {c.note}")
             print(f"      q: {c.query[:74]}")
             print(f"      top: {c.top_path[:88] or '(nothing)'}")
+        print()
+
+    if semantic and any(not c.passed for c in semantic):
+        print("  SEMANTIC GAP (what an embedder would have to fix)")
+        for c in semantic:
+            if not c.passed:
+                print(f"    {c.id:<26} {c.note}")
+                print(f"      q: {c.query[:74]}")
+                print(f"      top: {c.top_path[:88] or '(nothing)'}")
         print()
 
     print("  METRICS")
@@ -170,7 +215,7 @@ def report(summary: Summary, gold: dict, baseline: dict | None) -> bool:
     # Per-case no-regression: a case that used to pass may never start failing.
     regressed: list[str] = []
     if baseline:
-        for c in summary.cases:
+        for c in lexical.cases:
             was = baseline.get("cases", {}).get(c.id)
             if was and was.get("passed") and not c.passed:
                 regressed.append(c.id)
