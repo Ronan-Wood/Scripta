@@ -101,3 +101,62 @@ class OllamaEmbedder:
             return self.model.split(":")[0] in names
         except Exception:
             return False
+
+
+@dataclass
+class AppleEmbedder:
+    """On-device embeddings via Apple's NLContextualEmbedding, through a Swift shim.
+
+    The question this answers: can the substrate run with NO Ollama at all? Apple ships an
+    on-device contextual embedder, so the answer is not automatically no — and Scripta's
+    earlier rejection of it was measured on call transcripts with a weaker instrument, which
+    is not the same as measuring it here.
+
+    No task prefixes: those are a nomic convention, not a general one. Vectors arrive
+    mean-pooled and L2-normalized from the shim.
+    """
+
+    binary: str = "bin/embed-apple"
+    model: str = "apple-nlcontextual"
+    dim: int = 0
+    _proc: object | None = None
+
+    def available(self) -> bool:
+        from pathlib import Path as _P
+
+        return _P(self.binary).exists()
+
+    def _ensure(self):
+        import subprocess
+        from pathlib import Path as _P
+
+        if self._proc is None or self._proc.poll() is not None:
+            self._proc = subprocess.Popen(
+                [str(_P(self.binary).resolve())],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True, bufsize=1,
+            )
+            ready = self._proc.stdout.readline().strip()
+            if not ready.startswith("READY"):
+                raise EmbeddingError(f"embed-apple did not start ({ready!r})")
+            self.dim = int(ready.split()[1])
+        return self._proc
+
+    def _one(self, text: str) -> list[float]:
+        import base64
+        import struct as _s
+
+        proc = self._ensure()
+        proc.stdin.write(text.replace("\n", "\\n").replace("\r", " ") + "\n")
+        proc.stdin.flush()
+        line = (proc.stdout.readline() or "").strip()
+        if not line:
+            raise EmbeddingError("empty embedding from embed-apple")
+        raw = base64.b64decode(line)
+        return list(_s.unpack(f"{len(raw) // 4}f", raw))
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._one(t) for t in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._one(text)
