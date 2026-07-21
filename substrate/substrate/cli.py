@@ -1,0 +1,152 @@
+"""substrate — ingest reference documents into markdown + chunks.
+
+    ingest  --pdf X --doc-class reference-frozen --out DIR
+    verify  DIR
+
+Ingestion is deterministic for a pinned extractor: no model generates text anywhere in this
+path. Outputs are files; the blast radius is a directory.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+from substrate import classes
+from substrate.paths import ARTIFACTS, configure, internal_cache_footprint
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False, sort_keys=True) for r in rows) + "\n",
+        encoding="utf-8",
+    )
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    configure()
+    from substrate.chunk.chunker import chunk
+    from substrate.extract.docling_arm import DoclingExtractor
+    from substrate.markdown.emit import emit, frontmatter
+
+    pdf = Path(args.pdf).expanduser()
+    if not pdf.exists():
+        print(f"FATAL: no such file: {pdf}", file=sys.stderr)
+        return 2
+
+    out = Path(args.out).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+
+    pages = None
+    if args.pages:
+        a, b = args.pages.split("-")
+        pages = (int(a), int(b))
+
+    t0 = time.monotonic()
+    print(f"artifacts : {ARTIFACTS}")
+    print(f"ingesting : {pdf.name}  class={args.doc_class}")
+
+    extractor = DoclingExtractor(batch_pages=args.batch)
+    doc = extractor.extract(pdf, args.doc_class, pages=pages)
+
+    try:
+        meta = classes.apply(doc)
+    except classes.ClassPolicyError as e:
+        print(f"\nFATAL (class policy): {e}", file=sys.stderr)
+        return 3
+
+    body, estats = emit(doc)
+    chunks, cstats = chunk(doc)
+
+    (out / "document.md").write_text(frontmatter(doc, {"version_source": None}) + body, "utf-8")
+    _write_jsonl(out / "blocks.jsonl", [b.to_json() for b in doc.blocks if b.char_start >= 0])
+    _write_jsonl(out / "chunks.jsonl", [c.to_json() for c in chunks])
+
+    run = {
+        "doc_id": doc.doc_id,
+        "source": str(pdf),
+        "source_sha256": doc.source_sha256,
+        "pages": doc.source_pages,
+        "elapsed_s": round(time.monotonic() - t0, 1),
+        "class": meta,
+        "extract": doc.confidence,
+        "emit": estats,
+        "chunk": cstats,
+        "coverage": round(cstats["sum_chunk_chars"] / max(len(body), 1), 4),
+        "internal_cache": internal_cache_footprint(),
+    }
+    (out / "run.json").write_text(json.dumps(run, indent=2, ensure_ascii=False), "utf-8")
+
+    print(f"\n  title      : {meta['title']}")
+    if meta.get("version"):
+        print(f"  version    : {meta['version']}  ({meta.get('version_date')})")
+    print(f"  body       : {len(body):,} chars")
+    print(f"  passages   : {cstats['passages']}  outlines: {cstats['outlines']}")
+    print(f"  sizes      : p5={cstats['chars_p5']} p50={cstats['chars_p50']} p95={cstats['chars_p95']}")
+    print(f"  well-formed: {cstats['well_formed_pct']}%  (fragments: {cstats['short_fragments']})")
+    print(f"  coverage   : {run['coverage']}")
+    print(f"  elapsed    : {run['elapsed_s']}s")
+    print(f"  internal   : {run['internal_cache']}")
+    print(f"\nwrote -> {out}")
+    return 0
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Assertions over an ingested directory. Non-zero exit on failure, for CI."""
+    from substrate.text.hyphens import residue
+    from substrate.text.normalize import ligature_residue
+
+    out = Path(args.dir).expanduser()
+    body = (out / "document.md").read_text("utf-8")
+    run = json.loads((out / "run.json").read_text("utf-8"))
+    chunks = [json.loads(x) for x in (out / "chunks.jsonl").read_text("utf-8").splitlines() if x]
+
+    passages = [c for c in chunks if c["kind"] == "passage"]
+    checks: list[tuple[str, bool, str]] = []
+
+    checks.append(("A1  hyphen residue", residue(body) <= 2, f"{residue(body)} left"))
+    checks.append(
+        ("A1b ligature residue", ligature_residue(body) == 0, f"{ligature_residue(body)} left")
+    )
+    checks.append(("A12 version captured", not (run["class"]["document_class"] == "reference-versioned" and not run["class"]["version"]), str(run["class"].get("version"))))
+    checks.append(("A13 no fragments", run["chunk"]["short_fragments"] == 0, f"{run['chunk']['short_fragments']}"))
+    checks.append(("A13 oversize bounded", run["chunk"]["oversize"] <= max(1, len(passages) // 50), f"{run['chunk']['oversize']}"))
+    checks.append(("A14 coverage >= 0.95", run["coverage"] >= 0.95, f"{run['coverage']}"))
+    checks.append(("A14 paths present", run["chunk"]["path_depth_ge2_pct"] >= 60, f"{run['chunk']['path_depth_ge2_pct']}%"))
+
+    width = max(len(n) for n, _, _ in checks)
+    failed = 0
+    for name, ok, detail in checks:
+        if not ok:
+            failed += 1
+        print(f"  {'PASS' if ok else 'FAIL'}  {name:<{width}}  {detail}")
+
+    print(f"\n{'ALL PASS' if not failed else f'{failed} FAILED'}")
+    return 1 if failed else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="substrate")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    ing = sub.add_parser("ingest")
+    ing.add_argument("--pdf", required=True)
+    ing.add_argument("--doc-class", required=True, choices=sorted(classes.POLICIES))
+    ing.add_argument("--out", required=True)
+    ing.add_argument("--pages", default=None, help="e.g. 1-40")
+    ing.add_argument("--batch", type=int, default=100)
+    ing.set_defaults(func=cmd_ingest)
+
+    ver = sub.add_parser("verify")
+    ver.add_argument("dir")
+    ver.set_defaults(func=cmd_verify)
+
+    args = ap.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

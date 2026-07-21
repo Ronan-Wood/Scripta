@@ -82,6 +82,67 @@ class Block:
 
 
 @dataclass
+class Chunk:
+    """A retrievable unit. Two kinds: `passage` (leaf text) and `outline` (orientation).
+
+    The spine is DENORMALIZED onto every chunk on purpose. A retrieved passage must be able
+    to answer "is this the current Go spec?" without a join — a passage that cannot state
+    its own version reads authoritative while being silently stale.
+    """
+
+    chunk_id: str
+    doc_id: str
+    kind: str  # "passage" | "outline"
+    text: str
+    path: list[str] = field(default_factory=list)
+    level: int = 0
+
+    # Provenance chain: chunk -> blocks -> pages -> the PDF.
+    block_ids: list[str] = field(default_factory=list)
+    char_start: int = -1
+    char_end: int = -1
+    page_start: int | None = None
+    page_end: int | None = None
+
+    # Packing outcome.
+    n_chars: int = 0
+    part_index: int | None = None
+    part_count: int | None = None
+    oversize: bool = False
+
+    # Neighbours, so retrieval can expand without a second query.
+    prev_id: str | None = None
+    next_id: str | None = None
+
+    # Denormalized spine.
+    document_class: str = ""
+    version: str | None = None
+    source_sha256: str = ""
+    page_label_offset: int | None = None
+
+    @property
+    def path_str(self) -> str:
+        return " > ".join(self.path)
+
+    @property
+    def text_with_path(self) -> str:
+        """What actually gets indexed. BM25 cannot match a path that is not in the text."""
+        return f"{self.path_str}\n\n{self.text}" if self.path else self.text
+
+    def page_label(self, page: int | None) -> int | None:
+        if page is None or self.page_label_offset is None:
+            return page
+        return page - self.page_label_offset
+
+    def to_json(self) -> dict:
+        d = asdict(self)
+        d["path_str"] = self.path_str
+        d["text_with_path"] = self.text_with_path
+        d["page_label_start"] = self.page_label(self.page_start)
+        return d
+
+
+@dataclass
 class Document:
     """A whole extracted document plus the provenance/confidence spine."""
 
