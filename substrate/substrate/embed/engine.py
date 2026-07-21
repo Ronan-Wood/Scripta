@@ -72,6 +72,19 @@ class OllamaEmbedder:
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            # MUST precede URLError: HTTPError subclasses it, so catching URLError first
+            # reported every rejected request as "server unreachable" — which sent me
+            # looking at the daemon when the real answer was in the response body.
+            body = e.read()[:300].decode(errors="replace")
+            if "context length" in body:
+                raise EmbeddingError(
+                    f"{self.model}: chunk exceeds the model's context window. "
+                    f"This corpus chunks to ~1500 chars (max ~5600), so an embedder with a "
+                    f"512-token window cannot hold it without silently truncating. "
+                    f"Use a longer-context embedder. Server said: {body}"
+                )
+            raise EmbeddingError(f"{self.host} HTTP {e.code}: {body}")
         except urllib.error.URLError as e:
             raise EmbeddingError(f"{self.host} unreachable — is `ollama serve` running? ({e})")
 
