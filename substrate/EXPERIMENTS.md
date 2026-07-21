@@ -19,13 +19,15 @@ index     SQLite FTS5 (external content) + chunk_vectors, section-weighted bm25
 embed     qwen3-embedding:0.6b, raw text both sides   (key: ...#raw)
 expand    HyDE via qwen2.5:7b, canonical prompt, cached
 fuse      RRF k=60, lexical + vector at equal weight
+rerank    listwise via qwen2.5:7b, ADAPTIVE (skipped when the top hit is already a
+          strong lexical match), pool 20, cached
 ```
 
 | metric | value |
 |---|---|
-| semantic MRR | **0.603** (44 cases) |
+| semantic MRR | **0.698** (44 cases) |
 | lexical gate | **28/28** |
-| latency p50 / p95 | **397ms / 872ms** warm · ~5s on a novel query (HyDE cold) |
+| latency p50 / p95 | **412ms / 1074ms** warm · ~5s on a novel query (HyDE + rerank cold) |
 
 ---
 
@@ -57,6 +59,7 @@ noise and then crowns it.
 | **Hybrid vectors** | 0.207 → 0.375 (**+0.168**) | The single biggest structural win |
 | **HyDE (qwen2.5:7b)** | 0.375 → 0.531 (**+0.156**) | Query/document vocabulary gap is the dominant failure mode |
 | **qwen3-embedding:0.6b** | 0.531 → 0.642 (**+0.110**) | LLM-derived embedder; different lineage from the BERT-family cluster |
+| **Adaptive listwise rerank** | 0.603 → 0.698 (**+0.095**) at +37ms | Sharpens order without widening the pool — the thing three failed experiments pointed at |
 
 ## Rejected — measured and not shipped
 

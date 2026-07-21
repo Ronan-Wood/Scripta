@@ -67,6 +67,7 @@ class Trace:
     vector: int = 0
     routed: int = 0
     variants: int = 0
+    reranked: bool = False
     degraded: str = ""
     expanded: bool = False
     routes: list[str] = None
@@ -109,6 +110,7 @@ def retrieve(
     embedder=None,
     expander=None,
     multiquery=None,
+    reranker=None,
 ) -> tuple[list[Hit], Trace]:
     """Passage retrieval, optionally routed through the outline layer."""
     trace = Trace()
@@ -205,6 +207,11 @@ def retrieve(
     if embedder is not None or len(lists) > 1:
         fused = [h for _, h in _rrf(lists)]
         trace.fused = len(fused)
+        # Rerank BEFORE truncating to k — reranking the already-cut top-k could only permute
+        # what fusion already chose, and the whole point is to promote something fusion
+        # ranked 6th-20th.
+        if reranker is not None and fused:
+            fused, trace.reranked = reranker.rerank(query, fused)
         return fused[:k], trace
 
     fused = list(direct[:k])
