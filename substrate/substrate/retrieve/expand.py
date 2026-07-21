@@ -29,11 +29,31 @@ from pathlib import Path
 # MEASURED, and bigger is NOT better. Semantic mrr by generator, 24 cases:
 #   none 0.375 | apple-fm 0.422 | llama3.2:3b 0.478 | qwen2.5:7b 0.531 | qwen2.5:14b 0.472
 #
-# Apple FM (on-device) helps but is the weakest generator that does: it stays in LAY
-# register ("emergency restart", "backup machine") instead of reaching the domain vocabulary
-# ("failover", "follower", "promoted") that is the entire mechanism. Its value is that
-# generation never leaves the device, not that it removes a dependency — HyDE only shapes
-# the VECTOR query, and vectors still need the embedder.
+# WHY THE LARGER MODEL LOSES — measured, after two wrong explanations.
+#
+# Wrong #1: "14b writes longer, hedged prose that dilutes the vector." FALSE. 14b generates
+#           SHORTER text (median 566 vs 621 chars) and truncates less (0/49 vs 2/49).
+# Wrong #2: "14b fails to reach domain vocabulary." FALSE, and backwards: 14b contains the
+#           target domain term MORE often (17/24 vs 14/24).
+#
+# Actual mechanism — retrieval is COMPETITIVE, not absolute:
+#
+#     model        cosine to correct chunk     margin over best competitor
+#     7b           0.743                       -0.021
+#     14b          0.745  (closer, 15/24)      -0.029  (worse, 7b wins 9v5)
+#
+# 14b moves the query vector closer to the right answer AND closer to everything else in
+# the same topical neighbourhood. Absolute similarity rises while DISCRIMINATION falls: it
+# writes more genericly on-topic prose, lifting the whole region instead of picking out one
+# passage. Optimizing a HyDE prompt should therefore target separation from near-misses, not
+# proximity to the answer — those are different objectives and they diverge with scale.
+#
+# Related: margins are almost all NEGATIVE, so the correct chunk is usually not the top
+# VECTOR hit. Retrieval works because RRF fuses vectors with lexical; the vector layer
+# supplies ranking signal but rarely wins outright.
+#
+# Apple FM's weakness against nomic is a REGISTER mismatch, not a capability gap — paired
+# with Apple's own embedder it beats qwen 7b (0.472 vs 0.392). See embed/engine.py.
 # 14b scores WORSE than 7b and runs 2.7x slower. This is a known HyDE failure mode rather
 # than a fluke: larger models write longer, hedged, discursive hypotheticals, and the extra
 # prose dilutes the query vector. The output here is never read by a human — it is only
