@@ -23,7 +23,21 @@ from dataclasses import dataclass
 from typing import Protocol
 
 DEFAULT_HOST = "http://127.0.0.1:11434"
-DEFAULT_MODEL = "nomic-embed-text"
+# MEASURED. qwen3-embedding is LLM-derived (built on Qwen3) rather than a BERT-family
+# retrieval encoder, and that lineage difference is what mattered:
+#
+#     embedder                  size      dim    semantic mrr   lexical
+#     qwen3-embedding:0.6b      0.64 GB   1024   0.642          28/28
+#     snowflake-arctic-embed2   1.16 GB   1024   0.536          27/28
+#     nomic-embed-text          0.27 GB    768   0.531          28/28
+#     bge-m3                    1.16 GB   1024   0.527          28/28
+#     apple-nlcontextual        on-device  512   0.472          28/28
+#     mxbai-embed-large         0.67 GB   1024   —  512-tok context, cannot hold our chunks
+#
+# The middle three clustering within 0.009 looked like a ceiling. It was not — they are all
+# the same architectural generation. "Diverse models agree" only implies a ceiling when the
+# diversity spans the axis that matters.
+DEFAULT_MODEL = "qwen3-embedding:0.6b"
 BATCH = 64
 TIMEOUT = 120
 
