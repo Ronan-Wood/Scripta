@@ -66,6 +66,7 @@ class Trace:
     vector: int = 0
     routed: int = 0
     degraded: str = ""
+    expanded: bool = False
     routes: list[str] = None
     fused: int = 0
 
@@ -104,6 +105,7 @@ def retrieve(
     route: bool = False,
     expand: bool = False,
     embedder=None,
+    expander=None,
 ) -> tuple[list[Hit], Trace]:
     """Passage retrieval, optionally routed through the outline layer."""
     trace = Trace()
@@ -123,7 +125,12 @@ def retrieve(
         # stops answering because a local daemon is down is worse than one that answers
         # slightly less well.
         try:
-            qv = embedder.embed_query(query)
+            # HyDE applies to the VECTOR query only. BM25 over a generated paragraph would
+            # inject invented terms into a lexical match that is already at 28/28; scoping
+            # expansion to the embedding makes it incapable of disturbing that by design.
+            vquery = expander.expand(query) if expander is not None else query
+            trace.expanded = len(vquery) > len(query)
+            qv = embedder.embed_query(vquery)
             vhits = store.vector_search(
                 qv, embedder.model, k=k * 3, kind="passage", doc_id=doc_id,
                 document_class=document_class,

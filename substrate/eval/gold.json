@@ -309,6 +309,115 @@
       "cohort": "semantic",
       "answer": ["ottomup"],
       "path": ["Bottomup"]
+    },
+
+    {
+      "_class": "Cohort expanded 7 -> 25 (2026-07-21). Seven cases could distinguish a +0.162",
+      "_class2": "effect from +0.043 but nothing smaller, which blocked any further accuracy work:",
+      "_class3": "reranking, query expansion and embedder swaps all land in the range 7 cases",
+      "_class4": "cannot adjudicate. All written as LAY vocabulary against DOMAIN content, which",
+      "_class5": "is the measured failure class (query says 'main machine dies', passage says",
+      "_class6": "'leader failure / followers promoted').",
+      "id": "sem-power-loss",
+      "query": "stopping the database forgetting things when the power suddenly goes out",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["durab"], "path": ["Transactions"]
+    },
+    {
+      "id": "sem-partly-broken",
+      "query": "keeping a service working even though one piece of it has broken",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["fault"], "path": ["Nonfunctional"]
+    },
+    {
+      "id": "sem-slower-with-users",
+      "query": "why does everything get slower once many more people are using it",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["response time"], "path": ["Nonfunctional"]
+    },
+    {
+      "id": "sem-agree-when-cut-off",
+      "query": "how do separate computers agree on one answer when they cannot all talk",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["consensus"], "path": ["Consistency and Consensus"]
+    },
+    {
+      "id": "sem-copies-disagree",
+      "query": "what to do when two copies of the same record end up disagreeing",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["conflict"], "path": ["Replication"]
+    },
+    {
+      "id": "sem-find-again-fast",
+      "query": "storing information so a particular record can be found again quickly",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["index"], "path": ["Storage"]
+    },
+    {
+      "id": "sem-between-languages",
+      "query": "sending structured information between programs written in different languages",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["encod"], "path": ["Encoding"]
+    },
+    {
+      "id": "sem-overnight-pile",
+      "query": "chewing through an enormous pile of files overnight in one go",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["batch"], "path": ["Batch Processing"]
+    },
+    {
+      "id": "sem-react-as-happens",
+      "query": "reacting to things the moment they happen instead of waiting for a nightly run",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["stream"], "path": ["Stream Processing"]
+    },
+    {
+      "id": "sem-money-not-lost",
+      "query": "making sure money is never lost halfway through moving between two accounts",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["atomic"], "path": ["Transactions"]
+    },
+    {
+      "id": "sem-clocks-disagree",
+      "query": "one server thinks it is a different time than another server",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["clock"], "path": ["Trouble with Distributed Systems"]
+    },
+    {
+      "id": "sem-connected-people",
+      "query": "asking questions about who is connected to whom in a big web of relationships",
+      "doc": "ddia-2e", "cohort": "semantic",
+      "answer": ["graph"], "path": ["Data Models"]
+    },
+    {
+      "id": "sem-value-never-changes",
+      "query": "declaring a name whose value can never be changed later",
+      "doc": "go-spec", "cohort": "semantic",
+      "answer": ["onstant"], "path": ["Constant"]
+    },
+    {
+      "id": "sem-group-fields",
+      "query": "grouping several related values together under one named type",
+      "doc": "go-spec", "cohort": "semantic",
+      "answer": ["struct"], "path": ["Struct types"]
+    },
+    {
+      "id": "sem-something-goes-wrong",
+      "query": "stopping everything when something has gone badly wrong at runtime",
+      "doc": "go-spec", "cohort": "semantic",
+      "answer": ["panic"], "path": ["Handling panics"]
+    },
+    {
+      "id": "sem-any-number-of-args",
+      "query": "letting one function accept any number of arguments",
+      "doc": "go-spec", "cohort": "semantic",
+      "answer": ["variadic"], "path": ["Function types"]
+    },
+    {
+      "id": "sem-check-behaviour",
+      "query": "checking whether the system actually behaves the way we wanted it to",
+      "doc": "paper-moral", "cohort": "semantic",
+      "answer": ["valuat"], "path": ["Evaluating"]
     }
   ]
 }
