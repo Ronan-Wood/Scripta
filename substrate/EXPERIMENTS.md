@@ -209,10 +209,43 @@ whose correct answer is not in the corpus (consistent hashing) get deleted, not 
 | # | experiment | status |
 |---|---|---|
 | 4 | Chunk granularity (600 / 1500 / 2500) as an axis | not started — the one factor never varied |
-| 5 | qwen3-embedding 4b / 8b | pending download; **after** chunking is locked (they'd be re-embedded twice otherwise) |
+| 5 | qwen3-embedding 4b / 8b | **unblocked** — chunking is locked. Runbook below |
 | 6 | Reranking — qwen2.5:7b vs Bonsai-27B ternary | arguably should move ahead of #4 |
 | — | Adaptive multi-query (fallback only on low confidence) | needs a confidence signal the retriever does not expose |
 | — | qwen3 instruction format | **unanswered** — first attempt retracted |
+
+### Runbook: qwen3-embedding 4b / 8b
+
+Chunking is locked, so this can run any time. Result is directly comparable to **0.698** —
+same 44-case cohort, embedder as the only variable, no cross-scale caveat.
+
+```bash
+cd ~/CodeHome/CallTranscriber/substrate
+ollama pull qwen3-embedding:4b
+uv run python -m substrate.cli embed --model qwen3-embedding:4b     # ~10-15 min
+uv run python -m substrate.cli eval  --embed-model qwen3-embedding:4b
+uv run python -m substrate.cli embed --model qwen3-embedding:0.6b   # restore, free from cache
+```
+
+The eval will be a COLD pass (~7 min): new embeddings mean new candidate lists, so rerank
+cache keys miss. Its warm latency is the number to compare, not the first run's.
+
+**Decision rule — decide before seeing the number, so the result cannot rationalise itself:**
+
+| outcome | verdict |
+|---|---|
+| within ±0.023 of 0.698 | non-effect at this resolution. Embedder is DONE; skip 8b |
+| gains, but < 0.05 | weigh against a resident 2.5 GB model on the query hot path — probably not worth it |
+| gains ≥ 0.05 | real. Adopt, and 8b becomes worth the download |
+| loses | 0.6b confirmed; skip 8b |
+
+**Prediction (recorded so it can be scored):** genuinely uncertain. An earlier prediction that
+4b would lose was withdrawn as unfounded — the evidence base for it was one *generator* size
+comparison (14b HyDE) whose mechanism is specific to producing text, plus cross-family
+embedder comparisons already identified as confounded by lineage. There are ZERO within-family
+embedder size comparisons on record, which is precisely what this measures. A positive
+mechanism also exists and was underweighted: reranking (+0.095) operates on the fused
+candidate pool, so better embeddings feed it better candidates and the two compound.
 
 **Bonsai-27B note:** ternary 1.58-bit, ~4 GB for 27B-class, derived from Qwen3.6-27B — the
 same family already in use. Interesting as a **reranker** (judgment task, where scale helps
