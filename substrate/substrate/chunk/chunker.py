@@ -218,7 +218,7 @@ def _outline_records(doc: Document, sections: list[Section], seq: int) -> tuple[
     return out, seq
 
 
-def chunk(doc: Document) -> tuple[list[Chunk], dict]:
+def chunk(doc: Document, override: tuple[int, int, int] | None = None) -> tuple[list[Chunk], dict]:
     # Geometry is class-driven. Module-level TARGET/MAX/MIN remain the defaults for any
     # class that does not override them.
     global TARGET, MAX, MIN
@@ -226,7 +226,9 @@ def chunk(doc: Document) -> tuple[list[Chunk], dict]:
 
     pol = POLICIES.get(doc.document_class)
     saved = (TARGET, MAX, MIN)
-    if pol is not None:
+    if override is not None:
+        TARGET, MAX, MIN = override
+    elif pol is not None:
         TARGET, MAX, MIN = pol.chunk.target, pol.chunk.max_chars, pol.chunk.min_chars
     try:
         return _chunk(doc)
