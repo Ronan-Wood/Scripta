@@ -219,25 +219,43 @@ whose correct answer is not in the corpus (consistent hashing) get deleted, not 
 Chunking is locked, so this can run any time. Result is directly comparable to **0.698** —
 same 44-case cohort, embedder as the only variable, no cross-scale caveat.
 
+**Run BOTH 4b and 8b**, not 8b conditionally on 4b. Two points give a direction; three give
+the SHAPE. That matters because the generator axis turned out non-monotonic (7b beat 14b at
+HyDE) — if embedder scaling is monotonic while generator scaling peaks, that is a real
+structural difference between the two roles, and it is invisible from a single pairwise
+comparison.
+
+Run serially, one resident model at a time:
+
 ```bash
 cd ~/CodeHome/CallTranscriber/substrate
-ollama pull qwen3-embedding:4b
-uv run python -m substrate.cli embed --model qwen3-embedding:4b     # ~10-15 min
-uv run python -m substrate.cli eval  --embed-model qwen3-embedding:4b
+
+for M in qwen3-embedding:4b qwen3-embedding:8b; do
+  ollama pull  "$M"
+  uv run python -m substrate.cli embed --model "$M"        # 4b ~10-15m · 8b ~25-40m
+  uv run python -m substrate.cli eval  --embed-model "$M"  # cold pass, ~7m
+  ollama stop  "$M"
+done
+
 uv run python -m substrate.cli embed --model qwen3-embedding:0.6b   # restore, free from cache
 ```
 
 The eval will be a COLD pass (~7 min): new embeddings mean new candidate lists, so rerank
 cache keys miss. Its warm latency is the number to compare, not the first run's.
 
-**Decision rule — decide before seeing the number, so the result cannot rationalise itself:**
+**ADOPTION rule — fixed before the numbers exist, so no result can rationalise itself.**
+This governs what ships, not what gets run; both sizes get measured either way.
 
-| outcome | verdict |
+| best result vs 0.698 | verdict |
 |---|---|
-| within ±0.023 of 0.698 | non-effect at this resolution. Embedder is DONE; skip 8b |
-| gains, but < 0.05 | weigh against a resident 2.5 GB model on the query hot path — probably not worth it |
-| gains ≥ 0.05 | real. Adopt, and 8b becomes worth the download |
-| loses | 0.6b confirmed; skip 8b |
+| within ±0.023 | non-effect at this resolution — keep 0.6b, it is 4-12x smaller |
+| gains < 0.05 | real but small: does it justify 2.5-5 GB resident on the QUERY hot path? Default no |
+| gains ≥ 0.05 | adopt the winner |
+| loses | 0.6b confirmed |
+
+Record the **shape** regardless of what ships — flat / monotonic / peaked across 0.6b→4b→8b
+is the finding here, independent of which one wins. Log latency alongside MRR for all three;
+an 8b that wins on MRR while pushing p50 past ~1s is a worse engine, not a better one.
 
 **Prediction (recorded so it can be scored):** genuinely uncertain. An earlier prediction that
 4b would lose was withdrawn as unfounded — the evidence base for it was one *generator* size
