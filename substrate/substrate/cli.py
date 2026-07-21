@@ -132,6 +132,29 @@ def cmd_verify(args: argparse.Namespace) -> int:
             f"{len(oversize_prose)} prose / {run['chunk']['oversize']} total (rest are tables/code, kept whole)",
         )
     )
+    # A17 catches STALE ANCESTORS — the failure that every other assertion missed.
+    # When 11 of 14 DDIA chapter titles were being discarded, the heading stack held a stale
+    # chapter for hundreds of pages: page 328 (Transactions) carried "CHAPTER 2 Defining
+    # Nonfunctional Requirements". Coverage, depth and fragments were all green, because the
+    # paths were well-FORMED and merely wrong. Only a real query exposed it. A top-level
+    # element spanning an implausible share of the document is the signature.
+    spans: dict[str, list[int]] = {}
+    for c in passages:
+        if len(c["path"]) >= 2 and c.get("page_start"):
+            spans.setdefault(c["path"][1], []).append(c["page_start"])
+    worst, worst_share = None, 0.0
+    for name, pages_seen in spans.items():
+        share = (max(pages_seen) - min(pages_seen) + 1) / max(run["pages"], 1)
+        if share > worst_share:
+            worst, worst_share = name, share
+    checks.append(
+        (
+            "A17 no stale ancestor",
+            worst_share <= 0.30 or len(spans) <= 2,
+            f"widest top-level element spans {worst_share:.0%} of pages ({str(worst)[:34]})",
+        )
+    )
+
     checks.append(("A14 coverage >= 0.95", run["coverage"] >= 0.95, f"{run['coverage']}"))
     checks.append(("A14 paths present", run["chunk"]["path_depth_ge2_pct"] >= 60, f"{run['chunk']['path_depth_ge2_pct']}%"))
 

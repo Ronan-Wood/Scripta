@@ -25,7 +25,12 @@ from substrate.models import Block, Chunk, Document, Kind
 TARGET = 1400
 MAX = 2600
 MIN = 400
-OUTLINE_MAX_LEVEL = 3
+# Validated against three real orientation queries on DDIA (2026-07-21). At 3 the layer is
+# chapter-grain only (21 records, 1.3/chapter) and answers "which chapter covers this". At 5
+# it reaches NAMED SUBSECTIONS — "Serializability > Serializable Snapshot Isolation" rather
+# than just "Serializability" — with materially better BM25 separation, while staying 4.5:1
+# against passages and structurally distinct from them (path + lede + children + summary).
+OUTLINE_MAX_LEVEL = 5
 LEDE_CHARS = 420
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z(\"'])")
