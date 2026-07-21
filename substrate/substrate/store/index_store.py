@@ -196,6 +196,7 @@ class IndexStore:
         document_class: str | None = None,
         doc_id: str | None = None,
         min_path_depth: int | None = None,
+        path_prefix: str | None = None,
     ) -> list[Hit]:
         """Lexical search, precision-first with a recall TOP-UP.
 
@@ -208,7 +209,7 @@ class IndexStore:
         """
         kw = dict(
             kind=kind, document_class=document_class, doc_id=doc_id,
-            min_path_depth=min_path_depth,
+            min_path_depth=min_path_depth, path_prefix=path_prefix,
         )
         seen: set[str] = set()
         out: list[Hit] = []
@@ -237,6 +238,9 @@ class IndexStore:
         if kw.get("min_path_depth") is not None:
             where.append("c.path_depth >= ?")
             args.append(kw["min_path_depth"])
+        if kw.get("path_prefix"):
+            where.append("(c.path_str = ? OR c.path_str LIKE ? || ' > %')")
+            args.extend([kw["path_prefix"], kw["path_prefix"]])
         args.append(kw.get("k", 10))
 
         sql = (
@@ -278,6 +282,15 @@ class IndexStore:
             (c["doc_id"], c["path_str"]),
         ).fetchone()
         return _row_to_hit(r, 0.0) if r else None
+
+    def passages_under(self, doc_id: str, path_prefix: str, k: int = 20) -> list[Hit]:
+        """Every passage beneath a structural path. The outline layer routes with this."""
+        rows = self.db.execute(
+            f"{_SELECT} WHERE c.doc_id=? AND c.kind='passage' "
+            "AND (c.path_str = ? OR c.path_str LIKE ? || ' > %') ORDER BY c.seq LIMIT ?",
+            (doc_id, path_prefix, path_prefix, k),
+        ).fetchall()
+        return [_row_to_hit(r, 0.0) for r in rows]
 
     def documents(self) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM documents ORDER BY doc_id")]
