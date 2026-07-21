@@ -72,6 +72,27 @@ def _is_prose(b: Block) -> bool:
     return len(b.text) >= PROSE_CHARS and bool(_SENTENCE.search(b.text.strip()))
 
 
+# A back-of-book index is a dense run of "term, page[, page]" with no sentences. DDIA's
+# leaked in as a 2,669-char prose block ("column families (Bigtable), 82, 140 ...") that
+# no sentence splitter could break up, because it contains no sentences. It is also
+# worthless to retrieve: the page numbers point into a book the reader does not have open.
+_PAGE_REF = re.compile(r",\s*\d{1,4}(?:-\d{1,4})?\b")
+_SENTENCE_ANY = re.compile(r"[.!?]\s+[A-Z]")
+INDEX_REFS_MIN = 8
+INDEX_REF_DENSITY = 1 / 90  # references per character
+
+
+def _looks_like_index(b: Block) -> bool:
+    text = b.text
+    if len(text) < MIN_CHARS:
+        return False
+    refs = len(_PAGE_REF.findall(text))
+    if refs < INDEX_REFS_MIN or refs / len(text) < INDEX_REF_DENSITY:
+        return False
+    # Real prose citing many page numbers still reads as sentences; an index never does.
+    return len(_SENTENCE_ANY.findall(text)) <= 1
+
+
 def mark(blocks: list[Block]) -> TocReport:
     """Reclassify contents-list blocks as INDEX so emission skips them.
 
@@ -113,6 +134,12 @@ def mark(blocks: list[Block]) -> TocReport:
                 continue
 
         if b.kind not in (Kind.TEXT, Kind.LIST_ITEM) or len(b.text) < MIN_CHARS:
+            continue
+
+        if _looks_like_index(b):
+            b.kind = Kind.INDEX
+            rep.by_structure += 1
+            rep.blocks_marked += 1
             continue
 
         hits, cov = _coverage(b.text, vocab)

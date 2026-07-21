@@ -116,7 +116,22 @@ def cmd_verify(args: argparse.Namespace) -> int:
     )
     checks.append(("A12 version captured", not (run["class"]["document_class"] == "reference-versioned" and not run["class"]["version"]), str(run["class"].get("version"))))
     checks.append(("A13 no fragments", run["chunk"]["short_fragments"] == 0, f"{run['chunk']['short_fragments']}"))
-    checks.append(("A13 oversize bounded", run["chunk"]["oversize"] <= max(1, len(passages) // 50), f"{run['chunk']['oversize']}"))
+    # An oversized chunk is only a defect when it is PROSE. Prose always has sentence
+    # boundaries to split on; a table or code listing does not, and splitting one leaves
+    # both halves useless. Counting raw oversize instead made a 78-passage paper fail on
+    # the same absolute count (2 tables) that a 1,152-passage book passed.
+    oversize_prose = [
+        c
+        for c in passages
+        if c.get("oversize") and "```" not in c["text"] and c["text"].count("|") <= 6
+    ]
+    checks.append(
+        (
+            "A13 no oversized prose",
+            not oversize_prose,
+            f"{len(oversize_prose)} prose / {run['chunk']['oversize']} total (rest are tables/code, kept whole)",
+        )
+    )
     checks.append(("A14 coverage >= 0.95", run["coverage"] >= 0.95, f"{run['coverage']}"))
     checks.append(("A14 paths present", run["chunk"]["path_depth_ge2_pct"] >= 60, f"{run['chunk']['path_depth_ge2_pct']}%"))
 
