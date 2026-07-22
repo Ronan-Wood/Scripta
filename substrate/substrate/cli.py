@@ -372,25 +372,61 @@ def cmd_eval(args: argparse.Namespace) -> int:
     if not args.no_rerank:
         from substrate.embed.cache import VectorCache as _VC2
 
+        # --no-gate reaches only the cross-encoder; LLMReranker gates unconditionally. Left
+        # unchecked this printed "(gate off)" over a fully gated listwise run, which is a
+        # wrong row in EXPERIMENTS.md and would read as "the gate is worth 0.000" against a
+        # recorded +0.090.
+        if args.no_gate and not args.cross_encoder:
+            print("FATAL: --no-gate applies only to --cross-encoder. The listwise arm gates "
+                  "unconditionally; refusing to run a config that would be logged gate-off.",
+                  file=sys.stderr)
+            return 2
+
         if args.cross_encoder:
             from substrate.retrieve.rerank_cross import DEFAULT_MODEL as _CE
             from substrate.retrieve.rerank_cross import CrossEncoderReranker
 
-            model = args.rerank_model if args.rerank_model != "qwen2.5:7b" else _CE
+            model = args.rerank_model or _CE
             cand = CrossEncoderReranker(model=model, pool=args.rerank_pool,
                                         cache=_VC2(args.cache), gate=not args.no_gate)
         else:
+            from substrate.retrieve.rerank import DEFAULT_MODEL as _LW
             from substrate.retrieve.rerank import LLMReranker
 
-            model = args.rerank_model
+            model = args.rerank_model or _LW
             cand = LLMReranker(model=model, pool=args.rerank_pool, cache=_VC2(args.cache))
-        rr = cand if cand.available() else None
+
+        # Same discipline as the vector guard above: an arm that cannot run must refuse to
+        # report, not silently report the control. A missing reranker still passes every
+        # gate — those are computed on the LEXICAL cohort, which the gate mostly skips — so
+        # it would exit 0 while semantic MRR quietly drops by the ~0.095 the reranker is worth.
+        if not cand.available():
+            print(f"FATAL: reranker {model!r} is not available at {cand.host}. "
+                  f"Refusing to report an unreranked run under a reranked label.",
+                  file=sys.stderr)
+            return 2
+        rr = cand
         kind = "cross" if args.cross_encoder else "listwise"
-        print(f"  rerank: {kind} {model} pool={args.rerank_pool}"
-              f"{'' if not args.no_gate else ' (gate off)'}" if rr else f"  rerank: {model} UNAVAILABLE")
+        gate_note = " (gate off)" if args.no_gate else ""
+        print(f"  rerank: {kind} {model} pool={args.rerank_pool}{gate_note}")
 
     summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route,
                         embedder=embedder, expander=expander, multiquery=mq, reranker=rr)
+
+    # A query whose reranker bailed IS the rerank-off configuration wearing the reranked
+    # arm's label. The pointwise arm makes 20 calls per query where the listwise makes 1, so
+    # it is 20x more exposed to a transient failure — and the resulting number is plausible,
+    # not obviously broken. Refuse to report it.
+    fell_back = getattr(rr, "fallback_queries", 0)
+    if fell_back:
+        print(f"\nFATAL: reranker fell back to fused order on {fell_back} queries "
+              f"({getattr(rr, 'transport_failures', 0)} transport failures). Those queries "
+              f"were measured WITHOUT reranking; the reported number would mix two arms.",
+              file=sys.stderr)
+        return 2
+    if getattr(rr, "abstentions", 0):
+        print(f"  note: {rr.abstentions} unparseable verdicts abstained (ranked neutral)")
+
     ok = report(summary, gold, baseline)
 
     if ok and args.update_baseline:
@@ -536,7 +572,9 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--hyde-prompt", default="canonical", choices=["canonical", "distinctive"])
     ev.add_argument("--multi-query", type=int, default=0, metavar="N")
     ev.add_argument("--no-rerank", action="store_true")
-    ev.add_argument("--rerank-model", default="qwen2.5:7b")
+    ev.add_argument("--rerank-model", default=None,
+                    help="default depends on the arm: the listwise model, or the "
+                         "cross-encoder under --cross-encoder")
     ev.add_argument("--rerank-pool", type=int, default=20)
     ev.add_argument("--cross-encoder", action="store_true",
                     help="pointwise Qwen3-Reranker instead of the listwise chat model")
