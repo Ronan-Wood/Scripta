@@ -38,6 +38,7 @@ class CaseResult:
     max_rank: int | None = None
     cohort: str = "lexical"
     ms: float = 0.0
+    degraded: str = ""                   # mid-run arm failure carried off retrieve()'s Trace
 
     @property
     def passed(self) -> bool:
@@ -113,16 +114,22 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, ro
         return CaseResult(id=case["id"], query=case["query"], note=f"doc {target!r} not indexed")
 
     _t0 = time.monotonic()
+    trace = None
     if case.get("kind") == "outline":
         hits = store.search(case["query"], k=k, kind="outline", doc_id=doc_id if scoped else None)
     else:
-        hits, _ = retrieve(
+        hits, trace = retrieve(
             store, case["query"], k=k, doc_id=doc_id if scoped else None, route=route,
             embedder=embedder, expander=expander, multiquery=multiquery, reranker=reranker,
         )
 
     _elapsed = (time.monotonic() - _t0) * 1000
     res = CaseResult(id=case["id"], query=case["query"], ms=_elapsed)
+    # A mid-run arm failure (embedder / HyDE / multi-query / reranker) is recorded ON the Trace
+    # by retrieve() and carried here as a field on the case — so cmd_eval can refuse a number
+    # that was measured under a degradation its label does not state, and name WHICH case.
+    if trace is not None and trace.degraded:
+        res.degraded = trace.degraded
     if hits:
         res.top_path, res.top_page = hits[0].path_str, hits[0].page_start
 

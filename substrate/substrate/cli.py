@@ -426,34 +426,23 @@ def cmd_eval(args: argparse.Namespace) -> int:
     summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route,
                         embedder=embedder, expander=expander, multiquery=mq, reranker=rr)
 
-    # A query whose reranker bailed IS the rerank-off configuration wearing the reranked
-    # arm's label. The pointwise arm makes 20 calls per query where the listwise makes 1, so
-    # it is 20x more exposed to a transient failure — and the resulting number is plausible,
-    # not obviously broken. Refuse to report it.
-    fell_back = getattr(rr, "fallback_queries", 0)
-    if fell_back:
-        print(f"\nFATAL: reranker fell back to fused order on {fell_back} queries "
-              f"({getattr(rr, 'transport_failures', 0)} transport failures). Those queries "
-              f"were measured WITHOUT reranking; the reported number would mix two arms.",
-              file=sys.stderr)
+    # Refuse a number measured under a degradation its label does not state. retrieve() records
+    # every mid-run arm failure — embedder, HyDE, multi-query, or a reranker that fell back to
+    # fused order — ON the Trace, which run_case threads onto CaseResult.degraded. The condition
+    # travels WITH the case (PRINCIPLES.md), so the eval can refuse AND name which query rather
+    # than read a per-arm scalar from the side. These arms share one Ollama daemon, so one
+    # hiccup can hit several at once; a single degraded query taints the aggregate.
+    degraded = [c for c in summary.cases if c.degraded]
+    if degraded:
+        for c in degraded[:5]:
+            print(f"    {c.id}: {c.degraded}", file=sys.stderr)
+        print(f"\nFATAL: {len(degraded)} of {len(summary.cases)} queries degraded mid-run "
+              f"(shown above) — measured under a different configuration than the label claims. "
+              f"Re-run once the local daemon is stable.", file=sys.stderr)
         return 2
+
     if getattr(rr, "abstentions", 0):
         print(f"  note: {rr.abstentions} unparseable verdicts abstained (ranked neutral)")
-
-    # Same discipline for the vector and expansion arms. Their mid-run failures degrade a query
-    # to lexical / no-HyDE inside retrieve(), which only recorded them on the Trace the eval
-    # discards — so a daemon that dies mid-run silently mixed arms with nothing to refuse. All
-    # three arms (embedder, HyDE, reranker) share one Ollama daemon here, so one hiccup can hit
-    # them together. A single fallen-back query is enough to invalidate the aggregate.
-    for arm, obj in (("embedder", embedder), ("HyDE expansion", expander),
-                     ("multi-query expansion", mq)):
-        fell = getattr(obj, "fallback_queries", 0)
-        if fell:
-            print(f"\nFATAL: {arm} fell back on {fell} quer{'y' if fell == 1 else 'ies'} "
-                  f"(transport failure mid-run). Those were measured WITHOUT that arm; the "
-                  f"reported number would mix configurations. Re-run once the daemon is stable.",
-                  file=sys.stderr)
-            return 2
 
     ok = report(summary, gold, baseline)
 
