@@ -142,6 +142,51 @@ half.
 
 ---
 
+### THE RERANKING AXIS IS SATURATED — four strategies, all tied
+
+Reranking was the axis with measured headroom, so it got the purpose-built treatment:
+`dengcao/Qwen3-Reranker-4B`, a model TRAINED on the relevance judgment the shipped listwise
+arm improvises. All at 44 cases, qwen3-embedding:0.6b, same fused input:
+
+    arm                                mrr      rank-1    p50 latency
+    listwise qwen2.5:7b  (SHIPPED)     0.698     24/44        385 ms
+    cross-encoder, precision gate on   0.708       —         4,558 ms
+    cross-encoder, gate off            0.716       —         7,688 ms
+    RRF fusion of both orders          0.711     25/44       ~8,000 ms
+    cascade (cross filters, LLM sorts) 0.678     24/44       ~8,000 ms
+
+Total spread 0.038 — under two cases. **Nothing here beats the shipped arm by a measurable
+margin, and the best of them costs 20x the latency.** The listwise workaround stays.
+
+**The aggregate was actively misleading, and the per-case diff is what caught it.** The
+cross-encoder's +0.017 looks like a small uniform improvement. It is not: 18 of 44 cases
+moved, 8 gained rank-1 and 7 lost it, net +1. It is not better, it is DIFFERENTLY WRONG —
+including `sem-money-not-lost` 1 -> 99 (it rejected a correct passage outright) against
+`sem-group-fields` 99 -> 1. Two arms with uncorrelated errors of equal magnitude.
+
+That predicted fusion would win, and **fusion lost** (0.711, below cross-open's 0.716; the
+cascade was worse than shipping). So the disagreements are not "one arm is confidently
+right" — both are near-indifferent exactly where they differ, and fusion has nothing to
+recover. Uncorrelated errors are necessary but NOT sufficient for ensembling to pay.
+
+Two findings about the gate, from the same runs:
+
+  * **The gate is a chat-model crutch.** On the listwise arm, skipping lexically-precise
+    queries is worth +0.090. On the cross-encoder it is worth **-0.008** — gate-off scores
+    HIGHER. The gate exists because a general chat model second-guesses hits BM25 already
+    had right; a model trained on relevance does not have that failure. A workaround tuned
+    for one component does not transfer to its replacement, even a strictly better one.
+  * Spot-checked directly: given a passage that MENTIONS the query's topic without answering
+    it, the cross-encoder answers "no". That is the exact failure the gate was built to
+    contain.
+
+**Caveat, stated because it bounds the conclusion.** Scoring here is BINARY. Graded relevance
+needs P(yes) vs P(no) from token logprobs, and Ollama 0.20.3 exposes them by no route tested:
+ignored silently inside `options`, HTTP 400 at top level, empty `top_logprobs` on
+/v1/completions. So the cross-encoder ran as a yes/no FILTER, not a scorer, and most
+candidates tie. The claim is "reranking is saturated ON THIS STACK", not "cross-encoders do
+not help." Revisit if Ollama ships logprobs.
+
 ### THE RERANKER IS AN EQUALIZER — five embedders, 44 cases, one instrument
 
 The most generalizable result in this log. Every embedder measured at the same cohort, with
