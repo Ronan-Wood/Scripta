@@ -38,8 +38,11 @@ DEFAULT_HOST = "http://127.0.0.1:11434"
 # the same architectural generation. "Diverse models agree" only implies a ceiling when the
 # diversity spans the axis that matters.
 DEFAULT_MODEL = "qwen3-embedding:0.6b"
-BATCH = 64
-TIMEOUT = 120
+# Sized for the largest embedder measured. qwen3-embedding:8b exceeded a 120s timeout on a
+# 64-item batch mid-corpus, failing after 256 of 1811 chunks. Smaller batches bound per-request
+# time; the longer ceiling covers a slow batch without aborting a 30-minute run.
+BATCH = 32
+TIMEOUT = 600
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1", "[::1]")
 
@@ -175,7 +178,7 @@ class OllamaEmbedder:
 
     def available(self) -> bool:
         try:
-            with urllib.request.urlopen(f"{self.host}/api/tags", timeout=5) as r:
+            with urllib.request.urlopen(f"{self.host}/api/tags", timeout=30) as r:
                 names = {m["name"].split(":")[0] for m in json.loads(r.read()).get("models", [])}
             return self.model.split(":")[0] in names
         except Exception:
