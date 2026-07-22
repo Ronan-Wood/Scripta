@@ -410,6 +410,41 @@ and the centroid problem does not apply), not as a HyDE generator (where scale m
 hurts). Trap: Ollama registry uploads are F16 variants (~54 GB); the ternary-packed GGUF must
 come from HF directly.
 
+## Local model inventory — everything below runs offline
+
+Acquired 2026-07-21 in one fast-connection window. **No further downloads are needed for any
+planned work**, which matters because the machine is often on slow wifi.
+
+Ollama (`OLLAMA_MODELS=/Volumes/ExtremeSSD/ollama-models`, 16 models, 48.5 GB):
+
+| role | models | status |
+|---|---|---|
+| embedder | **qwen3-embedding 0.6b** (shipped) · 4b · 8b · nomic · bge-m3 · snowflake · mxbai · embeddinggemma | 0.6b confirmed; embeddinggemma UNTESTED |
+| generator | **qwen2.5:7b** (shipped, HyDE + rerank) · 14b · llama3.1:8b · llama3.2:3b · gemma3:4b · Bonsai-27B ternary | Bonsai + gemma3 UNTESTED |
+| reranker | Qwen3-Reranker-4B (purpose-built cross-encoder) | UNTESTED — current rerank is LLM-listwise |
+| vision | qwen2.5vl:7b | Scripta screen-context, not the engine |
+
+Docling artifacts (`/Volumes/ExtremeSSD/docling-models`):
+
+| | purpose | wired? |
+|---|---|---|
+| layout-heron | block detection + labels | ✅ shipped |
+| docling-models (TableFormer) | table structure | ✅ shipped |
+| granite-docling-258M | VLM — reads page images | ❌ downloaded, NOT wired |
+| RapidOcr | classical OCR, cheaper per page than the VLM | ❌ downloaded, NOT wired |
+
+Apple on-device (no download): Foundation Models (HyDE, measured 0.422) ·
+NLContextualEmbedding (embedder, measured 0.472) · macOS 26 SpeechAnalyzer (transcription,
+untested, and a *Scripta* concern rather than an engine one).
+
+**Why the engine has never needed OCR:** all three corpus documents are BORN-DIGITAL — real
+text objects with coordinates, not page images. Docling extracts the existing text layer and
+uses the layout model only to classify regions. The cleanest proof is DDIA's `!` soft hyphen:
+a ToUnicode font-mapping artifact, which cannot occur if you are reading pixels. Same for the
+split ligatures. Both bugs are evidence of a text-layer path.
+
+---
+
 ## Operating rules
 
 1. **One model-backed job at a time.** Concurrent evals plus model pulls thrashed a 24 GB
