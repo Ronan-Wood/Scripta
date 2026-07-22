@@ -43,7 +43,7 @@ the internal per-call signal (gate-skip vs. real fallback can't be told apart ex
 
 | id | sev | finding | where | status |
 |----|-----|---------|-------|--------|
-| H2 | High | `reconcile` hashes only `document.md`, so `rechunk` never reaches the index; `run.json` reclassification leaves a stale spine | `store/reconcile.py:98,101` | 📋 |
+| H2 | High | `reconcile` hashes only `document.md`, so `rechunk` never reaches the index; `run.json` reclassification leaves a stale spine | `store/reconcile.py` | ✅ |
 | H3 | High | gold case missing `answer`/`path` passes vacuously at rank 1 (`all([])==True`); gold set is currently clean, so it's a guard | `eval/runner.py:72-79,129` | 📋 |
 | H4 | High | split-prose chunks all inherit the whole paragraph's `char_start/char_end` → overlapping offsets, violates the disjoint-offset invariant | `chunk/chunker.py:110-112` | 📋 |
 | M  | Med | vector store can't hold two model spaces (`chunk_id` sole PK); isolation held only by `drop_vectors` | `store/schema.py:103` | 🔭 |
