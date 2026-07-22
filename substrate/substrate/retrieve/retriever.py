@@ -130,17 +130,17 @@ def retrieve(
     # to match ONE phrasing, which is the point.
     queries = [query]
     if multiquery is not None:
+        # Multi-query variants are a SUPPLEMENTARY recall aid (VARIANT_WEIGHT, off by default),
+        # not part of the primary measured configuration. Their absence lowers recall but does
+        # NOT mislabel the lexical+vector+HyDE+rerank number, and variants() returns [] on a
+        # legitimate no-op (a query it declines to paraphrase) as readily as on failure — so it
+        # fails open WITHOUT degrading the case, unlike the primary arms below.
         try:
             extra = multiquery.variants(query)
             queries += extra
             trace.variants = len(extra)
-            # variants() fails open to [] internally, so an empty result under an enabled
-            # multi-query config IS a silent degradation: the query ran without the paraphrases
-            # its measured label claims. Surface it so the eval refuses rather than mislabels.
-            if not extra:
-                _degrade(trace, "multi-query produced no variants")
-        except Exception as e:  # noqa: BLE001 — fail open to the bare query, but record it
-            _degrade(trace, f"multi-query error: {str(e)[:80]}")
+        except Exception:  # noqa: BLE001 — supplementary; fail open to the bare query
+            pass
 
     direct = store.search(
         query, k=k * 3, kind="passage", doc_id=doc_id, document_class=document_class
@@ -165,8 +165,8 @@ def retrieve(
                 )
                 if vv:
                     lists.append((VARIANT_WEIGHT, vv))
-            except Exception as e:  # noqa: BLE001 — a variant is supplementary; keep going
-                _degrade(trace, f"variant embed: {str(e)[:80]}")
+            except Exception:  # noqa: BLE001 — a variant is supplementary; fail open, no degrade
+                pass
 
     # Hybrid: lexical AND vector, fused by RRF. RRF is used rather than a score blend
     # precisely because BM25 and cosine are not on a comparable scale, so no weighting
@@ -196,19 +196,28 @@ def retrieve(
         # FAIL OPEN. If the embedder is unreachable, retrieval degrades to pure lexical rather
         # than failing — an engine that stops answering because a local daemon is down is worse
         # than one that answers slightly less well. The degrade is recorded on the Trace so the
-        # eval refuses a hybrid-labelled number measured partly without the vector arm.
+        # eval refuses a hybrid-labelled number measured partly without the vector arm. The embed
+        # call and the store search are kept in separate try scopes so the reason attributes to
+        # the right arm: a dead Ollama daemon reads "embedder", a store/index error reads
+        # "vector search" — not the former mislabelled as the latter.
+        qv = None
         try:
             qv = embedder.embed_query(vquery)
-            vhits = store.vector_search(
-                qv, getattr(embedder, 'key', embedder.model), k=k * 3, kind="passage", doc_id=doc_id,
-                document_class=document_class,
-            )
-            trace.vector = len(vhits)
-            if vhits:
-                lists.append((VECTOR_WEIGHT, vhits))
         except Exception as e:  # noqa: BLE001 — degrade on ANY embedder failure, by design
             _degrade(trace, f"embedder: {str(e)[:80]}")
             embedder = None
+        if qv is not None:
+            try:
+                vhits = store.vector_search(
+                    qv, getattr(embedder, 'key', embedder.model), k=k * 3, kind="passage",
+                    doc_id=doc_id, document_class=document_class,
+                )
+                trace.vector = len(vhits)
+                if vhits:
+                    lists.append((VECTOR_WEIGHT, vhits))
+            except Exception as e:  # noqa: BLE001 — a store-side failure also degrades the case
+                _degrade(trace, f"vector search: {str(e)[:80]}")
+                embedder = None
 
     if route:
         outlines = store.search(

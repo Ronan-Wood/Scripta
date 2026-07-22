@@ -174,24 +174,22 @@ exit for CI. A17 assertion (no top-level element spanning >30% of pages) catches
 
 Ordered by my recommendation, but the user triages.
 
-1. **Adversary HIGH findings — unfixed.** See §7. The ABSTAIN sinkhole can make a future
-   experiment report the un-reranked number under a reranked label.
-2. **Today's Apple work is UNCROSSCHECKED.** `rerank-fm.swift`, `AppleFMReranker`, the
+1. **Today's Apple work is UNCROSSCHECKED.** `rerank-fm.swift`, `AppleFMReranker`, the
    `AppleFMExpander` cache_key fix, CLI wiring. The user's standing rule is crosscheck after
    every change set, adversary before presenting. Neither has run on it.
-3. **The result contract.** `retrieve()` returns `(hits, trace)` and **every consumer discards
+2. **The result contract.** `retrieve()` returns `(hits, trace)` and **every consumer discards
    the trace** (`runner.py:119`, `cli.py:273`). That is the Boundary Principle violated in our
    own code. Needs: passages + `capability` (which arms ACTUALLY ran) + `index_version`, as
    structured fields not prose. Tier costs are known: 0.698 / 0.593 / 0.343.
-4. **markdown → Document reader.** The engine has only a PDF path. Vault ingestion (Doc 2)
+3. **markdown → Document reader.** The engine has only a PDF path. Vault ingestion (Doc 2)
    needs markdown → canonical `Document` → existing chunker. Est. ~100 lines, stdlib only,
    **no Docling**. This is the gate on "wire the engine to read Doc-2 vaults."
-5. **Scanned-PDF guard.** `docling_arm.py:29` sets `do_ocr = False` and there is no text-layer
+4. **Scanned-PDF guard.** `docling_arm.py:29` sets `do_ocr = False` and there is no text-layer
    assertion. A *fully* scanned PDF is caught by A14 (coverage 0.0) but only at `verify` time.
    The real hole is a *partially* scanned book — image-only pages vanish while coverage stays
    >0.95 and every gate goes green. Same shape as the chapter-title bug. `RapidOcr` and
    `granite-docling-258M` are downloaded and unwired.
-6. **App settings reconciliation** (Doc 3) — its defaults predate the eval.
+5. **App settings reconciliation** (Doc 3) — its defaults predate the eval.
 
 **Dropped from the roadmap:** extracting to a separate repo. I pushed it repeatedly on
 inherited advice; once the architecture was corrected it stopped making sense. The Swift port
@@ -220,23 +218,24 @@ problem, because the default ingestion path is markdown vaults, not PDFs.
 
 ## 7. Known debt
 
-**Adversary HIGH (all live, all in the cross-encoder measurement arm — cannot affect shipped
-retrieval, can corrupt a future experiment):**
+**Adversary HIGH — ALL THREE FIXED** (verified 2026-07-22 against current code):
 
-1. **ABSTAIN sinkhole** (`rerank_cross.py:185`). If the model stops emitting yes/no, every
-   score becomes 0.5, the sort is a no-op, `fallback_queries` stays 0, and the run reports the
-   rerank-OFF number under the reranked label with exit 0. Demonstrated. `cli.py` prints a
-   `note:` and continues — it should refuse. The note has no denominator.
-2. **ABSTAIN=0.5 outranks an explicit "no"** (`rerank_cross.py:81`). The comment claims "keep
-   fused order"; demonstrated false — a rejected passage at fused rank 1 lands at index 19/20.
-3. **`transport_failures` and `fallback_queries` are provably identical** — incremented
-   together then `return`, so the CLI prints one number twice as if it were corroboration.
+1. ~~ABSTAIN sinkhole~~ — FIXED. `rerank_cross.py:252` — `if not any(s != ABSTAIN for s in
+   scores)` makes an all-abstain query a fallback, not a silent no-op rerank.
+2. ~~ABSTAIN=0.5 outranks an explicit "no"~~ — FIXED. `:262` — the sort key is now
+   `(scores[i] != 1.0, i)`, so "no" and ABSTAIN both sit below the yeses and keep fused order
+   among themselves. An ABSTAIN is a non-signal and no longer buries a rejected rank-1.
+3. ~~Counters provably identical~~ — FIXED. `transport_failures` is now documented and used as
+   a strict SUBSET of `fallback_queries`, which also counts all-abstain queries.
 
-**MEDIUM:** exception tuple misses `ConnectionResetError`/`RemoteDisconnected`/`IncompleteRead`/
-`UnicodeDecodeError` — **this one reaches shipped code** (`rerank.py:113`, `expand.py:155,241`)
-· `_CONFIG_SIG` omits `num_predict`/`temperature`/`_defang`/parse rule · pairs keyed by
-`chunk_id` but scored on text · `cache_key` omits `host` · nothing rejects a non-reranker model
-under `--cross-encoder`.
+Also fixed: `_CONFIG_SIG` now covers `TEMPERATURE` and `NUM_PREDICT`, plus a `_LOGIC_VERSION`
+to bump when the parse rule or `_defang` changes (neither can be hashed from config).
+
+**MEDIUM — still live:** exception tuple misses `ConnectionResetError`/`RemoteDisconnected`/
+`IncompleteRead`/`UnicodeDecodeError` — **this one reaches shipped code**, all four sites:
+`rerank_cross.py:191`, `rerank.py:113`, `expand.py:151,234` · pairs keyed by `chunk_id` but
+scored on text · `cache_key` omits `host` · nothing rejects a non-reranker model under
+`--cross-encoder`.
 
 **Other:** Apple tier drops lexical to 27/28 (one case, unchased). Bonsai-27B runs via stock
 `llama.cpp` at ~22 tok/s but is unshippable as a query-time generator; `LlamaServerHyDE` is
