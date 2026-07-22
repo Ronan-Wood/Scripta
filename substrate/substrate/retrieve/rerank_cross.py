@@ -249,14 +249,10 @@ class CrossEncoderReranker:
                 cached = self.cache.get_expansion(ckey, self.cache_key)
                 if cached is not None:
                     try:
-                        val = float(cached)
-                    except ValueError:
-                        val = None
-                    if val is not None:
-                        if val == ABSTAIN:
-                            self.abstentions += 1   # count cached abstains too, so the tally
-                        scores.append(val)          # is the same whether the run hit the cache
+                        scores.append(float(cached))
                         continue
+                    except ValueError:
+                        pass
 
             s = self._score(query, h.text)
             if s is None:
@@ -264,11 +260,12 @@ class CrossEncoderReranker:
                 self.fallback_queries += 1
                 return hits, False          # daemon-level failure: fail open, fused order
             if s == ABSTAIN:
+                # NOT cached: temp-0 greedy decoding is not bit-exact on batched GPU inference
+                # (fp non-associativity can flip the argmax), so an ABSTAIN can be a one-off
+                # transient. Freezing it in a durable, TTL-less cache would reproduce noise, not a
+                # verdict; re-scoring gives the pair another chance at a real yes/no.
                 self.abstentions += 1
-            # Cache the ABSTAIN too: at temperature 0 the verdict is deterministic, so re-running
-            # only re-pays the 20x latency for the same result — and a partially-abstained query's
-            # ordering would otherwise not be reproducible from cache.
-            if self.cache is not None:
+            elif self.cache is not None:
                 self.cache.put_expansion(ckey, self.cache_key, f"{s:.6f}")
             scores.append(s)
 
