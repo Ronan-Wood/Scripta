@@ -175,6 +175,33 @@ end-to-end spread 0.053 but scrambled — and 0.6b vs 8b is 0.015, BELOW the 0.0
 quantum. Statistically tied, despite 8b being 7x larger, 12x slower to embed and 20x the
 resident memory.
 
+**CONFOUND — read before generalising this table.** The three models are not served at equal
+precision:
+
+    0.6b   595M params   Q8_0     8-bit
+    4b     4.0B params   Q4_K_M   4-bit
+    8b     7.6B params   Q4_K_M   4-bit
+
+So this is size TANGLED WITH precision, not a clean size comparison. Quantization damages
+embedders more than generators: the vector IS the output, so numeric perturbation moves the
+point in vector space directly, which is exactly the discrimination being measured. A
+generator absorbs the same noise through sampling.
+
+**What survives: "0.6b is right for THIS engine"** — this hardware, this corpus, this
+pipeline. Well supported, and the decision is unaffected by the confound, because at Q8 the
+8b would need ~15-16 GB resident (12 GB observed at Q4, weights roughly doubling) on the
+query hot path beside a 5 GB generator. It is unshippable here whatever it scores.
+
+**What does NOT survive: "bigger embedders are worse."** That reading is confounded by
+quantization, measured on 1,811 chunks of monolingual English prose, in a pipeline whose
+every other knob is tuned around a small embedder, and possibly with the wrong input format
+(the qwen3 instruction-format test was retracted and never redone). Four independent reasons
+the result may not generalise, none of them resolved.
+
+Deliberately NOT tested: the 8b at Q8. It would decouple size from precision, but it cannot
+change the decision — unshippable at that residency either way — so it buys understanding,
+not a choice.
+
 **Verdict: 0.6b, decisively.** Not because it wins on quality — it ties 8b — but because it
 ties at a fraction of every cost. Per the rule fixed before the numbers existed
 (within ±0.023 → keep 0.6b), this is the pre-registered outcome.
