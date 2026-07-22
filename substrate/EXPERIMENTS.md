@@ -332,6 +332,26 @@ whose correct answer is not in the corpus (consistent hashing) get deleted, not 
 | — | Result contract (snippet-first, graduated capability + measured cost, version-stamped) | the cure for PRINCIPLES.md; precedes any transport choice |
 | — | Extract engine to its own repo | relocate BEFORE wiring consumers — do not wire through the weld |
 | — | Claude access: skill+CLI primary, MCP only if Desktop/web reach is real | trivial once the contract exists |
+| — | **Scanned-PDF ingestion** | granite-docling-258M is DOWNLOADED but **NOT WIRED** — see below |
+| — | embeddinggemma (3rd lineage) · Qwen3-Reranker-4B (purpose-built) · Bonsai-27B ternary | downloaded, untested |
+
+### Downloaded but not wired — scanned PDFs
+
+`ibm-granite--granite-docling-258M` is on the drive. The engine **still cannot ingest a
+scanned PDF**: the pipeline sets `do_ocr = False` and uses the standard text-layer path, so a
+page-image-only document produces a near-empty result rather than an error.
+
+Worth stating explicitly because the failure is silent and the weights being present invites
+the opposite assumption — the capability exists on disk and not in the pipeline. Wiring it
+needs: detection of a missing text layer at load, a VLM pipeline option, and an assertion that
+fails loudly on near-zero extraction rather than emitting an empty document. Untested whether
+the current coverage gate (A14 >= 0.95) catches the empty case cleanly.
+
+Three models were pulled in the same window and are likewise **downloaded, untested**:
+`embeddinggemma` (third architecture lineage — the axis that has actually moved results),
+`dengcao/Qwen3-Reranker-4B` (a purpose-built cross-encoder, versus the LLM-listwise reranker
+currently shipped), and `hf.co/prism-ml/Bonsai-27B-gguf:Q1_0` (27B-class judgment at 4.43 GB,
+verified ternary rather than the 54 GB F16 registry variant).
 
 ### Runbook: qwen3-embedding 4b / 8b
 
