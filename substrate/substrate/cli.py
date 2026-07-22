@@ -371,11 +371,23 @@ def cmd_eval(args: argparse.Namespace) -> int:
     rr = None
     if not args.no_rerank:
         from substrate.embed.cache import VectorCache as _VC2
-        from substrate.retrieve.rerank import LLMReranker
 
-        cand = LLMReranker(model=args.rerank_model, pool=args.rerank_pool, cache=_VC2(args.cache))
+        if args.cross_encoder:
+            from substrate.retrieve.rerank_cross import DEFAULT_MODEL as _CE
+            from substrate.retrieve.rerank_cross import CrossEncoderReranker
+
+            model = args.rerank_model if args.rerank_model != "qwen2.5:7b" else _CE
+            cand = CrossEncoderReranker(model=model, pool=args.rerank_pool,
+                                        cache=_VC2(args.cache), gate=not args.no_gate)
+        else:
+            from substrate.retrieve.rerank import LLMReranker
+
+            model = args.rerank_model
+            cand = LLMReranker(model=model, pool=args.rerank_pool, cache=_VC2(args.cache))
         rr = cand if cand.available() else None
-        print(f"  rerank: {args.rerank_model} pool={args.rerank_pool}" if rr else "  rerank: unavailable")
+        kind = "cross" if args.cross_encoder else "listwise"
+        print(f"  rerank: {kind} {model} pool={args.rerank_pool}"
+              f"{'' if not args.no_gate else ' (gate off)'}" if rr else f"  rerank: {model} UNAVAILABLE")
 
     summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route,
                         embedder=embedder, expander=expander, multiquery=mq, reranker=rr)
@@ -526,6 +538,10 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--no-rerank", action="store_true")
     ev.add_argument("--rerank-model", default="qwen2.5:7b")
     ev.add_argument("--rerank-pool", type=int, default=20)
+    ev.add_argument("--cross-encoder", action="store_true",
+                    help="pointwise Qwen3-Reranker instead of the listwise chat model")
+    ev.add_argument("--no-gate", action="store_true",
+                    help="rerank every query, including lexically-precise ones")
     ev.add_argument("--cache", default="out/vector-cache.db")
     ev.set_defaults(func=cmd_eval)
 
