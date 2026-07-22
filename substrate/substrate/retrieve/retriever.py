@@ -176,6 +176,10 @@ def retrieve(
                 lists.append((VECTOR_WEIGHT, vhits))
         except Exception as e:  # noqa: BLE001 — degrade on ANY embedder failure, by design
             trace.degraded = str(e)[:120]
+            # Record the degrade on the (shared) embedder so the eval can refuse: this query
+            # was retrieved lexical-only and must not be averaged under the hybrid label. The
+            # Trace already carried this, but every consumer discards the Trace.
+            embedder.fallback_queries = getattr(embedder, "fallback_queries", 0) + 1
             embedder = None
 
     if route:

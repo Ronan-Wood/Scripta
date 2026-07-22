@@ -142,6 +142,70 @@ half.
 
 ---
 
+### THE FLOOR — what a user gets with nothing installed. 0.593.
+
+The most product-relevant number in this file. Apple FM + NLContextualEmbedding is the
+DEFAULT tier: no Ollama, no downloads, works on any Mac. Every prior Apple measurement was
+taken at 24 cases and BEFORE the reranker existed, so the floor was effectively unknown.
+Measured at 44 cases, one layer at a time:
+
+    configuration                             mrr       delta
+    Apple embedder alone                      0.343       —
+    + Apple FM HyDE                           0.467     +0.124
+    + Apple FM rerank (pool 10)               0.593     +0.126
+    ------------------------------------------------------------
+    Ollama full stack (shipped ceiling)       0.698     +0.105 over the floor
+
+**The free tier delivers 85% of the full stack.** The gap a user closes by installing Ollama
+is 0.105, about 4.6 cases. That is the honest upgrade pitch, and it is much smaller than the
+"Apple is weak" prior suggested.
+
+**The equalizer prediction held.** Reranking is worth +0.095 to the strong Ollama tier and
++0.126 to the weak Apple tier — more to the weaker configuration, exactly as the five-embedder
+sweep predicted, and it does it while seeing HALF the candidates. Before this, the default
+tier was the only configuration in the engine running with no reranker at all, i.e. missing
+the lever that helps it most.
+
+CONFOUND, stated: the Apple arm reranks pool=10 and the Ollama arm pool=20, so the two
+rerank deltas are not measured under identical conditions. The direction is not in doubt
+(+0.126 vs +0.095 with the smaller pool), but the magnitude is not exact.
+
+**Apple FM's context cannot hold the 20-candidate pool.** Measured on real retrieved
+candidates:
+
+    pool=20   6,917 chars  ->  EMPTY REPLY (overflow, every query falls back)
+    pool=10   3,657 chars  ->  valid, non-identity ordering
+    pool= 5   2,031 chars  ->  valid, non-identity ordering
+
+That is a structural property of the floor tier, not a tuning knob. Note the first probe of
+this was WRONG and nearly recorded: it fed 20 IDENTICAL passages, so the identity permutation
+it returned proved nothing. Ranking probes must use genuinely distinct candidates.
+
+Lexical drops 28/28 -> 27/28 on the Apple tier. One case, recorded, not chased.
+
+### A BUG THAT HID FOR THE WHOLE PROJECT: Apple HyDE never ran with a cache
+
+`AppleFMExpander` had no `cache_key` property, but `expand()` reads
+`self.cache.get_expansion(query, self.cache_key)` OUTSIDE its try block. With a cache
+attached — which is what the CLI always passes — EVERY call raised AttributeError. That
+propagated into retriever.py's `except Exception` around vector retrieval, which degrades to
+lexical-only and records the failure against THE EMBEDDER.
+
+So the symptom named the wrong component: "embedder fell back on 69 queries" when the
+embedder was fine and the EXPANDER was broken. It hid because the arm was only ever
+hand-tested with cache=None, which skips the branch entirely.
+
+Consequence: every previous measurement of the Apple HyDE arm that passed a cache was
+silently lexical-only. Two lessons, both cheap:
+  * A cache attached vs not is a DIFFERENT CODE PATH. Hand-testing with cache=None does not
+    test the configuration that ships.
+  * A generic `except Exception` around one stage will attribute failures from OTHER stages
+    to that stage. The counter said "embedder" with total confidence and was wrong.
+
+Also fixed: the eval banner printed `pool=20` for a run that used 10, because it echoed the
+CLI flag instead of the resolved value. A wrong row in this file is the failure mode this
+project keeps retracting for, so the banner now prints what the object actually holds.
+
 ### Bonsai-27B RUNS on this machine — but is unshippable as a HyDE generator
 
 Correcting the earlier "Bonsai will not load" verdict. It loads fine; Ollama was the wrong
