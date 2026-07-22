@@ -112,6 +112,7 @@ noise and then crowns it.
 | **HyDE "distinctive" prompt** | 0.531 → 0.445 | Predicted improvement, got −0.086. Confounded (changed objective *and* length together) |
 | **qwen2.5:14b for HyDE** | 0.472 vs 7b 0.531 | See "bigger is worse" below |
 | **bge-m3 / snowflake / mxbai** | 0.527 / 0.536 / n/a | Wash, noise-with-a-regression, and disqualified respectively |
+| **qwen3-embedding:4b** | 0.645 vs 0.6b 0.698, **27/28** | Better embedder, worse system — see below |
 | **Multi-query fusion (3)** | +0.034 at **5× latency** | 11 up, 10 down, 3 newly broken. Redistribution, not improvement |
 | **Per-class chunk geometry** | +0.012 | Below resolution. **Shipped anyway on principle**, explicitly not on evidence |
 | **Chunk granularity sweep** | see below | Current geometry already at/near optimum |
@@ -141,6 +142,46 @@ half.
 
 ---
 
+### qwen3-embedding 4b — a BETTER component that made the system WORSE
+
+The most instructive negative result in the log, because every component metric said 4b was
+better and the system still lost.
+
+    end-to-end        rerank OFF   rerank ON   rerank gain
+    0.6b (0.64 GB)      0.603        0.698       +0.095
+    4b   (2.50 GB)      0.623        0.645       +0.022
+
+    vector layer only (margin analysis, 44 cases)
+                        0.6b     4b
+    mean cosine         0.422   0.451   4b closer on 36/44
+    mean margin        -0.043  -0.015   4b DISCRIMINATES BETTER
+    correct missed        20      16    4b misses fewer
+
+4b's retrieval is genuinely better in isolation, and **without reranking it wins**
+(0.623 vs 0.603). With reranking it loses, because the reranker contributes +0.095 to 0.6b
+and only +0.022 to 4b.
+
+**The embedder and the reranker are SUBSTITUTES, not complements.** Both fix the same
+deficiency — poor ranking — so improving one shrinks the headroom for the other. This
+directly refutes the argument used to justify running 4b at all ("better embeddings feed the
+reranker better candidates, so they compound"). They overlap.
+
+Mechanism is HEADROOM, not trigger rate. A first hypothesis — that better vectors fire the
+adaptive-skip more often — was tested and rejected: skip rates are 18% (0.6b) vs 20% (4b),
+essentially identical, and the reranker runs on 36 vs 35 cases. What changes is how much
+there is left to fix. With a worse starting order the reranker has plenty; with a better one
+it has little, while its known error mode (promoting mechanistic passages over definitional
+ones) still costs the same.
+
+Generalizes: **a better upstream component can make a system worse when a downstream
+component's value comes from correcting upstream deficiency.** Component benchmarks cannot
+see this — only end-to-end evaluation can, and only if the pipeline is evaluated as shipped.
+
+Costs, for completeness: 4b took 16.4 min to embed against 2.3 min, at 4× the size, and broke
+the lexical gate (27/28).
+
+---
+
 ## Retracted — measurements that were not measurements
 
 These matter more than the results. Every one looked plausible and was nearly committed.
@@ -151,6 +192,7 @@ These matter more than the results. Every one looked plausible and was nearly co
 | "outline routing = +0.012" | a bug, not the idea | routed list was document-ordered, fed to RRF which reads rank as relevance |
 | "nomic = 0.303 in embedder A/B" | lexical-only | `drop_vectors` had deleted nomic's vectors when Apple's were written |
 | "17/18 eval pass with doc filter" | unfiltered corpus-wide search | doc-name prefix never matched any doc_id, fell through `or hits` |
+| "0.6b margin = miss on all 44 cases" | an index holding only 4b vectors | ad-hoc analysis script bypassed the eval's no-vectors guard; caught only because all-miss was implausible |
 
 **Common cause: a silent no-op that still prints a plausible number.** Guards added since —
 the eval now refuses to run with zero vectors for the active key, and cache keys include
