@@ -316,12 +316,17 @@ def cmd_eval(args: argparse.Namespace) -> int:
                 _n = _s.db.execute(
                     "SELECT COUNT(*) FROM chunk_vectors WHERE embed_model=?", (embedder.key,)
                 ).fetchone()[0]
-            if _n == 0:
-                print(f"FATAL: no vectors for {embedder.key!r}. Run:  substrate embed "
-                      f"--model {args.embed_model} --embed-style {args.embed_style}",
-                      file=sys.stderr)
+                _total = _s.db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            # COMPLETENESS, not presence. An earlier version checked >0 and would have
+            # passed a partially-embedded corpus (256 of 1811 after a timeout), reporting a
+            # confident MRR computed on 14% of the data. Presence was attached to the
+            # result; completeness was not. Same failure family as PRINCIPLES.md.
+            if _n < _total:
+                print(f"FATAL: {embedder.key!r} has {_n}/{_total} vectors — "
+                      f"{'none' if _n == 0 else 'INCOMPLETE (partial embed?)'}. Run: "
+                      f"substrate embed --model {args.embed_model}", file=sys.stderr)
                 return 2
-            print(f"  vectors : {_n} under {embedder.key}")
+            print(f"  vectors : {_n}/{_total} under {embedder.key}")
         # GUARD: a vector config with no vectors silently degrades to lexical-only and
         # reports a plausible number. That has now invalidated three measurements — every
         # time, because a key change orphaned the stored vectors. Refuse to report instead.

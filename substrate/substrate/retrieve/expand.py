@@ -118,7 +118,7 @@ class HyDE:
 
     def available(self) -> bool:
         try:
-            with urllib.request.urlopen(f"{self.host}/api/tags", timeout=5) as r:
+            with urllib.request.urlopen(f"{self.host}/api/tags", timeout=30) as r:
                 names = {m["name"] for m in json.loads(r.read()).get("models", [])}
             return self.model in names or self.model.split(":")[0] in {
                 n.split(":")[0] for n in names

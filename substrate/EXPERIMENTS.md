@@ -112,7 +112,7 @@ noise and then crowns it.
 | **HyDE "distinctive" prompt** | 0.531 → 0.445 | Predicted improvement, got −0.086. Confounded (changed objective *and* length together) |
 | **qwen2.5:14b for HyDE** | 0.472 vs 7b 0.531 | See "bigger is worse" below |
 | **bge-m3 / snowflake / mxbai** | 0.527 / 0.536 / n/a | Wash, noise-with-a-regression, and disqualified respectively |
-| **qwen3-embedding:4b** | 0.645 vs 0.6b 0.698, **27/28** | Better embedder, worse system — see below |
+| **qwen3-embedding 4b / 8b** | 0.645 / 0.683 vs 0.6b 0.698 | Peaked component curve, reranker erases the difference — see below |
 | **Multi-query fusion (3)** | +0.034 at **5× latency** | 11 up, 10 down, 3 newly broken. Redistribution, not improvement |
 | **Per-class chunk geometry** | +0.012 | Below resolution. **Shipped anyway on principle**, explicitly not on evidence |
 | **Chunk granularity sweep** | see below | Current geometry already at/near optimum |
@@ -141,6 +141,49 @@ a precision-of-citation decision as well as a retrieval one, and the eval is bli
 half.
 
 ---
+
+### The embedder size sweep — the full 3x2 grid
+
+Run as a grid rather than a ladder specifically to separate the COMPONENT effect from the
+SYSTEM effect. Two points would have shown a direction; three showed a shape, and the shape
+is the finding.
+
+    model    rerank OFF   rerank ON   rerank gain   embed     size     resident
+    0.6b       0.603        0.698       +0.095     2.3 min   0.64 GB    ~0.6 GB
+    4b         0.623        0.645       +0.022    16.4 min   2.50 GB     ~3 GB
+    8b         0.581        0.683       +0.102    27.5 min   4.68 GB      12 GB
+
+**1. The component curve is PEAKED, not monotonic.** Rerank-off: 0.603 → 0.623 → 0.581. 4b is
+the best embedder in isolation; 8b is worse than the smallest model. This is the embedder
+analogue of the generator result (qwen2.5:7b beating 14b at HyDE) — the same non-monotonicity,
+peaking at a different point. A 0.6b-vs-4b comparison alone would have concluded "bigger is
+better" and been wrong.
+
+**2. Rerank gain tracks headroom INVERSELY, now confirmed on three points.**
+
+    starting mrr   rerank gain
+    0.581 (8b)       +0.102
+    0.603 (0.6b)     +0.095
+    0.623 (4b)       +0.022
+
+The worse the starting order, the more the reranker adds. This is the substitutes finding with
+a third data point: embedder and reranker fix the same deficiency, so their contributions trade
+off rather than compound.
+
+**3. End-to-end, the reranker largely ERASES the embedder difference.** Component spread 0.042,
+end-to-end spread 0.053 but scrambled — and 0.6b vs 8b is 0.015, BELOW the 0.023 single-case
+quantum. Statistically tied, despite 8b being 7x larger, 12x slower to embed and 20x the
+resident memory.
+
+**Verdict: 0.6b, decisively.** Not because it wins on quality — it ties 8b — but because it
+ties at a fraction of every cost. Per the rule fixed before the numbers existed
+(within ±0.023 → keep 0.6b), this is the pre-registered outcome.
+
+**What this means for the pipeline generally:** a downstream corrective stage can mask
+substantial upstream quality differences. That is good for robustness (the engine tolerates a
+weak embedder) and dangerous for evaluation (component benchmarks would have ranked these
+embedders 4b > 0.6b > 8b, which is neither the end-to-end ranking nor the right decision).
+Only end-to-end evaluation of the SHIPPED pipeline gets this right.
 
 ### qwen3-embedding 4b — a BETTER component that made the system WORSE
 
