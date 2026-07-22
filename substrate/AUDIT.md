@@ -58,18 +58,29 @@ the internal per-call signal (gate-skip vs. real fallback can't be told apart ex
 
 ## Batch (from your review) — cross-encoder & shipped-code
 
-### Unit B — cross-encoder correctness (`retrieve/rerank_cross.py`)  📋 next
-- **High** all-abstain no-op labelled reranked → make it a real fallback (plugs into H1's refusal)
-- **High** `ABSTAIN=0.5` outranks an explicit `no` (0.0) → "keeps fused order" comment is false
-- **High** `transport_failures` / `fallback_queries` provably identical → differentiate or collapse
-- Med: `_CONFIG_SIG` omits `num_predict`/`temperature`/`_defang`/parse rule · pair cache keyed by
-  `chunk_id` but scored on `h.text` (stale after re-chunk) · `cache_key` omits host · reject a
-  non-reranker model under `--cross-encoder`
+### Unit B — cross-encoder correctness (`retrieve/rerank_cross.py`)  ✅
+- **High** all-abstain no-op → real fallback (bumps `fallback_queries`; plugs into H1's refusal — a
+  non-reranker model under `--cross-encoder` now self-rejects at runtime)
+- **High** sort fixed: `(scores[i] != YES, i)` promotes "yes", keeps "no"/ABSTAIN in fused order
+  (verified identical to the old sort when no abstains → recorded 0.708/0.716 unchanged)
+- **High** `transport_failures` ⊆ `fallback_queries` now distinct (all-abstain bumps only the latter)
+- Med: `_CONFIG_SIG` rebuilt from explicit VALUES (prompt, sampling, `_CTRL.pattern`,
+  `_DEFANG_TOKEN`, verdict tokens+values) + function BYTECODE — captures referenced constants and
+  structural logic, no import-time `OSError`, no cosmetic cache-bust · per-pair cache keyed on a
+  content hash of `h.text` (re-chunk-safe) · `cache_key` includes `host` · `--rerank-pool 0` guarded
+- crosscheck (2 reviewers) → replaced a `_LOGIC_VERSION` manual-bump foot-gun with hashed logic;
+  named `YES`/`NO`; fixed a stale cli abstention note. adversary (2 reviewers) → both caught that
+  hashing function *source* missed referenced-constant values → rebuilt as values + bytecode.
 
-### Unit C — exception-tuple breadth (shipped)  📋
-`rerank.py:113`, `expand.py` HyDE/Llama catch only `(URLError, TimeoutError, JSONDecodeError)` —
-miss `ConnectionResetError`/`RemoteDisconnected`/`IncompleteRead`/`UnicodeDecodeError`. Partly
-pre-mitigated for the eval path by H1's retriever wraps; components' own contracts still need it.
+### Unit C — exception-tuple breadth (shipped)  ✅
+The 4 narrow `except (URLError, TimeoutError, JSONDecodeError)` sites (rerank.py, expand.py ×2,
+rerank_cross.py) now catch by FAMILY via a shared `_TRANSPORT_ERRORS = (OSError,
+http.client.HTTPException, json.JSONDecodeError, UnicodeDecodeError)` — covers the escaping
+`ConnectionResetError`/`RemoteDisconnected`/`IncompleteRead`/`UnicodeDecodeError` (verified).
+- adversary (2 reviewers) → cleared over-catch (try blocks are tight) + confirmed `OSError` subsumes
+  `TimeoutError`/`ssl`; flagged the tuple triplication (DRY) and a residual non-dict-JSON-body
+  `AttributeError`. Both fixed: `_TRANSPORT_ERRORS` + a safe `_response_field` helper consolidated
+  into `retrieve/__init__.py`; all 4 sites route through it → a non-dict body now fails open.
 
 ### Unit D — arg / guard hardening (`cli.py` + rerankers)  📋
 `--no-gate --no-rerank` slips the guard · `--rerank-pool 0/negative` · `available()` exact-match

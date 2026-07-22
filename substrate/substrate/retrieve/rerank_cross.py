@@ -66,10 +66,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
+from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
 from substrate.store.index_store import Hit
 
 DEFAULT_MODEL = "dengcao/Qwen3-Reranker-4B:Q4_K_M"
@@ -83,7 +83,11 @@ TIMEOUT = 120
 NUM_PREDICT = 1        # a single verdict token — see note 2
 TEMPERATURE = 0.0
 
-ABSTAIN = 0.5          # sentinel for an unparseable verdict; it is NOT a rank (see the sort)
+YES = 1.0              # relevance verdict: promoted above everything else
+NO = 0.0               # relevance verdict: kept in fused order, below the yeses
+ABSTAIN = 0.5          # sentinel for an unparseable verdict; NOT a rank, NOT cached (see sort)
+YES_TOKEN = "yes"      # reply prefixes the parser maps to YES / NO — part of the cache identity
+NO_TOKEN = "no"
 
 SYSTEM = (
     'Judge whether the Document meets the requirements based on the Query and the Instruct '
@@ -102,26 +106,46 @@ TEMPLATE = (
     "<|im_start|>assistant\n<think>\n\n</think>\n\n"
 )
 
-# Everything CONFIGURABLE that changes a score, hashed into the cache key. The rule is already
-# written down in expand.py and embed/engine.py — "anything that changes the output belongs in
-# the key" — and both were written after a prompt-cache bug served generations from a different
-# prompt. Editing INSTRUCTION to test prompt sensitivity is the obvious next experiment on this
-# arm; without this, that experiment would replay the old scores in seconds and report "wording
-# does not matter." Sampling params (temperature, num_predict) change the verdict too, so they
-# belong here. The verdict PARSE rule and _defang live in code, not config, so they cannot be
-# hashed directly — bump _LOGIC_VERSION when either changes.
-_LOGIC_VERSION = "1"
-_CONFIG_SIG = hashlib.sha256(
-    (SYSTEM + INSTRUCTION + TEMPLATE + str(SNIPPET) + str(TEMPERATURE) + str(NUM_PREDICT)
-     + _LOGIC_VERSION).encode()
-).hexdigest()[:8]
-
 _CTRL = re.compile(r"<\|[A-Za-z0-9_]{1,24}\|>")
+_DEFANG_TOKEN = "[tok]"
 
 
 def _defang(s: str) -> str:
     """Strip ChatML control tokens so corpus text cannot address the model."""
-    return _CTRL.sub("[tok]", s)
+    return _CTRL.sub(_DEFANG_TOKEN, s)
+
+
+def _parse_verdict(text: str) -> float:
+    """Map a raw model reply to a relevance verdict: YES, NO, or the ABSTAIN sentinel."""
+    t = text.strip().lower()
+    if t.startswith(YES_TOKEN):
+        return YES
+    if t.startswith(NO_TOKEN):
+        return NO
+    return ABSTAIN     # template drift or a steered token — see note 1
+
+
+# Everything that changes a score, hashed into the cache key. The rule is already written down
+# in expand.py and embed/engine.py — "anything that changes the output belongs in the key" —
+# both written after a prompt-cache bug served generations from a different prompt. Editing
+# INSTRUCTION to test prompt sensitivity is the obvious next experiment on this arm; without
+# this it would replay old scores and report "wording does not matter."
+#
+# Two kinds of input are folded in, deliberately: every configurable VALUE that reaches the
+# model or the verdict (prompt, sampling, the defang pattern + token, the verdict tokens and
+# their numeric values), AND the BYTECODE of the two scoring functions to catch a structural
+# logic change. VALUES, not just function source, because a function reads a module global BY
+# NAME — neither its source nor its bytecode records the resolved value, so editing _DEFANG_TOKEN
+# or the _CTRL pattern would otherwise leave the sig unchanged while changing what the model sees.
+# BYTECODE, not source, so a comment or reformat does not spuriously bust a 20x-latency cache,
+# and no OSError can fire at import (source may be absent under zipimport; __code__ never is).
+_CONFIG_SIG = hashlib.sha256(
+    "\x00".join([
+        SYSTEM, INSTRUCTION, TEMPLATE, str(SNIPPET), str(TEMPERATURE), str(NUM_PREDICT),
+        _CTRL.pattern, _DEFANG_TOKEN, YES_TOKEN, NO_TOKEN, str(YES), str(NO), str(ABSTAIN),
+        _parse_verdict.__code__.co_code.hex(), _defang.__code__.co_code.hex(),
+    ]).encode()
+).hexdigest()[:8]
 
 
 @dataclass
@@ -136,7 +160,8 @@ class CrossEncoderReranker:
     # configuration wearing the reranked arm's label — the shape of this project's retracted
     # measurements — so the caller is given a number it can refuse to report on. Two DISTINCT
     # fallback causes, so the counters are not redundant:
-    #   transport_failures — a daemon-level failure (a doc scored None); a strict subset.
+    #   transport_failures — a daemon-level failure (a doc scored None); a subset (equal when
+    #                        no all-abstain fallbacks occurred).
     #   fallback_queries   — EVERY fallback: transport failures PLUS all-abstain queries (no
     #                        candidate produced a yes/no verdict). This is what the eval reads.
     # abstentions is PER-CANDIDATE (one unparseable verdict), not per-query.
@@ -157,7 +182,9 @@ class CrossEncoderReranker:
         try:
             with urllib.request.urlopen(f"{self.host}/api/tags", timeout=30) as r:
                 names = {m["name"] for m in json.loads(r.read()).get("models", [])}
-            return self.model in names
+            # Exact tag, since a cross-encoder's quant IS its identity here — but honour Ollama's
+            # tagless == ":latest" convention, so a model named without a tag still resolves.
+            return self.model in names or f"{self.model}:latest" in names
         except Exception:
             return False
 
@@ -187,16 +214,11 @@ class CrossEncoderReranker:
         )
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-                data = json.loads(r.read())
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                text = _response_field(r.read(), "response")
+        except _TRANSPORT_ERRORS:
             return None
 
-        text = (data.get("response") or "").strip().lower()
-        if text.startswith("yes"):
-            return 1.0
-        if text.startswith("no"):
-            return 0.0
-        return ABSTAIN     # template drift or a steered token — see note 1
+        return _parse_verdict(text)
 
     def rerank(self, query: str, hits: list[Hit]) -> tuple[list[Hit], bool]:
         if len(hits) < 2:
@@ -227,10 +249,14 @@ class CrossEncoderReranker:
                 cached = self.cache.get_expansion(ckey, self.cache_key)
                 if cached is not None:
                     try:
-                        scores.append(float(cached))
-                        continue
+                        val = float(cached)
                     except ValueError:
-                        pass
+                        val = None
+                    if val is not None:
+                        if val == ABSTAIN:
+                            self.abstentions += 1   # count cached abstains too, so the tally
+                        scores.append(val)          # is the same whether the run hit the cache
+                        continue
 
             s = self._score(query, h.text)
             if s is None:
@@ -238,8 +264,11 @@ class CrossEncoderReranker:
                 self.fallback_queries += 1
                 return hits, False          # daemon-level failure: fail open, fused order
             if s == ABSTAIN:
-                self.abstentions += 1       # NOT cached — a transient failure must not freeze
-            elif self.cache is not None:
+                self.abstentions += 1
+            # Cache the ABSTAIN too: at temperature 0 the verdict is deterministic, so re-running
+            # only re-pays the 20x latency for the same result — and a partially-abstained query's
+            # ordering would otherwise not be reproducible from cache.
+            if self.cache is not None:
                 self.cache.put_expansion(ckey, self.cache_key, f"{s:.6f}")
             scores.append(s)
 
@@ -249,7 +278,9 @@ class CrossEncoderReranker:
         # returns fused order while claiming changed=True: the rerank-OFF config wearing the
         # reranked label. Count it as a fallback (per query, distinct from a transport failure)
         # so the eval refuses it, exactly as it refuses a dead daemon.
-        if not any(s != ABSTAIN for s in scores):
+        if not scores or not any(s != ABSTAIN for s in scores):
+            # An empty pool (e.g. --rerank-pool 0) or a pool where no candidate yielded a
+            # yes/no verdict: no rerank actually happened, so this is a fallback, not a reorder.
             self.fallback_queries += 1
             return hits, False
 
@@ -259,5 +290,5 @@ class CrossEncoderReranker:
         # The old ABSTAIN=0.5 banded abstains ABOVE every "no", burying a rejected fused-rank-1
         # passage beneath candidates it merely failed to parse. With no abstains present this is
         # identical to the old -score sort (yes above no, fused order within each).
-        order = sorted(range(len(pool)), key=lambda i: (scores[i] != 1.0, i))
+        order = sorted(range(len(pool)), key=lambda i: (scores[i] != YES, i))
         return [pool[i] for i in order] + hits[self.pool :], True

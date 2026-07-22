@@ -369,18 +369,22 @@ def cmd_eval(args: argparse.Namespace) -> int:
         mq = cand if cand.available() else None
         print(f"  multi-query: {args.multi_query} variants" if mq else "  multi-query: unavailable")
 
+    # --no-gate is meaningful ONLY on a --cross-encoder rerank run: the listwise arm gates
+    # unconditionally (unchecked it printed "(gate off)" over a fully gated run — a wrong
+    # EXPERIMENTS.md row), and --no-rerank has no gate to disable. Checked HERE, not inside the
+    # rerank block, so `--no-gate --no-rerank` cannot slip past and be silently logged gate-off.
+    if args.no_gate and (args.no_rerank or not args.cross_encoder):
+        print("FATAL: --no-gate applies only to a --cross-encoder rerank run (the listwise arm "
+              "gates unconditionally; --no-rerank has no gate). Refusing a config whose --no-gate "
+              "would be silently ignored.", file=sys.stderr)
+        return 2
+
     rr = None
     if not args.no_rerank:
         from substrate.embed.cache import VectorCache as _VC2
 
-        # --no-gate reaches only the cross-encoder; LLMReranker gates unconditionally. Left
-        # unchecked this printed "(gate off)" over a fully gated listwise run, which is a
-        # wrong row in EXPERIMENTS.md and would read as "the gate is worth 0.000" against a
-        # recorded +0.090.
-        if args.no_gate and not args.cross_encoder:
-            print("FATAL: --no-gate applies only to --cross-encoder. The listwise arm gates "
-                  "unconditionally; refusing to run a config that would be logged gate-off.",
-                  file=sys.stderr)
+        if args.rerank_pool < 1:
+            print("FATAL: --rerank-pool must be >= 1.", file=sys.stderr)
             return 2
 
         if args.rerank_model in ("apple", "apple-fm"):
@@ -442,7 +446,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
         return 2
 
     if getattr(rr, "abstentions", 0):
-        print(f"  note: {rr.abstentions} unparseable verdicts abstained (ranked neutral)")
+        print(f"  note: {rr.abstentions} unparseable verdicts abstained "
+              "(kept below every yes, same tier as no)")
 
     ok = report(summary, gold, baseline)
 

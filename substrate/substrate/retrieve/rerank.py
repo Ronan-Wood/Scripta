@@ -22,11 +22,11 @@ from __future__ import annotations
 
 import json
 import re
-import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
 from substrate.store.index_store import Hit
 
 DEFAULT_MODEL = "qwen2.5:7b"
@@ -109,8 +109,8 @@ class LLMReranker:
         )
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-                text = (json.loads(r.read()).get("response") or "").strip()
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                text = _response_field(r.read(), "response").strip()
+        except _TRANSPORT_ERRORS:
             return None
 
         return self._parse_order(text, len(hits))

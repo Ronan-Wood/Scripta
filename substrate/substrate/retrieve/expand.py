@@ -22,10 +22,11 @@ from __future__ import annotations
 
 import json
 import re
-import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+
+from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
 
 # MEASURED, and bigger is NOT better. Semantic mrr by generator, 24 cases:
 #   none 0.375 | apple-fm 0.422 | llama3.2:3b 0.478 | qwen2.5:7b 0.531 | qwen2.5:14b 0.472
@@ -147,8 +148,8 @@ class HyDE:
         )
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-                text = (json.loads(r.read()).get("response") or "").strip()
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                text = _response_field(r.read(), "response").strip()
+        except _TRANSPORT_ERRORS:
             return query
         if not text:
             return query
@@ -230,8 +231,8 @@ class LlamaServerHyDE:
         )
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-                text = (json.loads(r.read()).get("content") or "").strip()
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                text = _response_field(r.read(), "content").strip()
+        except _TRANSPORT_ERRORS:
             return query
         # Bonsai emits an (often empty) <think>...</think> block even on the raw completion
         # endpoint. It is never the hypothetical passage, only the reasoning wrapper, so it is
