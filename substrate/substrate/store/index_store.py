@@ -295,15 +295,6 @@ class IndexStore:
     def documents(self) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM documents ORDER BY doc_id")]
 
-    def indexed(self) -> dict[str, tuple[float, str]]:
-        """markdown_path -> (mtime, sha256), the reconcile diff key."""
-        return {
-            r["markdown_path"]: (r["markdown_mtime"], r["markdown_sha256"])
-            for r in self.db.execute(
-                "SELECT markdown_path, markdown_mtime, markdown_sha256 FROM documents"
-            )
-        }
-
     def stats(self) -> dict:
         q = lambda s: self.db.execute(s).fetchone()[0]  # noqa: E731
         return {
