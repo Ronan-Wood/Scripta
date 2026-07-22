@@ -142,6 +142,39 @@ half.
 
 ---
 
+### THE RERANKER IS AN EQUALIZER — five embedders, 44 cases, one instrument
+
+The most generalizable result in this log. Every embedder measured at the same cohort, with
+and without the shipped reranker:
+
+    embedder                rerank OFF   rerank ON    gain     vs best (ON)
+    qwen3-embedding:4b        0.623        0.645     +0.022      -0.053
+    qwen3-embedding:0.6b      0.603        0.698     +0.095         —
+    qwen3-embedding:8b        0.581        0.683     +0.102      -0.015
+    embeddinggemma            0.544        0.691     +0.147      -0.008
+    nomic-embed-text          0.528        0.656     +0.128      -0.043
+
+    spread without rerank   0.095  (4.1 cases)
+    spread with rerank      0.053  (2.3 cases)
+
+**Reranking halves the spread, and allocates its gain inversely to embedder quality.** The
+best starter gains least (+0.022), the worst gain most (+0.128 to +0.147), across three
+architecture families and a 13x size range. Almost perfectly monotonic.
+
+**Consequence: pick the CHEAPEST ADEQUATE embedder, not the best one.** With a strong
+reranker downstream, embedder choice is worth ~2 cases; embedder cost varies by 13x in size,
+10x in embedding time and 20x in resident memory. The optimisation target is cost, not score.
+
+**This also corrects an earlier story told in this file.** The "lineage matters" claim came
+from nomic 0.531 vs qwen3 0.642 — a 0.110 gap. But that was measured at 24 cases, BEFORE
+reranking existed. At 44 cases with the reranker, the same pair is 0.656 vs 0.698, a 0.042
+gap. Lineage does matter, but less than half as much as claimed, and the difference is not
+the cohort — it is the reranker compressing it.
+
+A component sweep run before a downstream corrective stage exists will systematically
+OVERSTATE how much that component matters. Both the embedder sweep and the lineage claim were
+run in that condition.
+
 ### The embedder size sweep — the full 3x2 grid
 
 Run as a grid rather than a ladder specifically to separate the COMPONENT effect from the
