@@ -346,16 +346,17 @@ def cmd_eval(args: argparse.Namespace) -> int:
         print(f"  retrieval: {'hybrid (lexical + vector)' if embedder else 'lexical only'}")
     expander = None
     if not args.no_hyde:
-        from substrate.retrieve.expand import AppleFMExpander, HyDE
+        from substrate.retrieve.expand import AppleFMExpander, HyDE, LlamaServerHyDE
 
         from substrate.embed.cache import VectorCache
 
         vc = VectorCache(args.cache)
-        cand = (
-            AppleFMExpander(cache=vc)
-            if args.hyde_model in ("apple", "apple-fm")
-            else HyDE(model=args.hyde_model, cache=vc, prompt_id=args.hyde_prompt)
-        )
+        if args.hyde_model in ("apple", "apple-fm"):
+            cand = AppleFMExpander(cache=vc)
+        elif args.hyde_model in ("bonsai", "bonsai-27b", "llama-server"):
+            cand = LlamaServerHyDE(cache=vc, prompt_id=args.hyde_prompt)
+        else:
+            cand = HyDE(model=args.hyde_model, cache=vc, prompt_id=args.hyde_prompt)
         expander = cand if cand.available() else None
         print(f"  expansion: {'HyDE via ' + args.hyde_model if expander else 'unavailable'}")
 

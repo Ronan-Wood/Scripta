@@ -142,6 +142,42 @@ half.
 
 ---
 
+### Bonsai-27B RUNS on this machine — but is unshippable as a HyDE generator
+
+Correcting the earlier "Bonsai will not load" verdict. It loads fine; Ollama was the wrong
+runtime.
+
+  * It is a GENUINE 27B — 1-bit ternary (Q1_0), ~24.8B backbone + 2.5B embeddings, derived
+    from Qwen3.6-27B. The "3.65B parameters" Ollama reported was a PACKED-TENSOR artifact:
+    27B ternary weights at ~1.125 bits/weight pack to ~3.8 GB, and Ollama counted packed
+    elements. The metadata contradicting the name was the tell, and it was misleading, not
+    wrong-model.
+  * Ollama 0.20.3 has no kernel for its architecture and refuses the Q1_0 blob. But Q1_0 is
+    now UPSTREAM in llama.cpp, so `brew install llama.cpp` (b10080) runs it on Metal at
+    ~22 tok/s generation / ~69 tok/s prompt. Zero new weights — the 4.4 GB blob was already
+    on the SSD from the Ollama pull. No PrismML fork needed.
+  * It is a THINKING model. Via /v1/chat/completions the entire token budget goes into a
+    `reasoning_content` channel and `content` comes back EMPTY even at 600 tokens and with
+    --reasoning-budget 0. The native /completion endpoint bypasses the think wrapper and
+    returns usable prose immediately — wired as LlamaServerHyDE against /completion.
+
+WHY IT WAS NOT MEASURED TO A NUMBER: at 22 tok/s with a thinking preamble, a single uncached
+HyDE expansion costs ~15-20s. HyDE is a QUERY-TIME path; the eval caches it but real use pays
+per novel query. That is two orders of magnitude over the shipped qwen2.5:7b path (sub-second
+end-to-end) and disqualifies it as an interactive generator ON THIS HARDWARE regardless of
+score. Combined with the standing "bigger loses at HyDE" finding — which predicts a 27B does
+not even win — the expected value of the ~10-minute cold run did not justify the machine load.
+
+The arm is wired and the server invocation is known, so the number is one overnight command
+away on idle hardware:
+
+    llama-server -m <blob> -c 4096 -ngl 99 --host 127.0.0.1 --port 8899 --no-webui
+    uv run python -m substrate.cli eval --hyde-model bonsai --embed-model qwen3-embedding:0.6b
+
+What this DOES settle: the engine's design goal that end users can hot-swap any local model,
+including formats Ollama cannot load, holds — the llama.cpp-server seam reaches them. That is
+the durable result; the MRR number is not the point.
+
 ### The model axis is exhausted — everything downloaded, everything tied
 
 Final sweep of the four models pulled in the fast-wifi window. Every one measured at 44
