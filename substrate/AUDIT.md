@@ -82,9 +82,15 @@ http.client.HTTPException, json.JSONDecodeError, UnicodeDecodeError)` — covers
   `AttributeError`. Both fixed: `_TRANSPORT_ERRORS` + a safe `_response_field` helper consolidated
   into `retrieve/__init__.py`; all 4 sites route through it → a non-dict body now fails open.
 
-### Unit D — arg / guard hardening (`cli.py` + rerankers)  📋
-`--no-gate --no-rerank` slips the guard · `--rerank-pool 0/negative` · `available()` exact-match
-rejects `:latest` · abstentions uncached so ordering isn't reproducible.
+### Unit D — arg / guard hardening (`cli.py` + rerankers)  ✅
+`--no-gate` misuse now caught before the rerank block (so `--no-gate --no-rerank` can't slip) ·
+`--rerank-pool < 1` rejected · cross-encoder `available()` honours tagless == `:latest` while
+keeping exact-quant pinning.
+- adversary (2 reviewers) → cleared the guard truth-table + `:latest` logic; flagged the 4th
+  proposed fix (caching ABSTAIN scores for reproducibility) as HIGH — a durable, TTL-less cache
+  would freeze a transient decode glitch (temp-0 greedy decode is not bit-exact on batched GPU),
+  and the reproducibility was illusory (it froze noise). **Reverted** that fix per review; the
+  anti-freeze rationale is now documented in the code so it isn't re-attempted.
 
 ---
 

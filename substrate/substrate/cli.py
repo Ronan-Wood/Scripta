@@ -369,10 +369,11 @@ def cmd_eval(args: argparse.Namespace) -> int:
         mq = cand if cand.available() else None
         print(f"  multi-query: {args.multi_query} variants" if mq else "  multi-query: unavailable")
 
-    # --no-gate is meaningful ONLY on a --cross-encoder rerank run: the listwise arm gates
-    # unconditionally (unchecked it printed "(gate off)" over a fully gated run — a wrong
-    # EXPERIMENTS.md row), and --no-rerank has no gate to disable. Checked HERE, not inside the
-    # rerank block, so `--no-gate --no-rerank` cannot slip past and be silently logged gate-off.
+    # --no-gate is meaningful ONLY on a --cross-encoder rerank run. Two misuse cases, both caught
+    # HERE (before the rerank block, so --no-rerank cannot skip the check): with a listwise rerank
+    # the arm gates unconditionally, so "(gate off)" would mislabel a fully gated run in
+    # EXPERIMENTS.md; with --no-rerank there is no gate at all, so the flag is a silent no-op.
+    # Fail rather than accept a config where --no-gate does not mean what it says.
     if args.no_gate and (args.no_rerank or not args.cross_encoder):
         print("FATAL: --no-gate applies only to a --cross-encoder rerank run (the listwise arm "
               "gates unconditionally; --no-rerank has no gate). Refusing a config whose --no-gate "
