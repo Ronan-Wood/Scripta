@@ -383,7 +383,16 @@ def cmd_eval(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 2
 
-        if args.cross_encoder:
+        if args.rerank_model in ("apple", "apple-fm"):
+            from substrate.retrieve.rerank import AppleFMReranker
+
+            model = args.rerank_model
+            # Apple FM overflows above ~10 candidates (measured), so it keeps its own default
+            # unless the pool was set explicitly. Silently handing it 20 returns empty replies
+            # and every query falls back to fused order.
+            pool = args.rerank_pool if args.rerank_pool != 20 else 10
+            cand = AppleFMReranker(pool=pool, cache=_VC2(args.cache))
+        elif args.cross_encoder:
             from substrate.retrieve.rerank_cross import DEFAULT_MODEL as _CE
             from substrate.retrieve.rerank_cross import CrossEncoderReranker
 
@@ -409,7 +418,10 @@ def cmd_eval(args: argparse.Namespace) -> int:
         rr = cand
         kind = "cross" if args.cross_encoder else "listwise"
         gate_note = " (gate off)" if args.no_gate else ""
-        print(f"  rerank: {kind} {model} pool={args.rerank_pool}{gate_note}")
+        # Print the RESOLVED pool, not the flag. Apple FM silently uses 10 (it overflows at
+        # 20), so echoing args.rerank_pool logged "pool=20" over a run that used 10 -- a wrong
+        # row in EXPERIMENTS.md, which is the failure mode this project keeps retracting for.
+        print(f"  rerank: {kind} {model} pool={cand.pool}{gate_note}")
 
     summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route,
                         embedder=embedder, expander=expander, multiquery=mq, reranker=rr)
@@ -427,6 +439,21 @@ def cmd_eval(args: argparse.Namespace) -> int:
         return 2
     if getattr(rr, "abstentions", 0):
         print(f"  note: {rr.abstentions} unparseable verdicts abstained (ranked neutral)")
+
+    # Same discipline for the vector and expansion arms. Their mid-run failures degrade a query
+    # to lexical / no-HyDE inside retrieve(), which only recorded them on the Trace the eval
+    # discards — so a daemon that dies mid-run silently mixed arms with nothing to refuse. All
+    # three arms (embedder, HyDE, reranker) share one Ollama daemon here, so one hiccup can hit
+    # them together. A single fallen-back query is enough to invalidate the aggregate.
+    for arm, obj in (("embedder", embedder), ("HyDE expansion", expander),
+                     ("multi-query expansion", mq)):
+        fell = getattr(obj, "fallback_queries", 0)
+        if fell:
+            print(f"\nFATAL: {arm} fell back on {fell} quer{'y' if fell == 1 else 'ies'} "
+                  f"(transport failure mid-run). Those were measured WITHOUT that arm; the "
+                  f"reported number would mix configurations. Re-run once the daemon is stable.",
+                  file=sys.stderr)
+            return 2
 
     ok = report(summary, gold, baseline)
 

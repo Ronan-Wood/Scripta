@@ -24,7 +24,7 @@ import json
 import re
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # MEASURED, and bigger is NOT better. Semantic mrr by generator, 24 cases:
@@ -109,6 +109,10 @@ class HyDE:
     max_tokens: int = 160
     cache: object | None = None
     prompt_id: str = "canonical"
+    # Counter the eval reads to refuse a mixed-arm number: a query that fell open to the bare
+    # query was measured WITHOUT expansion, and averaging it under the HyDE label is the shape
+    # of this project's retracted measurements. Only records generation failures, not cache hits.
+    fallback_queries: int = field(default=0, init=False)
 
     @property
     def cache_key(self) -> str:
@@ -149,8 +153,10 @@ class HyDE:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 text = (json.loads(r.read()).get("response") or "").strip()
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            self.fallback_queries += 1
             return query
         if not text:
+            self.fallback_queries += 1
             return query
         # Keep the original query: the hypothetical supplies domain vocabulary, the query
         # supplies what was actually asked. Dropping the query loses the user's specifics.
@@ -188,6 +194,7 @@ class LlamaServerHyDE:
     max_tokens: int = 160
     cache: object | None = None
     prompt_id: str = "canonical"
+    fallback_queries: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         # New egress path, so it carries the loopback guard engine.py enforces and the older
@@ -232,12 +239,14 @@ class LlamaServerHyDE:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 text = (json.loads(r.read()).get("content") or "").strip()
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            self.fallback_queries += 1
             return query
         # Bonsai emits an (often empty) <think>...</think> block even on the raw completion
         # endpoint. It is never the hypothetical passage, only the reasoning wrapper, so it is
         # noise in the embedded vector — strip it and keep what follows.
         text = re.sub(r"^\s*<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
         if not text:
+            self.fallback_queries += 1
             return query
         out = f"{query}\n\n{text}"
         if self.cache is not None:
@@ -261,7 +270,28 @@ class AppleFMExpander:
     binary: str = "bin/hyde-fm"
     model: str = "apple-fm"
     cache: object | None = None
+    fallback_queries: int = field(default=0, init=False)
     _proc: object | None = None
+
+    @property
+    def cache_key(self) -> str:
+        """MUST exist, and MUST match what put_expansion writes.
+
+        This was missing, and the failure it caused is worth recording. `expand()` reads
+        `self.cache.get_expansion(query, self.cache_key)` OUTSIDE its try block, so with a
+        cache attached EVERY call raised AttributeError. That propagated into retriever.py's
+        `except Exception` around vector retrieval, which degrades to lexical-only and
+        attributes the failure to THE EMBEDDER — so the symptom ("embedder fell back on 69
+        queries") named the wrong component entirely.
+
+        Consequence: the Apple HyDE arm had never once run with a cache attached. Every
+        measurement of it that passed one was silently lexical-only. It hid because the arm
+        was only ever hand-tested with cache=None, which skips this branch.
+
+        Writes previously used `self.model` while reads used `cache_key`; they were identical
+        only by luck. Both now go through here.
+        """
+        return self.model
 
     def available(self) -> bool:
         return Path(self.binary).exists()
@@ -291,12 +321,14 @@ class AppleFMExpander:
             proc.stdin.flush()
             text = (proc.stdout.readline() or "").strip().replace("\\n", "\n")
         except Exception:
+            self.fallback_queries += 1
             return query  # fail open, exactly as the Ollama path does
         if not text:
+            self.fallback_queries += 1
             return query
         out = f"{query}\n\n{text}"
         if self.cache is not None:
-            self.cache.put_expansion(query, self.model, out)
+            self.cache.put_expansion(query, self.cache_key, out)
         return out
 
 
@@ -347,6 +379,7 @@ class MultiQuery:
     n: int = 3
     cache: object | None = None
     prompt_id: str = "multiquery"
+    fallback_queries: int = field(default=0, init=False)
 
     @property
     def cache_key(self) -> str:
@@ -377,6 +410,7 @@ class MultiQuery:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 text = (json.loads(r.read()).get("response") or "").strip()
         except Exception:
+            self.fallback_queries += 1
             return []
 
         out: list[str] = []
