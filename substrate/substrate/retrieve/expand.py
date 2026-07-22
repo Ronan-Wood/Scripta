@@ -21,6 +21,7 @@ Boundaries this deliberately respects:
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -153,6 +154,91 @@ class HyDE:
             return query
         # Keep the original query: the hypothetical supplies domain vocabulary, the query
         # supplies what was actually asked. Dropping the query loses the user's specifics.
+        out = f"{query}\n\n{text}"
+        if self.cache is not None:
+            self.cache.put_expansion(query, self.cache_key, out)
+        return out
+
+
+_LOOPBACK = ("127.0.0.1", "localhost", "::1", "[::1]")
+
+
+@dataclass
+class LlamaServerHyDE:
+    """HyDE via a llama.cpp `llama-server`, for GGUF models Ollama cannot load.
+
+    Exists for one model: Bonsai-27B, a 1-bit ternary 27B (Q1_0). Ollama 0.20.3 has no kernel
+    for its architecture and refuses the blob; stock llama.cpp gained upstream Q1_0 support and
+    runs it on Metal at ~22 tok/s. This is the ONLY path to a >8B generator on this machine, so
+    it is what actually tests the "bigger loses at HyDE" curve past the 7b/14b pair it was
+    fitted on.
+
+    Transport differences from the Ollama arm, both MEASURED the hard way:
+      * The native `/completion` endpoint, NOT `/v1/chat/completions`. Bonsai is a thinking
+        model; the chat path routes its entire budget into a `reasoning_content` channel and
+        returns empty `content` even at 600 tokens and with `--reasoning-budget 0`. A raw
+        completion has no think preamble and returns usable prose immediately.
+      * The response field is `content`, not `response`.
+
+    Same everything else: the canonical prompt, the cache contract, fail-open to the bare query.
+    """
+
+    model: str = "bonsai-27b-q1"
+    host: str = "http://127.0.0.1:8899"
+    max_tokens: int = 160
+    cache: object | None = None
+    prompt_id: str = "canonical"
+
+    def __post_init__(self) -> None:
+        # New egress path, so it carries the loopback guard engine.py enforces and the older
+        # expanders predate: a HyDE call ships the query to the endpoint, and this engine is
+        # local-only by design. A remote llama-server is not a supported configuration.
+        h = self.host.split("//")[-1].split(":")[0]
+        if h not in _LOOPBACK:
+            raise ValueError(
+                f"refusing non-loopback llama-server host {self.host!r}. Expansion sends the "
+                "query to the endpoint; this engine is local-only by design."
+            )
+
+    @property
+    def cache_key(self) -> str:
+        return f"{self.model}#{self.prompt_id}"
+
+    def available(self) -> bool:
+        try:
+            with urllib.request.urlopen(f"{self.host}/health", timeout=5) as r:
+                return json.loads(r.read()).get("status") == "ok"
+        except Exception:
+            return False
+
+    def expand(self, query: str) -> str:
+        if self.cache is not None:
+            hit = self.cache.get_expansion(query, self.cache_key)
+            if hit is not None:
+                return hit
+
+        payload = {
+            "prompt": PROMPTS[self.prompt_id].format(q=query),
+            "temperature": 0.0,
+            "n_predict": self.max_tokens,
+            "cache_prompt": False,
+        }
+        req = urllib.request.Request(
+            f"{self.host}/completion",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                text = (json.loads(r.read()).get("content") or "").strip()
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            return query
+        # Bonsai emits an (often empty) <think>...</think> block even on the raw completion
+        # endpoint. It is never the hypothetical passage, only the reasoning wrapper, so it is
+        # noise in the embedded vector — strip it and keep what follows.
+        text = re.sub(r"^\s*<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
+        if not text:
+            return query
         out = f"{query}\n\n{text}"
         if self.cache is not None:
             self.cache.put_expansion(query, self.cache_key, out)
