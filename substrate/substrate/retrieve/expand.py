@@ -24,7 +24,7 @@ import json
 import re
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 # MEASURED, and bigger is NOT better. Semantic mrr by generator, 24 cases:
@@ -109,10 +109,6 @@ class HyDE:
     max_tokens: int = 160
     cache: object | None = None
     prompt_id: str = "canonical"
-    # Counter the eval reads to refuse a mixed-arm number: a query that fell open to the bare
-    # query was measured WITHOUT expansion, and averaging it under the HyDE label is the shape
-    # of this project's retracted measurements. Only records generation failures, not cache hits.
-    fallback_queries: int = field(default=0, init=False)
 
     @property
     def cache_key(self) -> str:
@@ -153,10 +149,8 @@ class HyDE:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 text = (json.loads(r.read()).get("response") or "").strip()
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            self.fallback_queries += 1
             return query
         if not text:
-            self.fallback_queries += 1
             return query
         # Keep the original query: the hypothetical supplies domain vocabulary, the query
         # supplies what was actually asked. Dropping the query loses the user's specifics.
@@ -194,7 +188,6 @@ class LlamaServerHyDE:
     max_tokens: int = 160
     cache: object | None = None
     prompt_id: str = "canonical"
-    fallback_queries: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         # New egress path, so it carries the loopback guard engine.py enforces and the older
@@ -239,14 +232,12 @@ class LlamaServerHyDE:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 text = (json.loads(r.read()).get("content") or "").strip()
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            self.fallback_queries += 1
             return query
         # Bonsai emits an (often empty) <think>...</think> block even on the raw completion
         # endpoint. It is never the hypothetical passage, only the reasoning wrapper, so it is
         # noise in the embedded vector — strip it and keep what follows.
         text = re.sub(r"^\s*<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
         if not text:
-            self.fallback_queries += 1
             return query
         out = f"{query}\n\n{text}"
         if self.cache is not None:
@@ -270,7 +261,6 @@ class AppleFMExpander:
     binary: str = "bin/hyde-fm"
     model: str = "apple-fm"
     cache: object | None = None
-    fallback_queries: int = field(default=0, init=False)
     _proc: object | None = None
 
     @property
@@ -321,10 +311,8 @@ class AppleFMExpander:
             proc.stdin.flush()
             text = (proc.stdout.readline() or "").strip().replace("\\n", "\n")
         except Exception:
-            self.fallback_queries += 1
             return query  # fail open, exactly as the Ollama path does
         if not text:
-            self.fallback_queries += 1
             return query
         out = f"{query}\n\n{text}"
         if self.cache is not None:
@@ -379,7 +367,6 @@ class MultiQuery:
     n: int = 3
     cache: object | None = None
     prompt_id: str = "multiquery"
-    fallback_queries: int = field(default=0, init=False)
 
     @property
     def cache_key(self) -> str:
@@ -410,7 +397,6 @@ class MultiQuery:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 text = (json.loads(r.read()).get("response") or "").strip()
         except Exception:
-            self.fallback_queries += 1
             return []
 
         out: list[str] = []

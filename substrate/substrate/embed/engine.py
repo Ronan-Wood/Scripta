@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol
 
 DEFAULT_HOST = "http://127.0.0.1:11434"
@@ -98,10 +98,6 @@ class OllamaEmbedder:
     host: str = DEFAULT_HOST
     dim: int = 0
     prefix_style: str = "auto"
-    # Incremented by the retriever when a live query embed fails and retrieval degrades to
-    # lexical-only for that query. The eval reads it to refuse a hybrid-labelled number that
-    # was partly measured without the vector arm (the failure only the reranker guarded before).
-    fallback_queries: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:  # noqa: D105
         host = self.host.split("//")[-1].split(":")[0]
@@ -205,7 +201,6 @@ class AppleEmbedder:
     binary: str = "bin/embed-apple"
     model: str = "apple-nlcontextual"
     dim: int = 0
-    fallback_queries: int = field(default=0, init=False)
 
     @property
     def key(self) -> str:

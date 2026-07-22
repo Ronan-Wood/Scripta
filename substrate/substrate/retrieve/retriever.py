@@ -98,6 +98,17 @@ def _rrf(
     return sorted(((s, best[cid]) for cid, s in scores.items()), key=lambda x: -x[0])
 
 
+def _degrade(trace: Trace, reason: str) -> None:
+    """Record a mid-run degradation ON the Trace — the seam that carries the condition to the
+    consumer (the eval threads it onto CaseResult; a serving caller can show it).
+
+    Accumulate rather than overwrite, so a query that loses two arms names both. This is the
+    whole point: a number measured under a degradation must carry that condition with it, or it
+    reads authoritative while being quietly a different configuration than its label claims.
+    """
+    trace.degraded = f"{trace.degraded}; {reason}" if trace.degraded else reason
+
+
 def retrieve(
     store: IndexStore,
     query: str,
@@ -123,8 +134,13 @@ def retrieve(
             extra = multiquery.variants(query)
             queries += extra
             trace.variants = len(extra)
-        except Exception as e:  # noqa: BLE001 — fail open to the bare query
-            trace.degraded = str(e)[:120]
+            # variants() fails open to [] internally, so an empty result under an enabled
+            # multi-query config IS a silent degradation: the query ran without the paraphrases
+            # its measured label claims. Surface it so the eval refuses rather than mislabels.
+            if not extra:
+                _degrade(trace, "multi-query produced no variants")
+        except Exception as e:  # noqa: BLE001 — fail open to the bare query, but record it
+            _degrade(trace, f"multi-query error: {str(e)[:80]}")
 
     direct = store.search(
         query, k=k * 3, kind="passage", doc_id=doc_id, document_class=document_class
@@ -149,23 +165,39 @@ def retrieve(
                 )
                 if vv:
                     lists.append((VARIANT_WEIGHT, vv))
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001 — a variant is supplementary; keep going
+                _degrade(trace, f"variant embed: {str(e)[:80]}")
 
     # Hybrid: lexical AND vector, fused by RRF. RRF is used rather than a score blend
     # precisely because BM25 and cosine are not on a comparable scale, so no weighting
     # calibration is implied or needed.
     if embedder is not None:
-        # FAIL OPEN. If the embedder is unreachable, retrieval degrades to pure lexical
-        # rather than failing — the same contract Scripta's Embedder honours. An engine that
-        # stops answering because a local daemon is down is worse than one that answers
-        # slightly less well.
-        try:
-            # HyDE applies to the VECTOR query only. BM25 over a generated paragraph would
-            # inject invented terms into a lexical match that is already at 28/28; scoping
-            # expansion to the embedding makes it incapable of disturbing that by design.
-            vquery = expander.expand(query) if expander is not None else query
+        # HyDE applies to the VECTOR query only. BM25 over a generated paragraph would inject
+        # invented terms into a lexical match that is already at 28/28; scoping expansion to the
+        # embedding makes it incapable of disturbing that by design.
+        #
+        # Expansion sits in its OWN try, separate from the embedder's: a HyDE failure must be
+        # attributed to HyDE (not misreported as an embedder fallback) and must NOT disable the
+        # vector arm — it simply falls back to embedding the bare query.
+        vquery = query
+        if expander is not None:
+            expand_failed = False
+            try:
+                vquery = expander.expand(query)
+            except Exception as e:  # noqa: BLE001 — the cache/generator calls can raise
+                _degrade(trace, f"expansion error: {str(e)[:80]}")
+                expand_failed = True
             trace.expanded = len(vquery) > len(query)
+            # A successful generation always appends text, so an unchanged length means HyDE
+            # fell back to the bare query internally — a silent degradation, surfaced.
+            if not expand_failed and not trace.expanded:
+                _degrade(trace, "expansion fell back to bare query")
+
+        # FAIL OPEN. If the embedder is unreachable, retrieval degrades to pure lexical rather
+        # than failing — an engine that stops answering because a local daemon is down is worse
+        # than one that answers slightly less well. The degrade is recorded on the Trace so the
+        # eval refuses a hybrid-labelled number measured partly without the vector arm.
+        try:
             qv = embedder.embed_query(vquery)
             vhits = store.vector_search(
                 qv, getattr(embedder, 'key', embedder.model), k=k * 3, kind="passage", doc_id=doc_id,
@@ -175,11 +207,7 @@ def retrieve(
             if vhits:
                 lists.append((VECTOR_WEIGHT, vhits))
         except Exception as e:  # noqa: BLE001 — degrade on ANY embedder failure, by design
-            trace.degraded = str(e)[:120]
-            # Record the degrade on the (shared) embedder so the eval can refuse: this query
-            # was retrieved lexical-only and must not be averaged under the hybrid label. The
-            # Trace already carried this, but every consumer discards the Trace.
-            embedder.fallback_queries = getattr(embedder, "fallback_queries", 0) + 1
+            _degrade(trace, f"embedder: {str(e)[:80]}")
             embedder = None
 
     if route:
@@ -215,7 +243,20 @@ def retrieve(
         # what fusion already chose, and the whole point is to promote something fusion
         # ranked 6th-20th.
         if reranker is not None and fused:
-            fused, trace.reranked = reranker.rerank(query, fused)
+            # The reranker fails open to fused order on a transport/parse failure, which is
+            # indistinguishable by return value from the adaptive gate-skip (both leave the
+            # order unchanged). Its own fallback counter is the honest per-call signal, so
+            # snapshot-diff it and surface a real fallback onto the Trace for the eval to refuse.
+            # The call is also wrapped: an error its own except tuple misses (a reset, a
+            # RemoteDisconnected) must degrade the query, not abort the whole eval mid-run.
+            rr_fb0 = getattr(reranker, "fallback_queries", 0)
+            try:
+                fused, trace.reranked = reranker.rerank(query, fused)
+            except Exception as e:  # noqa: BLE001 — a reranker crash degrades, never aborts
+                _degrade(trace, f"reranker error: {str(e)[:80]}")
+            else:
+                if getattr(reranker, "fallback_queries", 0) > rr_fb0:
+                    _degrade(trace, "reranker fell back to fused order")
         return fused[:k], trace
 
     fused = list(direct[:k])
