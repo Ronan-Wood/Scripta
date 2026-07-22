@@ -38,9 +38,12 @@ THREE INVOCATION DETAILS, ALL MEASURED, ALL SILENT FAILURES IF MISSED
    /v1/completions returns `top_logprobs` empty. So the score is 1.0 or 0.0.
 
    That makes this a RELEVANCE FILTER rather than a re-ranker: every "yes" is promoted above
-   every "no", and within each partition the RRF fusion order is preserved by a stable sort.
-   Losing that stability would discard the ranking those candidates earned — with binary
-   scores most entries tie, so the sort's stability carries almost all the ordering.
+   the rest, and fused order is preserved within each group by a stable sort. A "no" and an
+   unparseable ABSTAIN both keep fused order below the yeses — an ABSTAIN is a non-signal and
+   must not outrank a candidate the model actually judged. If NO candidate yields a verdict the
+   whole query is a fallback (see rerank()), not a rerank. Losing the sort's stability would
+   discard the ranking those candidates earned — with binary scores most entries tie, so the
+   sort's stability carries almost all the ordering.
 
    No speculative logprob-parsing branch is kept here. The finding is recorded above and in
    EXPERIMENTS.md; unreachable code written against a response shape nobody has observed
@@ -77,8 +80,10 @@ DEFAULT_HOST = "http://127.0.0.1:11434"
 POOL = 20
 SNIPPET = 900          # cross-encoders see one doc at a time, so it can exceed listwise's 320
 TIMEOUT = 120
+NUM_PREDICT = 1        # a single verdict token — see note 2
+TEMPERATURE = 0.0
 
-ABSTAIN = 0.5          # unparseable verdict: rank between "yes" and "no", keep fused order
+ABSTAIN = 0.5          # sentinel for an unparseable verdict; it is NOT a rank (see the sort)
 
 SYSTEM = (
     'Judge whether the Document meets the requirements based on the Query and the Instruct '
@@ -97,14 +102,18 @@ TEMPLATE = (
     "<|im_start|>assistant\n<think>\n\n</think>\n\n"
 )
 
-# EVERYTHING that changes a score, hashed into the cache key. The rule is already written
-# down in expand.py and embed/engine.py — "anything that changes the output belongs in the
-# key" — and both were written after a prompt-cache bug served generations from a different
-# prompt. Editing INSTRUCTION to test prompt sensitivity is the obvious next experiment on
-# this arm; without this, that experiment would replay the old scores in seconds and report
-# "wording does not matter."
+# Everything CONFIGURABLE that changes a score, hashed into the cache key. The rule is already
+# written down in expand.py and embed/engine.py — "anything that changes the output belongs in
+# the key" — and both were written after a prompt-cache bug served generations from a different
+# prompt. Editing INSTRUCTION to test prompt sensitivity is the obvious next experiment on this
+# arm; without this, that experiment would replay the old scores in seconds and report "wording
+# does not matter." Sampling params (temperature, num_predict) change the verdict too, so they
+# belong here. The verdict PARSE rule and _defang live in code, not config, so they cannot be
+# hashed directly — bump _LOGIC_VERSION when either changes.
+_LOGIC_VERSION = "1"
 _CONFIG_SIG = hashlib.sha256(
-    (SYSTEM + INSTRUCTION + TEMPLATE + str(SNIPPET)).encode()
+    (SYSTEM + INSTRUCTION + TEMPLATE + str(SNIPPET) + str(TEMPERATURE) + str(NUM_PREDICT)
+     + _LOGIC_VERSION).encode()
 ).hexdigest()[:8]
 
 _CTRL = re.compile(r"<\|[A-Za-z0-9_]{1,24}\|>")
@@ -123,11 +132,14 @@ class CrossEncoderReranker:
     cache: object | None = None
     gate: bool = True       # skip queries whose top hit is already lexically precise
 
-    # Counters, not diagnostics-by-print. A pointwise arm makes 20 calls where the listwise
-    # arm makes 1, so it is 20x more exposed to a transient failure — and a query that falls
-    # back is silently the rerank-OFF configuration wearing the reranked arm's label. That is
-    # the shape of all five retracted measurements in this project, so the caller is given a
-    # number it can refuse to report on.
+    # Counters, not diagnostics-by-print. A query that falls back is silently the rerank-OFF
+    # configuration wearing the reranked arm's label — the shape of this project's retracted
+    # measurements — so the caller is given a number it can refuse to report on. Two DISTINCT
+    # fallback causes, so the counters are not redundant:
+    #   transport_failures — a daemon-level failure (a doc scored None); a strict subset.
+    #   fallback_queries   — EVERY fallback: transport failures PLUS all-abstain queries (no
+    #                        candidate produced a yes/no verdict). This is what the eval reads.
+    # abstentions is PER-CANDIDATE (one unparseable verdict), not per-query.
     transport_failures: int = field(default=0, init=False)
     abstentions: int = field(default=0, init=False)
     fallback_queries: int = field(default=0, init=False)
@@ -136,8 +148,10 @@ class CrossEncoderReranker:
     def cache_key(self) -> str:
         # `gate` and `pool` are deliberately ABSENT: neither changes what a (query, document)
         # score IS, only whether it is computed. Including them would partition the cache into
-        # identical halves and force a needless 20x recompute on a 20x-latency arm.
-        return f"{self.model}#cross#{_CONFIG_SIG}"
+        # identical halves and force a needless 20x recompute on a 20x-latency arm. `host` IS
+        # included: the same tag on another host (or after a re-pull) can be different weights —
+        # the Ollama tag does not pin them — so a score is only reusable within one host.
+        return f"{self.model}#{self.host}#cross#{_CONFIG_SIG}"
 
     def available(self) -> bool:
         try:
@@ -164,7 +178,7 @@ class CrossEncoderReranker:
             ),
             "raw": True,
             "stream": False,
-            "options": {"temperature": 0.0, "num_predict": 1},
+            "options": {"temperature": TEMPERATURE, "num_predict": NUM_PREDICT},
         }
         req = urllib.request.Request(
             f"{self.host}/api/generate",
@@ -205,7 +219,10 @@ class CrossEncoderReranker:
         # share almost no cache hits despite heavily overlapping candidate sets.
         scores: list[float] = []
         for h in pool:
-            ckey = query + "\x00" + h.chunk_id
+            # Keyed on the CONTENT scored, not chunk_id: a re-chunk that reuses an id but
+            # changes the text would otherwise serve the old verdict forever. A score is a pure
+            # function of (query, this document's text).
+            ckey = query + "\x00" + hashlib.sha256(h.text.encode()).hexdigest()[:16]
             if self.cache is not None:
                 cached = self.cache.get_expansion(ckey, self.cache_key)
                 if cached is not None:
@@ -226,8 +243,21 @@ class CrossEncoderReranker:
                 self.cache.put_expansion(ckey, self.cache_key, f"{s:.6f}")
             scores.append(s)
 
-        # STABLE sort: equal scores keep fused order. With binary scores most entries tie, so
-        # an unstable sort would throw away the fusion ranking that earned those positions.
-        # One exit, so the cached and freshly-scored paths cannot drift apart.
-        order = sorted(range(len(pool)), key=lambda i: (-scores[i], i))
+        # ALL-ABSTAIN IS A FALLBACK, not a rerank. If not one candidate produced a yes/no
+        # verdict — the failure mode note 1 documents, and what a non-reranker model wrongly
+        # passed to --cross-encoder produces — the sort below is a no-op over equal scores that
+        # returns fused order while claiming changed=True: the rerank-OFF config wearing the
+        # reranked label. Count it as a fallback (per query, distinct from a transport failure)
+        # so the eval refuses it, exactly as it refuses a dead daemon.
+        if not any(s != ABSTAIN for s in scores):
+            self.fallback_queries += 1
+            return hits, False
+
+        # Promote every "yes" above the rest; the stable sort preserves fused order within each
+        # group. A "no" and an unparseable ABSTAIN both keep fused order below the yeses — an
+        # ABSTAIN is a NON-signal and must not outrank a candidate the model actually judged.
+        # The old ABSTAIN=0.5 banded abstains ABOVE every "no", burying a rejected fused-rank-1
+        # passage beneath candidates it merely failed to parse. With no abstains present this is
+        # identical to the old -score sort (yes above no, fused order within each).
+        order = sorted(range(len(pool)), key=lambda i: (scores[i] != 1.0, i))
         return [pool[i] for i in order] + hits[self.pool :], True
