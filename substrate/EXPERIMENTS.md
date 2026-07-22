@@ -142,6 +142,30 @@ half.
 
 ---
 
+### The model axis is exhausted — everything downloaded, everything tied
+
+Final sweep of the four models pulled in the fast-wifi window. Every one measured at 44
+cases against the shipped 0.698, one at a time:
+
+    model                        role          result            verdict
+    embeddinggemma               embedder      0.691  (-0.008)   tied; 2.5x slower to embed
+    nomic-embed-text (re-run)    embedder      0.656  (-0.043)   ~2 cases behind
+    Qwen3-Reranker-4B            reranker      0.716  (+0.017)   tied, at 20x latency
+    gemma3:4b                    HyDE          0.685  (-0.013)   tied
+    Bonsai-27B ternary Q1_0      —             WILL NOT LOAD     see below
+
+**Bonsai-27B does not run and never could.** `ollama show` reports `architecture qwen35`,
+`quantization unknown`, and **3.65B parameters against a repo named 27B**. Ollama 0.20.3 has
+no kernel for it and fails with a bare "unable to load model". Nothing to measure. The
+lesson is cheap and worth keeping: read `ollama show` BEFORE building a harness arm around a
+model — the metadata contradicted the model's own name, and one command surfaced it.
+
+**Standing back: five embedders, four reranking strategies, three HyDE generators, and the
+best configuration is still the one found before any of them.** Swapping models is not where
+the remaining accuracy is. Every axis that responded to model choice has been walked to its
+flat region; what is left is structural — chunking, the corpus, and what the caller is
+actually asked.
+
 ### THE RERANKING AXIS IS SATURATED — four strategies, all tied
 
 Reranking was the axis with measured headroom, so it got the purpose-built treatment:
