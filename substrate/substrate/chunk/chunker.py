@@ -36,24 +36,35 @@ LEDE_CHARS = 420
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z(\"'])")
 
 
-def _split_prose(text: str, limit: int) -> list[str]:
-    """Split oversized prose on sentence boundaries — never mid-sentence."""
-    sentences = _SENTENCE_END.split(text)
-    out, buf = [], ""
-    for s in sentences:
-        if buf and len(buf) + len(s) + 1 > limit:
-            out.append(buf.strip())
-            buf = s
-        else:
-            buf = f"{buf} {s}".strip() if buf else s
-    if buf.strip():
-        out.append(buf.strip())
-    # A single sentence longer than the limit is emitted whole rather than shredded.
-    return out or [text]
+def _split_prose(text: str, limit: int) -> list[tuple[int, int]]:
+    """Split oversized prose on sentence boundaries into contiguous (start, end) spans.
+
+    Spans, not strings: each piece is a byte-exact slice `text[start:end]`, so the pieces tile
+    the unit's offset range DISJOINTLY and map back to the emitted body — which is what keeps
+    char_start/char_end load-bearing. (Handing every piece the whole unit's offsets made them
+    all claim the entire paragraph.) A single sentence longer than `limit` is emitted whole
+    rather than shredded.
+    """
+    # Sentence starts: 0, plus the char after each inter-sentence whitespace run. Each sentence
+    # then spans [starts[i], ends[i]) and the sentences tile `text` with no gaps or overlap.
+    starts = [0] + [m.end() for m in _SENTENCE_END.finditer(text)]
+    ends = starts[1:] + [len(text)]
+
+    spans: list[tuple[int, int]] = []
+    p_start = 0
+    for s, e in zip(starts, ends):
+        # Close the current piece before the sentence that would push it over the limit; a piece
+        # already holding one over-limit sentence is emitted whole (we never split within one).
+        if s > p_start and (e - p_start) > limit:
+            spans.append((p_start, s))
+            p_start = s
+    spans.append((p_start, len(text)))
+    return spans
 
 
 def _mk(
-    doc: Document, section: Section, units: list[Unit], text: str, seq: int, oversize: bool
+    doc: Document, section: Section, units: list[Unit], text: str, seq: int, oversize: bool,
+    *, char_start: int | None = None, char_end: int | None = None,
 ) -> Chunk:
     pages = [u.pages for u in units]
     starts = [p[0] for p in pages if p[0] is not None]
@@ -66,8 +77,12 @@ def _mk(
         path=list(section.path),
         level=section.level,
         block_ids=[i for u in units for i in u.ids],
-        char_start=min((u.char_start for u in units if u.char_start >= 0), default=-1),
-        char_end=max((u.char_end for u in units if u.char_end >= 0), default=-1),
+        # Explicit overrides let a split-prose piece carry its OWN slice; otherwise the chunk
+        # spans all its units.
+        char_start=char_start if char_start is not None
+        else min((u.char_start for u in units if u.char_start >= 0), default=-1),
+        char_end=char_end if char_end is not None
+        else max((u.char_end for u in units if u.char_end >= 0), default=-1),
         page_start=min(starts) if starts else None,
         page_end=max(ends) if ends else None,
         n_chars=len(text),
@@ -104,11 +119,24 @@ def _pack_section(doc: Document, section: Section, seq: int) -> tuple[list[Chunk
             flush(oversize=True)
             continue
 
-        # Oversized prose splits on sentence boundaries.
+        # Oversized prose splits on sentence boundaries into CONTIGUOUS slices, each piece with
+        # its OWN offsets, so the pieces tile the unit's span DISJOINTLY instead of every one
+        # claiming the whole paragraph. The slice keeps its inter-sentence whitespace (it is NOT
+        # stripped) so a piece equals `body[char_start:char_end]` byte-for-byte and the pieces sum
+        # to the unit's length — coverage stays exact. (A LIST_ITEM/CAPTION unit's offsets already
+        # include its "- " / "*...*" markup; that pre-existing shift is orthogonal and unchanged
+        # here, but the pieces are still disjoint.)
         if not unit.atomic and unit.n_chars > MAX:
             flush()
-            for piece in _split_prose(unit.text, TARGET):
-                chunks.append(_mk(doc, section, [unit], piece, seq, len(piece) > MAX))
+            base = unit.char_start
+            for p_start, p_end in _split_prose(unit.text, TARGET):
+                piece = unit.text[p_start:p_end]
+                if not piece.strip():
+                    continue
+                chunks.append(
+                    _mk(doc, section, [unit], piece, seq, len(piece) > MAX,
+                        char_start=base + p_start, char_end=base + p_end)
+                )
                 seq += 1
             continue
 
@@ -146,9 +174,14 @@ def _absorb_runts(chunks: list[Chunk]) -> list[Chunk]:
     for c in chunks[1:]:
         prev = out[-1]
         if c.n_chars < MIN and prev.n_chars + c.n_chars + 2 <= MAX and not (prev.oversize or c.oversize):
-            prev.text = f"{prev.text}\n\n{c.text}"
+            # Split-prose siblings of ONE paragraph share block_ids and are char-contiguous —
+            # their separating whitespace is already the trailing edge of prev — so they
+            # concatenate with NO separator and the merged text still equals its char span
+            # exactly. Genuinely separate units keep the "\n\n" the emitted body has between them.
+            sep = "" if set(prev.block_ids) & set(c.block_ids) else "\n\n"
+            prev.text = f"{prev.text}{sep}{c.text}"
             prev.n_chars = len(prev.text)
-            prev.block_ids += c.block_ids
+            prev.block_ids = list(dict.fromkeys(prev.block_ids + c.block_ids))
             prev.char_end = max(prev.char_end, c.char_end)
             if c.page_end is not None:
                 prev.page_end = max(prev.page_end or c.page_end, c.page_end)
