@@ -26,6 +26,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from substrate.net import require_loopback
 from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
 from substrate.store.index_store import Hit
 
@@ -59,6 +60,9 @@ class LLMReranker:
     # default of 0 and could never fire for the arm actually shipped.
     transport_failures: int = field(default=0, init=False)
     fallback_queries: int = field(default=0, init=False)
+
+    def __post_init__(self) -> None:
+        require_loopback(self.host, sends="the query and passages", suggest=DEFAULT_HOST)
 
     @property
     def cache_key(self) -> str:

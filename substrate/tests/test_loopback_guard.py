@@ -22,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from substrate.embed.engine import EmbeddingError, OllamaEmbedder  # noqa: E402
 from substrate.net import is_loopback  # noqa: E402
 from substrate.retrieve.expand import HyDE, LlamaServerHyDE, MultiQuery  # noqa: E402
+from substrate.retrieve.rerank import LLMReranker  # noqa: E402
+from substrate.retrieve.rerank_cross import CrossEncoderReranker  # noqa: E402
 
 
 def test_userinfo_bypass_is_rejected() -> None:
@@ -121,6 +123,25 @@ def test_ollama_expanders_carry_the_guard() -> None:
     # HyDE (the default expander) and MultiQuery ship the query too; they must refuse a
     # non-loopback host, not just the two arms the original fix touched.
     for cls in (HyDE, MultiQuery):
+        try:
+            cls(host="http://attacker.example")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{cls.__name__} accepted a non-loopback host")
+        try:
+            cls(host="http://127.0.0.1:11434@evil.example:1337")     # userinfo bypass
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{cls.__name__} accepted a userinfo-bypass host")
+        cls(host="http://127.0.0.1:11434")                           # genuine loopback constructs
+
+
+def test_rerankers_carry_the_guard() -> None:
+    # Both rerankers POST the query and retrieved passages to self.host; they must refuse a
+    # non-loopback host too, not just the embedder and expanders.
+    for cls in (LLMReranker, CrossEncoderReranker):
         try:
             cls(host="http://attacker.example")
         except ValueError:
