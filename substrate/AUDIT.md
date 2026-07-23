@@ -51,7 +51,7 @@ the internal per-call signal (gate-skip vs. real fallback can't be told apart ex
 | M  | Med | `AppleEmbedder` doesn't L2-normalize / dim-check (asymmetric with Ollama arm) | `embed/engine.py` | ✅ |
 | M  | Med | `AppleFMExpander.cache_key` undefined → apple-fm HyDE arm silently degrades (read/write key mismatch even if fixed) | `retrieve/expand.py` | ✅ |
 | M  | Med | extraction heuristics that misfire off-corpus (CAPTION two-number regex; `toc_pages` build/assign asymmetry; furniture caption readmitted as TEXT; `_coverage` >1.0; furniture `page=None` counted) | `extract/*` | 🔭 |
-| M  | Med | text repair: block-scoped compound guard; `residue()` checks 4 of 8 glyphs (false-clean) | `text/hyphens.py` | 🔭 |
+| M  | Med | text repair: `residue()` checks 4 of 8 glyphs (false-clean); compound-guard scoping ✋ (won't-fix, see note) | `text/hyphens.py` | 🔭 |
 | L  | Low | committed binary DBs `substrate.db`/`vectors.db`; `neighbours` seq-window vs prev/next; LIKE metachar in path-prefix; `report/review.py` "Repaired words" mislabel; misc | various | 🔭 |
 
 ---
@@ -137,3 +137,18 @@ took a `host` and POSTed query/passages to `f"{self.host}/api/generate"` with **
 wrongly raise. Every network-egress arm now routes through the shared guard; the `net.py` docstring
 is left non-universal on purpose so a future arm can't silently re-falsify a "covers every arm"
 claim. Regression test: `test_rerankers_carry_the_guard`.
+
+## Investigated — dehyphenate compound guard: block- vs doc-scoped  ✋ won't-fix
+
+The audit flagged `_compound_kept`'s recurrence check as block-scoped and implied it should be
+doc-scoped (so a compound recurring across blocks isn't welded). Implemented and reviewed — **both
+crosscheck reviewers reproduced that doc-scoping is a NET REGRESSION.** Recurrence can't tell "the
+same compound repeated" from "the same word split at the same wrap point repeatedly": doc-scoped
+`>=2` then KEEPS a recurring soft-hyphen artifact (a long word reflowing at the same column across
+pages — common), leaving hyphens the pass exists to remove. Every doc-vocabulary alternative tried
+(joined-form-in-vocab veto; both-halves-standalone) still mis-keeps always-split real words that
+never appear whole in the document (`under-stand`→understand, `data-base`→database) — the true
+discriminator needs a dictionary the module deliberately doesn't carry. Block-scoping errs toward
+JOINING (only keeps on a strong LOCAL 2×-in-one-paragraph signal), which is aligned with a
+join-oriented repair pass; its failure (welding a compound seen ≤1×/block) is the lesser evil, and
+only matters at all when the calibrated glyph is a literal `-`. Reverted; block-scoped kept.
