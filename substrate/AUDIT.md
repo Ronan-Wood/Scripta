@@ -127,11 +127,13 @@ guard-and-raise so the refusal message can't drift either — and routed all fou
   and over-caught. Also surfaced the reranker gap below and that the `net.py` docstring's "every
   arm" claim was false — docstring corrected.
 
-## Follow-up — rerankers have NO egress guard  📋
+## Follow-up — rerankers have NO egress guard  ✅
 
-Surfaced by the adversary during the HyDE/MultiQuery fix: `LLMReranker` (`retrieve/rerank.py`) and
-`CrossEncoderReranker` (`retrieve/rerank_cross.py`) both take a `host` and POST query/passages to
-`f"{self.host}/api/generate"` with **no `require_loopback` guard**. Same egress class as the
-expanders. Not CLI-reachable via a custom host today, but latent. Fix: add `require_loopback` to
-both `__post_init__` (`AppleFMReranker`'s `host` is a local-subprocess property, no network egress
-— leave it). Then `net.py` can truthfully claim it covers every arm again.
+`LLMReranker` (`retrieve/rerank.py`) and `CrossEncoderReranker` (`retrieve/rerank_cross.py`) both
+took a `host` and POSTed query/passages to `f"{self.host}/api/generate"` with **no
+`require_loopback` guard**. Same egress class as the expanders. **Fix:** added `require_loopback`
+(`sends="the query and passages"`) to both `__post_init__`. `AppleFMReranker` left unguarded — its
+`host` is a read-only property returning `bin/rerank-fm` (a local subprocess), so guarding it would
+wrongly raise. Every network-egress arm now routes through the shared guard; the `net.py` docstring
+is left non-universal on purpose so a future arm can't silently re-falsify a "covers every arm"
+claim. Regression test: `test_rerankers_carry_the_guard`.
