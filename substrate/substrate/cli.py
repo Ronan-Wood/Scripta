@@ -416,15 +416,17 @@ def cmd_query(args: argparse.Namespace) -> int:
     embedder = None if args.no_vector else (cand if cand.available() else None)
 
     with IndexStore(args.db) as store:
+        cap = None
         if args.kind == "outline":
             hits = store.search(args.text, k=args.k, kind="outline", document_class=args.doc_class)
+            index_version = store.index_version
         else:
-            hits, _ = retrieve(
+            result = retrieve(
                 store, args.text, k=args.k, document_class=args.doc_class, embedder=embedder
             )
+            hits, cap, index_version = result.passages, result.capability, result.index_version
         if not hits:
             print("  (no results)")
-            return 0
         for h in hits:
             print(f"\n  [{h.kind}] {h.citation}")
             body = " ".join(h.text.split())
@@ -433,6 +435,26 @@ def cmd_query(args: argparse.Namespace) -> int:
                 out = store.outline_for(h.chunk_id)
                 if out:
                     print(f"    ↳ orientation: {out.path_str}")
+        # Surface the capability envelope — which arms actually produced this, the measured tier
+        # they imply, and any mid-run fallback — instead of discarding it (the Boundary Principle).
+        if cap is not None:
+            print(f"\n  capability: embedder={cap.embedder or 'lexical-only'} · "
+                  f"hyde={cap.hyde} · rerank={cap.reranker}")
+            if cap.expected_mrr is not None:
+                q = f"expected mrr: ~{cap.expected_mrr} (measured tier, {cap.cohort})"
+            elif cap.fallbacks:
+                q = "expected mrr: unmeasured (a wired arm fell back — see below)"
+            elif not cap.embedder:
+                # No embedder was available (or --no-vector): a lexical-only run, distinct from the
+                # embedder-only default below. Say so rather than claim a config it isn't.
+                q = "expected mrr: n/a — lexical-only (no vector arm)"
+            else:
+                # No number because `query` runs embedder-only BY DESIGN (no HyDE/rerank); this is
+                # a lean lookup config, not a fault. The measured tiers live on the full stack (eval).
+                q = "expected mrr: n/a — query runs embedder-only by design (full stack: eval)"
+            print(f"  {q} · index {index_version}")
+            if cap.fallbacks:
+                print(f"  DEGRADED (arms fell back): {'; '.join(cap.fallbacks)}")
     return 0
 
 

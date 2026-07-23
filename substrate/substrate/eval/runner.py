@@ -38,7 +38,8 @@ class CaseResult:
     max_rank: int | None = None
     cohort: str = "lexical"
     ms: float = 0.0
-    degraded: str = ""                   # mid-run arm failure carried off retrieve()'s Trace
+    degraded: str = ""                   # mid-run arm failure, from result.capability.fallbacks
+    expected_mrr: float | None = None    # measured tier for the arms that ran (result contract)
 
     @property
     def passed(self) -> bool:
@@ -51,6 +52,8 @@ class CaseResult:
 class Summary:
     cases: list[CaseResult] = field(default_factory=list)
     elapsed_ms: float = 0.0
+    index_version: str = ""              # run-level, from the result contract (same for all cases)
+    expected_cohort: str = ""            # the cohort the expected-MRR tier was measured on
 
     def rate(self, pred) -> float:
         return sum(1 for c in self.cases if pred(c)) / max(len(self.cases), 1)
@@ -114,22 +117,25 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, ro
         return CaseResult(id=case["id"], query=case["query"], note=f"doc {target!r} not indexed")
 
     _t0 = time.monotonic()
-    trace = None
+    cap = None
     if case.get("kind") == "outline":
         hits = store.search(case["query"], k=k, kind="outline", doc_id=doc_id if scoped else None)
     else:
-        hits, trace = retrieve(
+        result = retrieve(
             store, case["query"], k=k, doc_id=doc_id if scoped else None, route=route,
             embedder=embedder, expander=expander, multiquery=multiquery, reranker=reranker,
         )
+        hits, cap = result.passages, result.capability
 
     _elapsed = (time.monotonic() - _t0) * 1000
     res = CaseResult(id=case["id"], query=case["query"], ms=_elapsed)
-    # A mid-run arm failure (embedder / HyDE / multi-query / reranker) is recorded ON the Trace
-    # by retrieve() and carried here as a field on the case — so cmd_eval can refuse a number
-    # that was measured under a degradation its label does not state, and name WHICH case.
-    if trace is not None and trace.degraded:
-        res.degraded = trace.degraded
+    # Read the result contract, don't discard it. A mid-run arm failure crosses the boundary as
+    # capability.fallbacks (fields, not prose), so cmd_eval can refuse a number measured under a
+    # degradation its label does not state, and name WHICH case. The measured tier and index
+    # version ride along too, so the eval surfaces what stack produced the number.
+    if cap is not None:
+        res.degraded = "; ".join(cap.fallbacks)
+        res.expected_mrr = cap.expected_mrr
     if hits:
         res.top_path, res.top_page = hits[0].path_str, hits[0].page_start
 
@@ -169,10 +175,14 @@ def run(db: str, gold_path: Path, k: int = K, route: bool = True, embedder=None,
     gold = json.loads(gold_path.read_text("utf-8"))
     summary = Summary()
     t0 = time.monotonic()
+    from substrate.retrieve.retriever import _COHORT
+
     with IndexStore(db) as store:
         docs = resolve_docs(store)
         for case in gold["cases"]:
             summary.cases.append(run_case(store, case, docs, k=k, route=route, embedder=embedder, expander=expander, multiquery=multiquery, reranker=reranker))
+        summary.index_version = store.index_version  # run-level: one index per eval
+    summary.expected_cohort = _COHORT
     summary.elapsed_ms = (time.monotonic() - t0) * 1000
     return summary, gold
 
@@ -263,6 +273,21 @@ def report(summary: Summary, gold: dict, baseline: dict | None) -> bool:
             f"\n  LATENCY  p50 {p50:.0f}ms   p95 {p95:.0f}ms   max {lat[-1]:.0f}ms"
             "   (per query; expansions cached)"
         )
+
+    # Surface the result contract the eval now reads instead of discarding: which index this ran
+    # against, and the measured tier for the arms that ran — taken from a NON-degraded case so it
+    # represents the run's configured stack, not a mid-run casualty. ALWAYS print the tier's
+    # cohort AND this run's semantic count side by side, unconditionally: a number measured at 44
+    # cases beside an MRR computed over N≠44 is the cross-cohort comparison HANDOFF §6 forbids, so
+    # the reader must always see both counts (never a substring/equality suppression that a stray
+    # count like 4 ⊂ 44 could defeat).
+    rep = next((c for c in summary.cases if not c.degraded and c.expected_mrr is not None), None)
+    exp_s = f"~{rep.expected_mrr}" if rep is not None else "unmeasured for this stack"
+    n_sem = sum(1 for c in summary.cases if c.cohort == "semantic")
+    tier_cohort = summary.expected_cohort or "measured"
+    print(f"\n  CONTRACT  index {summary.index_version or '(n/a)'}   "
+          f"expected {exp_s} (tier: {tier_cohort}; this run: {n_sem} semantic case"
+          f"{'s' if n_sem != 1 else ''})")
 
     print(f"\n  {'PASS' if ok else 'FAIL'}")
     return ok

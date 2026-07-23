@@ -12,6 +12,7 @@ left half-indexed with a fresh mtime that would suppress re-indexing.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import struct
@@ -294,6 +295,31 @@ class IndexStore:
 
     def documents(self) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM documents ORDER BY doc_id")]
+
+    @property
+    def index_version(self) -> str:
+        """Identity of the INDEXED content — schema version + a hash over each document's indexing
+        stage_ledger hash (a sha over its chunks.jsonl + class block; reconcile writes it). So it
+        changes on a re-chunk or re-extraction, not only a source-file change — 'what the index was
+        built from' includes the chunk geometry, not just the source PDF. Falls back to
+        source_sha256 for a doc inserted without a ledger row. Travels on the result contract so a
+        caller can DETECT staleness; per PRINCIPLES.md that is surfaced, not solved — this side has
+        no FSEvents watcher, so the caller must compare. Cheap: one indexed join over the (small)
+        documents table. Vector-space staleness is out of scope — the embed model is a query-time
+        choice, and the eval's completeness guard already refuses a partially-embedded corpus."""
+        rows = self.db.execute(
+            "SELECT d.doc_id, COALESCE(s.content_hash, d.source_sha256) AS h "
+            "FROM documents d "
+            "LEFT JOIN stage_ledger s ON s.doc_id = d.doc_id AND s.stage = 'index' "
+            "ORDER BY d.doc_id"
+        ).fetchall()
+        sv = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if not rows:
+            return f"v{sv}:empty"
+        sig = hashlib.sha256(
+            "\n".join(f"{r['doc_id']}:{r['h']}" for r in rows).encode()
+        ).hexdigest()[:12]
+        return f"v{sv}:{sig}"
 
     def stats(self) -> dict:
         q = lambda s: self.db.execute(s).fetchone()[0]  # noqa: E731
