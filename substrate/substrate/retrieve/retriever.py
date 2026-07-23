@@ -61,7 +61,12 @@ VARIANT_WEIGHT = 0.6    # paraphrases are coverage, not the question actually as
 
 @dataclass
 class Trace:
-    """Why a result set looks the way it does — retrieval must be explainable."""
+    """Why a result set looks the way it does — retrieval must be explainable.
+
+    The per-arm `*_fell_back` flags and `fallback_reasons` are the STRUCTURED source `retrieve()`
+    builds `Capability` from, so nothing has to parse the prose `degraded` back apart to know
+    which arm degraded or how many did.
+    """
 
     direct: int = 0
     vector: int = 0
@@ -72,10 +77,89 @@ class Trace:
     expanded: bool = False
     routes: list[str] = None
     fused: int = 0
+    embedder_fell_back: bool = False
+    hyde_fell_back: bool = False
+    reranker_fell_back: bool = False
+    rerank_reached: bool = False          # the rerank stage actually ran (vs gate-skip vs absent)
+    fallback_reasons: list[str] = None    # one entry per fallback — the structured list, not prose
 
     def __post_init__(self) -> None:
         if self.routes is None:
             self.routes = []
+        if self.fallback_reasons is None:
+            self.fallback_reasons = []
+
+
+# The two MEASURED 44-case stacks, each a FIXED model set. `expected_mrr` is a number ONLY when
+# the running arms match one exactly — same embedder key AND the same HyDE/reranker models the
+# tier was measured with. A different embedder, a swapped HyDE/rerank model, a mixed-provider
+# stack, or an unknown model is honestly UNMEASURED (None): the tiers are model-specific
+# (EXPERIMENTS.md measured nomic 0.656, 8b 0.683, embeddinggemma 0.691, cross-encoder 0.708 — NOT
+# one "ollama" number), so generalizing them by family would stamp a number on a config it was
+# never measured at, the exact Boundary-Principle sin this contract exists to prevent. NEVER
+# compare across cohorts (HANDOFF §6); the cohort travels on the Capability field. This replaces
+# PRINCIPLES.md's older mixed-cohort sketch (0.698/0.375/0.21) with same-cohort 44-case numbers.
+_COHORT = "44-case semantic"
+_STACKS: dict[str, dict] = {
+    "qwen3-embedding:0.6b#raw": {           # all-Ollama CEILING
+        "hyde": "qwen2.5:7b", "reranker": "qwen2.5:7b",
+        "mrr": {(True, True): 0.698, (True, False): 0.603},
+    },
+    "apple-nlcontextual": {                 # all-Apple FLOOR (zero-install default)
+        "hyde": "apple-fm", "reranker": "apple-fm",
+        "mrr": {(True, True): 0.593, (True, False): 0.467, (False, False): 0.343},
+    },
+}
+
+
+def _expected_mrr(
+    embed_key: str, hyde_model: str, rerank_model: str, hyde_in_tier: bool, rerank_in_tier: bool
+) -> float | None:
+    """The measured 44-case MRR for the EXACT stack that ran, or None if this configuration was
+    never measured. No interpolation, no family generalization, no lower-bound guessing — the
+    tiers are model-specific, so anything but an exact match is honestly unmeasured."""
+    stack = _STACKS.get(embed_key)
+    if stack is None:
+        return None
+    if hyde_in_tier and hyde_model != stack["hyde"]:
+        return None
+    if rerank_in_tier and rerank_model != stack["reranker"]:
+        return None
+    return stack["mrr"].get((hyde_in_tier, rerank_in_tier))
+
+
+@dataclass(frozen=True)
+class Capability:
+    """Which retrieval arms ACTUALLY ran, and the measured MRR that implies — carried as FIELDS on
+    the result so a degradation crosses the boundary to the caller instead of reading as absence
+    (PRINCIPLES.md, the Boundary Principle). `fallbacks` is the un-hidden list of arms that
+    dropped mid-run; a run with any fallback is a real degradation the caller must not treat as
+    full-quality. `expected_mrr` is the measured envelope for THIS exact stack — None when the
+    configuration was never measured at `cohort` (honest absence, not a smoothed guess; a number
+    is always an exact measured tier, never an estimate)."""
+
+    embedder: str                 # embedder key that ran, "" if the vector arm did not contribute
+    hyde: str                     # "ran" | "off" | "fell_back"
+    reranker: str                 # "ran" | "skipped" (adaptive gate) | "off" | "fell_back"
+    expected_mrr: float | None    # exact measured MRR for this stack, or None if unmeasured
+    cohort: str                   # the eval cohort that number was measured on
+    fallbacks: tuple[str, ...]    # arms that fell back mid-run, with reasons — a field, not a log
+
+    @property
+    def degraded(self) -> bool:
+        return bool(self.fallbacks)
+
+
+@dataclass(frozen=True)
+class RetrievalResult:
+    """The result contract every consumer reads: the passages, WHICH arms produced them, and what
+    the index was built from. Replaces the bare (hits, trace) tuple whose trace every caller
+    discarded — the Boundary Principle violated in our own code."""
+
+    passages: list[Hit]
+    capability: Capability
+    index_version: str
+    trace: Trace                  # raw per-arm signals capability is derived from (audit/debug)
 
 
 def _rrf(
@@ -98,18 +182,20 @@ def _rrf(
     return sorted(((s, best[cid]) for cid, s in scores.items()), key=lambda x: -x[0])
 
 
-def _degrade(trace: Trace, reason: str) -> None:
+def _degrade(trace: Trace, arm: str, reason: str) -> None:
     """Record a mid-run degradation ON the Trace — the seam that carries the condition to the
-    consumer (the eval threads it onto CaseResult; a serving caller can show it).
-
-    Accumulate rather than overwrite, so a query that loses two arms names both. This is the
-    whole point: a number measured under a degradation must carry that condition with it, or it
-    reads authoritative while being quietly a different configuration than its label claims.
+    consumer. `arm` sets the structured `<arm>_fell_back` flag Capability reads (never parsed back
+    out of the prose); `reason` accumulates onto `degraded` so a query that loses two arms names
+    both. A number measured under a degradation must carry that condition with it, or it reads
+    authoritative while being quietly a different configuration than its label claims.
     """
+    if arm:
+        setattr(trace, f"{arm}_fell_back", True)
+    trace.fallback_reasons.append(reason)
     trace.degraded = f"{trace.degraded}; {reason}" if trace.degraded else reason
 
 
-def retrieve(
+def _retrieve(
     store: IndexStore,
     query: str,
     *,
@@ -123,7 +209,9 @@ def retrieve(
     multiquery=None,
     reranker=None,
 ) -> tuple[list[Hit], Trace]:
-    """Passage retrieval, optionally routed through the outline layer."""
+    """Passage retrieval, optionally routed through the outline layer. Returns (hits, trace);
+    `retrieve()` wraps this into the RetrievalResult contract. Behaviour is unchanged from before
+    the contract existed — this is the identical retrieval body, only the return is now wrapped."""
     trace = Trace()
 
     # Query set: the original, plus register-varied paraphrases. A relevant chunk only has
@@ -185,13 +273,13 @@ def retrieve(
             try:
                 vquery = expander.expand(query)
             except Exception as e:  # noqa: BLE001 — the cache/generator calls can raise
-                _degrade(trace, f"expansion error: {str(e)[:80]}")
+                _degrade(trace, "hyde", f"expansion error: {str(e)[:80]}")
                 expand_failed = True
             trace.expanded = len(vquery) > len(query)
             # A successful generation always appends text, so an unchanged length means HyDE
             # fell back to the bare query internally — a silent degradation, surfaced.
             if not expand_failed and not trace.expanded:
-                _degrade(trace, "expansion fell back to bare query")
+                _degrade(trace, "hyde", "expansion fell back to bare query")
 
         # FAIL OPEN. If the embedder is unreachable, retrieval degrades to pure lexical rather
         # than failing — an engine that stops answering because a local daemon is down is worse
@@ -204,7 +292,7 @@ def retrieve(
         try:
             qv = embedder.embed_query(vquery)
         except Exception as e:  # noqa: BLE001 — degrade on ANY embedder failure, by design
-            _degrade(trace, f"embedder: {str(e)[:80]}")
+            _degrade(trace, "embedder", f"embedder: {str(e)[:80]}")
             embedder = None
         if qv is not None:
             try:
@@ -216,7 +304,7 @@ def retrieve(
                 if vhits:
                     lists.append((VECTOR_WEIGHT, vhits))
             except Exception as e:  # noqa: BLE001 — a store-side failure also degrades the case
-                _degrade(trace, f"vector search: {str(e)[:80]}")
+                _degrade(trace, "embedder", f"vector search: {str(e)[:80]}")
                 embedder = None
 
     if route:
@@ -258,14 +346,15 @@ def retrieve(
             # snapshot-diff it and surface a real fallback onto the Trace for the eval to refuse.
             # The call is also wrapped: an error its own except tuple misses (a reset, a
             # RemoteDisconnected) must degrade the query, not abort the whole eval mid-run.
+            trace.rerank_reached = True  # distinguishes an adaptive gate-skip from "never ran"
             rr_fb0 = getattr(reranker, "fallback_queries", 0)
             try:
                 fused, trace.reranked = reranker.rerank(query, fused)
             except Exception as e:  # noqa: BLE001 — a reranker crash degrades, never aborts
-                _degrade(trace, f"reranker error: {str(e)[:80]}")
+                _degrade(trace, "reranker", f"reranker error: {str(e)[:80]}")
             else:
                 if getattr(reranker, "fallback_queries", 0) > rr_fb0:
-                    _degrade(trace, "reranker fell back to fused order")
+                    _degrade(trace, "reranker", "reranker fell back to fused order")
         return fused[:k], trace
 
     fused = list(direct[:k])
@@ -291,3 +380,88 @@ def retrieve(
         fused = fused[:k] + extra
 
     return fused[:k], trace
+
+
+def _capability(
+    trace: Trace, *, embed_key: str, emb_provided: bool, hyde_model: str, hyde_provided: bool,
+    rerank_model: str, rr_provided: bool,
+) -> Capability:
+    """Derive the arm-by-arm capability from the trace's STRUCTURED flags (never the prose).
+
+    Tier note: the adaptive gate legitimately SKIPS the reranker on an already-precise query, and
+    the measured tiers already include that behaviour — so a gate-skip stays in the reranked tier;
+    only 'off' (never reached) or 'fell_back' (reached, failed) drop out of it. HyDE only feeds the
+    vector query, so with no embedder it is 'off' regardless.
+    """
+    embedder = "" if (not emb_provided or trace.embedder_fell_back) else embed_key
+    emb_ok = bool(embedder)
+
+    if not (hyde_provided and emb_provided):
+        hyde = "off"
+    elif trace.hyde_fell_back:
+        hyde = "fell_back"
+    elif trace.expanded:
+        hyde = "ran"
+    else:
+        hyde = "off"  # provided but never produced an expansion (and did not flag a failure)
+
+    if not rr_provided:
+        reranker = "off"
+    elif trace.reranker_fell_back:
+        reranker = "fell_back"
+    elif trace.reranked:
+        reranker = "ran"
+    elif trace.rerank_reached:
+        reranker = "skipped"          # reached the rerank stage, adaptive gate declined
+    else:
+        reranker = "off"              # wired, but the pipeline never reached the rerank stage
+
+    tier_key = embed_key if emb_ok else ""
+    exp = _expected_mrr(tier_key, hyde_model, rerank_model,
+                        hyde == "ran", reranker in ("ran", "skipped"))
+    return Capability(
+        embedder=embedder, hyde=hyde, reranker=reranker,
+        expected_mrr=exp, cohort=_COHORT, fallbacks=tuple(trace.fallback_reasons),
+    )
+
+
+def retrieve(
+    store: IndexStore,
+    query: str,
+    *,
+    k: int = 5,
+    doc_id: str | None = None,
+    document_class: str | None = None,
+    route: bool = False,
+    expand: bool = False,
+    embedder=None,
+    expander=None,
+    multiquery=None,
+    reranker=None,
+) -> RetrievalResult:
+    """Passage retrieval, returning the RESULT CONTRACT: passages + which arms actually ran +
+    index_version. The retrieval itself is `_retrieve`, unchanged — this only surfaces the
+    condition the engine already knew and used to throw away (PRINCIPLES.md, the Boundary
+    Principle). No consumer should ever go back to reading a bare hit list.
+    """
+    # Capture what was WIRED (and each arm's model identity) before _retrieve can null an arm out
+    # on fallback. The model identities gate the measured tier — a swapped HyDE/rerank model is a
+    # different, unmeasured stack.
+    emb_provided = embedder is not None
+    embed_key = getattr(embedder, "key", getattr(embedder, "model", "")) if emb_provided else ""
+    hyde_model = getattr(expander, "model", "") if expander is not None else ""
+    rerank_model = getattr(reranker, "model", "") if reranker is not None else ""
+
+    hits, trace = _retrieve(
+        store, query, k=k, doc_id=doc_id, document_class=document_class, route=route,
+        expand=expand, embedder=embedder, expander=expander, multiquery=multiquery,
+        reranker=reranker,
+    )
+    cap = _capability(
+        trace, embed_key=embed_key, emb_provided=emb_provided,
+        hyde_model=hyde_model, hyde_provided=expander is not None,
+        rerank_model=rerank_model, rr_provided=reranker is not None,
+    )
+    return RetrievalResult(
+        passages=hits, capability=cap, index_version=store.index_version, trace=trace
+    )

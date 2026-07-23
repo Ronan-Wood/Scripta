@@ -72,9 +72,15 @@ The result envelope handed to any consumer (skill, CLI, MCP, GUI) carries:
 | field | states | honest status |
 |---|---|---|
 | `passages[]` | snippet-first, expandable by id | design |
-| `capabilities` | which of embedder / generator / rerank are live | design |
-| `expected_quality` | measured MRR for THIS degradation, not a flag | 0.698 full · 0.375 no generator · 0.21 no embedder |
+| `capabilities` | which of embedder / generator / rerank are live | **built** — `retrieve()` returns a `Capability` (embedder / hyde / reranker: ran / skipped / off / fell_back) |
+| `expected_quality` | measured MRR for THIS exact stack, not a flag | **built** — same-cohort 44-case tiers: 0.698 full-Ollama · 0.593 full-Apple · 0.343 Apple-embedder-alone; unmeasured stacks return `None`, not a guess |
 | `index_version` | what the index was built from | **surfaces staleness; does not solve it** |
+
+The `expected_quality` numbers here supersede an earlier sketch (`0.698 full · 0.375 no generator ·
+0.21 no embedder`) that was **mixed-cohort** — 0.375 is a 24-case figure and 0.21 a 7-case one, so
+quoting them beside the 44-case 0.698 would be the cross-cohort subtraction HANDOFF §6 forbids. The
+implemented tiers (`retrieve/retriever.py:_STACKS`) are all 44-case and model-specific; a config
+that was never measured at 44 cases returns `None` rather than importing a lower-cohort number.
 
 **Be precise about that last row.** `index_version` converts *silent omission* into *detectable
 omission*, which by this document's own argument is the whole game. But detection is not
