@@ -459,7 +459,7 @@ def cmd_query(args: argparse.Namespace) -> int:
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
-    from substrate.eval.runner import report, run
+    from substrate.eval.runner import GoldError, report, run
 
     gold_path = Path(args.gold).expanduser()
     baseline_path = Path(args.baseline).expanduser()
@@ -599,8 +599,15 @@ def cmd_eval(args: argparse.Namespace) -> int:
         # row in EXPERIMENTS.md, which is the failure mode this project keeps retracting for.
         print(f"  rerank: {kind} {model} pool={cand.pool}{gate_note}")
 
-    summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route,
-                        embedder=embedder, expander=expander, multiquery=mq, reranker=rr)
+    try:
+        summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route,
+                            embedder=embedder, expander=expander, multiquery=mq, reranker=rr)
+    except GoldError as e:
+        # A bad gold file — malformed/vacuous cases, bad JSON, or no 'cases' — fails clean here,
+        # like every other validation in this CLI, not with a raw traceback. Caught by TYPE, not by
+        # bare ValueError: a genuine ValueError from the eval pipeline must not read as a gold bug.
+        print(f"FATAL: {e}", file=sys.stderr)
+        return 2
 
     # Refuse a number measured under a degradation its label does not state. retrieve() records
     # every mid-run arm failure — embedder, HyDE, multi-query, or a reranker that fell back to

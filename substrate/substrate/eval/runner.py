@@ -25,6 +25,12 @@ from substrate.store.index_store import Hit, IndexStore
 K = 5
 
 
+class GoldError(ValueError):
+    """A malformed or vacuous gold file, raised at load so cmd_eval reports it as a clean FATAL —
+    and so a genuine ValueError from the eval pipeline (a garbled embedding response, say) is NOT
+    mislabeled as a gold-file problem."""
+
+
 @dataclass
 class CaseResult:
     id: str
@@ -87,6 +93,55 @@ def _in_pages(hit: Hit, bounds: list[int] | None) -> bool:
     if not bounds or hit.page_start is None:
         return True
     return bounds[0] <= hit.page_start <= bounds[1]
+
+
+def _str_assertion(v: object) -> bool:
+    """True iff `v` is a list of strings with at least one non-blank member — a usable assertion
+    for `_has_answer`/`_has_path`, which substring-match each member via `.lower()`. A non-string
+    member would raise AttributeError there, so it fails here instead; an empty or all-blank list
+    is `all([]) == True`, satisfied by every chunk, so it asserts nothing."""
+    return (
+        isinstance(v, list)
+        and all(isinstance(x, str) for x in v)
+        and any(x.strip() for x in v)
+    )
+
+
+def _validate_gold(cases: list[dict]) -> None:
+    """Reject, at load, any case that is malformed or would not exercise the conjunctive gate.
+
+    A chunk is scored on BOTH the answer phrase (`_has_answer`) AND the attribution (`_has_path`),
+    and both are `all(...)` — so an empty or all-blank list is `all([]) == True`, satisfied by every
+    chunk. A case missing either side silently degrades the gate to single-axis scoring: the exact
+    Phase-0 failure the module docstring describes (a well-formed path on the WRONG chapter, or
+    content from the wrong source, blessed as a pass). Require a non-blank string `answer` AND a
+    non-blank string `path`, plus the `id`/`query` run_case indexes. `pages` and `expect_doc` are
+    supplementary, NOT standalone attribution: each only constrains for some corpora (`pages` needs
+    the hit to carry page metadata; `expect_doc` needs a multi-document, un-`doc`-scoped search), so
+    against the wrong corpus either goes vacuous — `path` is the one that always constrains. Fail
+    loudly with GoldError, naming every offender at once.
+    """
+    bad = []
+    for i, c in enumerate(cases):
+        rid = c.get("id")
+        has_id = isinstance(rid, str) and bool(rid.strip())
+        cid = rid if has_id else f"<case {i}>"
+        missing = []
+        if not has_id:
+            missing.append("id")
+        if not (isinstance(c.get("query"), str) and c.get("query").strip()):
+            missing.append("query")
+        if not _str_assertion(c.get("answer")):
+            missing.append("answer (non-blank string list)")
+        if not _str_assertion(c.get("path")):
+            missing.append("path (non-blank string list)")
+        if missing:
+            bad.append(f"{cid}: missing/invalid {', '.join(missing)}")
+    if bad:
+        raise GoldError(
+            "gold cases are malformed or would not exercise the conjunctive gate:\n  "
+            + "\n  ".join(bad)
+        )
 
 
 def resolve_docs(store: IndexStore) -> dict[str, str]:
@@ -172,7 +227,13 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, ro
 
 
 def run(db: str, gold_path: Path, k: int = K, route: bool = True, embedder=None, expander=None, multiquery=None, reranker=None) -> tuple[Summary, dict]:
-    gold = json.loads(gold_path.read_text("utf-8"))
+    try:
+        gold = json.loads(gold_path.read_text("utf-8"))
+    except json.JSONDecodeError as e:
+        raise GoldError(f"{gold_path} is not valid JSON: {e}") from e
+    if not isinstance(gold, dict) or not isinstance(gold.get("cases"), list):
+        raise GoldError(f"{gold_path} has no 'cases' list")
+    _validate_gold(gold["cases"])
     summary = Summary()
     t0 = time.monotonic()
     from substrate.retrieve.retriever import _COHORT
