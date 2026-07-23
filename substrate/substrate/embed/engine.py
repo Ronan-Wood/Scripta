@@ -189,8 +189,10 @@ class AppleEmbedder:
     earlier rejection of it was measured on call transcripts with a weaker instrument, which
     is not the same as measuring it here.
 
-    No task prefixes: those are a nomic convention, not a general one. Vectors arrive
-    mean-pooled and L2-normalized from the shim.
+    No task prefixes: those are a nomic convention, not a general one. The shim mean-pools and
+    normalizes; this arm re-L2-normalizes each vector anyway (the same discipline the Ollama arm
+    applies to its source) and rejects any vector whose length disagrees with the handshake `dim`,
+    so a dot product IS cosine rather than trusted to be.
     """
 
     binary: str = "bin/embed-apple"
@@ -235,7 +237,15 @@ class AppleEmbedder:
         if not line:
             raise EmbeddingError("empty embedding from embed-apple")
         raw = base64.b64decode(line)
-        return list(_s.unpack(f"{len(raw) // 4}f", raw))
+        # Validate the RAW byte count, not the post-floor-division float count: 4 bytes per
+        # float32, so a payload that isn't exactly dim*4 bytes (truncated, padded, or the wrong
+        # dim) raises here cleanly instead of a struct.error or a silently-reshaped vector.
+        if len(raw) != self.dim * 4:
+            raise EmbeddingError(
+                f"embed-apple returned {len(raw)} bytes, expected {self.dim * 4} "
+                f"(= {self.dim} float32s)"
+            )
+        return _l2(list(_s.unpack(f"{self.dim}f", raw)))
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [self._one(t) for t in texts]
