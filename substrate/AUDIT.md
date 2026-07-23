@@ -94,10 +94,29 @@ keeping exact-quant pinning.
 
 ---
 
-## Cross-cutting — surfaced, your call  ✋
+## Cross-cutting — loopback egress guard  ✅
 
-**Loopback-guard bypass (SSRF-flavoured egress).** `host.split("//")[-1].split(":")[0]` returns
-`127.0.0.1` for `http://127.0.0.1:11434@attacker.example:1337`, so query text can egress to a
-non-loopback host while the guard passes. Present in `LlamaServerHyDE.__post_init__`
-(`retrieve/expand.py`) and the pre-existing `OllamaEmbedder.__post_init__` (`embed/engine.py`).
-Fix: `urllib.parse.urlsplit(host).hostname` + case-insensitive compare. Not scheduled — flagging.
+**Loopback-guard bypass (SSRF-flavoured egress).** The old `host.split("//")[-1].split(":")[0]`
+read `127.0.0.1` out of `http://127.0.0.1:11434@evil.example:1337` (that's userinfo, not the host)
+and mangled `http://[::1]:port` down to `[` (wrongly refusing IPv6 loopback). **Fix:** a shared
+`substrate/net.py::is_loopback()` — `urlsplit(host).hostname`, refuses ANY userinfo outright, fails
+closed on non-str / malformed / no-host, allowed set unchanged (not widened). Both
+`LlamaServerHyDE.__post_init__` and `OllamaEmbedder.__post_init__` call it; refusal messages made
+accurate (no false "non-loopback" for a scheme-less loopback host) + actionable. Regression test:
+`tests/test_loopback_guard.py` (11 cases).
+- crosscheck (3 reviewers) → reject userinfo outright: `urllib.request` does NOT strip it, so
+  `urlsplit().hostname` and the socket disagree — the `@evil.example` string DNS-fails under this
+  transport, but a userinfo-stripping one (requests/httpx) would connect off-machine. Reframed as
+  parsing-correctness + defense-in-depth, not a live exfil-through-`urllib.request` bug.
+- adversary (2 reviewers, diff-only) → **no bypass found** (both verified `is_loopback` never
+  returns True for a host the transport reaches off-loopback). Added: non-str fail-closed guard
+  (was leaking `AttributeError`), honest test comments (only the `@evil.example:1337` case was an
+  old-guard bypass), actionable scheme-less message.
+
+## Follow-up — HyDE / MultiQuery have NO egress guard  📋
+
+Surfaced during the guard fix: `HyDE` (the DEFAULT Ollama expander) and `MultiQuery` in
+`retrieve/expand.py` take a `host` and POST the query to it with **no loopback check at all** — not
+the broken guard, none. Not CLI-reachable today (no `--hyde-host` flag), so latent, but the same
+egress class, and `net.py`'s docstring claims "every local-only daemon arm." Fix: add `is_loopback`
+guards to both `__post_init__`.

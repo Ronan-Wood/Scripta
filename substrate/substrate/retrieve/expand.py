@@ -26,6 +26,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from substrate.net import is_loopback
 from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
 
 # MEASURED, and bigger is NOT better. Semantic mrr by generator, 24 cases:
@@ -161,9 +162,6 @@ class HyDE:
         return out
 
 
-_LOOPBACK = ("127.0.0.1", "localhost", "::1", "[::1]")
-
-
 @dataclass
 class LlamaServerHyDE:
     """HyDE via a llama.cpp `llama-server`, for GGUF models Ollama cannot load.
@@ -194,11 +192,11 @@ class LlamaServerHyDE:
         # New egress path, so it carries the loopback guard engine.py enforces and the older
         # expanders predate: a HyDE call ships the query to the endpoint, and this engine is
         # local-only by design. A remote llama-server is not a supported configuration.
-        h = self.host.split("//")[-1].split(":")[0]
-        if h not in _LOOPBACK:
+        if not is_loopback(self.host):
             raise ValueError(
-                f"refusing non-loopback llama-server host {self.host!r}. Expansion sends the "
-                "query to the endpoint; this engine is local-only by design."
+                f"refusing llama-server host {self.host!r}: not a loopback URL. Expansion sends "
+                "the query to the endpoint, so this engine is local-only by design — pass an "
+                "http:// loopback host such as http://127.0.0.1:8899."
             )
 
     @property
