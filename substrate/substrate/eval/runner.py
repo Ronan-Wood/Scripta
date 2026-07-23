@@ -169,7 +169,12 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, ro
     target = scoped or expect_doc
     doc_id = docs.get(target) if target else None
     if target and doc_id is None:
-        return CaseResult(id=case["id"], query=case["query"], note=f"doc {target!r} not indexed")
+        # Carry the declared cohort even on this early exit. Without it the result defaults to
+        # "lexical", so a not-indexed SEMANTIC case drops out of the semantic denominator (inflating
+        # its MRR, which --update-baseline then persists) and lands as a spurious failure in the
+        # lexical gate. A missing doc must read as a miss in its OWN cohort, not vanish.
+        return CaseResult(id=case["id"], query=case["query"], note=f"doc {target!r} not indexed",
+                          cohort=case.get("cohort", "lexical"))
 
     _t0 = time.monotonic()
     cap = None
