@@ -18,7 +18,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from substrate.retrieve.retriever import (  # noqa: E402
-    Capability,
     RetrievalResult,
     Trace,
     _capability,

@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 
 from substrate.chunk.sections import Section, Unit, leaf_sections
-from substrate.models import Block, Chunk, Document, Kind
+from substrate.models import Block, Chunk, Document
 
 TARGET = 1400
 MAX = 2600
