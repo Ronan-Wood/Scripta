@@ -48,7 +48,7 @@ the internal per-call signal (gate-skip vs. real fallback can't be told apart ex
 | H4 | High | split-prose chunks all inherit the whole paragraph's `char_start/char_end` → overlapping offsets, violates the disjoint-offset invariant | `chunk/chunker.py` | ✅ |
 | M  | Med | vector store can't hold two model spaces (`chunk_id` sole PK); isolation held only by `drop_vectors` | `store/schema.py:103` | 🔭 |
 | M  | Med | semantic-MRR inflation when a doc isn't indexed (early-return cohort defaults `lexical`); `--update-baseline` persists it | `eval/runner.py:112,205` | 🔭 |
-| M  | Med | `AppleEmbedder` doesn't L2-normalize / dim-check (asymmetric with Ollama arm) | `embed/engine.py` | 🔭 |
+| M  | Med | `AppleEmbedder` doesn't L2-normalize / dim-check (asymmetric with Ollama arm) | `embed/engine.py` | ✅ |
 | M  | Med | `AppleFMExpander.cache_key` undefined → apple-fm HyDE arm silently degrades (read/write key mismatch even if fixed) | `retrieve/expand.py` | 🔭 |
 | M  | Med | extraction heuristics that misfire off-corpus (CAPTION two-number regex; `toc_pages` build/assign asymmetry; furniture caption readmitted as TEXT; `_coverage` >1.0; furniture `page=None` counted) | `extract/*` | 🔭 |
 | M  | Med | text repair: block-scoped compound guard; `residue()` checks 4 of 8 glyphs (false-clean) | `text/hyphens.py` | 🔭 |
