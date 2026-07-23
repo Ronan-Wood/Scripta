@@ -351,8 +351,10 @@ class IndexStore:
     def chunks_missing_vectors(self, model: str, limit: int = 100000) -> list[tuple[str, str]]:
         """Chunks with no vector in the CURRENT model's space. This is the embed cache.
 
-        Keyed on (chunk_id, embed_model), so re-running embed is a no-op and a model change
-        re-embeds everything rather than silently mixing two spaces.
+        The JOIN filters on embed_model, but the TABLE is keyed on chunk_id alone (one space at a
+        time, not (chunk_id, embed_model)). So re-running the same model is a no-op, and a model
+        change relies on drop_vectors -- which cmd_embed runs first -- to clear the old space
+        rather than the two coexisting.
         """
         rows = self.db.execute(
             "SELECT c.chunk_id, c.text_with_path FROM chunks c "

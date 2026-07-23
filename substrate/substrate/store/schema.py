@@ -97,8 +97,10 @@ CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
     VALUES('delete', old.rowid, old.text_with_path);
 END;
 
--- Vector slot: versioned by (model, dim) so two embedding spaces can never be compared.
--- Stays empty until an embedder beats the Phase 4 eval gate; retrieval works without it.
+-- Vector slot: ONE embedding space at a time. chunk_id is the sole PK, so a row is per-chunk,
+-- not per-(chunk, model); isolation is by convention, not the key -- drop_vectors (run on every
+-- embed) purges other models and search scopes by embed_model. Stays empty until an embedder
+-- beats the Phase 4 eval gate; retrieval works without it.
 CREATE TABLE IF NOT EXISTS chunk_vectors(
     chunk_id    TEXT PRIMARY KEY,
     vector      BLOB NOT NULL,
