@@ -22,6 +22,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
 
+from substrate.net import is_loopback
+
 DEFAULT_HOST = "http://127.0.0.1:11434"
 # MEASURED. qwen3-embedding is LLM-derived (built on Qwen3) rather than a BERT-family
 # retrieval encoder, and that lineage difference is what mattered:
@@ -43,8 +45,6 @@ DEFAULT_MODEL = "qwen3-embedding:0.6b"
 # time; the longer ceiling covers a slow batch without aborting a 30-minute run.
 BATCH = 32
 TIMEOUT = 600
-
-LOOPBACK = ("127.0.0.1", "localhost", "::1", "[::1]")
 
 
 class EmbeddingError(RuntimeError):
@@ -100,11 +100,11 @@ class OllamaEmbedder:
     prefix_style: str = "auto"
 
     def __post_init__(self) -> None:  # noqa: D105
-        host = self.host.split("//")[-1].split(":")[0]
-        if host not in LOOPBACK:
+        if not is_loopback(self.host):
             raise EmbeddingError(
-                f"refusing non-loopback embedding host {self.host!r}. Embedding sends the "
-                "corpus to the endpoint; this engine is local-only by design."
+                f"refusing embedding host {self.host!r}: not a loopback URL. Embedding sends the "
+                "corpus to the endpoint, so this engine is local-only by design — pass an http:// "
+                f"loopback host such as {DEFAULT_HOST}."
             )
         if self.prefix_style == "auto":
             # Task prefixes are a per-family convention, not a universal one. nomic wants
