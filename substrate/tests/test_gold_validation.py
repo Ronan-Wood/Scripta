@@ -7,6 +7,11 @@ satisfied by every chunk (`all([]) == True`) and passes vacuously at rank 1. The
 reject such a case at LOAD, with a clean GoldError — and must reject the malformations the earlier
 vacuous-pass fix uncovered (non-string members that crash scoring, missing id/query, non-`path`
 attribution that only constrains for some corpora) — while accepting the whole committed gold set.
+
+Also pins the cohort guard: report() buckets on cohort == "lexical" / "semantic" only, so a
+present-but-unknown cohort (a typo, a non-string) matches neither bucket and vanishes from BOTH the
+gate denominator and the semantic report. The validator must reject it at load; an absent cohort
+(defaulting to "lexical") must still pass.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from substrate.eval.runner import GoldError, _validate_gold, run  # noqa: E402
+from substrate.eval.runner import LEXICAL, SEMANTIC, GoldError, _validate_gold, run  # noqa: E402
 
 
 def _raises(cases: list[dict]) -> bool:
@@ -81,6 +86,43 @@ def test_missing_id_or_query_rejected() -> None:
     assert _raises([_case(id="")])                                     # blank id
     assert _raises([{"id": "c", "answer": ["x"], "path": ["c"]}])      # no query
     assert _raises([_case(query="  ")])                                # blank query
+
+
+def test_unknown_cohort_rejected() -> None:
+    # A typo'd cohort matches neither report() bucket and drops from both — reject at load.
+    assert _raises([_case(cohort="lexcal")])                          # typo of "lexical"
+    assert _raises([_case(cohort="hard")])                            # invented cohort
+    assert _raises([_case(cohort="")])                                # blank string
+
+
+def test_non_string_cohort_rejected() -> None:
+    # `in COHORTS` compares by ==, so a non-string is never a bucket and must be rejected too.
+    assert _raises([_case(cohort=None)])                             # JSON null present
+    assert _raises([_case(cohort=1)])
+    assert _raises([_case(cohort=["semantic"])])
+
+
+def test_valid_and_absent_cohorts_accepted() -> None:
+    _validate_gold([_case(cohort="lexical")])
+    _validate_gold([_case(cohort="semantic")])
+    _validate_gold([_case()])                                        # absent → defaults to lexical
+
+
+def test_unknown_cohort_named_in_message() -> None:
+    # The offending value must reach the operator, not just "invalid cohort".
+    try:
+        _validate_gold([_case(id="bc", cohort="lexcal")])
+    except GoldError as e:
+        assert "bc" in str(e) and "lexcal" in str(e)
+    else:
+        raise AssertionError("unknown cohort was not rejected")
+
+
+def test_cohort_values_are_pinned() -> None:
+    # report()'s buckets, the committed gold data, and cli.py's baseline all use these exact
+    # spellings; pin them so a respelling of LEXICAL/SEMANTIC fails loudly here. (The real gold set
+    # is exercised through the shipped validator by test_committed_gold_set_passes.)
+    assert (LEXICAL, SEMANTIC) == ("lexical", "semantic")
 
 
 def test_all_offenders_named_at_once() -> None:

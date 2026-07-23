@@ -24,6 +24,16 @@ from substrate.store.index_store import Hit, IndexStore
 
 K = 5
 
+# The two cohort buckets report() splits on: LEXICAL is the CI gate, SEMANTIC the improvement
+# target. A case whose cohort is neither matches NO bucket — it drops from the gate denominator,
+# from the semantic report, and (via --update-baseline) persists as a junk cohort in the baseline.
+# report() buckets on these names and _validate_gold rejects any present-but-unknown cohort at
+# load, both keyed off this one binding so a respelling can't desync them. Adding a NEW cohort
+# still needs a matching bucket in report() by hand: _validate_gold would accept it, but report()
+# would keep only these two buckets and silently drop it.
+LEXICAL, SEMANTIC = "lexical", "semantic"
+COHORTS = (LEXICAL, SEMANTIC)
+
 
 class GoldError(ValueError):
     """A malformed or vacuous gold file, raised at load so cmd_eval reports it as a clean FATAL —
@@ -42,7 +52,7 @@ class CaseResult:
     top_page: int | None = None
     note: str = ""
     max_rank: int | None = None
-    cohort: str = "lexical"
+    cohort: str = LEXICAL
     ms: float = 0.0
     degraded: str = ""                   # mid-run arm failure, from result.capability.fallbacks
     expected_mrr: float | None = None    # measured tier for the arms that ran (result contract)
@@ -118,8 +128,14 @@ def _validate_gold(cases: list[dict]) -> None:
     non-blank string `path`, plus the `id`/`query` run_case indexes. `pages` and `expect_doc` are
     supplementary, NOT standalone attribution: each only constrains for some corpora (`pages` needs
     the hit to carry page metadata; `expect_doc` needs a multi-document, un-`doc`-scoped search), so
-    against the wrong corpus either goes vacuous — `path` is the one that always constrains. Fail
-    loudly with GoldError, naming every offender at once.
+    against the wrong corpus either goes vacuous — `path` is the one that always constrains.
+
+    Also reject a `cohort` that is present but not one of COHORTS. report() splits cases into
+    exactly the "lexical" (gated) and "semantic" (target) buckets, so a typo'd or non-string cohort
+    matches neither and vanishes from BOTH — off the gate denominator, out of the semantic report,
+    and persisted as junk by --update-baseline. An ABSENT cohort is fine: it defaults to "lexical".
+
+    Fail loudly with GoldError, naming every offender at once.
     """
     bad = []
     for i, c in enumerate(cases):
@@ -135,6 +151,10 @@ def _validate_gold(cases: list[dict]) -> None:
             missing.append("answer (non-blank string list)")
         if not _str_assertion(c.get("path")):
             missing.append("path (non-blank string list)")
+        if "cohort" in c and c["cohort"] not in COHORTS:
+            # `in COHORTS` also rejects a non-string (a list/int is never == LEXICAL/SEMANTIC); repr
+            # keeps any control chars in the echoed value escaped.
+            missing.append(f"cohort (must be one of {' | '.join(COHORTS)}); got {c['cohort']!r}")
         if missing:
             bad.append(f"{cid}: missing/invalid {', '.join(missing)}")
     if bad:
@@ -174,7 +194,7 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, ro
         # its MRR, which --update-baseline then persists) and lands as a spurious failure in the
         # lexical gate. A missing doc must read as a miss in its OWN cohort, not vanish.
         return CaseResult(id=case["id"], query=case["query"], note=f"doc {target!r} not indexed",
-                          cohort=case.get("cohort", "lexical"))
+                          cohort=case.get("cohort", LEXICAL))
 
     _t0 = time.monotonic()
     cap = None
@@ -216,7 +236,7 @@ def run_case(store: IndexStore, case: dict, docs: dict[str, str], k: int = K, ro
             res.both_rank = i
 
     res.max_rank = case.get("max_rank")
-    res.cohort = case.get("cohort", "lexical")
+    res.cohort = case.get("cohort", LEXICAL)
     if res.both_rank is None:
         if res.answer_rank and not res.attrib_rank:
             res.note = (
@@ -257,8 +277,8 @@ def report(summary: Summary, gold: dict, baseline: dict | None) -> bool:
     # The semantic cohort is the IMPROVEMENT TARGET, not the CI line. Gates are computed on
     # the lexical cohort so a known-hard paraphrase set cannot mask a real regression, and a
     # real regression cannot hide behind a hard set that was always failing.
-    lexical = Summary([c for c in summary.cases if c.cohort == "lexical"], summary.elapsed_ms)
-    semantic = [c for c in summary.cases if c.cohort == "semantic"]
+    lexical = Summary([c for c in summary.cases if c.cohort == LEXICAL], summary.elapsed_ms)
+    semantic = [c for c in summary.cases if c.cohort == SEMANTIC]
 
     m = lexical.metrics
     gates = gold["gates"]
@@ -349,7 +369,7 @@ def report(summary: Summary, gold: dict, baseline: dict | None) -> bool:
     # count like 4 ⊂ 44 could defeat).
     rep = next((c for c in summary.cases if not c.degraded and c.expected_mrr is not None), None)
     exp_s = f"~{rep.expected_mrr}" if rep is not None else "unmeasured for this stack"
-    n_sem = sum(1 for c in summary.cases if c.cohort == "semantic")
+    n_sem = sum(1 for c in summary.cases if c.cohort == SEMANTIC)
     tier_cohort = summary.expected_cohort or "measured"
     print(f"\n  CONTRACT  index {summary.index_version or '(n/a)'}   "
           f"expected {exp_s} (tier: {tier_cohort}; this run: {n_sem} semantic case"
