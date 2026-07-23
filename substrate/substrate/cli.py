@@ -18,6 +18,13 @@ from pathlib import Path
 from substrate import classes
 from substrate.paths import ARTIFACTS, configure, internal_cache_footprint
 
+# A18 aggregate floor. Markdown ingestion must not silently drop source content end-to-end
+# (source → chunks). Measured 0.9998–1.0 across the three reference docs AND a 900-char note; the
+# tiny margin is empty "Table of Contents" headings, never a dropped line. This ratio catches
+# LARGE/systematic loss; a small categorical drop in a big doc is caught by the per-block
+# survival check (uncovered_content_blocks), which is size-independent.
+MD_COVERAGE_GATE = 0.99
+
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text(
@@ -97,6 +104,115 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ingest_md(args: argparse.Namespace) -> int:
+    """Ingest a markdown file → canonical Document → chunks. The vault path.
+
+    No PDF, no Docling, no torch — markdown hands us the structure the PDF path had to recover
+    from glyph geometry. Proves the adapter the way cmd_rechunk proves the chunker: markdown in,
+    the SAME Document shape out, straight into the existing emit()/chunk() with the PDF path
+    untouched. A18 guards against the silent-loss failure this project keeps hitting.
+    """
+    from substrate.chunk.chunker import chunk
+    from substrate.markdown.emit import emit, frontmatter
+    from substrate.markdown.reader import (
+        content_coverage,
+        read_markdown,
+        uncovered_content_blocks,
+    )
+
+    src = Path(args.md).expanduser()
+    if not src.exists():
+        print(f"FATAL: no such file: {src}", file=sys.stderr)
+        return 2
+
+    out = Path(args.out).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+
+    t0 = time.monotonic()
+    print(f"ingesting : {src.name}  (markdown)")
+
+    try:
+        doc, body_md, rstats = read_markdown(src, doc_class=args.doc_class)
+    except ValueError as e:  # over-size file or non-UTF-8 bytes — refuse cleanly, no traceback
+        print(f"\nFATAL: cannot read {src.name}: {e}", file=sys.stderr)
+        return 2
+
+    try:
+        meta = classes.apply(doc)
+    except classes.ClassPolicyError as e:
+        print(f"\nFATAL (class policy): {e}", file=sys.stderr)
+        return 3
+
+    # repair=False: markdown carries no glyph artifacts, so the PDF-tier hyphen/ligature repair
+    # can only mutate clean authored text (measured: 8 words welded on one round-trip).
+    body, estats = emit(doc, repair=False)
+    chunks, cstats = chunk(doc)
+
+    # A18 — end-to-end source→chunks coverage, the silent-loss guard, measured against the SOURCE
+    # (A14's chunk-chars/body-chars ratio can't see a dropped line — it leaves the body too).
+    # `captured` is everything the source content should survive INTO: chunk text_with_path (a
+    # heading's tokens ride along via the path it became), each fence-language, and every heading
+    # block's own text — an empty-section heading forms no chunk (its section is empty), so
+    # without this its words would score as "dropped" and falsely refuse a valid outline note.
+    # Heading STRUCTURE is A17's job, not A18's. Two checks: the aggregate ratio for large loss,
+    # and the per-block survival list for a small categorical drop a big doc's ratio would hide.
+    from substrate.models import Kind
+
+    captured = (
+        [c.text_with_path for c in chunks]
+        + [b.lang for b in doc.blocks if b.lang]
+        + [b.text for b in doc.blocks if b.kind is Kind.HEADING]
+    )
+    src_cov, src_missing = content_coverage(body_md, captured)
+    drops = uncovered_content_blocks(doc.blocks, captured)
+    if src_cov < MD_COVERAGE_GATE or drops:
+        # Refuse rather than write a silently-lossy ingest.
+        print(f"\nFATAL (A18 markdown coverage): aggregate {src_cov} (gate {MD_COVERAGE_GATE}); "
+              f"{len(drops)} content block(s) dropped {drops[:8]}; missing tokens {src_missing}",
+              file=sys.stderr)
+        return 3
+
+    (out / "document.md").write_text(frontmatter(doc, {"version_source": None}) + body, "utf-8")
+    _write_jsonl(out / "blocks.jsonl", [b.to_json() for b in doc.blocks])
+    _write_jsonl(out / "chunks.jsonl", [c.to_json() for c in chunks])
+
+    run = {
+        "doc_id": doc.doc_id,
+        "source": str(src),
+        "source_sha256": doc.source_sha256,
+        "pages": doc.source_pages,
+        "source_format": "markdown",
+        "elapsed_s": round(time.monotonic() - t0, 1),
+        "class": meta,
+        "extract": {
+            "extractor": doc.extractor, "extractor_arm": doc.extractor_arm,
+            "layout_model": doc.layout_model,
+            "source_coverage": src_cov, "source_coverage_missing": src_missing,
+            "content_block_drops": drops, **rstats,
+        },
+        "emit": estats,
+        "chunk": cstats,
+        "coverage": round(cstats["sum_chunk_chars"] / max(len(body), 1), 4),
+    }
+    (out / "run.json").write_text(json.dumps(run, indent=2, ensure_ascii=False), "utf-8")
+
+    print(f"\n  title      : {meta['title']}")
+    if meta.get("version"):
+        print(f"  version    : {meta['version']}  ({meta.get('version_date')})")
+    print(f"  blocks     : {rstats['blocks']}  "
+          f"(headings {rstats['headings']} · code {rstats['code']} · "
+          f"tables {rstats['tables']} · list {rstats['list_items']})")
+    print(f"  body       : {len(body):,} chars")
+    print(f"  passages   : {cstats['passages']}  outlines: {cstats['outlines']}")
+    print(f"  sizes      : p5={cstats['chars_p5']} p50={cstats['chars_p50']} p95={cstats['chars_p95']}")
+    print(f"  well-formed: {cstats['well_formed_pct']}%  (fragments: {cstats['short_fragments']})")
+    print(f"  A14 re-emit coverage    : {run['coverage']}")
+    print(f"  A18 source→chunk coverage: {src_cov}")
+    print(f"  elapsed    : {run['elapsed_s']}s")
+    print(f"\nwrote -> {out}")
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     """Assertions over an ingested directory. Non-zero exit on failure, for CI."""
     from substrate.text.hyphens import residue
@@ -155,8 +271,41 @@ def cmd_verify(args: argparse.Namespace) -> int:
         )
     )
 
-    checks.append(("A14 coverage >= 0.95", run["coverage"] >= 0.95, f"{run['coverage']}"))
-    checks.append(("A14 paths present", run["chunk"]["path_depth_ge2_pct"] >= 60, f"{run['chunk']['path_depth_ge2_pct']}%"))
+    # A14 re-emit coverage (chunk chars / body chars) is a book-SCALE proxy: markup and uncounted
+    # outline records are ~4% of a large doc but a large fraction of a small note, so a valid
+    # 900-char markdown note scores ~0.89 with nothing lost. For markdown A18 (below) is the
+    # exact, size-independent loss gate that supersedes it, so the A14 row is report-only and
+    # LABELLED as such — a bare "PASS" beside a sub-0.95 number reads as a weakened gate. The PDF
+    # path keeps A14 gated (its born-digital books always clear 0.95).
+    # Both A14 rows are book-scale structural heuristics that a valid markdown note can miss with
+    # nothing wrong: a small note's markup dominates the coverage ratio, and a deliberately FLAT
+    # note (only top-level headings) has no depth-≥2 paths. For the PDF path both catch real
+    # extraction failures (glyph-geometry can flatten the heading tree), so they stay gated there;
+    # for markdown headings are explicit, so these can only false-reject — report-only, and A18 +
+    # A17 carry the real content/structure guarantees.
+    is_md = run.get("source_format") == "markdown"
+    a14 = run["coverage"] >= 0.95
+    name14 = "A14 coverage (report-only, md)" if is_md and not a14 else "A14 coverage >= 0.95"
+    checks.append((name14, a14 or is_md, f"{run['coverage']}"))
+    a14p = run["chunk"]["path_depth_ge2_pct"] >= 60
+    name14p = "A14 paths (report-only, md)" if is_md and not a14p else "A14 paths present"
+    checks.append((name14p, a14p or is_md, f"{run['chunk']['path_depth_ge2_pct']}%"))
+
+    # A18 — markdown ingestion only. End-to-end source→chunks coverage: A14 above compares chunk
+    # chars to the re-emitted BODY, so a stage that dropped a source line passes it (the line is
+    # absent from both sides). A18 compares against the SOURCE file. Two parts, both must hold:
+    # the aggregate token ratio (large loss) and zero dropped content blocks (a small categorical
+    # drop a big doc's ratio would hide). Heading/path STRUCTURE is A17's job, not A18's.
+    if is_md:
+        ex = run.get("extract", {})
+        cov = ex.get("source_coverage")
+        drops = ex.get("content_block_drops", [])
+        checks.append(
+            ("A18 md source coverage",
+             cov is not None and cov >= MD_COVERAGE_GATE and not drops,
+             f"{cov} · {len(drops)} block(s) dropped {drops[:5]} · missing "
+             f"{ex.get('source_coverage_missing')}")
+        )
 
     width = max(len(n) for n, _, _ in checks)
     failed = 0
@@ -551,6 +700,13 @@ def main(argv: list[str] | None = None) -> int:
     ing.add_argument("--pages", default=None, help="e.g. 1-40")
     ing.add_argument("--batch", type=int, default=100)
     ing.set_defaults(func=cmd_ingest)
+
+    ingmd = sub.add_parser("ingest-md")
+    ingmd.add_argument("--md", required=True)
+    ingmd.add_argument("--doc-class", default=None, choices=sorted(classes.POLICIES),
+                       help="overrides frontmatter; defaults to it, else reference-frozen")
+    ingmd.add_argument("--out", required=True)
+    ingmd.set_defaults(func=cmd_ingest_md)
 
     ver = sub.add_parser("verify")
     ver.add_argument("dir")
