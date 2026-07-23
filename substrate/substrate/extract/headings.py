@@ -16,7 +16,7 @@ Two contaminants ride along and are removed here, not downstream:
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass, field
 
 from substrate.extract.furniture import CAPTION

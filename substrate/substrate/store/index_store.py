@@ -13,7 +13,6 @@ left half-indexed with a fresh mtime that would suppress re-indexing.
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
 import struct
 from dataclasses import dataclass

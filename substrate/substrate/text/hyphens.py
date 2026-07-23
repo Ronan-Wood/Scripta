@@ -13,7 +13,6 @@ The glyph is DISCOVERED by voting, never assumed: it is `!` in DDIA (byte-verifi
 from __future__ import annotations
 
 import re
-from collections import Counter
 from dataclasses import dataclass, field
 
 # Every character seen acting as a soft hyphen across real PDF producers.

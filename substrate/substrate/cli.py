@@ -338,7 +338,7 @@ def cmd_rechunk(args: argparse.Namespace) -> int:
     a granularity sweep that re-parsed every PDF would cost 20 minutes instead of 2.
     """
     from substrate.chunk.chunker import chunk as _chunk
-    from substrate.models import Block, Chunk, Document, Kind
+    from substrate.models import Block, Document, Kind
 
     out = Path(args.dir).expanduser()
     run = json.loads((out / "run.json").read_text("utf-8"))
