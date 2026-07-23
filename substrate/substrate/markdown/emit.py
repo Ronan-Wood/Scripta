@@ -58,16 +58,29 @@ def _repair_blocks(blocks: list[Block], cal: Calibration) -> dict:
     return stats
 
 
-def emit(doc: Document) -> tuple[str, dict]:
-    """Render the document body, filling char offsets on every emitted block."""
+def emit(doc: Document, *, repair: bool = True) -> tuple[str, dict]:
+    """Render the document body, filling char offsets on every emitted block.
+
+    `repair=False` is the markdown path: markdown carries NO glyph artifacts (soft hyphens,
+    split ligatures are ToUnicode-mapping defects of a PDF text layer), so re-running that
+    repair on already-clean authored text can only MUTATE it — measured joining 8 real words on
+    one reference doc's round-trip. So the markdown arm skips calibration + glyph repair and
+    applies only clean_block hygiene (NFC, control-byte strip, nbsp→space), which is
+    token-preserving. The PDF path keeps the default and is byte-identical to before.
+    """
     body_blocks = [b for b in doc.body_blocks if b.kind is not Kind.INDEX and b.text.strip()]
 
-    # Pass 1 — calibrate against the whole document.
-    raw = "\n\n".join(b.text for b in body_blocks)
-    cal = calibrate(raw)
-
-    # Pass 2 — repair in place.
-    repairs = _repair_blocks(body_blocks, cal)
+    if repair:
+        # Pass 1 — calibrate against the whole document.
+        raw = "\n\n".join(b.text for b in body_blocks)
+        cal = calibrate(raw)
+        # Pass 2 — repair in place.
+        repairs = _repair_blocks(body_blocks, cal)
+    else:
+        for b in body_blocks:
+            b.text = clean_block(b.text)  # hygiene only; never glyph repair on clean markdown
+        cal = Calibration(glyph=None)
+        repairs = {"ligatures": 0, "hyphens": 0, "kept_hyphen": 0}
 
     # Pass 3 — assemble, recording offsets against the FINAL text.
     parts: list[str] = []

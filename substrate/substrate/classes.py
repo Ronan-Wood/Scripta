@@ -127,7 +127,11 @@ def apply(doc: Document) -> dict:
 
     doc.title = doc.title or extract_title(doc)
 
-    if policy.requires_version:
+    # Re-extract a version from the body only when one was not already supplied (the markdown
+    # reader recovers it from frontmatter). The PDF path has doc.version=None here, so it still
+    # extracts; round-tripping the engine's own reference-versioned markdown keeps its version
+    # instead of failing the required-field gate when the body no longer re-matches.
+    if policy.requires_version and not doc.version:
         version, date, src = extract_version(doc.blocks)
         doc.version, doc.version_date, doc.version_source = version, date, src
 

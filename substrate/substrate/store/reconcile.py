@@ -52,6 +52,11 @@ def _load_dir(d: Path) -> tuple[Document, list[Chunk], dict, bytes, str] | None:
 
     run = json.loads(rj.read_text("utf-8"))
     cls = run.get("class", {})
+    extract = run.get("extract", {})
+    # Provenance comes from run.json, not a hardcoded "docling": the markdown arm is the first
+    # non-docling producer, and stamping every ingest docling was the Boundary-Principle failure
+    # in miniature (the producer knew the arm; the consumer overwrote it). Default preserves the
+    # existing PDF corpus, whose run.json predates these keys.
     doc = Document(
         doc_id=run["doc_id"],
         source_path=run["source"],
@@ -61,9 +66,9 @@ def _load_dir(d: Path) -> tuple[Document, list[Chunk], dict, bytes, str] | None:
         title=cls.get("title"),
         version=cls.get("version"),
         version_date=cls.get("version_date"),
-        extractor=run.get("extract", {}).get("extractor", ""),
-        extractor_arm="docling",
-        layout_model="docling-layout-heron",
+        extractor=extract.get("extractor", ""),
+        extractor_arm=extract.get("extractor_arm", "docling"),
+        layout_model=extract.get("layout_model", "docling-layout-heron"),
     )
 
     markdown_sha256 = hashlib.sha256(md.read_bytes()).hexdigest()
