@@ -51,7 +51,7 @@ the internal per-call signal (gate-skip vs. real fallback can't be told apart ex
 | M  | Med | `AppleEmbedder` doesn't L2-normalize / dim-check (asymmetric with Ollama arm) | `embed/engine.py` | ✅ |
 | M  | Med | `AppleFMExpander.cache_key` undefined → apple-fm HyDE arm silently degrades (read/write key mismatch even if fixed) | `retrieve/expand.py` | ✅ |
 | M  | Med | extraction heuristics that misfire off-corpus (CAPTION two-number regex; `toc_pages` build/assign asymmetry; furniture caption readmitted as TEXT; `_coverage` >1.0; furniture `page=None` counted) | `extract/*` | 🔭 |
-| M  | Med | text repair: `residue()` checks 4 of 8 glyphs (false-clean); compound-guard scoping ✋ (won't-fix, see note) | `text/hyphens.py` | 🔭 |
+| M  | Med | text repair (hyphens.py): compound-guard scoping + `residue()` glyph coverage — both investigated, both ✋ won't-fix (net regressions; see note) | `text/hyphens.py` | ✋ |
 | L  | Low | committed binary DBs `substrate.db`/`vectors.db`; `neighbours` seq-window vs prev/next; LIKE metachar in path-prefix; `report/review.py` "Repaired words" mislabel; misc | various | 🔭 |
 
 ---
@@ -152,3 +152,18 @@ discriminator needs a dictionary the module deliberately doesn't carry. Block-sc
 JOINING (only keeps on a strong LOCAL 2×-in-one-paragraph signal), which is aligned with a
 join-oriented repair pass; its failure (welding a compound seen ≤1×/block) is the lesser evil, and
 only matters at all when the calibrated glyph is a literal `-`. Reverted; block-scoped kept.
+
+## Investigated — residue() glyph coverage  ✋ won't-fix
+
+The audit flagged `residue()` (the A1 hyphen-artifact assertion) as checking 4 of 8 candidate
+glyphs → false-clean. Every widening direction was implemented and reviewed, each a net regression:
+(1) **add the missing glyphs unconditionally** — `¬` is legitimate between letters in Boolean/logic
+notation (`ab¬c`, `p¬q`) and `!` in dialogue (this repo is CallTranscriber); a logic/transcript
+excerpt then FALSE-FAILS the `<= 2` gate on clean text (reproduced, residue 11 / 4). `-`,`/`,`?`
+were already excluded for the same reason. (2) **calibration-aware** — count `!`/`¬` only when
+they are the doc's calibrated glyph — breaks A1's INDEPENDENCE (both reviewers, HIGH): the
+assertion exists to catch when dehyphenation FAILED, so it must not trust calibration's output; a
+doc with real `!` artifacts but under-confident calibration (`glyph=None`) then ships them
+uncounted. The original independent `­ ‐ ‑ !` check is a reasonable point on an inherent
+false-positive/false-clean trade-off, and its one false-positive (dialogue `!`) only bites if
+transcripts run the PDF-verify path, which they don't. Reverted; original 4-glyph check kept.
