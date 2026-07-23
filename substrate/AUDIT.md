@@ -113,10 +113,25 @@ accurate (no false "non-loopback" for a scheme-less loopback host) + actionable.
   (was leaking `AttributeError`), honest test comments (only the `@evil.example:1337` case was an
   old-guard bypass), actionable scheme-less message.
 
-## Follow-up — HyDE / MultiQuery have NO egress guard  📋
+## Follow-up — HyDE / MultiQuery had NO egress guard  ✅
 
-Surfaced during the guard fix: `HyDE` (the DEFAULT Ollama expander) and `MultiQuery` in
-`retrieve/expand.py` take a `host` and POST the query to it with **no loopback check at all** — not
-the broken guard, none. Not CLI-reachable today (no `--hyde-host` flag), so latent, but the same
-egress class, and `net.py`'s docstring claims "every local-only daemon arm." Fix: add `is_loopback`
-guards to both `__post_init__`.
+`HyDE` (the DEFAULT Ollama expander) and `MultiQuery` in `retrieve/expand.py` took a `host` and
+POSTed the query to it with **no loopback check at all** — not the broken guard, none. **Fix:**
+introduced `net.py::require_loopback(host, *, sends, suggest, exc=ValueError)` — one shared
+guard-and-raise so the refusal message can't drift either — and routed all four arms through it
+(embedder + LlamaServerHyDE + HyDE + MultiQuery). Regression test extended (13 cases).
+- crosscheck (2 reviewers) → made `suggest` a required arg (the generic guard shouldn't hardcode
+  Ollama's port); flagged `MultiQuery.available()` could raise now.
+- adversary (2 reviewers, diff-only) → **reverted** a crosscheck-added `available()` try/except: it
+  defended only a post-construction-mutation non-threat (host is already validated at construction)
+  and over-caught. Also surfaced the reranker gap below and that the `net.py` docstring's "every
+  arm" claim was false — docstring corrected.
+
+## Follow-up — rerankers have NO egress guard  📋
+
+Surfaced by the adversary during the HyDE/MultiQuery fix: `LLMReranker` (`retrieve/rerank.py`) and
+`CrossEncoderReranker` (`retrieve/rerank_cross.py`) both take a `host` and POST query/passages to
+`f"{self.host}/api/generate"` with **no `require_loopback` guard**. Same egress class as the
+expanders. Not CLI-reachable via a custom host today, but latent. Fix: add `require_loopback` to
+both `__post_init__` (`AppleFMReranker`'s `host` is a local-subprocess property, no network egress
+— leave it). Then `net.py` can truthfully claim it covers every arm again.

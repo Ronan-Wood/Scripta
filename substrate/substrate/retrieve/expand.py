@@ -26,7 +26,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from substrate.net import is_loopback
+from substrate.net import require_loopback
 from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
 
 # MEASURED, and bigger is NOT better. Semantic mrr by generator, 24 cases:
@@ -112,6 +112,9 @@ class HyDE:
     cache: object | None = None
     prompt_id: str = "canonical"
 
+    def __post_init__(self) -> None:
+        require_loopback(self.host, sends="the query", suggest=DEFAULT_HOST)
+
     @property
     def cache_key(self) -> str:
         """Cache identity MUST include the prompt. Keying on (query, model) alone would
@@ -189,15 +192,7 @@ class LlamaServerHyDE:
     prompt_id: str = "canonical"
 
     def __post_init__(self) -> None:
-        # New egress path, so it carries the loopback guard engine.py enforces and the older
-        # expanders predate: a HyDE call ships the query to the endpoint, and this engine is
-        # local-only by design. A remote llama-server is not a supported configuration.
-        if not is_loopback(self.host):
-            raise ValueError(
-                f"refusing llama-server host {self.host!r}: not a loopback URL. Expansion sends "
-                "the query to the endpoint, so this engine is local-only by design — pass an "
-                "http:// loopback host such as http://127.0.0.1:8899."
-            )
+        require_loopback(self.host, sends="the query", suggest="http://127.0.0.1:8899")
 
     @property
     def cache_key(self) -> str:
@@ -366,6 +361,9 @@ class MultiQuery:
     n: int = 3
     cache: object | None = None
     prompt_id: str = "multiquery"
+
+    def __post_init__(self) -> None:
+        require_loopback(self.host, sends="the query", suggest=DEFAULT_HOST)
 
     @property
     def cache_key(self) -> str:

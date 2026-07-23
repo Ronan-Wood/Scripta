@@ -1,4 +1,4 @@
-"""Loopback egress guard, shared by every local-only daemon arm.
+"""Loopback egress guard for the engine's local-only daemon arms.
 
 The embedder ships the corpus and the HyDE expanders ship the query, so both refuse a
 non-loopback host by design. The refusal keys off the authority urlsplit parses, not a textual
@@ -45,3 +45,20 @@ def is_loopback(host: str) -> bool:
     except ValueError:
         return False
     return bool(hostname) and hostname.lower() in LOOPBACK_HOSTS
+
+
+def require_loopback(
+    host: str, *, sends: str, suggest: str, exc: type[Exception] = ValueError,
+) -> None:
+    """Raise unless `host` is a loopback URL. This is the one place the loopback check and its
+    refusal message live, so neither drifts between the call sites that route through it.
+
+    `sends` is the noun phrase for what would egress ("the corpus", "the query"); `suggest` is an
+    example loopback host for the message — the caller passes its OWN default so this module stays
+    daemon-agnostic; `exc` lets a caller keep its own exception type.
+    """
+    if not is_loopback(host):
+        raise exc(
+            f"refusing host {host!r}: not a loopback URL — {sends} would egress off-machine, and "
+            f"this engine is local-only by design. Pass an http:// loopback host such as {suggest}."
+        )
