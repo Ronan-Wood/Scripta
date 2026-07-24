@@ -59,6 +59,17 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _like_escape(s: str) -> str:
+    r"""Escape SQLite LIKE metacharacters so a structural path matches literally.
+
+    A heading can contain `_` or `%` (a `snake_case` term, a "100% coverage" title); used raw as a
+    LIKE prefix those act as wildcards and over-match unrelated paths. Backslash is the ESCAPE char,
+    so it is escaped first. Pair with `ESCAPE '\'` in the query, and apply this to the LIKE-pattern
+    arg only — an exact-match `= ?` arm takes the raw path (it has no wildcards to escape).
+    """
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
     return Hit(
         chunk_id=r["chunk_id"],
@@ -239,8 +250,8 @@ class IndexStore:
             where.append("c.path_depth >= ?")
             args.append(kw["min_path_depth"])
         if kw.get("path_prefix"):
-            where.append("(c.path_str = ? OR c.path_str LIKE ? || ' > %')")
-            args.extend([kw["path_prefix"], kw["path_prefix"]])
+            where.append("(c.path_str = ? OR c.path_str LIKE ? || ' > %' ESCAPE '\\')")
+            args.extend([kw["path_prefix"], _like_escape(kw["path_prefix"])])
         args.append(kw.get("k", 10))
 
         sql = (
@@ -276,6 +287,10 @@ class IndexStore:
         ).fetchone()
         if not c or not c["path_str"]:
             return None
+        # NB: the LIKE pattern here is the per-row COLUMN c.path_str, not a bound param, so
+        # _like_escape (which escapes a bound value) does not apply — a `_`/`%` in a stored heading
+        # can still over-match. Same bug class as the path_prefix sites above; deferred, because a
+        # column pattern needs a SQL-side escape (REPLACE) or a metachar-free substr prefix-check.
         r = self.db.execute(
             f"{_SELECT} WHERE c.doc_id=? AND c.kind='outline' AND ? LIKE c.path_str || '%' "
             "ORDER BY LENGTH(c.path_str) DESC LIMIT 1",
@@ -287,8 +302,8 @@ class IndexStore:
         """Every passage beneath a structural path. The outline layer routes with this."""
         rows = self.db.execute(
             f"{_SELECT} WHERE c.doc_id=? AND c.kind='passage' "
-            "AND (c.path_str = ? OR c.path_str LIKE ? || ' > %') ORDER BY c.seq LIMIT ?",
-            (doc_id, path_prefix, path_prefix, k),
+            "AND (c.path_str = ? OR c.path_str LIKE ? || ' > %' ESCAPE '\\') ORDER BY c.seq LIMIT ?",
+            (doc_id, path_prefix, _like_escape(path_prefix), k),
         ).fetchall()
         return [_row_to_hit(r, 0.0) for r in rows]
 
