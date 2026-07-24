@@ -18,13 +18,6 @@ from pathlib import Path
 from substrate import classes
 from substrate.paths import ARTIFACTS, configure, internal_cache_footprint
 
-# A18 aggregate floor. Markdown ingestion must not silently drop source content end-to-end
-# (source → chunks). Measured 0.9998–1.0 across the three reference docs AND a 900-char note; the
-# tiny margin is empty "Table of Contents" headings, never a dropped line. This ratio catches
-# LARGE/systematic loss; a small categorical drop in a big doc is caught by the per-block
-# survival check (uncovered_content_blocks), which is size-independent.
-MD_COVERAGE_GATE = 0.99
-
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text(
@@ -105,20 +98,15 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def cmd_ingest_md(args: argparse.Namespace) -> int:
-    """Ingest a markdown file → canonical Document → chunks. The vault path.
+    """Ingest a markdown file → canonical Document → chunks. The single-file vault path.
 
-    No PDF, no Docling, no torch — markdown hands us the structure the PDF path had to recover
-    from glyph geometry. Proves the adapter the way cmd_rechunk proves the chunker: markdown in,
-    the SAME Document shape out, straight into the existing emit()/chunk() with the PDF path
-    untouched. A18 guards against the silent-loss failure this project keeps hitting.
+    A thin wrapper over ``markdown.ingest.ingest_markdown`` (the one shared body, used by the
+    manifest-composition path too). Standalone ingest is LENIENT on status — an absent status
+    defaults to 'active' (the existing corpus predates the field); an invalid status or a
+    superseded note with no link is still refused. The strict path is `compose` (require_status).
     """
-    from substrate.chunk.chunker import chunk
-    from substrate.markdown.emit import emit, frontmatter
-    from substrate.markdown.reader import (
-        content_coverage,
-        read_markdown,
-        uncovered_content_blocks,
-    )
+    from substrate.markdown.ingest import CoverageError, ingest_markdown
+    from substrate.spine import SpineError
 
     src = Path(args.md).expanduser()
     if not src.exists():
@@ -126,88 +114,43 @@ def cmd_ingest_md(args: argparse.Namespace) -> int:
         return 2
 
     out = Path(args.out).expanduser()
-    out.mkdir(parents=True, exist_ok=True)
-
-    t0 = time.monotonic()
     print(f"ingesting : {src.name}  (markdown)")
 
     try:
-        doc, body_md, rstats = read_markdown(src, doc_class=args.doc_class)
+        # Standalone ingest carries no composition provenance — vault/tier are set only by the
+        # `compose` path (from the resolved manifest), which calls ingest_markdown() directly.
+        r = ingest_markdown(src, out, doc_class=args.doc_class, require_status=False)
     except ValueError as e:  # over-size file or non-UTF-8 bytes — refuse cleanly, no traceback
         print(f"\nFATAL: cannot read {src.name}: {e}", file=sys.stderr)
         return 2
-
-    try:
-        meta = classes.apply(doc)
     except classes.ClassPolicyError as e:
         print(f"\nFATAL (class policy): {e}", file=sys.stderr)
         return 3
-
-    # repair=False: markdown carries no glyph artifacts, so the PDF-tier hyphen/ligature repair
-    # can only mutate clean authored text (measured: 8 words welded on one round-trip).
-    body, estats = emit(doc, repair=False)
-    chunks, cstats = chunk(doc)
-
-    # A18 — end-to-end source→chunks coverage, the silent-loss guard, measured against the SOURCE
-    # (A14's chunk-chars/body-chars ratio can't see a dropped line — it leaves the body too).
-    # `captured` is everything the source content should survive INTO: chunk text_with_path (a
-    # heading's tokens ride along via the path it became), each fence-language, and every heading
-    # block's own text — an empty-section heading forms no chunk (its section is empty), so
-    # without this its words would score as "dropped" and falsely refuse a valid outline note.
-    # Heading STRUCTURE is A17's job, not A18's. Two checks: the aggregate ratio for large loss,
-    # and the per-block survival list for a small categorical drop a big doc's ratio would hide.
-    from substrate.models import Kind
-
-    captured = (
-        [c.text_with_path for c in chunks]
-        + [b.lang for b in doc.blocks if b.lang]
-        + [b.text for b in doc.blocks if b.kind is Kind.HEADING]
-    )
-    src_cov, src_missing = content_coverage(body_md, captured)
-    drops = uncovered_content_blocks(doc.blocks, captured)
-    if src_cov < MD_COVERAGE_GATE or drops:
-        # Refuse rather than write a silently-lossy ingest.
-        print(f"\nFATAL (A18 markdown coverage): aggregate {src_cov} (gate {MD_COVERAGE_GATE}); "
-              f"{len(drops)} content block(s) dropped {drops[:8]}; missing tokens {src_missing}",
-              file=sys.stderr)
+    except SpineError as e:
+        print(f"\nFATAL (spine): {e}", file=sys.stderr)
+        return 3
+    except CoverageError as e:
+        print(f"\nFATAL (A18): {e}", file=sys.stderr)
         return 3
 
-    (out / "document.md").write_text(frontmatter(doc, {"version_source": None}) + body, "utf-8")
-    _write_jsonl(out / "blocks.jsonl", [b.to_json() for b in doc.blocks])
-    _write_jsonl(out / "chunks.jsonl", [c.to_json() for c in chunks])
-
-    run = {
-        "doc_id": doc.doc_id,
-        "source": str(src),
-        "source_sha256": doc.source_sha256,
-        "pages": doc.source_pages,
-        "source_format": "markdown",
-        "elapsed_s": round(time.monotonic() - t0, 1),
-        "class": meta,
-        "extract": {
-            "extractor": doc.extractor, "extractor_arm": doc.extractor_arm,
-            "layout_model": doc.layout_model,
-            "source_coverage": src_cov, "source_coverage_missing": src_missing,
-            "content_block_drops": drops, **rstats,
-        },
-        "emit": estats,
-        "chunk": cstats,
-        "coverage": round(cstats["sum_chunk_chars"] / max(len(body), 1), 4),
-    }
-    (out / "run.json").write_text(json.dumps(run, indent=2, ensure_ascii=False), "utf-8")
-
-    print(f"\n  title      : {meta['title']}")
-    if meta.get("version"):
-        print(f"  version    : {meta['version']}  ({meta.get('version_date')})")
+    run, rstats, cstats = r.run, r.run["extract"], r.run["chunk"]
+    print(f"\n  title      : {r.title}")
+    if run["class"].get("version"):
+        print(f"  version    : {run['class']['version']}  ({run['class'].get('version_date')})")
+    print(f"  status     : {r.status}"
+          + (f"  ·  domains {r.domains}" if r.domains else "")
+          + (f"  ·  supersedes {run['spine']['supersedes']}" if run["spine"]["supersedes"] else "")
+          + (f"  ·  superseded_by {run['spine']['superseded_by']}"
+             if run["spine"]["superseded_by"] else ""))
     print(f"  blocks     : {rstats['blocks']}  "
           f"(headings {rstats['headings']} · code {rstats['code']} · "
           f"tables {rstats['tables']} · list {rstats['list_items']})")
-    print(f"  body       : {len(body):,} chars")
+    print(f"  body       : {r.body_chars:,} chars")
     print(f"  passages   : {cstats['passages']}  outlines: {cstats['outlines']}")
     print(f"  sizes      : p5={cstats['chars_p5']} p50={cstats['chars_p50']} p95={cstats['chars_p95']}")
     print(f"  well-formed: {cstats['well_formed_pct']}%  (fragments: {cstats['short_fragments']})")
     print(f"  A14 re-emit coverage    : {run['coverage']}")
-    print(f"  A18 source→chunk coverage: {src_cov}")
+    print(f"  A18 source→chunk coverage: {r.source_coverage}")
     print(f"  elapsed    : {run['elapsed_s']}s")
     print(f"\nwrote -> {out}")
     return 0
@@ -297,6 +240,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     # the aggregate token ratio (large loss) and zero dropped content blocks (a small categorical
     # drop a big doc's ratio would hide). Heading/path STRUCTURE is A17's job, not A18's.
     if is_md:
+        from substrate.markdown.ingest import MD_COVERAGE_GATE
         ex = run.get("extract", {})
         cov = ex.get("source_coverage")
         drops = ex.get("content_block_drops", [])
@@ -306,6 +250,26 @@ def cmd_verify(args: argparse.Namespace) -> int:
              f"{cov} · {len(drops)} block(s) dropped {drops[:5]} · missing "
              f"{ex.get('source_coverage_missing')}")
         )
+
+        # A19 — the note's spine status is one the engine can act on. A status outside the four is
+        # silently excluded by the default retrieval filter (it is not in the included set), and a
+        # superseded note with no supersession link is a dead fact with no path to the live one.
+        # Per-DOC here (verify runs on one ingested dir); the cross-doc partition is A20 (compose).
+        # Only asserted when a spine block is present: a markdown ingest dir written before this
+        # feature has none, and a status is not "invalid" merely for predating the field — a
+        # re-ingest writes the block. New ingests always emit one, so this only spares stale dirs.
+        if "spine" in run:
+            from substrate.spine import STATUSES
+            sp = run["spine"]
+            st = sp.get("status")
+            superseded_ok = st != "superseded" or bool(sp.get("superseded_by"))
+            checks.append(
+                ("A19 spine status valid",
+                 st in STATUSES and superseded_ok,
+                 f"{st}"
+                 + ("" if superseded_ok else " · superseded with no superseded_by")
+                 + (f" · domains {sp.get('domains')}" if sp.get("domains") else "")),
+            )
 
     width = max(len(n) for n, _, _ in checks)
     failed = 0
@@ -406,6 +370,119 @@ def cmd_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compose(args: argparse.Namespace) -> int:
+    """Resolve a project vault's manifest, ingest the composed note set, index it, and PROVE the
+    composition — the inheritance mechanism end to end (Doc 2 §1–2, §6).
+
+    Strict where a single-file ingest is lenient: every note must declare a status
+    (require_status=True), and the whole scope is refused if ANY note fails to ingest — a partially
+    composed scope is a silently-wrong retrieval set. After indexing, two A-series assertions run:
+    A-compose (inheritance actually composed, no tier silently dropped) and A20 (the status filter
+    partitions exactly), so a green run is a proof, not a hope.
+    """
+    from substrate import vault as _vault
+    from substrate.markdown.ingest import CoverageError, ingest_markdown
+    from substrate.spine import SpineError
+    from substrate.store.index_store import IndexStore, StatusPartitionError
+    from substrate.store.reconcile import reconcile
+
+    project = Path(args.project_vault).expanduser()
+    index_root = Path(args.index_root).expanduser()
+
+    try:
+        scope = _vault.resolve_scope(project)
+    except _vault.VaultError as e:
+        print(f"FATAL (manifest): {e}", file=sys.stderr)
+        return 2
+
+    print(f"scope: {scope.project.name}  <-  {[v.name for v in scope.vaults]}")
+    print(f"  {len(scope.notes)} notes across {len(scope.vaults)} vault(s)")
+
+    if index_root.exists() and args.clean:
+        import shutil
+        shutil.rmtree(index_root)
+    index_root.mkdir(parents=True, exist_ok=True)
+
+    # Ingest every note. Collect failures rather than aborting on the first, then refuse the WHOLE
+    # scope if any failed — a composed index missing notes is exactly the silent-loss shape, so it
+    # is never indexed partially. The out-dir name flattens the note's vault-relative path so two
+    # notes (even same filename in different sources) never share an ingest dir.
+    import hashlib as _hl
+    ingested: set[str] = set()
+    failures: list[tuple[Path, str]] = []
+    for n in scope.notes:
+        # A per-note out dir: vault + filename stem + a short path hash, so two same-named files
+        # (e.g. each source's passages/00-*.md) never collide on one ingest directory.
+        digest = _hl.sha256(str(n.path).encode()).hexdigest()[:8]
+        out_dir = index_root / f"{n.vault}__{n.path.stem}__{digest}"
+        try:
+            r = ingest_markdown(
+                n.path, out_dir, doc_class=n.doc_class, require_status=True,
+                override_status=n.override_status, override_version=n.override_version,
+                extra_domains=n.extra_domains, vault=n.vault, tier=n.tier,
+            )
+        except (ValueError, classes.ClassPolicyError, SpineError, CoverageError) as e:
+            failures.append((n.path, f"{type(e).__name__}: {e}"))
+            continue
+        ingested.add(r.doc_id)
+        print(f"  [{n.tier}] {n.vault}/{n.path.name}  ->  {r.doc_id}  "
+              f"({r.status}{', ' + ','.join(r.domains) if r.domains else ''})")
+
+    if failures:
+        print(f"\nFATAL: {len(failures)} note(s) failed to ingest — refusing to index a partial "
+              "scope:", file=sys.stderr)
+        for path, why in failures:
+            print(f"    {path}: {why}", file=sys.stderr)
+        return 3
+
+    with IndexStore(args.db) as store:
+        rep = reconcile(store, index_root)
+        s = store.stats()
+        try:
+            comp = _vault.assert_composed(store, ingested_doc_ids=ingested)
+            part = store.assert_status_partition()
+        except (_vault.VaultError, StatusPartitionError) as e:
+            print(f"\nFATAL (composition/status assertion): {e}", file=sys.stderr)
+            return 3
+        index_version = store.index_version
+
+    print(f"\n  indexed: added {len(rep.added)} · updated {len(rep.updated)} · "
+          f"unchanged {len(rep.unchanged)} · removed {len(rep.removed)}")
+    print(f"  {s['documents']} documents · {s['passages']} passages · {s['outlines']} outlines")
+    print(f"  A-compose PASS  by vault {comp['by_vault']} · by tier {comp['by_tier']}")
+    print(f"  A20 status PASS  included {part['included_chunks']} · "
+          f"excluded {part['excluded_chunks']} · by status {part['by_status']}")
+    print(f"  db: {args.db} (schema v{s['schema_version']}) · index {index_version}")
+    return 0
+
+
+def _resolve_statuses(args: argparse.Namespace) -> frozenset[str] | None:
+    """The status filter for a query, from the flags. Refuses an unknown status rather than
+    silently filtering to nothing. None means unfiltered (an explicit administrative scan)."""
+    from substrate.retrieve.retriever import DEFAULT_STATUSES
+    from substrate.spine import STATUSES
+
+    if getattr(args, "all_status", False):
+        return None
+    if getattr(args, "status", None):
+        chosen = frozenset(s.strip() for s in args.status.split(",") if s.strip())
+        if not chosen:
+            # e.g. `--status ,,` or `--status " "`: parses to nothing. An empty set means "match
+            # nothing" downstream, so accepting it would silently return zero results — refuse it.
+            print(f"FATAL: --status {args.status!r} names no statuses; known {sorted(STATUSES)}",
+                  file=sys.stderr)
+            raise SystemExit(2)
+        unknown = chosen - STATUSES
+        if unknown:
+            print(f"FATAL: unknown status {sorted(unknown)}; known {sorted(STATUSES)}",
+                  file=sys.stderr)
+            raise SystemExit(2)
+        return chosen
+    if getattr(args, "include_archived", False):
+        return DEFAULT_STATUSES | {"archived"}
+    return DEFAULT_STATUSES
+
+
 def cmd_query(args: argparse.Namespace) -> int:
     from substrate.store.index_store import IndexStore
 
@@ -414,23 +491,37 @@ def cmd_query(args: argparse.Namespace) -> int:
 
     cand = OllamaEmbedder()
     embedder = None if args.no_vector else (cand if cand.available() else None)
+    statuses = _resolve_statuses(args)
 
     with IndexStore(args.db) as store:
         cap = None
         if args.kind == "outline":
-            hits = store.search(args.text, k=args.k, kind="outline", document_class=args.doc_class)
+            hits = store.search(args.text, k=args.k, kind="outline",
+                                document_class=args.doc_class, statuses=statuses)
             index_version = store.index_version
         else:
             result = retrieve(
-                store, args.text, k=args.k, document_class=args.doc_class, embedder=embedder
+                store, args.text, k=args.k, document_class=args.doc_class,
+                statuses=statuses, embedder=embedder,
             )
             hits, cap, index_version = result.passages, result.capability, result.index_version
+        sset = "all" if statuses is None else ",".join(sorted(statuses))
+        print(f"  status filter: {sset}")
         if not hits:
             print("  (no results)")
         for h in hits:
             print(f"\n  [{h.kind}] {h.citation}")
             body = " ".join(h.text.split())
             print(f"    {body[:args.chars]}{'…' if len(body) > args.chars else ''}")
+            # Spine ON the hit (the Boundary Principle): its currency, domain tags, and — when this
+            # is a live note that replaced a dead one — the supersession link that surfaces the
+            # superseded fact's identity without ever retrieving the superseded note directly.
+            meta = [f"status={h.status}"]
+            if h.domains:
+                meta.append(f"domains={h.domains}")
+            if h.supersedes:
+                meta.append(f"supersedes={h.supersedes}")
+            print(f"    ↳ {' · '.join(meta)}")
             if args.expand and h.kind == "passage":
                 out = store.outline_for(h.chunk_id)
                 if out:
@@ -754,6 +845,17 @@ def main(argv: list[str] | None = None) -> int:
     idx.add_argument("--rebuild", action="store_true", help="drop the cache and rebuild")
     idx.set_defaults(func=cmd_index)
 
+    comp = sub.add_parser("compose",
+                          help="resolve a project vault's manifest, ingest + index the composed "
+                               "scope (project + inherited), and assert the composition")
+    comp.add_argument("project_vault", help="path to the project vault (holds .substrate.toml)")
+    comp.add_argument("--index-root", default="out-vault/index",
+                      help="where per-note ingest dirs are written (disposable, kept off cloud-sync)")
+    comp.add_argument("--db", default="out-vault/index.db")
+    comp.add_argument("--clean", action="store_true",
+                      help="remove the index-root first, so a deleted note leaves no stale dir")
+    comp.set_defaults(func=cmd_compose)
+
     qry = sub.add_parser("query")
     qry.add_argument("text")
     qry.add_argument("--db", default="out/substrate.db")
@@ -763,6 +865,13 @@ def main(argv: list[str] | None = None) -> int:
     qry.add_argument("--chars", type=int, default=200)
     qry.add_argument("--expand", action="store_true")
     qry.add_argument("--no-vector", action="store_true")
+    # Default retrieval set is active+complete (Doc 2 §6). These broaden it explicitly.
+    qry.add_argument("--include-archived", action="store_true",
+                     help="add archived to the default active+complete set")
+    qry.add_argument("--status", default=None,
+                     help="explicit comma-separated status set, e.g. active,archived")
+    qry.add_argument("--all-status", action="store_true",
+                     help="no status filter — includes superseded (administrative scan)")
     qry.set_defaults(func=cmd_query)
 
     ev = sub.add_parser("eval")

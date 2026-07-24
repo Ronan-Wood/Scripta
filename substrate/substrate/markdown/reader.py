@@ -61,6 +61,28 @@ _I64 = 2**63 - 1
 _MAX_MD_BYTES = 64 * 1024 * 1024  # refuse a pathological file rather than OOM
 _DOC_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")  # accepted frontmatter doc_id shape
 _SHA256 = re.compile(r"[0-9a-f]{64}")               # accepted frontmatter source_sha256 shape
+_DOMAIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,63}")  # accepted domain-tag shape
+
+
+def _parse_list(v: str | None) -> list[str]:
+    """Parse a frontmatter flow list — `[a, b, c]` — into a clean, shape-checked tag list.
+
+    The reader keeps frontmatter values as raw strings, so `domains: [software-dev, databases]`
+    arrives here as the literal `"[software-dev, databases]"`. Only well-shaped tags survive (a
+    stray value is dropped, not carried as a phantom domain); a bare value with no brackets is
+    treated as a single tag. Deliberately narrow — domains is a tag axis, not free text.
+    """
+    if not v:
+        return []
+    v = v.strip()
+    if v.startswith("[") and v.endswith("]"):
+        v = v[1:-1]
+    out: list[str] = []
+    for part in v.split(","):
+        t = part.strip().strip('"').strip("'")
+        if t and _DOMAIN.fullmatch(t) and t not in out:
+            out.append(t)
+    return out
 
 
 def _bounded_int(v: str, lo: int, hi: int) -> int | None:
@@ -294,6 +316,13 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
     # source_sha256 as provenance, so an arbitrary crafted value is a spoof / collision surface.
     fid = front.get("doc_id", "")
     fsha = front.get("source_sha256", "")
+    # Supersession links are doc_ids; a value that is not doc_id-shaped is dropped to None rather
+    # than carried, so a crafted link cannot smuggle in a value the reconcile/index keys on. The
+    # reader stays a pure PARSER — it does not enforce "superseded requires a link" or "status is
+    # one of the four"; that is spine.validate_status, called by the ingest paths (which decide how
+    # strict to be: the vault path requires status, a standalone ingest defaults it to active).
+    fsup_by = front.get("superseded_by", "")
+    fsup = front.get("supersedes", "")
     doc = Document(
         doc_id=fid if _DOC_ID.fullmatch(fid) else doc_id_for(path),
         source_path=str(path),
@@ -306,6 +335,10 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
         version=front.get("version"),
         version_date=front.get("version_date"),
         page_label_offset=_bounded_int(front.get("page_label_offset", ""), -_I64, _I64),
+        status=(front.get("status") or None),
+        superseded_by=fsup_by if _DOC_ID.fullmatch(fsup_by) else None,
+        supersedes=fsup if _DOC_ID.fullmatch(fsup) else None,
+        domains=_parse_list(front.get("domains")),
         extractor="markdown-reader/0.1.0",
         extractor_arm="markdown",
         layout_model="",
@@ -317,5 +350,7 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
         "code": sum(1 for b in blocks if b.kind is Kind.CODE),
         "tables": sum(1 for b in blocks if b.kind is Kind.TABLE),
         "list_items": sum(1 for b in blocks if b.kind is Kind.LIST_ITEM),
+        "status": doc.status,
+        "domains": list(doc.domains),
     }
     return doc, body_md, stats

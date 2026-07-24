@@ -15,13 +15,18 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import struct
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from substrate.models import Chunk, Document
 from substrate.store import fts, schema, sections
+
+
+class StatusPartitionError(RuntimeError):
+    """The indexed status set does not partition cleanly into the default-retrieval split."""
 
 
 @dataclass
@@ -41,6 +46,16 @@ class Hit:
     title: str | None
     prev_id: str | None
     next_id: str | None
+    # Doc-2 spine, carried ON the hit so a passage states its own currency and origin without the
+    # caller running a second query (the Boundary Principle). `status` is the chunk-denormalized
+    # currency; `supersedes` is the link that surfaces "this replaced X" when the live note is the
+    # hit; `domains`/`vault` are the retrieval tag and composition provenance. (The inverse link
+    # `superseded_by` and the numeric `tier` live on the documents row — read there, not surfaced
+    # on a hit: the superseded note is excluded from retrieval, so its `superseded_by` never shows.)
+    status: str = "active"
+    supersedes: str | None = None
+    domains: list[str] = field(default_factory=list)
+    vault: str | None = None
 
     @property
     def citation(self) -> str:
@@ -52,6 +67,8 @@ class Hit:
             bits.append(f"p{self.page_label_start}")
         if self.version:
             bits.append(f"v{self.version}")
+        if self.vault:
+            bits.append(f"@{self.vault}")
         return " · ".join(bits)
 
 
@@ -70,6 +87,32 @@ def _like_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _col(r: sqlite3.Row, name: str, default: object = None) -> object:
+    """Row value by name, or a default when the column is absent from THIS query's projection.
+
+    Some queries select `c.*` plus a few document aliases; others (vector_search) build their own
+    projection. A hit is constructed from both, so a spine column missing from one projection must
+    read as its default, not raise a KeyError."""
+    return r[name] if name in r.keys() else default
+
+
+def _add_status_filter(where: list[str], args: list[Any], statuses: frozenset[str] | None) -> None:
+    """Append a `c.status IN (...)` clause when a status set is given. None means no filter.
+
+    An EMPTY set is not "no filter" — it is "include nothing", and `IN ()` is a SQL syntax error,
+    so it is compiled to a literal false. Silently treating an empty set as unfiltered would be the
+    exact status-filter-includes-more-than-intended failure the A20 assertion guards against.
+    """
+    if statuses is None:
+        return
+    if not statuses:
+        where.append("0")
+        return
+    ordered = sorted(statuses)
+    where.append(f"c.status IN ({','.join('?' * len(ordered))})")
+    args.extend(ordered)
+
+
 def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
     return Hit(
         chunk_id=r["chunk_id"],
@@ -84,14 +127,25 @@ def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
         score=score,
         document_class=r["document_class"],
         version=r["version"],
-        title=r["title"] if "title" in r.keys() else None,
+        title=_col(r, "title"),
         prev_id=r["prev_id"],
         next_id=r["next_id"],
+        # `status` is the chunk's own denormalized column (from c.*); the supersession link,
+        # domain tags and vault provenance are document-level, joined in and aliased d_* so they
+        # never collide with the chunks table's own (always-NULL) superseded_by column.
+        status=_col(r, "status", "active") or "active",
+        supersedes=_col(r, "d_supersedes"),
+        domains=json.loads(_col(r, "d_domains") or "[]"),
+        vault=_col(r, "d_vault"),
     )
 
 
+# c.* carries the chunk spine (incl. its own denormalized `status`); the document-level fields a
+# hit surfaces — the supersession link, the domain tags, the composition provenance — are aliased
+# d_* so they are unambiguous next to the chunks table's like-named columns.
 _SELECT = """
-SELECT c.*, d.title AS title
+SELECT c.*, d.title AS title, d.supersedes AS d_supersedes,
+       d.domains AS d_domains, d.vault AS d_vault
 FROM chunks c JOIN documents d ON d.doc_id = c.doc_id
 """
 
@@ -128,20 +182,26 @@ class IndexStore:
         db.execute("BEGIN")
         try:
             self._delete_rows(doc.doc_id)
+            # `status` defaults to 'active' when the document declares none — the standalone
+            # ingest path allows that (the vault path refuses it upstream via spine.validate_status),
+            # so the existing corpus, which predates the field, stays on the live surface. `domains`
+            # is stored as a JSON array so the multi-valued tag survives a round-trip losslessly.
+            status = doc.status or "active"
             db.execute(
                 """INSERT INTO documents(
                     doc_id, source_path, source_sha256, source_pages, markdown_path,
                     markdown_mtime, markdown_sha256, title, document_class, version,
                     version_date, page_label_offset, extractor, extractor_arm, layout_model,
                     pipeline_version, ingested_at, last_verified_at, supersedes,
-                    superseded_by, confidence, coverage)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    superseded_by, status, domains, vault, tier, confidence, coverage)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     doc.doc_id, doc.source_path, doc.source_sha256, doc.source_pages,
                     markdown_path, markdown_mtime, markdown_sha256, doc.title,
                     doc.document_class, doc.version, doc.version_date, doc.page_label_offset,
                     doc.extractor, doc.extractor_arm, doc.layout_model, doc.pipeline_version,
-                    _now(), _now(), None, None, None, coverage,
+                    _now(), _now(), doc.supersedes, doc.superseded_by,
+                    status, json.dumps(list(doc.domains)), doc.vault, doc.tier, None, coverage,
                 ),
             )
             db.executemany(
@@ -149,15 +209,18 @@ class IndexStore:
                     chunk_id, doc_id, kind, seq, text, text_with_path, path_str, path_depth, section_kind,
                     level, char_start, char_end, page_start, page_end, page_label_start,
                     n_chars, part_index, part_count, oversize, prev_id, next_id,
-                    document_class, version, source_sha256, confidence, superseded_by)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    document_class, version, source_sha256, confidence, superseded_by, status)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         c.chunk_id, c.doc_id, c.kind, i, c.text, c.text_with_path,
                         c.path_str, len(c.path), sections.classify(c.path_str), c.level, c.char_start, c.char_end,
                         c.page_start, c.page_end, c.page_label(c.page_start), c.n_chars,
                         c.part_index, c.part_count, int(bool(c.oversize)), c.prev_id,
-                        c.next_id, c.document_class, c.version, c.source_sha256, None, None,
+                        # status is DENORMALIZED from the document onto every chunk (like class /
+                        # version / sha) so the default-retrieval filter reads currency off the
+                        # chunk row without a join.
+                        c.next_id, c.document_class, c.version, c.source_sha256, None, None, status,
                     )
                     for i, c in enumerate(chunks)
                 ],
@@ -208,6 +271,7 @@ class IndexStore:
         doc_id: str | None = None,
         min_path_depth: int | None = None,
         path_prefix: str | None = None,
+        statuses: frozenset[str] | None = None,
     ) -> list[Hit]:
         """Lexical search, precision-first with a recall TOP-UP.
 
@@ -217,10 +281,14 @@ class IndexStore:
         suppress every better OR match. The document spells it "topdown", so `"down"*` never
         matches even though `"top"*` does — one unmatched term is enough to starve AND while
         the right passages sit one query away.
+
+        `statuses` restricts to the given status set (the default retrieval set is applied by the
+        retriever, not here). None means NO status filter — the historical behaviour every
+        existing direct caller (the eval) relies on, so their results are unchanged.
         """
         kw = dict(
             kind=kind, document_class=document_class, doc_id=doc_id,
-            min_path_depth=min_path_depth, path_prefix=path_prefix,
+            min_path_depth=min_path_depth, path_prefix=path_prefix, statuses=statuses,
         )
         seen: set[str] = set()
         out: list[Hit] = []
@@ -252,6 +320,7 @@ class IndexStore:
         if kw.get("path_prefix"):
             where.append("(c.path_str = ? OR c.path_str LIKE ? || ' > %' ESCAPE '\\')")
             args.extend([kw["path_prefix"], _like_escape(kw["path_prefix"])])
+        _add_status_filter(where, args, kw.get("statuses"))
         args.append(kw.get("k", 10))
 
         sql = (
@@ -346,6 +415,104 @@ class IndexStore:
             "schema_version": q("PRAGMA user_version"),
         }
 
+    # ------------------------------------------------------- status audit
+
+    def status_counts(self) -> dict[str, int]:
+        """Document count per status value. NULL statuses report under the key ''."""
+        rows = self.db.execute(
+            "SELECT COALESCE(status,'') AS s, COUNT(*) AS n FROM documents GROUP BY s"
+        ).fetchall()
+        return {r["s"]: r["n"] for r in rows}
+
+    def _count_status_filtered(self, statuses: frozenset[str] | None) -> int:
+        """Count chunks the PRODUCTION filter builder selects for a status set — the same
+        `_add_status_filter` the query path uses, so the audit tests the real code, not a copy."""
+        where: list[str] = []
+        args: list[Any] = []
+        _add_status_filter(where, args, statuses)
+        sql = "SELECT COUNT(*) FROM chunks c" + (f" WHERE {' AND '.join(where)}" if where else "")
+        return self.db.execute(sql, args).fetchone()[0]
+
+    def assert_status_partition(self) -> dict:
+        """A20 — the default-retrieval status filter includes and excludes exactly its declared sets.
+
+        "Green gates, silent loss" in its status form is a filter that admits one document more (or
+        fewer) than intended and still returns plausible results. Three checks over the ACTUAL
+        indexed rows:
+
+          1. no status outside the known four — an unknown/NULL value is silently excluded by
+             `IN (included)`, reading as absence; refuse it rather than drop it unseen.
+          2. the chunk-denormalized status agrees with its document's — a drifted chunk would leak
+             or hide against what a browse of the note shows.
+          3. the PRODUCTION filter builder (`_add_status_filter`, the exact code the query path
+             runs) selects EXACTLY the included set and EXACTLY the excluded set, and the two
+             partition the whole corpus. Genuinely independent of check 1: a polarity or omission
+             bug in the filter diverges from the direct `IN (included)` count here even when every
+             status is valid.
+
+        NOT asserted here, by design: that `INCLUDED_STATUSES == {active, complete}`. That the
+        constant matches Doc 2 §6 is a spec fact, pinned by test_status_filter — not a property of
+        the indexed data, so it is not this data-audit's job to claim it (claiming more than it
+        proves would be its own small version of the failure this guards).
+
+        Returns the partition counts for the read-out. Raises StatusPartitionError on any breach.
+        """
+        from substrate.spine import EXCLUDED_STATUSES, INCLUDED_STATUSES, STATUSES
+
+        db = self.db
+        # (1) unknown / NULL statuses on either table.
+        bad_docs = [
+            (r["doc_id"], r["status"])
+            for r in db.execute("SELECT doc_id, status FROM documents").fetchall()
+            if r["status"] not in STATUSES
+        ]
+        bad_chunks = db.execute(
+            f"SELECT COUNT(*) FROM chunks WHERE status NOT IN ({','.join('?' * len(STATUSES))})",
+            sorted(STATUSES),
+        ).fetchone()[0]
+        if bad_docs or bad_chunks:
+            raise StatusPartitionError(
+                f"status outside {sorted(STATUSES)}: documents={bad_docs[:5]} "
+                f"chunks={bad_chunks}. An unknown status is excluded unseen — refusing."
+            )
+
+        # (2) denormalization integrity: every chunk's status matches its document's.
+        drift = db.execute(
+            "SELECT COUNT(*) FROM chunks c JOIN documents d ON d.doc_id=c.doc_id "
+            "WHERE c.status IS NOT d.status"
+        ).fetchone()[0]
+        if drift:
+            raise StatusPartitionError(
+                f"{drift} chunk(s) carry a status that disagrees with their document — the "
+                "denormalized currency has drifted from the source note."
+            )
+
+        # (3) the ACTUAL filter builder must select the declared sets. n_in_direct hand-writes
+        # `IN (included)`; n_in_filter routes through _add_status_filter — a divergence means the
+        # production filter no longer implements the set it claims to. And included+excluded must
+        # cover every row (nothing falls outside the partition).
+        inc = sorted(INCLUDED_STATUSES)
+        total = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        n_in_direct = db.execute(
+            f"SELECT COUNT(*) FROM chunks WHERE status IN ({','.join('?' * len(inc))})", inc
+        ).fetchone()[0]
+        n_in_filter = self._count_status_filtered(INCLUDED_STATUSES)
+        n_ex_filter = self._count_status_filtered(EXCLUDED_STATUSES)
+        if n_in_direct != n_in_filter:
+            raise StatusPartitionError(
+                f"the default-retrieval filter selects {n_in_filter} chunks but the included set "
+                f"{inc} has {n_in_direct} — _add_status_filter no longer matches its declared set."
+            )
+        if n_in_filter + n_ex_filter != total:
+            raise StatusPartitionError(
+                f"status partition does not close: included={n_in_filter} excluded={n_ex_filter} "
+                f"total={total}. Some row falls outside {{included}} ∪ {{excluded}}."
+            )
+        return {
+            "included_chunks": n_in_filter, "excluded_chunks": n_ex_filter, "total_chunks": total,
+            "by_status": self.status_counts(),
+        }
+
     # ------------------------------------------------------- vector slot
 
     def has_vectors(self, model: str) -> bool:
@@ -404,11 +571,16 @@ class IndexStore:
         kind: str | None = None,
         doc_id: str | None = None,
         document_class: str | None = None,
+        statuses: frozenset[str] | None = None,
     ) -> list[Hit]:
         """Brute-force cosine. Vectors are L2-normalized, so a dot product IS cosine.
 
         No ANN index: at personal-corpus scale this is instant and there is no index to
         rebuild or drift. sqlite-vec becomes worthwhile only when this stops being true.
+
+        `statuses` mirrors `search`: the same default-retrieval filter must apply to the vector
+        arm, or an archived/superseded passage the lexical arm excluded would re-enter via cosine.
+        None means no filter, unchanged for callers that do not pass it.
         """
         import numpy as np
 
@@ -419,9 +591,11 @@ class IndexStore:
             if val is not None:
                 where.append(f"{col} = ?")
                 args.append(val)
+        _add_status_filter(where, args, statuses)
 
         rows = self.db.execute(
-            "SELECT c.*, d.title AS title, v.vector AS vector "
+            "SELECT c.*, d.title AS title, d.supersedes AS d_supersedes, "
+            "d.domains AS d_domains, d.vault AS d_vault, v.vector AS vector "
             "FROM chunks c JOIN documents d ON d.doc_id = c.doc_id "
             "JOIN chunk_vectors v ON v.chunk_id = c.chunk_id "
             f"WHERE {' AND '.join(where)}",

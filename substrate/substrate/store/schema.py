@@ -15,11 +15,15 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # v1 (2026-07-21) initial: documents, chunks, chunks_fts (external-content), chunk_vectors.
 # v2 (2026-07-21) chunks.section_kind — references sections were acting as retrieval
 #     attractors; ranking weights them down. Derived from path_str, so no re-ingest.
+# v3 (2026-07-23) Doc-2 vault spine + composition provenance. documents gains status / domains /
+#     vault / tier (supersedes/superseded_by already existed, previously always NULL); chunks
+#     gains status, DENORMALIZED like the rest of the spine so the default-retrieval filter reads
+#     currency off the chunk without a join. Drop-and-rebuild from markdown, no data loss.
 DDL = """
 CREATE TABLE IF NOT EXISTS documents(
     doc_id            TEXT PRIMARY KEY,
@@ -42,10 +46,16 @@ CREATE TABLE IF NOT EXISTS documents(
     last_verified_at  TEXT,
     supersedes        TEXT,
     superseded_by     TEXT,
+    status            TEXT,
+    domains           TEXT,
+    vault             TEXT,
+    tier              INTEGER,
     confidence        REAL,
     coverage          REAL
 );
-CREATE INDEX IF NOT EXISTS idx_documents_class ON documents(document_class);
+CREATE INDEX IF NOT EXISTS idx_documents_class  ON documents(document_class);
+CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
+CREATE INDEX IF NOT EXISTS idx_documents_vault  ON documents(vault);
 
 CREATE TABLE IF NOT EXISTS chunks(
     chunk_id         TEXT PRIMARY KEY,
@@ -73,11 +83,13 @@ CREATE TABLE IF NOT EXISTS chunks(
     version          TEXT,
     source_sha256    TEXT,
     confidence       REAL,
-    superseded_by    TEXT
+    superseded_by    TEXT,
+    status           TEXT NOT NULL DEFAULT 'active'
 );
-CREATE INDEX IF NOT EXISTS idx_chunks_doc  ON chunks(doc_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_kind ON chunks(kind);
-CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path_str);
+CREATE INDEX IF NOT EXISTS idx_chunks_doc    ON chunks(doc_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_kind   ON chunks(kind);
+CREATE INDEX IF NOT EXISTS idx_chunks_path   ON chunks(path_str);
+CREATE INDEX IF NOT EXISTS idx_chunks_status ON chunks(status);
 
 -- External-content FTS over chunks. text_with_path is indexed rather than text: BM25
 -- cannot match a structural path that is not present in the indexed string.

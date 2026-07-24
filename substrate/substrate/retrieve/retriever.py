@@ -48,7 +48,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from substrate.spine import INCLUDED_STATUSES
 from substrate.store.index_store import Hit, IndexStore
+
+# The default retrieval set (Doc 2 §6): active + complete included; archived + superseded excluded.
+# Sourced from spine.INCLUDED_STATUSES so "the set retrieval uses" and "the set the audit checks"
+# are one definition and cannot drift. A caller passes an explicit `statuses` (e.g. to include
+# archived on an explicit request, or None for an unfiltered administrative scan) to override it.
+DEFAULT_STATUSES = INCLUDED_STATUSES
 
 RRF_K = 60
 OUTLINE_ROUTES = 3      # how many outline records may route
@@ -202,6 +209,7 @@ def _retrieve(
     k: int = 5,
     doc_id: str | None = None,
     document_class: str | None = None,
+    statuses: frozenset[str] | None = DEFAULT_STATUSES,
     route: bool = False,
     expand: bool = False,
     embedder=None,
@@ -211,7 +219,12 @@ def _retrieve(
 ) -> tuple[list[Hit], Trace]:
     """Passage retrieval, optionally routed through the outline layer. Returns (hits, trace);
     `retrieve()` wraps this into the RetrievalResult contract. Behaviour is unchanged from before
-    the contract existed — this is the identical retrieval body, only the return is now wrapped."""
+    the contract existed — this is the identical retrieval body, only the return is now wrapped.
+
+    `statuses` is the default-retrieval filter, applied uniformly to EVERY arm (direct, variant,
+    vector, route) so a status the lexical arm excludes cannot re-enter through the vector or
+    routing arm. The default excludes archived + superseded; the existing corpus is all `active`,
+    so its results are unchanged."""
     trace = Trace()
 
     # Query set: the original, plus register-varied paraphrases. A relevant chunk only has
@@ -231,7 +244,8 @@ def _retrieve(
             pass
 
     direct = store.search(
-        query, k=k * 3, kind="passage", doc_id=doc_id, document_class=document_class
+        query, k=k * 3, kind="passage", doc_id=doc_id, document_class=document_class,
+        statuses=statuses,
     )
     trace.direct = len(direct)
     lists: list[tuple[float, list[Hit]]] = [(DIRECT_WEIGHT, direct)]
@@ -241,7 +255,7 @@ def _retrieve(
     # displacing precise hits.
     for variant in queries[1:]:
         vlist = store.search(variant, k=k * 2, kind="passage", doc_id=doc_id,
-                             document_class=document_class)
+                             document_class=document_class, statuses=statuses)
         if vlist:
             lists.append((VARIANT_WEIGHT, vlist))
         if embedder is not None:
@@ -250,6 +264,7 @@ def _retrieve(
                     embedder.embed_query(variant),
                     getattr(embedder, "key", embedder.model),
                     k=k * 2, kind="passage", doc_id=doc_id, document_class=document_class,
+                    statuses=statuses,
                 )
                 if vv:
                     lists.append((VARIANT_WEIGHT, vv))
@@ -298,7 +313,7 @@ def _retrieve(
             try:
                 vhits = store.vector_search(
                     qv, getattr(embedder, 'key', embedder.model), k=k * 3, kind="passage",
-                    doc_id=doc_id, document_class=document_class,
+                    doc_id=doc_id, document_class=document_class, statuses=statuses,
                 )
                 trace.vector = len(vhits)
                 if vhits:
@@ -310,7 +325,7 @@ def _retrieve(
     if route:
         outlines = store.search(
             query, k=OUTLINE_ROUTES, kind="outline", doc_id=doc_id,
-            document_class=document_class,
+            document_class=document_class, statuses=statuses,
         )
         for o in outlines:
             if not o.path_str:
@@ -321,7 +336,7 @@ def _retrieve(
             # +0.012 MRR with two cases regressing before this was scoped as a search.
             under = store.search(
                 query, k=ROUTE_DEPTH, kind="passage", doc_id=o.doc_id,
-                path_prefix=o.path_str,
+                path_prefix=o.path_str, statuses=statuses,
             )
             if under:
                 trace.routes.append(o.path_str)
@@ -432,6 +447,7 @@ def retrieve(
     k: int = 5,
     doc_id: str | None = None,
     document_class: str | None = None,
+    statuses: frozenset[str] | None = DEFAULT_STATUSES,
     route: bool = False,
     expand: bool = False,
     embedder=None,
@@ -443,6 +459,9 @@ def retrieve(
     index_version. The retrieval itself is `_retrieve`, unchanged — this only surfaces the
     condition the engine already knew and used to throw away (PRINCIPLES.md, the Boundary
     Principle). No consumer should ever go back to reading a bare hit list.
+
+    `statuses` is the default-retrieval filter (Doc 2 §6), defaulting to active+complete. Pass a
+    broader set to answer an explicit archived/superseded query, or None for an unfiltered scan.
     """
     # Capture what was WIRED (and each arm's model identity) before _retrieve can null an arm out
     # on fallback. The model identities gate the measured tier — a swapped HyDE/rerank model is a
@@ -453,8 +472,8 @@ def retrieve(
     rerank_model = getattr(reranker, "model", "") if reranker is not None else ""
 
     hits, trace = _retrieve(
-        store, query, k=k, doc_id=doc_id, document_class=document_class, route=route,
-        expand=expand, embedder=embedder, expander=expander, multiquery=multiquery,
+        store, query, k=k, doc_id=doc_id, document_class=document_class, statuses=statuses,
+        route=route, expand=expand, embedder=embedder, expander=expander, multiquery=multiquery,
         reranker=reranker,
     )
     cap = _capability(

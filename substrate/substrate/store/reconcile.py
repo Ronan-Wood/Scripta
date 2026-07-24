@@ -53,10 +53,12 @@ def _load_dir(d: Path) -> tuple[Document, list[Chunk], dict, bytes, str] | None:
     run = json.loads(rj.read_text("utf-8"))
     cls = run.get("class", {})
     extract = run.get("extract", {})
-    # Provenance comes from run.json, not a hardcoded "docling": the markdown arm is the first
-    # non-docling producer, and stamping every ingest docling was the Boundary-Principle failure
-    # in miniature (the producer knew the arm; the consumer overwrote it). Default preserves the
-    # existing PDF corpus, whose run.json predates these keys.
+    # Doc-2 spine + composition provenance. Separate blocks from `class` so status/domains are not
+    # smuggled under document-class policy, and both DEFAULT for the existing PDF corpus (whose
+    # run.json predates them): no spine block → status None (→ 'active' at upsert), no domains, no
+    # supersession, no vault/tier. So the old corpus reconciles byte-for-byte as before.
+    spine = run.get("spine", {})
+    prov = run.get("provenance", {})
     doc = Document(
         doc_id=run["doc_id"],
         source_path=run["source"],
@@ -66,6 +68,12 @@ def _load_dir(d: Path) -> tuple[Document, list[Chunk], dict, bytes, str] | None:
         title=cls.get("title"),
         version=cls.get("version"),
         version_date=cls.get("version_date"),
+        status=spine.get("status"),
+        superseded_by=spine.get("superseded_by"),
+        supersedes=spine.get("supersedes"),
+        domains=list(spine.get("domains", [])),
+        vault=prov.get("vault"),
+        tier=prov.get("tier"),
         extractor=extract.get("extractor", ""),
         extractor_arm=extract.get("extractor_arm", "docling"),
         layout_model=extract.get("layout_model", "docling-layout-heron"),
@@ -114,10 +122,16 @@ def reconcile(store: IndexStore, out_root: Path) -> Report:
         # misdetected title/version) changes it; a re-run of unchanged artifacts does not. Only
         # the stable class block is hashed, never run.json's timing fields. The key lives in
         # stage_ledger — the ledger reconcile already writes, keyed by doc_id.
+        # The spine + provenance blocks join the diff key alongside chunks and class: editing a
+        # note's status/domains/supersession or its vault leaves chunks.jsonl and document.md
+        # byte-identical, so keying on those alone would silently keep the OLD status and never
+        # re-index — a status change that never takes effect is precisely the silent-loss shape.
         content_sha = hashlib.sha256(
             b"\x00".join((
                 chunks_bytes,
                 json.dumps(run.get("class", {}), sort_keys=True).encode("utf-8"),
+                json.dumps(run.get("spine", {}), sort_keys=True).encode("utf-8"),
+                json.dumps(run.get("provenance", {}), sort_keys=True).encode("utf-8"),
             ))
         ).hexdigest()
         known = store.stage_hash(doc.doc_id, "index")
