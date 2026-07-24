@@ -159,6 +159,20 @@ class Document:
     version_source: str | None = None
     page_label_offset: int | None = None
 
+    # Doc-2 spine. `status` drives the default retrieval set (§6): active/complete included,
+    # archived/superseded excluded from default retrieval. `superseded_by`/`supersedes` are the
+    # supersession link — a superseded note is excluded directly but its link surfaces via the
+    # note that replaced it. `domains` is the multi-valued reference-retrieval tag (§3a), carried
+    # as a field only — the soft-weighting feature is deferred, so nothing filters or weights on it.
+    # `vault`/`tier` are composition provenance: which scoped vault a note came from, set by the
+    # manifest-composition path so "did inheritance actually compose" is checkable, not inferred.
+    status: str | None = None
+    superseded_by: str | None = None
+    supersedes: str | None = None
+    domains: list[str] = field(default_factory=list)
+    vault: str | None = None
+    tier: int | None = None
+
     extractor: str = ""
     extractor_arm: str = ""
     layout_model: str = ""

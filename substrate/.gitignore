@@ -15,4 +15,8 @@ eval/.baseline.json
 # durable vector cache — expensive to regenerate, content-addressed so never stale
 out/vector-cache.db*
 
+# Derived index for the Doc-2 vault spike. Disposable, rebuilt from vaults/ markdown; kept
+# OUT of the eval's out/ so it can never disturb out/substrate.db. The vaults/ source is tracked.
+out-vault/
+
 bin/

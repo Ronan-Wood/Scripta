@@ -3,6 +3,14 @@
 Written 2026-07-22 at the end of a long session, for a fresh context. Read this first, then
 `PRINCIPLES.md` (how this project fails), then `EXPERIMENTS.md` (every measurement).
 
+> **2026-07-24 update — Doc 2 vault structure is now BUILT (scaffold + engine).** The engine
+> reads a Doc-2 vault: manifest inheritance/composition (`substrate/vault.py`, `compose` command),
+> the `status` retrieval spine (§6), `domains` carried as a tag (§3a), and A-series
+> composition/status assertions. Read **`VAULT-SPIKE-READOUT.md`** for what shipped, what's
+> deferred, and how eval-safety was proven (0.698/0.593 unmoved). The §1 "Vault structure" row is
+> updated to match. Migration of real content and `reference_pins` version-selection are the next
+> steps (parsed in the manifest, not yet acted on).
+
 ---
 
 ## 0. READ THIS BEFORE THE PLAN FILE
@@ -49,10 +57,11 @@ The four layers:
 |---|---|
 | **Engine** | DONE as a retrieval component. Measured, optimised, finished as a tuning target. |
 | **App (Scripta)** | Exists. Settings pane predates the eval, so its defaults need reconciling to the winners. (Doc 3) |
-| **Vault structure** | Specced, NOT built. Tiers, manifest, domains. Engine has never been pointed at one. (Doc 2) |
+| **Vault structure** | BUILT (2026-07-24): engine reads a Doc-2 vault — manifest inheritance, `status` spine, `domains` tag. Migration + `reference_pins` remain. (Doc 2 · `VAULT-SPIKE-READOUT.md`) |
 | **Clients** | Future. App first-class, Zed first-class, MCP orchestration. (Docs 3/4) |
 
-I have **not read Docs 2, 3, or 4.** Anything I say about vault shape is inference.
+**Doc 2 is now read and built** (2026-07-24 — see the update note at the top and
+`VAULT-SPIKE-READOUT.md`). Docs 3 and 4 remain unread; anything about Doc 3/4 shape is inference.
 
 ---
 

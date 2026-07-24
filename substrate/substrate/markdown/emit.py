@@ -143,6 +143,18 @@ def frontmatter(doc: Document, extra: dict | None = None) -> str:
         f["version_date"] = doc.version_date
     if doc.page_label_offset is not None:
         f["page_label_offset"] = doc.page_label_offset
+    # Doc-2 spine — round-tripped so re-ingesting the engine's OWN emitted markdown recovers a
+    # note's status/domains/supersession instead of silently defaulting them (the reader keys the
+    # same fields back off frontmatter). Emitted only when set, so the PDF corpus's markdown, which
+    # has none of these, is byte-identical to before.
+    if doc.status:
+        f["status"] = doc.status
+    if doc.superseded_by:
+        f["superseded_by"] = doc.superseded_by
+    if doc.supersedes:
+        f["supersedes"] = doc.supersedes
+    if doc.domains:
+        f["domains"] = list(doc.domains)
     f.update(extra or {})
 
     lines = ["---"]
