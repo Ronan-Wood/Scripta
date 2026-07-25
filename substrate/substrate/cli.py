@@ -75,7 +75,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         "pages": doc.source_pages,
         "elapsed_s": round(time.monotonic() - t0, 1),
         "class": meta,
-        "extract": doc.confidence,
+        "extract": doc.extract_confidence,
         "emit": estats,
         "chunk": cstats,
         "coverage": round(cstats["sum_chunk_chars"] / max(len(body), 1), 4),
@@ -137,7 +137,8 @@ def cmd_ingest_md(args: argparse.Namespace) -> int:
     print(f"\n  title      : {r.title}")
     if run["class"].get("version"):
         print(f"  version    : {run['class']['version']}  ({run['class'].get('version_date')})")
-    print(f"  status     : {r.status}"
+    print(f"  status     : {r.status}  ·  doc_type {r.doc_type}"
+          + f"  ·  confidence {r.confidence}"
           + (f"  ·  domains {r.domains}" if r.domains else "")
           + (f"  ·  supersedes {run['spine']['supersedes']}" if run["spine"]["supersedes"] else "")
           + (f"  ·  superseded_by {run['spine']['superseded_by']}"
@@ -156,25 +157,97 @@ def cmd_ingest_md(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_verify(args: argparse.Namespace) -> int:
-    """Assertions over an ingested directory. Non-zero exit on failure, for CI."""
+# Quality-class per-note checks: they describe chunk SHAPE, not content loss or corruption. A
+# short split remainder or an oversized prose paragraph makes a note read worse; nothing is
+# missing and no path is wrong (A18 is the loss gate, A17 the corruption gate). `compose` reports
+# these per note instead of refusing the scope, because faithfully-migrated real content
+# legitimately produces both — a 2,500-char judge-panel paragraph the chunker will not split
+# mid-sentence, and the short remainder such a split leaves. Everything NOT named here refuses, so
+# an assertion added later fails closed until someone deliberately classifies it.
+_QUALITY_CHECKS: frozenset[str] = frozenset({"A13-fragments", "A13-oversize-prose"})
+
+
+def refuse_if_rebuilt(store, *, repopulates: bool) -> bool:
+    """A schema bump drops-and-rebuilds the index on open. Announce it — and on a READ path, refuse.
+
+    Dropping is safe by design (markdown is the source of truth), but only a command that
+    repopulates in the same run — `index`, `compose` — ends with an index again. A read path
+    (`query`, `embed`, `eval`) opens it, finds it empty, and has no way to refill it, so it would
+    answer `(no results)`. That reads as "nothing in your vault matches" when the truth is "your
+    index was just deleted": a plausible answer from a silently-emptied source set, which is this
+    project's signature failure and precisely what an empty result cannot distinguish itself from.
+
+    Returns True when the caller should abort. Write paths get the notice and carry on.
+    """
+    if not store.rebuilt:
+        return False
+    if repopulates:
+        print("schema version changed -> index dropped and rebuilt from markdown")
+        return False
+    print(
+        "FATAL: the index schema changed, so the index was dropped and rebuilt EMPTY on open.\n"
+        "  This command only reads, so it cannot refill it — and zero results here would be\n"
+        "  indistinguishable from a genuine no-match. Re-run `substrate index` (or `compose` for a\n"
+        "  vault) to rebuild from markdown, then retry.",
+        file=sys.stderr,
+    )
+    return True
+
+
+def partition_check_failures(
+    ingest_dirs: list[tuple[Path, Path]],
+) -> tuple[list[tuple[Path, str, str]], list[tuple[Path, str, str]]]:
+    """Run the per-document checks over every ingested note and split the failures two ways.
+
+    Returns `(fatal, warned)`. A failure is a warning only if its check id is in _QUALITY_CHECKS;
+    everything else is fatal, so an assertion added later fails closed until someone classifies it.
+    """
+    fatal: list[tuple[Path, str, str]] = []
+    warned: list[tuple[Path, str, str]] = []
+    for note_path, out_dir in ingest_dirs:
+        for cid, name, ok, detail in document_checks(out_dir):
+            if ok:
+                continue
+            (warned if cid in _QUALITY_CHECKS else fatal).append((note_path, name, detail))
+    return fatal, warned
+
+
+def document_checks(out: Path) -> list[tuple[str, str, bool, str]]:
+    """The per-DOCUMENT assertion set over one ingested directory.
+
+    Shared by `verify` (one dir, exit non-zero on any failure) and `compose` (every note in the
+    composed scope). Each entry is `(check_id, display name, ok, detail)`. The id is stable and the
+    display name is not — A14's name changes with the source format — so a caller classifying a
+    failure matches the id, never the label.
+
+    APPLICABILITY is per source format, and is a separate question from severity. A1/A1b hunt for
+    EXTRACTION artifacts and are emitted for the PDF path only: `residue` matches
+    `[a-z]\\s*[!­‐‑]\\s*[a-z]` because Docling renders DDIA's soft hyphen as `!`, so on authored
+    markdown it counts ordinary exclamations — three "word! word" occurrences in one migrated note
+    would otherwise refuse an entire composed vault with a message about hyphens. A18/A19 are
+    markdown-only for the mirror-image reason. Neither is a quality-vs-loss call, so neither belongs
+    in _QUALITY_CHECKS; conditional emission is how this module already expresses N/A.
+    """
     from substrate.text.hyphens import residue
     from substrate.text.normalize import ligature_residue
 
-    out = Path(args.dir).expanduser()
     body = (out / "document.md").read_text("utf-8")
     run = json.loads((out / "run.json").read_text("utf-8"))
     chunks = [json.loads(x) for x in (out / "chunks.jsonl").read_text("utf-8").splitlines() if x]
 
     passages = [c for c in chunks if c["kind"] == "passage"]
-    checks: list[tuple[str, bool, str]] = []
+    is_md = run.get("source_format") == "markdown"
+    checks: list[tuple[str, str, bool, str]] = []
 
-    checks.append(("A1  hyphen residue", residue(body) <= 2, f"{residue(body)} left"))
-    checks.append(
-        ("A1b ligature residue", ligature_residue(body) == 0, f"{ligature_residue(body)} left")
-    )
-    checks.append(("A12 version captured", not (run["class"]["document_class"] == "reference-versioned" and not run["class"]["version"]), str(run["class"].get("version"))))
-    checks.append(("A13 no fragments", run["chunk"]["short_fragments"] == 0, f"{run['chunk']['short_fragments']}"))
+    if not is_md:
+        checks.append(("A1-hyphen", "A1  hyphen residue", residue(body) <= 2,
+                       f"{residue(body)} left"))
+        checks.append(
+            ("A1b-ligature", "A1b ligature residue", ligature_residue(body) == 0,
+             f"{ligature_residue(body)} left")
+        )
+    checks.append(("A12-version", "A12 version captured", not (run["class"]["document_class"] == "reference-versioned" and not run["class"]["version"]), str(run["class"].get("version"))))
+    checks.append(("A13-fragments", "A13 no fragments", run["chunk"]["short_fragments"] == 0, f"{run['chunk']['short_fragments']}"))
     # An oversized chunk is only a defect when it is PROSE. Prose always has sentence
     # boundaries to split on; a table or code listing does not, and splitting one leaves
     # both halves useless. Counting raw oversize instead made a 78-passage paper fail on
@@ -186,6 +259,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     ]
     checks.append(
         (
+            "A13-oversize-prose",
             "A13 no oversized prose",
             not oversize_prose,
             f"{len(oversize_prose)} prose / {run['chunk']['oversize']} total (rest are tables/code, kept whole)",
@@ -206,10 +280,20 @@ def cmd_verify(args: argparse.Namespace) -> int:
         share = (max(pages_seen) - min(pages_seen) + 1) / max(run["pages"], 1)
         if share > worst_share:
             worst, worst_share = name, share
+    # A17's denominator is `run["pages"]`, which for markdown is the max `<!-- page:N -->` anchor
+    # in the SLICE, not the source book's page count — so a faithful Chapter-1 slice (anchors 2–9)
+    # computes an implausible "share of pages" and would refuse the whole scope, while the same
+    # slice taken from page 280 passes only because the denominator is inflated. It is a book-scale
+    # extraction heuristic ("11 of 14 DDIA chapter titles"), and a hand-authored slice does not
+    # carry the page count the ratio assumes. Report-only for markdown, gated for the PDF path
+    # where the denominator is real — the same split A14 already makes, for the same reason.
+    a17 = worst_share <= 0.30 or len(spans) <= 2
+    name17 = "A17 stale ancestor (report-only, md)" if is_md and not a17 else "A17 no stale ancestor"
     checks.append(
         (
-            "A17 no stale ancestor",
-            worst_share <= 0.30 or len(spans) <= 2,
+            "A17-stale-ancestor",
+            name17,
+            a17 or is_md,
             f"widest top-level element spans {worst_share:.0%} of pages ({str(worst)[:34]})",
         )
     )
@@ -225,14 +309,13 @@ def cmd_verify(args: argparse.Namespace) -> int:
     # note (only top-level headings) has no depth-≥2 paths. For the PDF path both catch real
     # extraction failures (glyph-geometry can flatten the heading tree), so they stay gated there;
     # for markdown headings are explicit, so these can only false-reject — report-only, and A18 +
-    # A17 carry the real content/structure guarantees.
-    is_md = run.get("source_format") == "markdown"
+    # A17 carry the real content/structure guarantees. (`is_md` is computed once, at the top.)
     a14 = run["coverage"] >= 0.95
     name14 = "A14 coverage (report-only, md)" if is_md and not a14 else "A14 coverage >= 0.95"
-    checks.append((name14, a14 or is_md, f"{run['coverage']}"))
+    checks.append(("A14-coverage", name14, a14 or is_md, f"{run['coverage']}"))
     a14p = run["chunk"]["path_depth_ge2_pct"] >= 60
     name14p = "A14 paths (report-only, md)" if is_md and not a14p else "A14 paths present"
-    checks.append((name14p, a14p or is_md, f"{run['chunk']['path_depth_ge2_pct']}%"))
+    checks.append(("A14-paths", name14p, a14p or is_md, f"{run['chunk']['path_depth_ge2_pct']}%"))
 
     # A18 — markdown ingestion only. End-to-end source→chunks coverage: A14 above compares chunk
     # chars to the re-emitted BODY, so a stage that dropped a source line passes it (the line is
@@ -245,7 +328,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         cov = ex.get("source_coverage")
         drops = ex.get("content_block_drops", [])
         checks.append(
-            ("A18 md source coverage",
+            ("A18-md-coverage", "A18 md source coverage",
              cov is not None and cov >= MD_COVERAGE_GATE and not drops,
              f"{cov} · {len(drops)} block(s) dropped {drops[:5]} · missing "
              f"{ex.get('source_coverage_missing')}")
@@ -259,21 +342,42 @@ def cmd_verify(args: argparse.Namespace) -> int:
         # feature has none, and a status is not "invalid" merely for predating the field — a
         # re-ingest writes the block. New ingests always emit one, so this only spares stale dirs.
         if "spine" in run:
-            from substrate.spine import STATUSES
+            from substrate.spine import DOC_TYPES, STATUSES
             sp = run["spine"]
             st = sp.get("status")
             superseded_ok = st != "superseded" or bool(sp.get("superseded_by"))
             checks.append(
-                ("A19 spine status valid",
+                ("A19-spine-status", "A19 spine status valid",
                  st in STATUSES and superseded_ok,
                  f"{st}"
                  + ("" if superseded_ok else " · superseded with no superseded_by")
                  + (f" · domains {sp.get('domains')}" if sp.get("domains") else "")),
             )
+            # doc_type (§6a) joins the per-doc spine check when present. A spine block written before
+            # doc_type existed has none — N/A, not invalid, the same leniency A19 gives a pre-spine
+            # dir; a re-ingest writes one. The cross-doc facet (validity + denorm) is A21 at compose.
+            if "doc_type" in sp:
+                dt = sp.get("doc_type")
+                checks.append(("A19-spine-doc-type", "A19 spine doc_type valid",
+                               dt in DOC_TYPES, f"{dt}"))
+            # confidence joins the per-doc spine check on the same terms. A spine block written
+            # before the axis existed has none — N/A, not invalid.
+            if "confidence" in sp:
+                from substrate.spine import STORED_CONFIDENCES
+                cf = sp.get("confidence")
+                checks.append(("A19-spine-confidence", "A19 spine confidence valid",
+                               cf in STORED_CONFIDENCES, f"{cf}"))
 
-    width = max(len(n) for n, _, _ in checks)
+    return checks
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Assertions over an ingested directory. Non-zero exit on failure, for CI."""
+    checks = document_checks(Path(args.dir).expanduser())
+
+    width = max(len(n) for _, n, _, _ in checks)
     failed = 0
-    for name, ok, detail in checks:
+    for _cid, name, ok, detail in checks:
         if not ok:
             failed += 1
         print(f"  {'PASS' if ok else 'FAIL'}  {name:<{width}}  {detail}")
@@ -348,24 +452,38 @@ def cmd_rechunk(args: argparse.Namespace) -> int:
 
 
 def cmd_index(args: argparse.Namespace) -> int:
-    from substrate.store.index_store import IndexStore
+    from substrate.store.index_store import ConfidenceError, DocTypeError, IndexStore
     from substrate.store.reconcile import reconcile
 
     root = Path(args.out_root).expanduser()
     with IndexStore(args.db) as store:
-        if store.rebuilt:
-            print("schema version changed -> index dropped and rebuilt from markdown")
+        refuse_if_rebuilt(store, repopulates=True)
         if args.rebuild:
             store.clear()
             print("cleared index (markdown is the source of truth)")
         rep = reconcile(store, root)
         s = store.stats()
+        # `index` rebuilds from `out/` artifacts rather than from vault notes, so nothing on this
+        # path runs the spine gates that `compose` runs at ingest — a hand-edited or stale run.json
+        # spine reaches both tables unvalidated. That was tolerable while the axes were only
+        # FILTERED on (an unknown status is excluded from retrieval, so it hides itself), but
+        # confidence is DISPLAYED: an out-of-vocabulary value prints on every hit as though the
+        # note claimed it, which is the laundering the axis exists to prevent. The store-side
+        # audits are cheap scans over a small table, so run them here too and make A21/A23's
+        # "every indexed value is valid" true of every path, not just of compose.
+        try:
+            store.assert_doc_type_valid()
+            store.assert_confidence_valid()
+        except (DocTypeError, ConfidenceError) as e:
+            print(f"\nFATAL (doc_type/confidence assertion): {e}", file=sys.stderr)
+            return 3
 
     print(
         f"  added {len(rep.added)} · updated {len(rep.updated)} · "
         f"unchanged {len(rep.unchanged)} · removed {len(rep.removed)}"
     )
     print(f"  {s['documents']} documents · {s['passages']} passages · {s['outlines']} outlines")
+    print("  A21/A23 spine axes valid")
     print(f"  db: {args.db} (schema v{s['schema_version']})")
     return 0
 
@@ -374,16 +492,29 @@ def cmd_compose(args: argparse.Namespace) -> int:
     """Resolve a project vault's manifest, ingest the composed note set, index it, and PROVE the
     composition — the inheritance mechanism end to end (Doc 2 §1–2, §6).
 
-    Strict where a single-file ingest is lenient: every note must declare a status
+    Strict where a single-file ingest is lenient: every note must declare a status and a doc_type
     (require_status=True), and the whole scope is refused if ANY note fails to ingest — a partially
-    composed scope is a silently-wrong retrieval set. After indexing, two A-series assertions run:
-    A-compose (inheritance actually composed, no tier silently dropped) and A20 (the status filter
-    partitions exactly), so a green run is a proof, not a hope.
+    composed scope is a silently-wrong retrieval set. Confidence stays optional on this path too
+    (absent → `unstated`), because a forced settledness marker is a guessed one.
+
+    Five assertions run, so a green run is a proof rather than a hope:
+
+      * **A22**, BEFORE indexing — the per-note sweep over every ingested note. Loss/corruption
+        failures refuse the scope; quality failures are reported against the note that produced
+        them. Before this existed, `compose` ran none of the per-document A-series at all.
+      * after indexing — **A-compose** (inheritance actually composed, no tier silently dropped),
+        **A20** (the status filter partitions exactly), **A21** (every doc_type valid, chunk↔doc
+        denormalization intact) and **A23** (the same two properties for confidence).
     """
     from substrate import vault as _vault
     from substrate.markdown.ingest import CoverageError, ingest_markdown
     from substrate.spine import SpineError
-    from substrate.store.index_store import IndexStore, StatusPartitionError
+    from substrate.store.index_store import (
+        ConfidenceError,
+        DocTypeError,
+        IndexStore,
+        StatusPartitionError,
+    )
     from substrate.store.reconcile import reconcile
 
     project = Path(args.project_vault).expanduser()
@@ -409,6 +540,7 @@ def cmd_compose(args: argparse.Namespace) -> int:
     # notes (even same filename in different sources) never share an ingest dir.
     import hashlib as _hl
     ingested: set[str] = set()
+    ingest_dirs: list[tuple[Path, Path]] = []   # (note path, its ingest dir) for the A22 sweep
     failures: list[tuple[Path, str]] = []
     for n in scope.notes:
         # A per-note out dir: vault + filename stem + a short path hash, so two same-named files
@@ -418,15 +550,18 @@ def cmd_compose(args: argparse.Namespace) -> int:
         try:
             r = ingest_markdown(
                 n.path, out_dir, doc_class=n.doc_class, require_status=True,
-                override_status=n.override_status, override_version=n.override_version,
+                override_status=n.override_status, override_doc_type=n.override_doc_type,
+                override_confidence=n.override_confidence,
+                override_version=n.override_version,
                 extra_domains=n.extra_domains, vault=n.vault, tier=n.tier,
             )
         except (ValueError, classes.ClassPolicyError, SpineError, CoverageError) as e:
             failures.append((n.path, f"{type(e).__name__}: {e}"))
             continue
         ingested.add(r.doc_id)
+        ingest_dirs.append((n.path, out_dir))
         print(f"  [{n.tier}] {n.vault}/{n.path.name}  ->  {r.doc_id}  "
-              f"({r.status}{', ' + ','.join(r.domains) if r.domains else ''})")
+              f"({r.status}/{r.doc_type}/{r.confidence}{', ' + ','.join(r.domains) if r.domains else ''})")
 
     if failures:
         print(f"\nFATAL: {len(failures)} note(s) failed to ingest — refusing to index a partial "
@@ -435,14 +570,41 @@ def cmd_compose(args: argparse.Namespace) -> int:
             print(f"    {path}: {why}", file=sys.stderr)
         return 3
 
+    # A22 — the per-NOTE assertion sweep. compose proves cross-document properties (A-compose, A20,
+    # A21) and nothing else; until this ran, the per-document A-series lived only in `verify`, which
+    # the vault path never calls. So a note that `verify` fails could enter a composed index under a
+    # wholly green compose — a well-formed artefact whose defect is in what it omits about itself,
+    # which is this project's signature failure. Runs before indexing, so a loss-class failure
+    # refuses the scope rather than being discovered after the write.
+    #
+    # Two tiers, and the DEFAULT IS REFUSE: only the ids in _QUALITY_CHECKS report, everything else
+    # is fatal. Quality failures are named per note rather than swallowed — Doc 2 §8 makes migration
+    # a supervised job over content the engine does not own, and real notes legitimately chunk
+    # imperfectly; refusing those would make faithful migration impossible, while hiding them would
+    # rebuild the gap this check exists to close.
+    fatal, warned = partition_check_failures(ingest_dirs)
+
+    if fatal:
+        print(f"\nFATAL (A22 per-note assertion): {len(fatal)} failure(s) across "
+              f"{len({p for p, _, _ in fatal})} note(s) — refusing to index content that does not "
+              "pass the per-document gates:", file=sys.stderr)
+        for path, name, detail in fatal:
+            print(f"    {path}: {name} — {detail}", file=sys.stderr)
+        return 3
+
     with IndexStore(args.db) as store:
+        refuse_if_rebuilt(store, repopulates=True)
         rep = reconcile(store, index_root)
         s = store.stats()
         try:
             comp = _vault.assert_composed(store, ingested_doc_ids=ingested)
             part = store.assert_status_partition()
-        except (_vault.VaultError, StatusPartitionError) as e:
-            print(f"\nFATAL (composition/status assertion): {e}", file=sys.stderr)
+            dtp = store.assert_doc_type_valid()
+            cfp = store.assert_confidence_valid()
+        except (_vault.VaultError, StatusPartitionError, DocTypeError,
+                ConfidenceError) as e:
+            print(f"\nFATAL (composition/status/doc_type/confidence assertion): {e}",
+                  file=sys.stderr)
             return 3
         index_version = store.index_version
 
@@ -452,6 +614,17 @@ def cmd_compose(args: argparse.Namespace) -> int:
     print(f"  A-compose PASS  by vault {comp['by_vault']} · by tier {comp['by_tier']}")
     print(f"  A20 status PASS  included {part['included_chunks']} · "
           f"excluded {part['excluded_chunks']} · by status {part['by_status']}")
+    print(f"  A21 doc_type PASS  by doc_type {dtp['by_doc_type']}")
+    print(f"  A23 confidence PASS  by confidence {cfp['by_confidence']}")
+    # Never print a bare PASS beside an unreported failure: the label states which gates it covers,
+    # and any quality warning is listed with the note that produced it, on its own line.
+    if warned:
+        print(f"  A22 per-note PASS (loss/corruption gates) · {len(warned)} QUALITY WARNING(S) "
+              f"across {len({p for p, _, _ in warned})} of {len(ingest_dirs)} note(s):")
+        for path, name, detail in warned:
+            print(f"      {path}: {name} — {detail}")
+    else:
+        print(f"  A22 per-note PASS  {len(ingest_dirs)} note(s) · 0 quality warnings")
     print(f"  db: {args.db} (schema v{s['schema_version']}) · index {index_version}")
     return 0
 
@@ -494,6 +667,8 @@ def cmd_query(args: argparse.Namespace) -> int:
     statuses = _resolve_statuses(args)
 
     with IndexStore(args.db) as store:
+        if refuse_if_rebuilt(store, repopulates=False):
+            return 2
         cap = None
         if args.kind == "outline":
             hits = store.search(args.text, k=args.k, kind="outline",
@@ -513,10 +688,14 @@ def cmd_query(args: argparse.Namespace) -> int:
             print(f"\n  [{h.kind}] {h.citation}")
             body = " ".join(h.text.split())
             print(f"    {body[:args.chars]}{'…' if len(body) > args.chars else ''}")
-            # Spine ON the hit (the Boundary Principle): its currency, domain tags, and — when this
-            # is a live note that replaced a dead one — the supersession link that surfaces the
-            # superseded fact's identity without ever retrieving the superseded note directly.
-            meta = [f"status={h.status}"]
+            # Spine ON the hit (the Boundary Principle): its currency, its settledness, domain
+            # tags, and — when this is a live note that replaced a dead one — the supersession link
+            # that surfaces the superseded fact's identity without ever retrieving the superseded
+            # note directly. `confidence` is printed ALWAYS, including `unstated`: the whole point
+            # of the axis is that a proposal must not read like a settled decision, and a value
+            # that disappears when it is inconvenient is prose, not a field.
+            meta = [f"status={h.status}", f"doc_type={h.doc_type}",
+                    f"confidence={h.confidence}"]
             if h.domains:
                 meta.append(f"domains={h.domains}")
             if h.supersedes:
@@ -765,6 +944,8 @@ def cmd_embed(args: argparse.Namespace) -> int:
 
     t0 = time.monotonic()
     with IndexStore(args.db) as store, VectorCache(args.cache) as cache:
+        if refuse_if_rebuilt(store, repopulates=False):
+            return 2
         dropped = store.drop_vectors(keeping_model=eng.key)
         if dropped:
             print(f"  dropped {dropped} vectors from other model spaces")

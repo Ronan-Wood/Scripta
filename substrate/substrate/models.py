@@ -164,12 +164,20 @@ class Document:
     # supersession link — a superseded note is excluded directly but its link surfaces via the
     # note that replaced it. `domains` is the multi-valued reference-retrieval tag (§3a), carried
     # as a field only — the soft-weighting feature is deferred, so nothing filters or weights on it.
+    # `doc_type` is the Diátaxis note-job axis (§6a: decision/explanation/reference/how-to), carried
+    # + surfaced like domains — an axis a query CAN filter on, server-side filtering deferred.
+    # `confidence` is the SETTLEDNESS axis, independent of status: status says whether a note is
+    # live, confidence says why its claims should be believed. A note can be active AND proposed;
+    # without this field that pair collapses and an unbuilt design retrieves reading as settled.
+    # Absent → `unstated`, surfaced as such — never defaulted to something confident.
     # `vault`/`tier` are composition provenance: which scoped vault a note came from, set by the
     # manifest-composition path so "did inheritance actually compose" is checkable, not inferred.
     status: str | None = None
     superseded_by: str | None = None
     supersedes: str | None = None
     domains: list[str] = field(default_factory=list)
+    doc_type: str | None = None
+    confidence: str | None = None
     vault: str | None = None
     tier: int | None = None
 
@@ -177,7 +185,9 @@ class Document:
     extractor_arm: str = ""
     layout_model: str = ""
     pipeline_version: str = "substrate-ingest/0.1.0"
-    confidence: dict = field(default_factory=dict)
+    # The EXTRACTOR's own run statistics (blocks, pages, seconds) — renamed off `confidence` so the
+    # spine field above can own that name. Never stored in the index; it rides in run.json only.
+    extract_confidence: dict = field(default_factory=dict)
 
     @property
     def body_blocks(self) -> list[Block]:

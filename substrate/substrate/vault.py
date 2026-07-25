@@ -36,10 +36,14 @@ _MAX_BYTES = 64 * 1024 * 1024
 
 # Files/dirs that are scaffolding, not retrievable notes. `_meta.md` is a source's metadata (read
 # for domains/class, never indexed); `structure.md` is an orientation outline Doc 2 explicitly
-# calls "not itself a retrieval target"; MEMORY.md and log.md are navigation/history; templates are
-# templates. Excluding them is not a silent drop — they are not notes, and the count check in
-# assert_composed is over the notes actually selected here, so nothing indexable goes missing.
-SKIP_NAMES: frozenset[str] = frozenset({"_meta.md", "structure.md", "MEMORY.md", "log.md"})
+# calls "not itself a retrieval target"; MEMORY.md and log.md are navigation/history; WRITING.md is
+# the read-wholesale authoring standard (§6a/rules) — a multi-job document by nature, so it is read
+# in full like a README, not chunked into single-job passages; templates are templates. Excluding
+# them is not a silent drop — they are not notes, and the count check in assert_composed is over the
+# notes actually selected here, so nothing indexable goes missing.
+SKIP_NAMES: frozenset[str] = frozenset(
+    {"_meta.md", "structure.md", "MEMORY.md", "log.md", "WRITING.md"}
+)
 SKIP_DIRS: frozenset[str] = frozenset({"99-templates"})
 
 
@@ -75,6 +79,8 @@ class NoteRef:
     tier: int                       # 1 operator · 2 reference · 3 project — derived from location
     doc_class: str | None = None    # from a reference source's _meta.md `class`, else None
     override_status: str | None = None   # from _meta.md, applied only when the note declares none
+    override_doc_type: str | None = None  # from _meta.md, applied only when the note declares none
+    override_confidence: str | None = None  # ditto — a source states its settledness once
     override_version: str | None = None  # from a versioned source's _meta.md
     extra_domains: list[str] = field(default_factory=list)  # merged from _meta.md
 
@@ -139,22 +145,38 @@ def _tier_for(rel_parts: tuple[str, ...]) -> int:
     return 3
 
 
-def _source_meta(note_path: Path) -> dict:
-    """`_meta.md` context for a reference passage: the `class`/`status`/`domains` a passage under
-    `<source>/passages/` inherits from its source. Empty for a note that is not under a passages/
-    dir, or whose source has no _meta.md. The _meta is read, never indexed."""
-    parts = note_path.parts
-    if "passages" not in parts:
+def _source_meta(note_path: Path, vault_root: Path) -> dict:
+    """`_meta.md` context for a reference passage: the `class`/`status`/`doc_type`/`confidence`/
+    `domains` a passage under `<source>/passages/` inherits from its source. Empty for a note that
+    is not under a passages/ dir, or whose source has no _meta.md. The _meta is read, never indexed.
+
+    Resolved against the VAULT-RELATIVE path, and only ever from inside the vault. Matching the
+    absolute path instead meant the first ancestor named `passages` won, so a vault that merely
+    happened to live under such a directory inherited an `_meta.md` from OUTSIDE the composed scope
+    — a file the manifest never authorised, silently supplying a note's class and (since these
+    fields joined it) its stated settledness. `_discover_notes` already guards SKIP_DIRS this exact
+    way, for this exact reason. `rindex` rather than `index` so a nested `passages/…/passages/`
+    resolves to the NEAREST enclosing source, not the outermost.
+    """
+    try:
+        rel_parts = note_path.relative_to(vault_root).parts
+    except ValueError:
         return {}
-    src_dir = Path(*parts[: parts.index("passages")])
+    if "passages" not in rel_parts:
+        return {}
+    src_dir = vault_root.joinpath(*rel_parts[: len(rel_parts) - 1 - rel_parts[::-1].index("passages")])
     meta_file = src_dir / "_meta.md"
-    if not meta_file.is_file():
+    # Belt-and-braces: the slice above cannot escape, but an `_meta.md` outside the vault must never
+    # govern a note inside it, so assert the resolved path rather than trusting the arithmetic.
+    if not meta_file.is_file() or vault_root not in meta_file.parents:
         return {}
     front, _ = _parse_frontmatter(_read_capped(meta_file))
     return {
         # Doc 2 writes reference metadata as `class:`; the engine's field is `document_class`.
         "doc_class": front.get("class") or front.get("document_class"),
         "status": front.get("status"),
+        "doc_type": front.get("doc_type"),
+        "confidence": front.get("confidence"),
         "domains": _parse_list(front.get("domains")),
         "version": front.get("version"),
     }
@@ -170,10 +192,12 @@ def _discover_notes(vault: VaultRef) -> list[NoteRef]:
             continue
         if path.name in SKIP_NAMES:
             continue
-        meta = _source_meta(path)
+        meta = _source_meta(path, vault.path)
         notes.append(NoteRef(
             path=path, vault=vault.name, tier=_tier_for(rel_parts),
             doc_class=meta.get("doc_class"), override_status=meta.get("status"),
+            override_doc_type=meta.get("doc_type"),
+            override_confidence=meta.get("confidence"),
             override_version=meta.get("version"), extra_domains=list(meta.get("domains", [])),
         ))
     return notes

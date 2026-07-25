@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from substrate.models import Document  # noqa: E402
-from substrate.spine import SpineError, validate_status  # noqa: E402
+from substrate.spine import SpineError, validate_doc_type, validate_status  # noqa: E402
 
 
 def _doc(**kw: object) -> Document:
@@ -63,6 +63,36 @@ def test_each_valid_status_accepted() -> None:
     assert validate_status(_doc(status="active"), require_present=True) == "active"
     assert validate_status(_doc(status="complete"), require_present=True) == "complete"
     assert validate_status(_doc(status="archived"), require_present=True) == "archived"
+
+
+# ---------------------------------------------------------------- doc_type (§6a)
+
+def test_absent_doc_type_defaults_reference_when_lenient() -> None:
+    # The standalone reference corpus (no doc_type) stays ingesting as reference lookup material.
+    assert validate_doc_type(_doc(doc_type=None), require_present=False) == "reference"
+
+
+def test_absent_doc_type_refused_when_required() -> None:
+    # The vault path forces every note to declare its job — defaulting would hide a two-job note.
+    try:
+        validate_doc_type(_doc(doc_type=None), require_present=True)
+    except SpineError:
+        return
+    raise AssertionError("expected SpineError for an absent doc_type in the strict path")
+
+
+def test_unknown_doc_type_refused_in_both_modes() -> None:
+    for req in (True, False):
+        try:
+            validate_doc_type(_doc(doc_type="tutorial"), require_present=req)
+        except SpineError:
+            continue
+        raise AssertionError(f"expected SpineError for an unknown doc_type (require={req})")
+
+
+def test_each_valid_doc_type_accepted() -> None:
+    for dt in ("decision", "explanation", "reference", "how-to"):
+        assert validate_doc_type(_doc(doc_type=dt), require_present=True) == dt
 
 
 if __name__ == "__main__":

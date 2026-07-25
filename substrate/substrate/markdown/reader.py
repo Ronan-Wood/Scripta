@@ -339,6 +339,14 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
         superseded_by=fsup_by if _DOC_ID.fullmatch(fsup_by) else None,
         supersedes=fsup if _DOC_ID.fullmatch(fsup) else None,
         domains=_parse_list(front.get("domains")),
+        # doc_type (§6a) is carried raw like status; spine.validate_doc_type is the gate that
+        # refuses an unknown value or an absent one on the strict vault path. The reader stays a
+        # pure parser and does not decide strictness.
+        doc_type=(front.get("doc_type") or None),
+        # confidence likewise: parsed raw, gated by spine.validate_confidence. Absent stays None
+        # here and becomes `unstated` at the gate — the reader never invents a value, so "the note
+        # said nothing" and "the note said unstated" arrive at the gate distinguishable.
+        confidence=(front.get("confidence") or None),
         extractor="markdown-reader/0.1.0",
         extractor_arm="markdown",
         layout_model="",
@@ -352,5 +360,6 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
         "list_items": sum(1 for b in blocks if b.kind is Kind.LIST_ITEM),
         "status": doc.status,
         "domains": list(doc.domains),
+        "doc_type": doc.doc_type,
     }
     return doc, body_md, stats

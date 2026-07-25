@@ -182,7 +182,7 @@ class DoclingExtractor:
             extractor_arm=self.name,
             layout_model="docling-layout-heron",
         )
-        doc.confidence.update(
+        doc.extract_confidence.update(
             {
                 "blocks": len(blocks),
                 "pages_processed": last - first + 1,

@@ -24,6 +24,38 @@ STATUSES: frozenset[str] = frozenset({"active", "complete", "archived", "superse
 INCLUDED_STATUSES: frozenset[str] = frozenset({"active", "complete"})
 EXCLUDED_STATUSES: frozenset[str] = STATUSES - INCLUDED_STATUSES  # {archived, superseded}
 
+# The four Doc-2 §6a doc_types (Diátaxis-derived): the JOB a note does. Unlike status, doc_type has
+# no default-retrieval partition — every value is retrievable — so there is no included/excluded
+# split, only membership. `reference` is the lenient default: a standalone ingest is reference
+# lookup material (the PDF corpus), and a note that reaches the store without a declared type is
+# treated as reference rather than mislabelled as a decision/explanation it may not be.
+DOC_TYPES: frozenset[str] = frozenset({"decision", "explanation", "reference", "how-to"})
+DEFAULT_DOC_TYPE = "reference"
+
+# CONFIDENCE — how settled a note's claims are, and the axis `status` was silently absorbing.
+#
+# status answers "is this note live?"; confidence answers "why should I believe it?". They are
+# independent: a note can be `active` AND `proposed`. Collapsing them is confidence laundering — a
+# design that was never built retrieves as current with nothing saying so, which is WRITING.md
+# rule 6 ("preserve confidence markers") having no carrier past the note body. Rule 6 is
+# unenforceable prose until the marker is a FIELD that survives chunking, exactly as the capability
+# envelope attaches its conditions to the result rather than beside it.
+#
+# The values are a provenance-of-claim axis, not an ordered scale (nothing ranks them):
+#   proposed  — put forward as a design or suggestion; not built, ratified, or tested.
+#   inferred  — derived from observation or reasoning; could be wrong.
+#   stated    — asserted directly by an authority (the operator, or a published source).
+#   verified  — measured, tested, or confirmed against reality.
+CONFIDENCES: frozenset[str] = frozenset({"proposed", "inferred", "stated", "verified"})
+
+# Absence is surfaced, never smoothed. A note that declares no confidence is making no claim about
+# how settled it is, and that is information — so it is stored as a real value rather than NULL.
+# Defaulting an absent marker to anything confident would BE the laundering this axis exists to
+# stop, and a NULL would reintroduce the `NULL NOT IN (…)` hole the doc_type audit already had to
+# correct. UNSTATED is therefore storable and valid, but never declarable-with-meaning.
+UNSTATED_CONFIDENCE = "unstated"
+STORED_CONFIDENCES: frozenset[str] = CONFIDENCES | {UNSTATED_CONFIDENCE}
+
 
 class SpineError(RuntimeError):
     """A note's spine fields are inconsistent — refuse rather than index a silently-wrong set."""
@@ -60,3 +92,60 @@ def validate_status(doc: Document, *, require_present: bool) -> str:
             "is unreachable — the supersession link is what makes exclusion safe."
         )
     return status
+
+
+def validate_doc_type(doc: Document, *, require_present: bool) -> str:
+    """Enforce the Doc-2 §6a doc_type contract and return the effective doc_type. Raises on violation.
+
+    Mirrors validate_status's two strictness modes (chosen by the caller, not the reader):
+      * doc_type absent where required (the vault path) — every note must DECLARE its job. Defaulting
+        it would defeat the point of the field: the split into decision/explanation/reference/how-to
+        is what keeps a note readable, and a silent default hides a note that blends two jobs (§6a
+        rule 8). A reference source supplies `doc_type: reference` via its `_meta.md`, same as status.
+      * doc_type outside the known four — an unknown value is not a retrieval job the engine or a
+        reader can act on; refuse it rather than carry a phantom axis value.
+
+    Absent-and-lenient (the standalone ingest of the existing reference corpus) returns the
+    `reference` default, so that corpus keeps ingesting unchanged.
+    """
+    dt = doc.doc_type
+    if dt is None:
+        if require_present:
+            raise SpineError(
+                f"{doc.doc_id}: no doc_type. Doc-2 §6a requires every note to declare one of "
+                f"{sorted(DOC_TYPES)} — the job it does. Refusing to default it and hide a note "
+                "that may blend two jobs."
+            )
+        return DEFAULT_DOC_TYPE
+    if dt not in DOC_TYPES:
+        raise SpineError(
+            f"{doc.doc_id}: doc_type {dt!r} is not one of {sorted(DOC_TYPES)}. An unknown doc_type "
+            "is a retrieval axis value nothing can act on — refusing rather than carrying it."
+        )
+    return dt
+
+
+def validate_confidence(doc: Document) -> str:
+    """Enforce the confidence contract and return the effective value. Raises SpineError on an
+    unknown one.
+
+    Deliberately NOT gated on require_present, unlike status and doc_type: confidence is optional
+    on every path. A note that declares none returns UNSTATED, which is a real, surfaced value —
+    the reader learns the note said nothing about how settled it is, rather than being handed a
+    default that reads as confident. Requiring it would instead force a guess per note during
+    migration, and a guessed confidence marker is worse than an absent one.
+
+    An unknown value is still refused. Carrying `confidence: mostly` would put an axis value on
+    every chunk of that note that no reader or filter can act on, which is the phantom-axis failure
+    doc_type refuses for the same reason.
+    """
+    c = doc.confidence
+    if c is None or c == "":
+        return UNSTATED_CONFIDENCE
+    if c not in STORED_CONFIDENCES:
+        raise SpineError(
+            f"{doc.doc_id}: confidence {c!r} is not one of {sorted(CONFIDENCES)} (or "
+            f"{UNSTATED_CONFIDENCE!r}). Confidence answers how SETTLED a claim is — a certainty "
+            "word like 'high' belongs in the note body, not on this axis."
+        )
+    return c
