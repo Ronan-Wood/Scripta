@@ -46,7 +46,7 @@ measuring first precisely so vectors cannot take credit for something structural
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from substrate.spine import INCLUDED_STATUSES
 from substrate.store.index_store import Hit, IndexStore
@@ -167,6 +167,11 @@ class RetrievalResult:
     capability: Capability
     index_version: str
     trace: Trace                  # raw per-arm signals capability is derived from (audit/debug)
+    # Orientation records for the same query — the two-speed layer of Doc 2 §7, off unless asked
+    # for. NOT routing: routing fuses outline-derived passages into the ranking (measured, off by
+    # default, see the module docstring). This only reports which SECTIONS matched, alongside an
+    # unchanged passage ranking, so a consumer can see the shape of the corpus around an answer.
+    outlines: list[Hit] = field(default_factory=list)
 
 
 def _rrf(
@@ -477,6 +482,7 @@ def retrieve(
     expander=None,
     multiquery=None,
     reranker=None,
+    with_outlines: int = 0,
 ) -> RetrievalResult:
     """Passage retrieval, returning the RESULT CONTRACT: passages + which arms actually ran +
     index_version. The retrieval itself is `_retrieve`, unchanged — this only surfaces the
@@ -485,6 +491,11 @@ def retrieve(
 
     `statuses` is the default-retrieval filter (Doc 2 §6), defaulting to active+complete. Pass a
     broader set to answer an explicit archived/superseded query, or None for an unfiltered scan.
+
+    `with_outlines` adds N orientation records for the same query, under the SAME filters. It is
+    strictly additive: the passage ranking is computed and returned unchanged, so requesting them
+    cannot move a result. Defaults to 0 — nothing on the eval path asks, so no measured number can
+    shift underneath it.
     """
     # Capture what was WIRED (and each arm's model identity) before _retrieve can null an arm out
     # on fallback. The model identities gate the measured tier — a swapped HyDE/rerank model is a
@@ -505,6 +516,17 @@ def retrieve(
         hyde_model=hyde_model, hyde_provided=expander is not None,
         rerank_model=rerank_model, rr_provided=reranker is not None,
     )
+    outlines: list[Hit] = []
+    if with_outlines > 0:
+        # The same filters as the passage arms. An orientation record that survived a status or
+        # source exclusion the passages were subject to would name a section whose content the
+        # caller is not allowed to see — an exclusion leaking back in through the other layer.
+        outlines = store.search(
+            query, k=with_outlines, kind="outline", doc_id=doc_id,
+            document_class=document_class, statuses=statuses, include_sources=include_sources,
+        )
+
     return RetrievalResult(
-        passages=hits, capability=cap, index_version=store.index_version, trace=trace
+        passages=hits, capability=cap, index_version=store.index_version, trace=trace,
+        outlines=outlines,
     )
