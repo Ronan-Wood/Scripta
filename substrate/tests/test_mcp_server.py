@@ -1,0 +1,315 @@
+"""The MCP surface is a transport, and its results are byte-identical to the CLI's.
+
+Doc 3a §6: "an MCP `search` and the equivalent CLI query must return the same passages, same
+capability, same index_version for the same scope. If they diverge, logic leaked into a
+transport." `test_mcp_and_cli_render_the_same_envelope` IS that verification — it runs the real
+CLI in a subprocess and the real tool handler in-process and compares the parsed envelopes.
+
+The rest pin the refusals. Every one of them exists because the alternative is a well-formed
+answer the caller cannot tell apart from a correct one: an unresolvable scope answered from a
+narrower one, an empty rebuilt index answered as a no-match, a filter accepted and ignored.
+
+Runnable with plain `python tests/test_mcp_server.py`; discovered by pytest if added.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+REPO = Path(__file__).resolve().parent.parent
+
+from substrate import render, scopes, stack  # noqa: E402
+from substrate.mcp import server  # noqa: E402
+from substrate.models import Chunk, Document  # noqa: E402
+from substrate.store.index_store import IndexStore  # noqa: E402
+
+_LONG = ("Composition resolves the manifest and indexes core plus project together. " * 12).strip()
+
+
+def _cfg(registry: Path) -> server.Config:
+    """Lexical-only, always. A test that depended on a local daemon would pass or fail on whether
+    Ollama happened to be running, which is not a property of this code."""
+    return server.Config(str(registry), stack.build(lexical_only=True))
+
+
+def _fixture() -> tuple[Path, Path]:
+    """A composed-looking scope: one index, one registered name, one note on disk."""
+    root = Path(tempfile.mkdtemp())
+    vault = root / "demo-vault"
+    vault.mkdir()
+    note = vault / "composition.md"
+    note.write_text(f"# Composition\n\n{_LONG}\n", encoding="utf-8")
+
+    db = root / "demo.db"
+    with IndexStore(str(db)) as s:
+        doc = Document(doc_id="composition", source_path=str(note), source_sha256="s" * 8,
+                       source_pages=1, document_class="reference-frozen", title="Composition",
+                       status="active", doc_type="explanation", confidence="proposed",
+                       vault="demo-vault", tier=3, domains=["retrieval"],
+                       supersedes="old-composition")
+        ch = Chunk(chunk_id="composition#c00000", doc_id="composition", kind="passage",
+                   text=_LONG, path=["Composition"], level=1, n_chars=len(_LONG),
+                   document_class="reference-frozen")
+        s.upsert(doc, [ch], markdown_path=str(note), markdown_mtime=0.0,
+                 markdown_sha256=__import__("hashlib").sha256(note.read_bytes()).hexdigest())
+
+    registry = root / "scopes.toml"
+    scopes.record("demo", vault=vault, db=db, index_root=root, registry=registry)
+    return root, registry
+
+
+def _call(tool: str, args: dict, registry: Path) -> dict:
+    """One tools/call through the real dispatcher; returns the parsed payload or raises on
+    isError, so a test cannot mistake a refusal for a result."""
+    resp = server.handle(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+         "params": {"name": tool, "arguments": args}},
+        _cfg(registry),
+    )
+    body = resp["result"]
+    text = body["content"][0]["text"]
+    if body.get("isError"):
+        raise AssertionError(f"tool refused: {text}")
+    return json.loads(text)
+
+
+def _call_raw(tool: str, args: dict, registry: Path) -> dict:
+    return server.handle(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+         "params": {"name": tool, "arguments": args}},
+        _cfg(registry),
+    )["result"]
+
+
+# ---------------------------------------------------------------- Doc 3a §6
+
+def test_mcp_and_cli_render_the_same_envelope() -> None:
+    """The verification that keeps "one contract, N renderings" true rather than aspirational."""
+    root, registry = _fixture()
+    query = "composition manifest"
+
+    mcp = _call("search", {"scope": "demo", "query": query, "k": 3}, registry)
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "substrate.cli", "query", query, "--scope", "demo",
+         "--registry", str(registry), "--k", "3", "--json", "--no-vector"],
+        capture_output=True, text=True, cwd=REPO, check=True,
+    )
+    cli = json.loads(proc.stdout)
+
+    assert mcp["passages"] == cli["passages"], "passages diverged — logic leaked into a transport"
+    assert mcp["retrieval_mode"] == cli["retrieval_mode"], "capability diverged"
+    assert mcp["index_version"] == cli["index_version"], "index_version diverged"
+    assert mcp["filters"] == cli["filters"], "applied filters diverged"
+    assert mcp["outline_records"] == cli["outline_records"]
+
+
+# ---------------------------------------------------------------- the contract crosses
+
+def test_search_carries_the_whole_spine() -> None:
+    _, registry = _fixture()
+    p = _call("search", {"scope": "demo", "query": "composition"}, registry)["passages"][0]
+    assert p["confidence"] == "proposed", "an unbuilt design must not read as settled"
+    assert p["status"] == "active", "status and confidence are independent axes"
+    assert p["doc_type"] == "explanation"
+    assert p["supersedes"] == "old-composition"
+    assert p["vault"] == "demo-vault"
+    assert p["domains"] == ["retrieval"]
+
+
+def test_search_is_snippet_first_with_a_usable_ref() -> None:
+    _, registry = _fixture()
+    env = _call("search", {"scope": "demo", "query": "composition"}, registry)
+    p = env["passages"][0]
+    assert "text" not in p and p["truncated"] is True
+    full = _call("expand", {"expand_ref": p["expand_ref"]}, registry)
+    assert full["passage"]["text"] == _LONG, "the ref search issued must resolve to the passage"
+
+
+def test_filters_state_what_was_withheld() -> None:
+    _, registry = _fixture()
+    f = _call("search", {"scope": "demo", "query": "composition"}, registry)["filters"]
+    assert f["statuses_excluded"] == ["archived", "superseded"]
+    assert f["sources_excluded"] is True
+
+
+def test_include_archived_and_include_sources_are_separate_axes() -> None:
+    """Collapsing them into one flag would encode a conflation this project already rejected:
+    superseded is excluded because it was REPLACED, a conversation because retrieval by passage
+    MISREPRESENTS it. Same mechanism, opposite reasons."""
+    _, registry = _fixture()
+    a = _call("search", {"scope": "demo", "query": "composition",
+                         "include_archived": True}, registry)["filters"]
+    assert "archived" in a["statuses_included"]
+    assert a["sources_excluded"] is True, "archived must not smuggle in conversation sources"
+
+    s = _call("search", {"scope": "demo", "query": "composition",
+                         "include_sources": True}, registry)["filters"]
+    assert s["sources_excluded"] is False
+    assert "archived" in s["statuses_excluded"], "sources must not smuggle in archived notes"
+
+
+def test_superseded_is_never_included_by_either_flag() -> None:
+    """A dead fact is reachable only as the `supersedes` link on its replacement (Doc 2 §6)."""
+    _, registry = _fixture()
+    for extra in ({}, {"include_archived": True}, {"include_sources": True}):
+        f = _call("search", {"scope": "demo", "query": "composition", **extra}, registry)["filters"]
+        assert "superseded" in f["statuses_excluded"], extra
+
+
+# ---------------------------------------------------------------- expand
+
+def test_expand_note_returns_the_whole_note_and_its_freshness() -> None:
+    _, registry = _fixture()
+    ref = _call("search", {"scope": "demo", "query": "composition"}, registry)["passages"][0][
+        "expand_ref"]
+    out = _call("expand", {"expand_ref": ref, "mode": "note"}, registry)
+    assert out["note"]["text"].startswith("# Composition")
+    assert out["note"]["stale"] is False
+    assert out["note"]["truncated"] is False
+
+
+def test_expand_note_reports_a_note_that_changed_since_indexing() -> None:
+    """A note silently newer than the passages quoted beside it is a mismatch the caller must be
+    able to see."""
+    root, registry = _fixture()
+    (root / "demo-vault" / "composition.md").write_text("# Composition\n\nrewritten\n",
+                                                        encoding="utf-8")
+    ref = _call("search", {"scope": "demo", "query": "composition"}, registry)["passages"][0][
+        "expand_ref"]
+    assert _call("expand", {"expand_ref": ref, "mode": "note"}, registry)["note"]["stale"] is True
+
+
+def test_expand_refuses_a_malformed_or_unknown_ref() -> None:
+    _, registry = _fixture()
+    assert _call_raw("expand", {"expand_ref": "no-separator"}, registry).get("isError")
+    assert _call_raw("expand", {"expand_ref": "demo/nope#c0"}, registry).get("isError")
+
+
+# ---------------------------------------------------------------- refusals
+
+def test_unknown_scope_refuses_rather_than_guessing() -> None:
+    _, registry = _fixture()
+    body = _call_raw("search", {"scope": "nope", "query": "x"}, registry)
+    assert body.get("isError")
+    assert "demo" in body["content"][0]["text"], "a refusal must name what IS available"
+
+
+def test_unimplemented_doc_type_filter_refuses_rather_than_ignoring() -> None:
+    """Accepting a filter and not applying it returns unfiltered results under a filtered label —
+    the caller cannot tell, which is the whole failure family."""
+    _, registry = _fixture()
+    body = _call_raw("search", {"scope": "demo", "query": "composition",
+                                "doc_type": "decision"}, registry)
+    assert body.get("isError")
+
+
+def test_missing_arguments_refuse() -> None:
+    _, registry = _fixture()
+    assert _call_raw("search", {"scope": "demo"}, registry).get("isError")
+    assert _call_raw("expand", {}, registry).get("isError")
+
+
+# ---------------------------------------------------------------- protocol
+
+def test_initialize_and_tools_list() -> None:
+    _, registry = _fixture()
+    cfg = _cfg(registry)
+    init = server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"}, cfg)
+    assert init["result"]["serverInfo"]["name"] == "substrate"
+    assert init["result"]["protocolVersion"] == server.PROTOCOL_VERSION
+
+    listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, cfg)["result"]
+    assert {t["name"] for t in listed["tools"]} == {"search", "expand"}
+    for t in listed["tools"]:
+        assert t["inputSchema"]["type"] == "object"
+
+
+def test_notifications_get_no_reply() -> None:
+    _, registry = _fixture()
+    assert server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"},
+                         _cfg(registry)) is None
+
+
+def test_unknown_method_and_tool() -> None:
+    _, registry = _fixture()
+    cfg = _cfg(registry)
+    assert server.handle({"jsonrpc": "2.0", "id": 3, "method": "nope"}, cfg)["error"]["code"] \
+        == -32601
+    assert server.handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                          "params": {"name": "nope"}}, cfg)["error"]["code"] == -32602
+
+
+def test_serve_reads_and_writes_line_delimited_json() -> None:
+    _, registry = _fixture()
+    stdin = io.StringIO(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize"}\n'
+        "\n"
+        "not json at all\n"
+        '{"jsonrpc":"2.0","method":"notifications/initialized"}\n'
+        '{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'
+    )
+    stdout = io.StringIO()
+    server.serve(_cfg(registry), stdin=stdin, stdout=stdout)
+    lines = [json.loads(x) for x in stdout.getvalue().splitlines() if x.strip()]
+    # Two replies: the notification and the junk line produce none, and neither kills the loop.
+    assert [m["id"] for m in lines] == [1, 2]
+
+
+def test_tool_fault_stays_inside_the_result() -> None:
+    """A refusal must reach the model as content it can act on, not as a transport error."""
+    _, registry = _fixture()
+    resp = server.handle({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                          "params": {"name": "search", "arguments": {"scope": "nope",
+                                                                     "query": "x"}}},
+                         _cfg(registry))
+    assert "error" not in resp
+    assert resp["result"]["isError"] is True
+
+
+# ---------------------------------------------------------------- honest absence
+
+def test_unavailable_arms_are_named_not_just_absent() -> None:
+    """`off` and `could not start` are byte-identical in Capability. To a caller they are opposite
+    situations — one means the stack was never measured, the other means start Ollama."""
+    _, registry = _fixture()
+    cfg = server.Config(str(registry), stack.Stack(unavailable=("hyde 'qwen2.5:7b' unreachable",)))
+    resp = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": "search",
+                                     "arguments": {"scope": "demo", "query": "composition"}}}, cfg)
+    mode = json.loads(resp["result"]["content"][0]["text"])["retrieval_mode"]
+    assert mode["unavailable"] == ["hyde 'qwen2.5:7b' unreachable"]
+    assert mode["expected_mrr"] is None
+
+
+def test_lexical_only_stack_reports_no_measured_number() -> None:
+    _, registry = _fixture()
+    mode = _call("search", {"scope": "demo", "query": "composition"}, registry)["retrieval_mode"]
+    assert mode["embedder"] is None
+    assert mode["expected_mrr"] is None, "a lexical-only run has no measured tier"
+
+
+def test_render_defaults_are_shared_not_copied() -> None:
+    """The MCP server must not carry its own outline count — that is how two adapters drift."""
+    assert server.render.OUTLINE_RECORDS is render.OUTLINE_RECORDS
+
+
+if __name__ == "__main__":
+    _tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    _failed = 0
+    for _t in _tests:
+        try:
+            _t()
+            print(f"  PASS  {_t.__name__}")
+        except Exception as e:  # noqa: BLE001
+            _failed += 1
+            print(f"  FAIL  {_t.__name__}: {type(e).__name__}: {e}")
+    print(f"\n{len(_tests) - _failed}/{len(_tests)} passed")
+    raise SystemExit(1 if _failed else 0)

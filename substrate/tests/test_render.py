@@ -39,7 +39,8 @@ PASSAGE_KEYS = {
 ENVELOPE_KEYS = {
     "scope", "query", "passages", "outline_records", "retrieval_mode", "filters", "index_version",
 }
-MODE_KEYS = {"embedder", "hyde", "reranker", "expected_mrr", "cohort", "degraded", "fallbacks"}
+MODE_KEYS = {"embedder", "hyde", "reranker", "expected_mrr", "cohort", "degraded", "fallbacks",
+             "unavailable"}
 FILTER_KEYS = {"statuses_included", "statuses_excluded", "sources_excluded", "doc_type"}
 
 LONG = ("A proposed design that was never built. " * 40).strip()
@@ -205,6 +206,17 @@ def test_measured_stack_reports_its_number_and_cohort() -> None:
     m = _payload(_result(cap=cap))["retrieval_mode"]
     assert m["expected_mrr"] == 0.698
     assert m["cohort"] == "44-case semantic", "a number without its cohort is uncomparable"
+
+
+def test_requested_but_unreachable_arms_are_named() -> None:
+    """`Capability` reports "off" for an arm nobody asked for AND for one that could not start.
+    To a caller those are opposite: one means this stack was never measured, the other means the
+    daemon is down. The condition exists where the stack is built and would otherwise die there."""
+    m = _payload(unavailable=("hyde 'qwen2.5:7b' unreachable at 127.0.0.1:11434",))
+    assert m["retrieval_mode"]["unavailable"] == [
+        "hyde 'qwen2.5:7b' unreachable at 127.0.0.1:11434"]
+    assert m["retrieval_mode"]["hyde"] == "off", "the arm still reports off — nothing ran"
+    assert _payload()["retrieval_mode"]["unavailable"] == [], "nothing requested, nothing missing"
 
 
 def test_degradation_crosses_with_its_reason() -> None:
