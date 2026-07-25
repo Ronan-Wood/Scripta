@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-from substrate import classes
+from substrate import classes, scopes
 from substrate.paths import ARTIFACTS, configure, internal_cache_footprint
 
 
@@ -627,6 +627,20 @@ def cmd_compose(args: argparse.Namespace) -> int:
     else:
         print(f"  A22 per-note PASS  {len(ingest_dirs)} note(s) · 0 quality warnings")
     print(f"  db: {args.db} (schema v{s['schema_version']}) · index {index_version}")
+
+    # Register the scope only now — after every gate passed. The registry's contract is that a
+    # named scope has a composed index behind it, so recording a refused compose would hand a
+    # caller a scope that answers nothing (Doc 3a §3: scope resolution hard-fails rather than
+    # returning a plausible narrower result). A registry failure is reported, not fatal: the
+    # index IS built, and losing the convenience mapping must not read as losing the compose.
+    try:
+        reg = scopes.record(scope.name, vault=project, db=Path(args.db), index_root=index_root,
+                            registry=args.registry)
+        print(f"  scope: {scope.name!r} registered in {reg}")
+    except scopes.ScopeError as e:
+        print(f"\nWARNING (scope registry): {e}", file=sys.stderr)
+        print(f"  scope: {scope.name!r} NOT registered — query with --db {args.db}",
+              file=sys.stderr)
     return 0
 
 
@@ -657,6 +671,28 @@ def _resolve_statuses(args: argparse.Namespace) -> frozenset[str] | None:
     return DEFAULT_STATUSES
 
 
+def _resolve_db(args: argparse.Namespace) -> str:
+    """The index to query: `--scope` through the registry, else `--db`, else the legacy default.
+
+    Passing both is refused rather than resolved by precedence. A caller who names a scope AND a
+    db has two different indexes in mind; silently honouring one would answer from a source set
+    they did not choose, and the answer would look exactly like the one they wanted.
+    """
+    name = getattr(args, "scope", None)
+    if not name:
+        return args.db or "out/substrate.db"
+    if args.db is not None:
+        print(f"FATAL: --scope {name!r} and --db {args.db!r} name two different indexes. "
+              "Pass one.", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        entry = scopes.resolve(name, args.registry)
+    except scopes.ScopeError as e:
+        print(f"FATAL (scope): {e}", file=sys.stderr)
+        raise SystemExit(2) from e
+    return str(entry.db)
+
+
 def cmd_query(args: argparse.Namespace) -> int:
     from substrate.store.index_store import IndexStore
 
@@ -666,8 +702,9 @@ def cmd_query(args: argparse.Namespace) -> int:
     cand = OllamaEmbedder()
     embedder = None if args.no_vector else (cand if cand.available() else None)
     statuses = _resolve_statuses(args)
+    db_path = _resolve_db(args)
 
-    with IndexStore(args.db) as store:
+    with IndexStore(db_path) as store:
         if refuse_if_rebuilt(store, repopulates=False):
             return 2
         cap = None
@@ -1039,15 +1076,26 @@ def main(argv: list[str] | None = None) -> int:
     comp.add_argument("--db", default="out-vault/index.db")
     comp.add_argument("--clean", action="store_true",
                       help="remove the index-root first, so a deleted note leaves no stale dir")
+    comp.add_argument("--registry", default=None,
+                      help=f"scope registry to record into (default ${scopes.ENV_VAR}, else "
+                           f"{scopes.DEFAULT_REGISTRY})")
     comp.set_defaults(func=cmd_compose)
 
     qry = sub.add_parser("query")
+    qry.add_argument("--scope", default=None,
+                     help="query a composed scope by its manifest name, resolved through the "
+                          "registry `compose` writes (alternative to --db)")
+    qry.add_argument("--registry", default=None,
+                     help=f"scope registry to resolve --scope against (default ${scopes.ENV_VAR}, "
+                          f"else {scopes.DEFAULT_REGISTRY})")
     qry.add_argument("--include-sources", action="store_true",
                      help="also retrieve source-class documents (conversations), which are "
                           "excluded by default because a passage from mid-transcript "
                           "misrepresents a document whose confidence varies within it")
     qry.add_argument("text")
-    qry.add_argument("--db", default="out/substrate.db")
+    # No default: an explicit --db must be distinguishable from an absent one, or --scope could
+    # not refuse the ambiguous "both given" case (_resolve_db applies the legacy default).
+    qry.add_argument("--db", default=None)
     qry.add_argument("--k", type=int, default=5)
     qry.add_argument("--kind", choices=["passage", "outline"], default=None)
     qry.add_argument("--doc-class", default=None)
