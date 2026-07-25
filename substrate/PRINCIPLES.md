@@ -158,3 +158,61 @@ That is the same defect as the tautological A20 check this project already retra
 (`EXCLUDED = STATUSES − INCLUDED`, which restated its own definition). A check and a test are the
 same kind of object: both are worthless if they cannot distinguish the world where they hold from
 the world where they do not.
+
+---
+
+## A third law: a declared value that is never read is invisible to every assertion
+
+The Boundary Principle is about information failing to reach a *consumer*. The second law is about
+un-gated assertions accumulating miscalibration. This is a third shape, and the one the A-series
+structurally cannot see.
+
+**Assertions validate values they RECEIVE. A value dropped upstream of the validator is
+indistinguishable from a value never declared** — the declaration and the default produce identical
+downstream state. So correctness becomes unfalsifiable from inside the system: no assertion can
+catch it, because every assertion runs downstream of the drop.
+
+**Observed.** Six migrated conversations declared `class: conversation` — the spelling Doc 2 §3 uses,
+and the one `vault._source_meta` already maps. The note reader honoured only `document_class:`. All
+six fell through to the `reference-frozen` default and composed **fully green**: A21, A22 and A23 all
+passed on a corpus where every conversation was mislabelled.
+
+Three properties make this the nastiest of the three shapes:
+
+1. **The defense existed and could not fire.** An unknown class was already refused by
+   `classes.apply()`. The value never reached it.
+2. **The failure was inclusion, not absence.** The default `reference-frozen` is retrieved BY
+   DEFAULT, so the symptom was conversations silently answering every query forever — the exact
+   opposite of what declaring the class was for, and indistinguishable from normal operation.
+3. **The mechanism was two names for one field.** `class:` per the spec, `document_class:` per the
+   reader. The information existed, was written correctly, and did not cross into the parser.
+
+It was caught by verifying an outcome, not by reading a status. Nothing in the system reported it.
+
+### The defense
+
+**For any field where absence has a meaningful default, assert that a declared value survives
+parsing.** Not "is the value valid" — that is what the spine validators already do — but "did a
+declared value reach the store unchanged." `tests/test_declared_survives.py`.
+
+Note the symmetry that did NOT imply itself: the emit round-trip tests
+(`tests/test_confidence.py`) guard the EMITTER dropping declared values; this guards the READER
+dropping them. Same defect, opposite ends of the pipeline, and fixing one gave no warning about the
+other. Anywhere a value is written by one component and read by another, both directions need a
+test, because each is invisible from the other side.
+
+The cheapest form of the check is vocabulary agreement between parsers: if one component maps a key
+and another ignores it, that is alias drift and it will default silently. That test catches the bug
+before the bug is written.
+
+### The known second instance, not yet fixed
+
+Doc 2 §3b calls the markdown→raw pointer **"system-contract provenance"** — `raw`, `raw_sha256`,
+`raw_location` in a source's `_meta.md`, whose stated purpose is that the regeneration path cannot
+be lost. It is written correctly in the real DDIA `_meta.md`. **Neither parser reads it and no
+column holds it.** A retrieved passage carries `source_sha256` — of the passage FILE, not of the
+source PDF — so it answers a different question than the one a reader would assume, which is why
+this one survives inspection.
+
+This is a different subclass from the alias drift: not "declared, valid, silently defaulted" but
+"declared in the spec, never implemented at all." Both are invisible; they need different fixes.
