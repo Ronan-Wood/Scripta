@@ -5,17 +5,18 @@ safe here for the same reason it is safe in ScriptaCore: no state lives only in 
 this file cannot be reconstructed from the markdown in out/, something is wrong with the
 design, not with the migration.
 
-Spine columns are on every row of both tables. `document_class`, `version`, `source_sha256`
-and `superseded_by` are DENORMALIZED onto chunks on purpose: a retrieved passage must be
-able to state whether it is current without a join, or it reads authoritative while being
-silently stale.
+Spine columns are on every row of both tables. `document_class`, `version`, `source_sha256`,
+`superseded_by`, `status`, `doc_type` and `confidence` are DENORMALIZED onto chunks on purpose: a
+retrieved passage must be able to state whether it is current, what job it does (§6a), and how
+settled its claims are (§6b) — all without a join, or it reads authoritative while being silently
+stale, mis-shaped, or more certain than the note ever claimed.
 """
 
 from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 # v1 (2026-07-21) initial: documents, chunks, chunks_fts (external-content), chunk_vectors.
 # v2 (2026-07-21) chunks.section_kind — references sections were acting as retrieval
@@ -24,6 +25,26 @@ SCHEMA_VERSION = 3
 #     vault / tier (supersedes/superseded_by already existed, previously always NULL); chunks
 #     gains status, DENORMALIZED like the rest of the spine so the default-retrieval filter reads
 #     currency off the chunk without a join. Drop-and-rebuild from markdown, no data loss.
+# v4 (2026-07-24) Doc-2 §6a doc_type — the Diátaxis-derived note-job axis (decision / explanation /
+#     reference / how-to). documents + chunks each gain doc_type, DENORMALIZED like status so a
+#     passage states its own job without a join. A retrieval axis alongside status/domains; the
+#     value is carried + surfaced now, server-side filtering deferred (like domains). Drop-and-
+#     rebuild. Adds a column, not text: the (chunk_id, text_with_path) eval signature is unmoved.
+# v5 (2026-07-24) also DELETES two dead columns by the criterion this bump adopted —
+#     declared, bound to NULL at every insert, never read: the `confidence REAL` pair
+#     (meant for extractor run stats that only ever lived in run.json) and
+#     `chunks.superseded_by`. A supersession link is a DOCUMENT property; a chunk
+#     reads it off its document. Keeping one dead column while deleting another
+#     leaves the next reader unable to tell which are intentional.
+# v5 (2026-07-24) confidence — lands together with v4 in one change set, so no database
+#     ever carried v4; the split is kept because they are separate contracts.
+#     The settledness axis (proposed/inferred/stated/verified, absent
+#     → 'unstated'). status says whether a note is LIVE; confidence says why its claims should
+#     be believed, and a note can be active AND proposed. Without it an unbuilt design
+#     retrieves reading as settled — WRITING.md rule 6 with no carrier past the note body.
+#     Denormalized onto chunks like status/doc_type. Never in the (chunk_id, text_with_path)
+#     FTS signature, so the eval is unmoved.
+
 DDL = """
 CREATE TABLE IF NOT EXISTS documents(
     doc_id            TEXT PRIMARY KEY,
@@ -48,14 +69,22 @@ CREATE TABLE IF NOT EXISTS documents(
     superseded_by     TEXT,
     status            TEXT,
     domains           TEXT,
+    doc_type          TEXT,
+    -- The note's SETTLEDNESS (proposed/inferred/stated/verified), independent of status.
+    -- v5 replaces a dead `confidence REAL` column here (declared, bound to NULL at every
+    -- insert, never read) that was meant for the extractor's run stats. Those live in
+    -- run.json under `extract`, the only place they ever reached, so the column is deleted
+    -- rather than kept beside this one. NOT NULL on chunks: absence is `unstated`, not NULL.
+    confidence        TEXT,
     vault             TEXT,
     tier              INTEGER,
-    confidence        REAL,
     coverage          REAL
 );
-CREATE INDEX IF NOT EXISTS idx_documents_class  ON documents(document_class);
-CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
-CREATE INDEX IF NOT EXISTS idx_documents_vault  ON documents(vault);
+CREATE INDEX IF NOT EXISTS idx_documents_class    ON documents(document_class);
+CREATE INDEX IF NOT EXISTS idx_documents_status   ON documents(status);
+CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type);
+CREATE INDEX IF NOT EXISTS idx_documents_confidence ON documents(confidence);
+CREATE INDEX IF NOT EXISTS idx_documents_vault    ON documents(vault);
 
 CREATE TABLE IF NOT EXISTS chunks(
     chunk_id         TEXT PRIMARY KEY,
@@ -82,14 +111,20 @@ CREATE TABLE IF NOT EXISTS chunks(
     document_class   TEXT NOT NULL,
     version          TEXT,
     source_sha256    TEXT,
-    confidence       REAL,
-    superseded_by    TEXT,
-    status           TEXT NOT NULL DEFAULT 'active'
+    status           TEXT NOT NULL DEFAULT 'active',
+    doc_type         TEXT NOT NULL DEFAULT 'reference',
+    -- Denormalized like status/doc_type so a passage states how settled it is without a join.
+    -- DEFAULT 'unstated', never NULL: a NULL would reintroduce the `NULL NOT IN (…)` hole the
+    -- doc_type audit had to correct, and would read as absence rather than as 'the note did
+    -- not say' — which is the distinction this axis exists to preserve.
+    confidence       TEXT NOT NULL DEFAULT 'unstated'
 );
-CREATE INDEX IF NOT EXISTS idx_chunks_doc    ON chunks(doc_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_kind   ON chunks(kind);
-CREATE INDEX IF NOT EXISTS idx_chunks_path   ON chunks(path_str);
-CREATE INDEX IF NOT EXISTS idx_chunks_status ON chunks(status);
+CREATE INDEX IF NOT EXISTS idx_chunks_doc      ON chunks(doc_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_kind     ON chunks(kind);
+CREATE INDEX IF NOT EXISTS idx_chunks_path     ON chunks(path_str);
+CREATE INDEX IF NOT EXISTS idx_chunks_status   ON chunks(status);
+CREATE INDEX IF NOT EXISTS idx_chunks_doc_type ON chunks(doc_type);
+CREATE INDEX IF NOT EXISTS idx_chunks_confidence ON chunks(confidence);
 
 -- External-content FTS over chunks. text_with_path is indexed rather than text: BM25
 -- cannot match a structural path that is not present in the indexed string.

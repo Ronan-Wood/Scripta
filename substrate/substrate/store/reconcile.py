@@ -56,7 +56,9 @@ def _load_dir(d: Path) -> tuple[Document, list[Chunk], dict, bytes, str] | None:
     # Doc-2 spine + composition provenance. Separate blocks from `class` so status/domains are not
     # smuggled under document-class policy, and both DEFAULT for the existing PDF corpus (whose
     # run.json predates them): no spine block → status None (→ 'active' at upsert), no domains, no
-    # supersession, no vault/tier. So the old corpus reconciles byte-for-byte as before.
+    # doc_type (→ 'reference' at upsert), no supersession, no vault/tier. So the old corpus
+    # reconciles byte-for-byte as before, and its chunk (chunk_id, text_with_path) signature is
+    # unmoved — doc_type is a new column, never part of the indexed text.
     spine = run.get("spine", {})
     prov = run.get("provenance", {})
     doc = Document(
@@ -72,6 +74,8 @@ def _load_dir(d: Path) -> tuple[Document, list[Chunk], dict, bytes, str] | None:
         superseded_by=spine.get("superseded_by"),
         supersedes=spine.get("supersedes"),
         domains=list(spine.get("domains", [])),
+        doc_type=spine.get("doc_type"),
+        confidence=spine.get("confidence"),
         vault=prov.get("vault"),
         tier=prov.get("tier"),
         extractor=extract.get("extractor", ""),

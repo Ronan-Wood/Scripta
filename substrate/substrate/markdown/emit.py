@@ -144,9 +144,16 @@ def frontmatter(doc: Document, extra: dict | None = None) -> str:
     if doc.page_label_offset is not None:
         f["page_label_offset"] = doc.page_label_offset
     # Doc-2 spine — round-tripped so re-ingesting the engine's OWN emitted markdown recovers a
-    # note's status/domains/supersession instead of silently defaulting them (the reader keys the
-    # same fields back off frontmatter). Emitted only when set, so the PDF corpus's markdown, which
-    # has none of these, is byte-identical to before.
+    # note's status/domains/supersession/job/settledness instead of silently defaulting them (the
+    # reader keys the same fields back off frontmatter). Emitted only when set, so the PDF corpus's
+    # markdown, which has none of these, is byte-identical to before.
+    #
+    # ALL FIVE axes must be here. §3b makes re-ingestion a designed operation (index regenerates
+    # from markdown, markdown from raw), so an axis missing from this block is laundered on every
+    # regeneration cycle, by the engine, on its own artifact: doc_type would return as `reference`
+    # and confidence as `unstated`, turning a proposal into an unqualified reference passage. That
+    # is the exact failure the confidence axis exists to prevent, and the comment above would be
+    # asserting an invariant the code beneath it broke.
     if doc.status:
         f["status"] = doc.status
     if doc.superseded_by:
@@ -155,6 +162,10 @@ def frontmatter(doc: Document, extra: dict | None = None) -> str:
         f["supersedes"] = doc.supersedes
     if doc.domains:
         f["domains"] = list(doc.domains)
+    if doc.doc_type:
+        f["doc_type"] = doc.doc_type
+    if doc.confidence:
+        f["confidence"] = doc.confidence
     f.update(extra or {})
 
     lines = ["---"]

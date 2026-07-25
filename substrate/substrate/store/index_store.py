@@ -29,6 +29,14 @@ class StatusPartitionError(RuntimeError):
     """The indexed status set does not partition cleanly into the default-retrieval split."""
 
 
+class DocTypeError(RuntimeError):
+    """An indexed doc_type is outside the known four, or drifted between a chunk and its document."""
+
+
+class ConfidenceError(RuntimeError):
+    """An indexed confidence is not a storable value, or drifted between a chunk and its document."""
+
+
 @dataclass
 class Hit:
     chunk_id: str
@@ -46,13 +54,16 @@ class Hit:
     title: str | None
     prev_id: str | None
     next_id: str | None
-    # Doc-2 spine, carried ON the hit so a passage states its own currency and origin without the
-    # caller running a second query (the Boundary Principle). `status` is the chunk-denormalized
-    # currency; `supersedes` is the link that surfaces "this replaced X" when the live note is the
-    # hit; `domains`/`vault` are the retrieval tag and composition provenance. (The inverse link
-    # `superseded_by` and the numeric `tier` live on the documents row — read there, not surfaced
-    # on a hit: the superseded note is excluded from retrieval, so its `superseded_by` never shows.)
+    # Doc-2 spine, carried ON the hit so a passage states its own currency, job and origin without
+    # the caller running a second query (the Boundary Principle). `status` is the chunk-denormalized
+    # currency and `doc_type` the chunk-denormalized job (§6a); `supersedes` is the link that surfaces
+    # "this replaced X" when the live note is the hit; `domains`/`vault` are the retrieval tag and
+    # composition provenance. (The inverse link `superseded_by` and the numeric `tier` live on the
+    # documents row — read there, not surfaced on a hit: the superseded note is excluded from
+    # retrieval, so its `superseded_by` never shows.)
     status: str = "active"
+    doc_type: str = "reference"
+    confidence: str = "unstated"
     supersedes: str | None = None
     domains: list[str] = field(default_factory=list)
     vault: str | None = None
@@ -130,10 +141,12 @@ def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
         title=_col(r, "title"),
         prev_id=r["prev_id"],
         next_id=r["next_id"],
-        # `status` is the chunk's own denormalized column (from c.*); the supersession link,
-        # domain tags and vault provenance are document-level, joined in and aliased d_* so they
-        # never collide with the chunks table's own (always-NULL) superseded_by column.
+        # `status` and `doc_type` are the chunk's own denormalized columns (from c.*); the
+        # supersession link, domain tags and vault provenance are document-level, joined in and
+        # aliased d_* so they never collide with the chunks table's own like-named columns.
         status=_col(r, "status", "active") or "active",
+        doc_type=_col(r, "doc_type", "reference") or "reference",
+        confidence=_col(r, "confidence", "unstated") or "unstated",
         supersedes=_col(r, "d_supersedes"),
         domains=json.loads(_col(r, "d_domains") or "[]"),
         vault=_col(r, "d_vault"),
@@ -182,26 +195,34 @@ class IndexStore:
         db.execute("BEGIN")
         try:
             self._delete_rows(doc.doc_id)
-            # `status` defaults to 'active' when the document declares none — the standalone
-            # ingest path allows that (the vault path refuses it upstream via spine.validate_status),
-            # so the existing corpus, which predates the field, stays on the live surface. `domains`
-            # is stored as a JSON array so the multi-valued tag survives a round-trip losslessly.
+            # `status` defaults to 'active' and `doc_type` to 'reference' when the document declares
+            # none — the standalone ingest path allows that (the vault path refuses an absent one
+            # upstream via spine.validate_{status,doc_type}), so the existing corpus, which predates
+            # both fields, stays on the live surface as reference lookup material. `domains` is stored
+            # as a JSON array so the multi-valued tag survives a round-trip losslessly.
             status = doc.status or "active"
+            doc_type = doc.doc_type or "reference"
+            # `confidence` defaults to 'unstated', which is the one default here that is NOT a
+            # convenience: a note that declared nothing must not acquire a settledness it never
+            # claimed. Unlike status/doc_type this default is also what the VAULT path produces —
+            # confidence is optional everywhere by design (spine.validate_confidence).
+            confidence = doc.confidence or "unstated"
             db.execute(
                 """INSERT INTO documents(
                     doc_id, source_path, source_sha256, source_pages, markdown_path,
                     markdown_mtime, markdown_sha256, title, document_class, version,
                     version_date, page_label_offset, extractor, extractor_arm, layout_model,
                     pipeline_version, ingested_at, last_verified_at, supersedes,
-                    superseded_by, status, domains, vault, tier, confidence, coverage)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    superseded_by, status, domains, doc_type, confidence, vault, tier, coverage)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     doc.doc_id, doc.source_path, doc.source_sha256, doc.source_pages,
                     markdown_path, markdown_mtime, markdown_sha256, doc.title,
                     doc.document_class, doc.version, doc.version_date, doc.page_label_offset,
                     doc.extractor, doc.extractor_arm, doc.layout_model, doc.pipeline_version,
                     _now(), _now(), doc.supersedes, doc.superseded_by,
-                    status, json.dumps(list(doc.domains)), doc.vault, doc.tier, None, coverage,
+                    status, json.dumps(list(doc.domains)), doc_type, confidence, doc.vault,
+                    doc.tier, coverage,
                 ),
             )
             db.executemany(
@@ -209,7 +230,8 @@ class IndexStore:
                     chunk_id, doc_id, kind, seq, text, text_with_path, path_str, path_depth, section_kind,
                     level, char_start, char_end, page_start, page_end, page_label_start,
                     n_chars, part_index, part_count, oversize, prev_id, next_id,
-                    document_class, version, source_sha256, confidence, superseded_by, status)
+                    document_class, version, source_sha256, status, doc_type,
+                    confidence)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
@@ -217,10 +239,11 @@ class IndexStore:
                         c.path_str, len(c.path), sections.classify(c.path_str), c.level, c.char_start, c.char_end,
                         c.page_start, c.page_end, c.page_label(c.page_start), c.n_chars,
                         c.part_index, c.part_count, int(bool(c.oversize)), c.prev_id,
-                        # status is DENORMALIZED from the document onto every chunk (like class /
-                        # version / sha) so the default-retrieval filter reads currency off the
-                        # chunk row without a join.
-                        c.next_id, c.document_class, c.version, c.source_sha256, None, None, status,
+                        # status, doc_type and confidence are DENORMALIZED from the document onto
+                        # every chunk (like class / version / sha) so a passage reads its own
+                        # currency, job and settledness off the chunk row without a join.
+                        c.next_id, c.document_class, c.version, c.source_sha256, status,
+                        doc_type, confidence,
                     )
                     for i, c in enumerate(chunks)
                 ],
@@ -512,6 +535,121 @@ class IndexStore:
             "included_chunks": n_in_filter, "excluded_chunks": n_ex_filter, "total_chunks": total,
             "by_status": self.status_counts(),
         }
+
+    def doc_type_counts(self) -> dict[str, int]:
+        """Document count per doc_type value. NULL doc_types report under the key ''."""
+        rows = self.db.execute(
+            "SELECT COALESCE(doc_type,'') AS t, COUNT(*) AS n FROM documents GROUP BY t"
+        ).fetchall()
+        return {r["t"]: r["n"] for r in rows}
+
+    def assert_doc_type_valid(self) -> dict:
+        """A21 — every indexed doc_type is one of the four §6a jobs, and the chunk denormalization
+        has not drifted from its document.
+
+        doc_type has no default-retrieval partition (every job is retrievable — unlike status, which
+        excludes archived/superseded), so this is validity + denormalization integrity, not a
+        partition proof. Two checks over the ACTUAL indexed rows, mirroring A20's first two:
+
+          1. no doc_type outside the known four on either table — an unknown value is a phantom
+             retrieval-axis value nothing can act on; refuse it rather than carry it unseen. (A NULL
+             cannot occur in practice: documents.doc_type defaults at upsert (`doc.doc_type or
+             'reference'`) and chunks.doc_type is `NOT NULL DEFAULT 'reference'`. If one somehow
+             appeared, the documents side is caught by the Python `not in DOC_TYPES` (None is not a
+             member); a NULL *chunk* would slip this `NOT IN` test — SQL `NULL NOT IN (...)` is NULL,
+             not true — but is then caught by the drift check below, as its document's doc_type is
+             non-NULL. NOT this `NOT IN` test, contra an earlier version of this note.)
+          2. the chunk-denormalized doc_type agrees with its document's — a drifted chunk would
+             answer a `doc_type` query under a job its note does not actually do.
+
+        Returns the per-doc_type counts for the read-out. Raises DocTypeError on any breach.
+        """
+        from substrate.spine import DOC_TYPES
+
+        db = self.db
+        bad_docs = [
+            (r["doc_id"], r["doc_type"])
+            for r in db.execute("SELECT doc_id, doc_type FROM documents").fetchall()
+            if r["doc_type"] not in DOC_TYPES
+        ]
+        bad_chunks = db.execute(
+            f"SELECT COUNT(*) FROM chunks WHERE doc_type NOT IN ({','.join('?' * len(DOC_TYPES))})",
+            sorted(DOC_TYPES),
+        ).fetchone()[0]
+        if bad_docs or bad_chunks:
+            raise DocTypeError(
+                f"doc_type outside {sorted(DOC_TYPES)}: documents={bad_docs[:5]} "
+                f"chunks={bad_chunks}. An unknown doc_type is a phantom retrieval axis — refusing."
+            )
+
+        drift = db.execute(
+            "SELECT COUNT(*) FROM chunks c JOIN documents d ON d.doc_id=c.doc_id "
+            "WHERE c.doc_type IS NOT d.doc_type"
+        ).fetchone()[0]
+        if drift:
+            raise DocTypeError(
+                f"{drift} chunk(s) carry a doc_type that disagrees with their document — the "
+                "denormalized job has drifted from the source note."
+            )
+        return {"by_doc_type": self.doc_type_counts()}
+
+    def confidence_counts(self) -> dict[str, int]:
+        """Document count per confidence value. NULL confidences report under the key ''."""
+        rows = self.db.execute(
+            "SELECT COALESCE(confidence,'') AS c, COUNT(*) AS n FROM documents GROUP BY c"
+        ).fetchall()
+        return {r["c"]: r["n"] for r in rows}
+
+    def assert_confidence_valid(self) -> dict:
+        """A23 — every indexed confidence is a storable value, and the chunk denormalization has
+        not drifted from its document.
+
+        Like doc_type and unlike status, confidence has no default-retrieval partition: nothing is
+        excluded for being merely `proposed`. It is carried and SURFACED, so this is validity +
+        denormalization integrity. The reason it must be checked at all is that this axis exists to
+        stop confidence laundering — a chunk whose settledness drifted from its note would state a
+        settledness the note never claimed, which is the precise failure the field was added for.
+
+          1. no value outside STORED_CONFIDENCES on either table. `unstated` IS a member: absence
+             is a real, surfaced value here, not a NULL. A NULL cannot occur — documents defaults at
+             upsert (`doc.confidence or 'unstated'`) and chunks.confidence is `NOT NULL DEFAULT
+             'unstated'` — and the schema constraint, not this query, is what guarantees it: SQL
+             `NULL NOT IN (...)` evaluates to NULL rather than true, so this test alone would not
+             see one. The documents side is additionally covered by the Python membership test
+             below, for which None is simply not a member.
+          2. the chunk-denormalized confidence agrees with its document's.
+
+        Returns the per-confidence counts for the read-out. Raises ConfidenceError on any breach.
+        """
+        from substrate.spine import STORED_CONFIDENCES
+
+        db = self.db
+        bad_docs = [
+            (r["doc_id"], r["confidence"])
+            for r in db.execute("SELECT doc_id, confidence FROM documents").fetchall()
+            if r["confidence"] not in STORED_CONFIDENCES
+        ]
+        bad_chunks = db.execute(
+            "SELECT COUNT(*) FROM chunks WHERE confidence NOT IN "
+            f"({','.join('?' * len(STORED_CONFIDENCES))})",
+            sorted(STORED_CONFIDENCES),
+        ).fetchone()[0]
+        if bad_docs or bad_chunks:
+            raise ConfidenceError(
+                f"confidence outside {sorted(STORED_CONFIDENCES)}: documents={bad_docs[:5]} "
+                f"chunks={bad_chunks}. An unknown settledness is a phantom axis value — refusing."
+            )
+
+        drift = db.execute(
+            "SELECT COUNT(*) FROM chunks c JOIN documents d ON d.doc_id=c.doc_id "
+            "WHERE c.confidence IS NOT d.confidence"
+        ).fetchone()[0]
+        if drift:
+            raise ConfidenceError(
+                f"{drift} chunk(s) carry a confidence that disagrees with their document — a "
+                "passage would state a settledness its note never claimed."
+            )
+        return {"by_confidence": self.confidence_counts()}
 
     # ------------------------------------------------------- vector slot
 

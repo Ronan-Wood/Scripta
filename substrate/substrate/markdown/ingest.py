@@ -39,6 +39,8 @@ class IngestResult:
     out_dir: Path
     status: str
     domains: list[str]
+    doc_type: str
+    confidence: str
     title: str | None
     body_chars: int
     source_coverage: float
@@ -52,6 +54,15 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     )
 
 
+def _meta_path_for(note_path: Path) -> Path | None:
+    """The `_meta.md` a passage inherits from, for error attribution only. Mirrors vault._source_meta
+    (nearest enclosing `passages/` ancestor); None when the note is not under one."""
+    parts = note_path.parts
+    if "passages" not in parts:
+        return None
+    return Path(*parts[: len(parts) - 1 - parts[::-1].index("passages")]) / "_meta.md"
+
+
 def ingest_markdown(
     src: Path,
     out_dir: Path,
@@ -59,6 +70,8 @@ def ingest_markdown(
     doc_class: str | None = None,
     require_status: bool = False,
     override_status: str | None = None,
+    override_doc_type: str | None = None,
+    override_confidence: str | None = None,
     override_version: str | None = None,
     extra_domains: list[str] | None = None,
     vault: str | None = None,
@@ -83,8 +96,26 @@ def ingest_markdown(
     # _meta.md context fills only what the note itself did not declare. `domains` is a UNION (a
     # passage may add its own tags to the source's); status is filled only when absent, so a note
     # that explicitly marks itself superseded is never silently reactivated by its source's 'active'.
+    # Track which spine values came from the SOURCE rather than the note, so a refusal can name the
+    # file the operator must actually edit. An error naming the wrong component with total
+    # confidence is a failure this project has already paid for (the AppleFM cache_key bug logged
+    # against the embedder), and here it is the EXPECTED migration failure: the real source vaults
+    # write `confidence: high`, so a book-sized source would otherwise print one refusal per
+    # passage, each blaming a passage file that contains no such value.
+    inherited: dict[str, Path | None] = {}
     if override_status and doc.status is None:
         doc.status = override_status
+        inherited["status"] = _meta_path_for(src)
+    # doc_type inherits the same way: a reference passage carries no frontmatter, so its source's
+    # `_meta.md` doc_type (reference) fills the absence; a note that declares its own job always wins.
+    if override_doc_type and doc.doc_type is None:
+        doc.doc_type = override_doc_type
+        inherited["doc_type"] = _meta_path_for(src)
+    # confidence inherits identically: a reference source states once, in its `_meta.md`, how
+    # settled its passages are; a passage that declares its own always wins.
+    if override_confidence and doc.confidence is None:
+        doc.confidence = override_confidence
+        inherited["confidence"] = _meta_path_for(src)
     # A reference passage carries no version of its own; a versioned source's `_meta.md` supplies it,
     # so the reference-versioned class gate (which refuses a passage that cannot state its version)
     # is satisfied by the source metadata rather than by scraping the passage body.
@@ -100,7 +131,19 @@ def ingest_markdown(
     doc.tier = tier
 
     meta = classes.apply(doc)
-    status = spine.validate_status(doc, require_present=require_status)
+    try:
+        status = spine.validate_status(doc, require_present=require_status)
+        doc_type = spine.validate_doc_type(doc, require_present=require_status)
+        # No require_present: confidence is optional on every path (absent → `unstated`), so it is
+        # deliberately NOT gated on require_status. Only an unknown value is refused.
+        confidence = spine.validate_confidence(doc)
+    except spine.SpineError as e:
+        # Attach the ORIGIN of the offending value. Which field failed is in the message already;
+        # what the operator cannot see is that the value came from a `_meta.md` one directory up.
+        for field, meta_path in inherited.items():
+            if meta_path is not None and f"{field} " in str(e):
+                raise spine.SpineError(f"{e} (inherited from {meta_path})") from e
+        raise
 
     # repair=False: markdown carries no glyph artifacts, so PDF-tier hyphen/ligature repair could
     # only mutate clean authored text (measured: 8 words welded on one round-trip).
@@ -150,6 +193,8 @@ def ingest_markdown(
         "spine": {
             "status": status,
             "domains": list(doc.domains),
+            "doc_type": doc_type,
+            "confidence": confidence,
             "superseded_by": doc.superseded_by,
             "supersedes": doc.supersedes,
         },
@@ -160,5 +205,7 @@ def ingest_markdown(
 
     return IngestResult(
         doc_id=doc.doc_id, out_dir=out_dir, status=status, domains=list(doc.domains),
-        title=meta.get("title"), body_chars=len(body), source_coverage=src_cov, run=run,
+        doc_type=doc_type, confidence=confidence, title=meta.get("title"),
+        body_chars=len(body),
+        source_coverage=src_cov, run=run,
     )
