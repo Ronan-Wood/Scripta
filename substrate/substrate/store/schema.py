@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # v1 (2026-07-21) initial: documents, chunks, chunks_fts (external-content), chunk_vectors.
 # v2 (2026-07-21) chunks.section_kind — references sections were acting as retrieval
@@ -36,6 +36,9 @@ SCHEMA_VERSION = 5
 #     `chunks.superseded_by`. A supersession link is a DOCUMENT property; a chunk
 #     reads it off its document. Keeping one dead column while deleting another
 #     leaves the next reader unable to tell which are intentional.
+# v6 (2026-07-24) §3b raw provenance — documents gains raw / raw_sha256 / raw_location, the
+#     markdown→raw pointer Doc 2 declares system-contract. Written at ingest, read by nothing yet.
+#     Not on chunks: identical per source, and the hit query already joins documents.
 # v5 (2026-07-24) confidence — lands together with v4 in one change set, so no database
 #     ever carried v4; the split is kept because they are separate contracts.
 #     The settledness axis (proposed/inferred/stated/verified, absent
@@ -76,6 +79,17 @@ CREATE TABLE IF NOT EXISTS documents(
     -- run.json under `extract`, the only place they ever reached, so the column is deleted
     -- rather than kept beside this one. NOT NULL on chunks: absence is `unstated`, not NULL.
     confidence        TEXT,
+    -- §3b markdown→raw provenance, which Doc 2 calls system-contract. Raw is the ONLY
+    -- irreplaceable layer: the index rebuilds from markdown and markdown regenerates from raw,
+    -- so a lost pointer permanently freezes a source on the chunking that produced it. Recorded
+    -- at ingest with no consumer yet, on purpose — RECORDING has a deadline (every source ingested
+    -- without one loses its regeneration path silently, and looks identical to a source whose raw
+    -- was deliberately discarded); USING it does not.
+    -- Document-level only. The pointer is the same for every chunk of a source, and the hit query
+    -- already joins documents, so denormalizing would be per-chunk cost for nothing.
+    raw               TEXT,
+    raw_sha256        TEXT,
+    raw_location      TEXT,
     vault             TEXT,
     tier              INTEGER,
     coverage          REAL

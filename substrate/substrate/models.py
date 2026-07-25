@@ -172,6 +172,15 @@ class Document:
     # Absent → `unstated`, surfaced as such — never defaulted to something confident.
     # `vault`/`tier` are composition provenance: which scoped vault a note came from, set by the
     # manifest-composition path so "did inheritance actually compose" is checkable, not inferred.
+    # §3b markdown→raw provenance. Doc 2 calls this "system-contract provenance": raw is the ONLY
+    # irreplaceable layer (index rebuilds from markdown, markdown regenerates from raw), so without
+    # a pointer "keep the raw" degrades into "have some PDFs somewhere with no idea which markdown
+    # came from which". Recorded at ingest; nothing consumes it yet, and that is deliberate — the
+    # pointer being RECORDED is what cannot be deferred, because every source ingested without one
+    # has a regeneration path that is silently lost. Names match the `_meta.md` keys exactly.
+    raw: str | None = None            # the source artifact, e.g. "ddia-2e.pdf"
+    raw_sha256: str | None = None     # its digest — identity, so the right file can be recognised
+    raw_location: str | None = None   # where it is kept. User-owned (§0); the POINTER is contract
     status: str | None = None
     superseded_by: str | None = None
     supersedes: str | None = None
