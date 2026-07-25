@@ -687,6 +687,30 @@ class IndexStore:
         ).fetchone()[0]
         return n > 0
 
+    def vector_coverage(self, model: str) -> tuple[int, int]:
+        """(vectors stored under `model`, total chunks) — COMPLETENESS, not presence.
+
+        `vector_search` on a model with no stored vectors returns [] rather than raising, so a
+        wired embedder over an unembedded index produces a lexical-only result set with NO
+        degradation recorded anywhere: the trace shows a live embedder, and the capability that
+        implies stamps a measured MRR on a run the vector arm never contributed to. That is the
+        second of PRINCIPLES.md's five incidents — the code knew there were zero vectors, and a
+        plausible number is what crossed the boundary.
+
+        Presence is not enough, for the same reason the eval learned it: 256 vectors of 1811 after
+        a timeout passes `> 0` and reports a confident number computed on 14% of the corpus. The
+        comparison is against ALL chunks because that is what `substrate embed` fills.
+
+        Returning the pair rather than a bool is deliberate — the caller names `n/total` in the
+        degradation reason, so "never embedded" and "partially embedded" stay distinguishable to
+        whoever has to fix it.
+        """
+        n = self.db.execute(
+            "SELECT COUNT(*) FROM chunk_vectors WHERE embed_model=?", (model,)
+        ).fetchone()[0]
+        total = self.db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        return n, total
+
     def store_vector(self, chunk_id: str, vector: list[float], model: str) -> None:
         blob = struct.pack(f"{len(vector)}f", *vector)
         self.db.execute(
