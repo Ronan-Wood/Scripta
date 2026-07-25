@@ -1,12 +1,14 @@
 # Project vault manifest. The FORMAT is fixed by the system (the engine parses it); the VALUES
 # are the user's. Per-vault and self-describing: adding a project needs no central edit.
 name = "demo"
-inherits = ["core-vault"]              # which vaults to load into retrieval scope
+inherits = ["demo-core-vault"]              # which vaults to load into retrieval scope
+
+# OPTIONAL — domain context for this project. The soft-weighting retrieval feature is DEFERRED;
+# today this is carried as a tag only, never a hard filter, so cross-domain sources stay reachable.
+# MUST stay above [reference_pins]: in TOML every key after a table header belongs to that table,
+# so a top-level key written below one is silently swallowed into it.
+reference_domains = ["software-dev", "distributed-systems"]
 
 [reference_pins]                       # versioned-doc supersession is PER PROJECT
 go = "1.21"                            # this project pins 1.21 as current; a later spec is
                                        #   treated as superseded-for-this-context
-
-# OPTIONAL — domain context for this project. The soft-weighting retrieval feature is DEFERRED;
-# today this is carried as a tag only, never a hard filter, so cross-domain sources stay reachable.
-reference_domains = ["software-dev", "distributed-systems"]

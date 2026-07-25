@@ -2,6 +2,7 @@
 title: Designing Data-Intensive Applications (2nd ed.)
 class: reference-frozen
 status: active
+doc_type: reference
 domains: [software-dev, distributed-systems, databases]
 raw: ddia-2e.pdf
 raw_sha256: 0000000000000000000000000000000000000000000000000000000000000000

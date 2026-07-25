@@ -2,6 +2,7 @@
 title: <source title>
 class: reference-frozen
 status: active
+doc_type: reference
 domains: [<primary-domain>, <other-domain>]
 raw: <source-file>
 raw_location: user-defined

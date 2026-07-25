@@ -1,6 +1,6 @@
 # demo-vault — content map
 
-A project vault (Tier 3). Inherits core-vault, so a query in this project's scope also reaches
+A project vault (Tier 3). Inherits demo-core-vault, so a query in this project's scope also reaches
 operator knowledge and grounded reference from core — that composition is the whole point.
 
 ## 02-areas (active work threads)

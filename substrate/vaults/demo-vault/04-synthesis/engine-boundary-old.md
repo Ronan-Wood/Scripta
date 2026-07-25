@@ -2,6 +2,7 @@
 doc_id: engine-boundary-old
 title: The engine boundary — retrieval engine only (SUPERSEDED)
 status: superseded
+doc_type: decision
 superseded_by: engine-boundary-current
 domains: [software-dev, architecture]
 ---

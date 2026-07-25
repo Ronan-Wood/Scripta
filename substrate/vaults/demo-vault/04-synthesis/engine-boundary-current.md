@@ -2,6 +2,7 @@
 doc_id: engine-boundary-current
 title: The engine boundary — the Python engine powers the app
 status: active
+doc_type: decision
 supersedes: engine-boundary-old
 domains: [software-dev, architecture]
 ---
