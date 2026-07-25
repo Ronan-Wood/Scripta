@@ -124,6 +124,28 @@ def _add_status_filter(where: list[str], args: list[Any], statuses: frozenset[st
     args.extend(ordered)
 
 
+def _add_class_exclusion(where: list[str], args: list[Any], *, include_sources: bool) -> None:
+    """Exclude source-class documents from default retrieval unless explicitly asked for.
+
+    A SEPARATE axis from status on purpose. Status says a note is dead or filed away; class says
+    what KIND of thing this is. A conversation is neither superseded nor archived — it is raw
+    material whose passages misrepresent it when retrieved individually (classes.EXCLUDED_CLASSES
+    carries the full reasoning, including why this must not be merged with the status exclusion).
+
+    `include_sources=True` is the explicit-ask path: the whole document is still wanted, it just
+    must not arrive uninvited.
+    """
+    if include_sources:
+        return
+    from substrate.classes import EXCLUDED_CLASSES
+
+    ordered = sorted(EXCLUDED_CLASSES)
+    if not ordered:
+        return
+    where.append(f"c.document_class NOT IN ({','.join('?' * len(ordered))})")
+    args.extend(ordered)
+
+
 def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
     return Hit(
         chunk_id=r["chunk_id"],
@@ -213,8 +235,9 @@ class IndexStore:
                     markdown_mtime, markdown_sha256, title, document_class, version,
                     version_date, page_label_offset, extractor, extractor_arm, layout_model,
                     pipeline_version, ingested_at, last_verified_at, supersedes,
-                    superseded_by, status, domains, doc_type, confidence, vault, tier, coverage)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    superseded_by, status, domains, doc_type, confidence, vault, tier, coverage,
+                    raw, raw_sha256, raw_location)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     doc.doc_id, doc.source_path, doc.source_sha256, doc.source_pages,
                     markdown_path, markdown_mtime, markdown_sha256, doc.title,
@@ -222,7 +245,7 @@ class IndexStore:
                     doc.extractor, doc.extractor_arm, doc.layout_model, doc.pipeline_version,
                     _now(), _now(), doc.supersedes, doc.superseded_by,
                     status, json.dumps(list(doc.domains)), doc_type, confidence, doc.vault,
-                    doc.tier, coverage,
+                    doc.tier, coverage, doc.raw, doc.raw_sha256, doc.raw_location,
                 ),
             )
             db.executemany(
@@ -295,6 +318,7 @@ class IndexStore:
         min_path_depth: int | None = None,
         path_prefix: str | None = None,
         statuses: frozenset[str] | None = None,
+        include_sources: bool = False,
     ) -> list[Hit]:
         """Lexical search, precision-first with a recall TOP-UP.
 
@@ -312,6 +336,7 @@ class IndexStore:
         kw = dict(
             kind=kind, document_class=document_class, doc_id=doc_id,
             min_path_depth=min_path_depth, path_prefix=path_prefix, statuses=statuses,
+            include_sources=include_sources,
         )
         seen: set[str] = set()
         out: list[Hit] = []
@@ -344,6 +369,9 @@ class IndexStore:
             where.append("(c.path_str = ? OR c.path_str LIKE ? || ' > %' ESCAPE '\\')")
             args.extend([kw["path_prefix"], _like_escape(kw["path_prefix"])])
         _add_status_filter(where, args, kw.get("statuses"))
+        _add_class_exclusion(where, args,
+                             include_sources=kw.get("include_sources", False)
+                             or kw.get("document_class") is not None)
         args.append(kw.get("k", 10))
 
         sql = (
@@ -710,6 +738,7 @@ class IndexStore:
         doc_id: str | None = None,
         document_class: str | None = None,
         statuses: frozenset[str] | None = None,
+        include_sources: bool = False,
     ) -> list[Hit]:
         """Brute-force cosine. Vectors are L2-normalized, so a dot product IS cosine.
 
@@ -730,6 +759,8 @@ class IndexStore:
                 where.append(f"{col} = ?")
                 args.append(val)
         _add_status_filter(where, args, statuses)
+        _add_class_exclusion(where, args,
+                             include_sources=include_sources or document_class is not None)
 
         rows = self.db.execute(
             "SELECT c.*, d.title AS title, d.supersedes AS d_supersedes, "

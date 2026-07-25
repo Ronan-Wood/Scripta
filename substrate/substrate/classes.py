@@ -80,7 +80,47 @@ POLICIES: dict[str, ClassPolicy] = {
         required_fields=["title", "source_sha256", "version"],
         chunk=ChunkPolicy(target=1000, max_chars=2000, min_chars=300),
     ),
+    # A conversation is a SOURCE, not a note — the layer a PDF occupies in the §3b lineage. Its
+    # distillate becomes notes; the transcript is what those notes were made from. So it is indexed
+    # and searchable, but excluded from default retrieval (see EXCLUDED_CLASSES below).
+    #
+    # Chunk geometry is deliberately smaller than a textbook's: a transcript has no sustained
+    # argument to preserve across a large window — it has turns. A big chunk of conversation drags
+    # in unrelated turns rather than context.
+    "conversation": ClassPolicy(
+        "conversation",
+        requires_version=False,
+        frozen=True,
+        description="A captured conversation. Raw material for notes, never a note itself.",
+        required_fields=["title"],
+        chunk=ChunkPolicy(target=1100, max_chars=2200, min_chars=300),
+    ),
 }
+
+# Classes excluded from DEFAULT retrieval, reachable on explicit ask. Parallel to the status
+# partition and deliberately a separate axis: status says a note is dead or filed away, class says
+# what KIND of thing this is.
+#
+# Why a conversation is excluded, and why the reason matters:
+#
+#   Superseded content is excluded because it has been REPLACED — nobody wants it, and its value is
+#   only that the live note can point at it. A conversation is excluded for the opposite reason: the
+#   whole document is still wanted, on ask, but retrieval BY PASSAGE misrepresents it. Confidence
+#   varies WITHIN a transcript — a passage from the middle surfaces reasoning that was abandoned
+#   four messages later, in exactly the same confident register as the conclusion. No note-level
+#   marker can fix that, which is why the exclusion is whole-document rather than per-value.
+#
+#   Same mechanism, opposite reasons. They therefore get different answers on embedding (a
+#   conversation SHOULD be embedded — "what did we decide about X" is a fuzzy query that FTS serves
+#   badly, and the explicit-ask path is the only one that reaches it), and must not be collapsed
+#   into one rule by a later simplification.
+#
+# This rule is not new policy. The source vault's own README said "do not write a note when it's a
+# transcript — distill or skip." The policy existed; it was a markdown convention, and a markdown
+# convention cannot refuse anything. Every transcript-shaped note written despite it is evidence
+# that an unenforceable rule reads as absent. This is the Boundary Principle in structural form:
+# what was missing was never the rule, only its passage into the machinery.
+EXCLUDED_CLASSES: frozenset[str] = frozenset({"conversation"})
 
 
 class ClassPolicyError(RuntimeError):

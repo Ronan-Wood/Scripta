@@ -552,6 +552,7 @@ def cmd_compose(args: argparse.Namespace) -> int:
                 n.path, out_dir, doc_class=n.doc_class, require_status=True,
                 override_status=n.override_status, override_doc_type=n.override_doc_type,
                 override_confidence=n.override_confidence,
+                raw=n.raw, raw_sha256=n.raw_sha256, raw_location=n.raw_location,
                 override_version=n.override_version,
                 extra_domains=n.extra_domains, vault=n.vault, tier=n.tier,
             )
@@ -672,16 +673,19 @@ def cmd_query(args: argparse.Namespace) -> int:
         cap = None
         if args.kind == "outline":
             hits = store.search(args.text, k=args.k, kind="outline",
-                                document_class=args.doc_class, statuses=statuses)
+                                document_class=args.doc_class, statuses=statuses,
+                                include_sources=args.include_sources)
             index_version = store.index_version
         else:
             result = retrieve(
                 store, args.text, k=args.k, document_class=args.doc_class,
                 statuses=statuses, embedder=embedder,
+                include_sources=args.include_sources,
             )
             hits, cap, index_version = result.passages, result.capability, result.index_version
         sset = "all" if statuses is None else ",".join(sorted(statuses))
-        print(f"  status filter: {sset}")
+        print(f"  status filter: {sset}"
+              + ("" if args.include_sources else "  ·  sources excluded (--include-sources)"))
         if not hits:
             print("  (no results)")
         for h in hits:
@@ -1038,6 +1042,10 @@ def main(argv: list[str] | None = None) -> int:
     comp.set_defaults(func=cmd_compose)
 
     qry = sub.add_parser("query")
+    qry.add_argument("--include-sources", action="store_true",
+                     help="also retrieve source-class documents (conversations), which are "
+                          "excluded by default because a passage from mid-transcript "
+                          "misrepresents a document whose confidence varies within it")
     qry.add_argument("text")
     qry.add_argument("--db", default="out/substrate.db")
     qry.add_argument("--k", type=int, default=5)

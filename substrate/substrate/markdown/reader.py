@@ -321,6 +321,7 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
     # reader stays a pure PARSER — it does not enforce "superseded requires a link" or "status is
     # one of the four"; that is spine.validate_status, called by the ingest paths (which decide how
     # strict to be: the vault path requires status, a standalone ingest defaults it to active).
+    fraw = front.get("raw_sha256", "")
     fsup_by = front.get("superseded_by", "")
     fsup = front.get("supersedes", "")
     doc = Document(
@@ -329,12 +330,24 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
         source_sha256=fsha if _SHA256.fullmatch(fsha) else sha,
         source_pages=_bounded_int(front.get("source_pages", ""), 1, _I64)
         or (max(anchors) if anchors else 1),
-        document_class=doc_class or front.get("document_class") or "reference-frozen",
+        # Doc 2 §3 writes the document class as `class:` in a source's `_meta.md`, and vault.py
+        # already maps that spelling. A note's OWN frontmatter must accept the same word, or the
+        # vault format has two names for one field depending on which file it appears in — and the
+        # unread spelling then falls through to the default silently. That is how six migrated
+        # conversations were relabelled `reference-frozen` under a fully green compose.
+        document_class=(doc_class or front.get("document_class") or front.get("class")
+                        or "reference-frozen"),
         blocks=blocks,
         title=front.get("title"),
         version=front.get("version"),
         version_date=front.get("version_date"),
         page_label_offset=_bounded_int(front.get("page_label_offset", ""), -_I64, _I64),
+        # §3b raw provenance. `raw_sha256` is shape-checked like source_sha256: a malformed digest
+        # is dropped rather than carried, because a pointer that cannot identify the file it names
+        # is worse than an absent one — it reads as provenance while being unusable.
+        raw=(front.get("raw") or None),
+        raw_sha256=fraw if _SHA256.fullmatch(fraw) else None,
+        raw_location=(front.get("raw_location") or None),
         status=(front.get("status") or None),
         superseded_by=fsup_by if _DOC_ID.fullmatch(fsup_by) else None,
         supersedes=fsup if _DOC_ID.fullmatch(fsup) else None,
