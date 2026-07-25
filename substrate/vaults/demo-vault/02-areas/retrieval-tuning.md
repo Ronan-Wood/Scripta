@@ -2,6 +2,7 @@
 doc_id: retrieval-tuning
 title: Retrieval tuning — the model axis is exhausted
 status: active
+doc_type: explanation
 domains: [software-dev, retrieval]
 ---
 

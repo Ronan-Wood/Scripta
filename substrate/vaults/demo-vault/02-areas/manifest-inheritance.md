@@ -2,6 +2,7 @@
 doc_id: manifest-inheritance
 title: Manifest inheritance composes core into project scope
 status: complete
+doc_type: explanation
 domains: [software-dev, retrieval]
 ---
 

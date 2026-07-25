@@ -1,4 +1,4 @@
-# core-vault — content map
+# demo-core-vault — content map
 
 The shared root vault. Tier 1 (operator) + Tier 2 (grounded reference). Inherits nothing;
 it is the root every project reads FROM. Nothing auto-writes INTO it — promoting a project

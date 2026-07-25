@@ -2,6 +2,7 @@
 doc_id: operator-working-cadence
 title: Working cadence — audit, review, implement, verify
 status: active
+doc_type: explanation
 domains: [operator, process]
 ---
 

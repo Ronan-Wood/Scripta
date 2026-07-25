@@ -2,6 +2,7 @@
 title: The Go Programming Language Specification
 class: reference-versioned
 status: active
+doc_type: reference
 version: 1.21
 domains: [software-dev, languages]
 raw: go-spec-1.21.html

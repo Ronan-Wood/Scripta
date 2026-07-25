@@ -2,6 +2,7 @@
 doc_id: phase0-spike-notes
 title: Phase 0 ingestion spike — working notes (archived)
 status: archived
+doc_type: explanation
 domains: [software-dev, retrieval]
 ---
 
