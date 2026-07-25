@@ -228,6 +228,27 @@ def _retrieve(
     so its results are unchanged."""
     trace = Trace()
 
+    # ONE coverage check, before any arm runs. An embedder wired over an index holding no (or
+    # partial) vectors for ITS key contributes nothing and raises nothing — `vector_search`
+    # returns [] on an empty space — so without this the trace shows a live embedder and the
+    # capability stamps a measured tier on what is really a lexical-only run. Degrading here is
+    # what keeps the envelope honest: `embedder` empties, HyDE (which only ever feeds the vector
+    # query) reports off, and `_expected_mrr` returns None rather than a number the stack did not
+    # earn. Fail OPEN, like every other arm on this path — a lexical answer correctly labelled is
+    # useful; `eval` is the caller that must refuse instead, because it publishes the number.
+    # The commonest cause is a key change orphaning the stored vectors, which is why the reason
+    # names the key and the counts rather than saying "unavailable".
+    if embedder is not None:
+        vec_key = getattr(embedder, "key", getattr(embedder, "model", ""))
+        n_vec, n_chunks = store.vector_coverage(vec_key)
+        if n_vec < n_chunks:
+            _degrade(
+                trace, "embedder",
+                f"{'no vectors' if n_vec == 0 else 'INCOMPLETE'}: {n_vec}/{n_chunks} under "
+                f"{vec_key!r} — run `substrate embed`",
+            )
+            embedder = None
+
     # Query set: the original, plus register-varied paraphrases. A relevant chunk only has
     # to match ONE phrasing, which is the point.
     queries = [query]
