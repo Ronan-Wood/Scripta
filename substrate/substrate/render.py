@@ -1,0 +1,177 @@
+"""One contract, N renderings — the structured payload the CLI and the MCP server both emit.
+
+Doc 3a §1: MCP is a thin adapter over the existing `RetrievalResult`; it does not define its own
+result shape. This module IS that shape, and it lives in the engine rather than in either adapter
+so the two cannot drift. Doc 3a §6's verification — an MCP `search` and the equivalent CLI query
+must return the same passages, capability and index_version — is expressible as one equality only
+because both sides call this function.
+
+Two rules govern every field here.
+
+**Payload discipline: snippet-first.** A passage is ~1500 chars; five of them is ~2k tokens per
+query, and a model caller pays for every one. What crosses is a citation, ~200 chars, and an
+`expand_ref` — expansion is a separate call, on demand. This is transport-independent discipline
+that MCP makes newly important rather than newly true.
+
+**Nothing that was withheld is silent.** Every spine field is emitted UNCONDITIONALLY, null
+included, and the filters that shaped the result set are emitted as structured fields rather than
+left implicit. A field that disappears when it has nothing interesting to say is prose, not a
+field: its absence reads as "no claim was checked" rather than "no claim was made", and a caller
+that does not know content was excluded concludes it does not exist. That is the Boundary
+Principle at the one seam this whole spine exists to protect — a model that cannot see
+`confidence=proposed` reads an unbuilt design as settled.
+"""
+
+from __future__ import annotations
+
+from substrate.retrieve.retriever import RetrievalResult
+from substrate.spine import STATUSES
+from substrate.store.index_store import Hit
+
+SNIPPET_CHARS = 200      # matches `query --chars`, so the two renderings cut at the same point
+OUTLINE_RECORDS = 3      # the shared default, so a bare CLI --json and a bare MCP search agree
+REF_SEP = "/"
+
+
+class RefError(ValueError):
+    """An expand_ref that does not name a scope and a chunk."""
+
+
+def expand_ref(scope: str, chunk_id: str) -> str:
+    """The handle a caller passes back to `expand`. Scope-qualified because ONE server serves
+    every scope: a bare chunk_id would be resolved against whichever index the callee guessed,
+    and a wrong guess returns a well-formed passage from the wrong vault."""
+    return f"{scope}{REF_SEP}{chunk_id}"
+
+
+def parse_expand_ref(ref: str) -> tuple[str, str]:
+    """`expand_ref` → (scope, chunk_id). Split on the FIRST separator: a chunk_id may contain one,
+    a scope name may not, and the caller resolving the scope is what makes a bad split loud."""
+    scope, sep, chunk_id = ref.partition(REF_SEP)
+    if not sep or not scope or not chunk_id:
+        raise RefError(
+            f"malformed expand_ref {ref!r}; expected '<scope>{REF_SEP}<chunk_id>' as returned by "
+            "search."
+        )
+    return scope, chunk_id
+
+
+def _snippet(text: str, chars: int) -> tuple[str, bool]:
+    body = " ".join(text.split())
+    return (body[:chars], True) if len(body) > chars else (body, False)
+
+
+def passage(h: Hit, *, scope: str, chars: int = SNIPPET_CHARS, full: bool = False) -> dict:
+    """One hit as a consumer sees it: a snippet, a handle to the rest, and the whole spine.
+
+    Every spine axis is present on every passage, with no field dropped for being uninteresting.
+    `status` is the note's currency, `doc_type` its job, `confidence` its SETTLEDNESS (independent
+    of status — a note can be active AND proposed), `domains` its retrieval tags, `vault` which
+    tier it composed from, and `supersedes` the dead note this live one replaced. `unstated`
+    confidence and a null `supersedes` are emitted exactly like any other value: "this note made
+    no claim" is information, and it is not the same as "nobody looked".
+
+    `full=True` is the `expand` path — same envelope, whole text, so a consumer never has to
+    reconcile two different passage shapes.
+    """
+    snippet, truncated = _snippet(h.text, chars)
+    out = {
+        "expand_ref": expand_ref(scope, h.chunk_id),
+        "citation": h.citation,
+        "path": h.path_str,
+        "page": h.page_label_start,
+        "n_chars": h.n_chars or len(h.text),
+        # The spine — the reason this payload exists at all.
+        "status": h.status,
+        "doc_type": h.doc_type,
+        "confidence": h.confidence,
+        "domains": list(h.domains),
+        "vault": h.vault,
+        "supersedes": h.supersedes,
+    }
+    if full:
+        out["text"] = h.text
+        out["truncated"] = False
+    else:
+        out["snippet"] = snippet
+        out["truncated"] = truncated
+    return out
+
+
+def outline_record(h: Hit, *, scope: str, chars: int = SNIPPET_CHARS) -> dict:
+    """A section's orientation record — the two-speed layer of Doc 2 §7. Same spine, because an
+    orientation record inherits the currency and settledness of the note it orients."""
+    rec = passage(h, scope=scope, chars=chars)
+    rec["kind"] = "outline"
+    return rec
+
+
+def retrieval_mode(result: RetrievalResult) -> dict:
+    """Which arms actually ran and what that is measured to be worth.
+
+    Doc 2 §7 sketched this as embedder/generator; the engine tracks the two generator-backed arms
+    separately (HyDE feeds the vector query, the reranker reorders the fused list) and they fail
+    independently, so both are reported rather than collapsed into one flag. `expected_mrr` is the
+    measured tier for THIS exact stack or an honest null — never an estimate, never a number
+    generalized from a neighbouring configuration.
+    """
+    c = result.capability
+    return {
+        "embedder": c.embedder or None,     # null, not "lexical-only": absence is not a model name
+        "hyde": c.hyde,
+        "reranker": c.reranker,
+        "expected_mrr": c.expected_mrr,
+        "cohort": c.cohort,
+        "degraded": c.degraded,
+        "fallbacks": list(c.fallbacks),
+    }
+
+
+def applied_filters(
+    statuses: frozenset[str] | None, *, include_sources: bool, doc_type: str | None = None
+) -> dict:
+    """What this result set left out, said out loud.
+
+    Doc 3a §2 requires the default exclusions to be surfaced structurally rather than applied
+    silently, mirroring the CLI's `status filter: … · sources excluded` line. The EXCLUDED list is
+    computed as the complement and carried alongside the included one on purpose: a caller who
+    does not know the status vocabulary cannot derive it, and "archived and superseded notes were
+    withheld" is the difference between a gap in the corpus and a gap in the query.
+
+    (Reporting the complement is not the tautological A20 check this project retracted. That was
+    an ASSERTION restating its own definition and proving nothing; this is a report, and telling a
+    consumer what it did not receive is the entire job.)
+    """
+    included = sorted(STATUSES) if statuses is None else sorted(statuses)
+    return {
+        "statuses_included": included,
+        "statuses_excluded": sorted(STATUSES - set(included)),
+        "sources_excluded": not include_sources,
+        "doc_type": doc_type,
+    }
+
+
+def search_payload(
+    result: RetrievalResult,
+    *,
+    scope: str,
+    query: str,
+    statuses: frozenset[str] | None,
+    include_sources: bool,
+    doc_type: str | None = None,
+    chars: int = SNIPPET_CHARS,
+) -> dict:
+    """The whole envelope: passages, orientation, capability, applied filters, index_version.
+
+    `scope` and `index_version` travel together because either alone is unfalsifiable — a version
+    hash says nothing about WHICH index it stamps when one server serves several.
+    """
+    return {
+        "scope": scope,
+        "query": query,
+        "passages": [passage(h, scope=scope, chars=chars) for h in result.passages],
+        "outline_records": [outline_record(h, scope=scope, chars=chars) for h in result.outlines],
+        "retrieval_mode": retrieval_mode(result),
+        "filters": applied_filters(statuses, include_sources=include_sources, doc_type=doc_type),
+        "index_version": result.index_version,
+    }

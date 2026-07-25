@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-from substrate import classes, scopes
+from substrate import classes, render, scopes
 from substrate.paths import ARTIFACTS, configure, internal_cache_footprint
 
 
@@ -699,10 +699,24 @@ def cmd_query(args: argparse.Namespace) -> int:
     from substrate.embed.engine import OllamaEmbedder
     from substrate.retrieve.retriever import retrieve
 
+    from substrate import render
+
     cand = OllamaEmbedder()
     embedder = None if args.no_vector else (cand if cand.available() else None)
     statuses = _resolve_statuses(args)
     db_path = _resolve_db(args)
+
+    if args.json and args.kind == "outline":
+        # The JSON envelope carries outline records as a FIELD beside the passages (Doc 2 §7's
+        # two-speed shape). An outline-only result would be the same key holding a different
+        # thing, which a consumer cannot tell apart from a passage search that matched nothing.
+        print("FATAL: --json returns outline records alongside passages; use --outlines N "
+              "rather than --kind outline.", file=sys.stderr)
+        return 2
+    # Human output is unchanged unless asked; --json defaults to the shared count so a bare
+    # `query --json` and a bare MCP `search` produce the SAME envelope (Doc 3a §6).
+    n_outlines = (args.outlines if args.outlines is not None
+                  else (render.OUTLINE_RECORDS if args.json else 0))
 
     with IndexStore(db_path) as store:
         if refuse_if_rebuilt(store, repopulates=False):
@@ -717,9 +731,22 @@ def cmd_query(args: argparse.Namespace) -> int:
             result = retrieve(
                 store, args.text, k=args.k, document_class=args.doc_class,
                 statuses=statuses, embedder=embedder,
-                include_sources=args.include_sources,
+                include_sources=args.include_sources, with_outlines=n_outlines,
             )
             hits, cap, index_version = result.passages, result.capability, result.index_version
+            if args.json:
+                # Rendered by the ENGINE, not here. The MCP server calls the same function on the
+                # same result, which is what makes Doc 3a §6's equivalence a single equality
+                # rather than two hand-written serializers that agree until they do not.
+                print(json.dumps(
+                    render.search_payload(
+                        result, scope=args.scope or db_path, query=args.text,
+                        statuses=statuses, include_sources=args.include_sources,
+                        doc_type=args.doc_class, chars=args.chars,
+                    ),
+                    indent=2, ensure_ascii=False,
+                ))
+                return 0
         sset = "all" if statuses is None else ",".join(sorted(statuses))
         print(f"  status filter: {sset}"
               + ("" if args.include_sources else "  ·  sources excluded (--include-sources)"))
@@ -1102,6 +1129,12 @@ def main(argv: list[str] | None = None) -> int:
     qry.add_argument("--chars", type=int, default=200)
     qry.add_argument("--expand", action="store_true")
     qry.add_argument("--no-vector", action="store_true")
+    qry.add_argument("--json", action="store_true",
+                     help="emit the structured result envelope (the same one the MCP server "
+                          "returns) instead of the human read-out")
+    qry.add_argument("--outlines", type=int, default=None, metavar="N",
+                     help=f"orientation records alongside the passages (Doc 2 §7); default 0 "
+                          f"for the human read-out, {render.OUTLINE_RECORDS} under --json")
     # Default retrieval set is active+complete (Doc 2 §6). These broaden it explicitly.
     qry.add_argument("--include-archived", action="store_true",
                      help="add archived to the default active+complete set")
