@@ -43,7 +43,7 @@ def _render(b: Block) -> str:
 
 def _repair_blocks(blocks: list[Block], cal: Calibration) -> dict:
     """Apply ligature + hyphen repair per block, so offsets computed after are stable."""
-    stats = {"ligatures": 0, "hyphens": 0, "kept_hyphen": 0}
+    stats: dict = {"ligatures": 0, "hyphens": 0, "kept_hyphen": 0, "repaired_samples": []}
     for b in blocks:
         if b.kind in (Kind.CODE, Kind.TABLE):
             b.text = clean_block(b.text)  # control bytes still get stripped
@@ -55,6 +55,12 @@ def _repair_blocks(blocks: list[Block], cal: Calibration) -> dict:
         stats["ligatures"] += lig["joined"]
         stats["hyphens"] += hyp["joined"]
         stats["kept_hyphen"] += hyp["kept_hyphen"]
+        # Carry a BOUNDED sample of the actual reassembled words (`orig -> joined`) to run.json, so
+        # the review's "Repaired words" check can show what the repair did rather than a long-word
+        # proxy. dehyphenate already caps each block at 40; cap the doc total at 40 too.
+        room = 40 - len(stats["repaired_samples"])
+        if room > 0:
+            stats["repaired_samples"].extend(hyp["samples"][:room])
     return stats
 
 
@@ -80,7 +86,7 @@ def emit(doc: Document, *, repair: bool = True) -> tuple[str, dict]:
         for b in body_blocks:
             b.text = clean_block(b.text)  # hygiene only; never glyph repair on clean markdown
         cal = Calibration(glyph=None)
-        repairs = {"ligatures": 0, "hyphens": 0, "kept_hyphen": 0}
+        repairs = {"ligatures": 0, "hyphens": 0, "kept_hyphen": 0, "repaired_samples": []}
 
     # Pass 3 — assemble, recording offsets against the FINAL text.
     parts: list[str] = []
