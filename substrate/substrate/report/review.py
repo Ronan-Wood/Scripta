@@ -210,15 +210,17 @@ def _transitions(body: str, blocks: list[dict], run: dict) -> str:
         if shown >= 12:
             break
 
-    L += ["## Repaired words", "", "Words reassembled from a split. Each must be a real word.", ""]
-    pat = re.compile(r"\b(\w{4,})\b")
-    hits = 0
-    for m in pat.finditer(body):
-        w = m.group(1)
-        if len(w) > 9 and hits < 14:
-            ctx = body[max(0, m.start() - 60) : m.end() + 60].replace("\n", " ")
-            L.append(f"- `{w}` — …{ctx.strip()}…")
-            hits += 1
+    # The ACTUAL reassembled words, threaded from dehyphenate()'s samples through emit() into
+    # run.json — not a long-word proxy. `.get` tolerates a run.json that predates the field (renders
+    # as none rather than raising).
+    L += ["## Repaired words", "",
+          "Words the dehyphenation pass reassembled from a split, shown as `original -> joined`. "
+          "Each joined form must be a real word; flag any that is not (a bad join).", ""]
+    samples = run["emit"].get("repaired_samples") or []
+    if samples:
+        L += [f"- `{s}`" for s in samples]
+    else:
+        L.append("_(none — no hyphen splits were repaired.)_")
     return "\n".join(L) + "\n"
 
 
