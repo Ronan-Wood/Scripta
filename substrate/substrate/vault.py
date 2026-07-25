@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from substrate.extract.base import doc_id_for  # stdlib-only; no Docling/torch pulled in
-from substrate.markdown.reader import _DOC_ID, _parse_frontmatter, _parse_list
+from substrate.markdown.reader import _DOC_ID, _DOMAIN, _parse_frontmatter, _parse_list
 
 MANIFEST = ".substrate.toml"
 
@@ -81,6 +81,9 @@ class NoteRef:
     override_status: str | None = None   # from _meta.md, applied only when the note declares none
     override_doc_type: str | None = None  # from _meta.md, applied only when the note declares none
     override_confidence: str | None = None  # ditto — a source states its settledness once
+    raw: str | None = None            # §3b provenance, from the source's _meta.md
+    raw_sha256: str | None = None
+    raw_location: str | None = None
     override_version: str | None = None  # from a versioned source's _meta.md
     extra_domains: list[str] = field(default_factory=list)  # merged from _meta.md
 
@@ -112,6 +115,38 @@ def _read_manifest(vault_dir: Path) -> dict:
     inherits = manifest.get("inherits", [])
     if not isinstance(inherits, list) or not all(isinstance(x, str) for x in inherits):
         raise VaultError(f"{path}: 'inherits' must be a list of strings.")
+
+    # All four Doc 2 §2 keys are shape-checked, not just the two the engine acts on today. The
+    # manifest FORMAT is the system's contract; a malformed one that parses cleanly and yields a
+    # wrong scope silently is the chapter-title shape — well-formed, wrong, green.
+    #
+    # This exists because of a real defect: `reference_domains` was written BELOW `[reference_pins]`
+    # in both shipped manifests, and in TOML every key after a table header belongs to that table.
+    # It parsed as `reference_pins.reference_domains`, so the vault's declared domains never existed
+    # at top level and the pins table gained a bogus entry. Nothing noticed for a whole phase,
+    # because both features that would read those keys are deferred — the value was declared,
+    # valid-looking, and read by nobody. Checking shape at PARSE time converts that into an
+    # immediate loud failure instead of a surprise whenever the deferred feature lands.
+    pins = manifest.get("reference_pins", {})
+    if not isinstance(pins, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in pins.items()
+    ):
+        raise VaultError(
+            f"{path}: 'reference_pins' must be a table of string→string (name = \"version\"); "
+            f"got {pins!r}."
+        )
+    domains = manifest.get("reference_domains", [])
+    if not isinstance(domains, list) or not all(isinstance(x, str) for x in domains):
+        raise VaultError(
+            f"{path}: 'reference_domains' must be a top-level list of strings; got {domains!r}. "
+            "If it looks absent, check it is not written BELOW a [table] header — in TOML every "
+            "key after one belongs to that table."
+        )
+    # A pin whose value is not a plausible version, or a domain that is not a well-shaped tag, is
+    # a typo that would otherwise surface as "why did this resolve to nothing" much later.
+    bad_domains = [d for d in domains if not _DOMAIN.fullmatch(d)]
+    if bad_domains:
+        raise VaultError(f"{path}: malformed domain tag(s) {bad_domains}.")
     return manifest
 
 
@@ -177,6 +212,11 @@ def _source_meta(note_path: Path, vault_root: Path) -> dict:
         "status": front.get("status"),
         "doc_type": front.get("doc_type"),
         "confidence": front.get("confidence"),
+        # §3b: the raw pointer lives on the SOURCE, so its passages inherit it —
+        # that is the whole mechanism by which a chunk can name the PDF it came from.
+        "raw": front.get("raw"),
+        "raw_sha256": front.get("raw_sha256"),
+        "raw_location": front.get("raw_location"),
         "domains": _parse_list(front.get("domains")),
         "version": front.get("version"),
     }
@@ -198,6 +238,8 @@ def _discover_notes(vault: VaultRef) -> list[NoteRef]:
             doc_class=meta.get("doc_class"), override_status=meta.get("status"),
             override_doc_type=meta.get("doc_type"),
             override_confidence=meta.get("confidence"),
+            raw=meta.get("raw"), raw_sha256=meta.get("raw_sha256"),
+            raw_location=meta.get("raw_location"),
             override_version=meta.get("version"), extra_domains=list(meta.get("domains", [])),
         ))
     return notes

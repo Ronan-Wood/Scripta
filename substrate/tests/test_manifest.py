@@ -282,6 +282,56 @@ def test_assert_composed_allows_empty_inherited_vault() -> None:
         assert rep["by_vault"] == {"demo-vault": 1}
 
 
+def test_manifest_refuses_the_f9_table_scoping_bug() -> None:
+    """`reference_domains` written BELOW `[reference_pins]` parses as a KEY OF THAT TABLE, so the
+    vault's declared domains never exist at top level. Shipped in both manifests for a whole phase
+    and invisible, because the two features that would read those keys are deferred — the value was
+    declared, valid-looking, and read by nobody. Parse-time shape checking is what makes it loud."""
+    root = Path(tempfile.mkdtemp())
+    p = root / "demo-vault"
+    p.mkdir()
+    (p / ".substrate.toml").write_text(
+        'name = "demo"\ninherits = []\n\n[reference_pins]\ngo = "1.21"\n'
+        'reference_domains = ["software-dev"]\n')
+    try:
+        V._read_manifest(p)
+    except V.VaultError as e:
+        assert "reference_pins" in str(e)
+        return
+    raise AssertionError("a swallowed reference_domains must be refused at parse time")
+
+
+def test_manifest_refuses_malformed_pins_and_domains() -> None:
+    root = Path(tempfile.mkdtemp())
+    for i, body in enumerate((
+        'name = "d"\ninherits = []\n\n[reference_pins]\ngo = 1.21\n',        # non-string pin
+        'name = "d"\ninherits = []\nreference_domains = ["ok", "not a tag!"]\n',  # bad tag shape
+        'name = "d"\ninherits = []\nreference_domains = "software-dev"\n',      # not a list
+    )):
+        p = root / f"v{i}"
+        p.mkdir()
+        (p / ".substrate.toml").write_text(body)
+        try:
+            V._read_manifest(p)
+        except V.VaultError:
+            continue
+        raise AssertionError(f"manifest {i} should have been refused: {body!r}")
+
+
+def test_a_correct_manifest_still_parses() -> None:
+    """The guard must not reject the shape every shipped vault actually uses."""
+    root = Path(tempfile.mkdtemp())
+    p = root / "ok-vault"
+    p.mkdir()
+    (p / ".substrate.toml").write_text(
+        'name = "ok"\ninherits = ["core-vault"]\n'
+        'reference_domains = ["software-dev", "retrieval"]\n\n'
+        '[reference_pins]\ngo = "1.21"\n')
+    m = V._read_manifest(p)
+    assert m["reference_domains"] == ["software-dev", "retrieval"]
+    assert m["reference_pins"] == {"go": "1.21"}
+
+
 if __name__ == "__main__":
     _tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     _failed = 0

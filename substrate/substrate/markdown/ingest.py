@@ -72,6 +72,9 @@ def ingest_markdown(
     override_status: str | None = None,
     override_doc_type: str | None = None,
     override_confidence: str | None = None,
+    raw: str | None = None,
+    raw_sha256: str | None = None,
+    raw_location: str | None = None,
     override_version: str | None = None,
     extra_domains: list[str] | None = None,
     vault: str | None = None,
@@ -116,6 +119,11 @@ def ingest_markdown(
     if override_confidence and doc.confidence is None:
         doc.confidence = override_confidence
         inherited["confidence"] = _meta_path_for(src)
+    # §3b: a passage inherits its source's raw pointer. This is the mechanism by which a chunk can
+    # name the artifact it ultimately came from — the passage file itself has no idea.
+    doc.raw = doc.raw or raw
+    doc.raw_sha256 = doc.raw_sha256 or raw_sha256
+    doc.raw_location = doc.raw_location or raw_location
     # A reference passage carries no version of its own; a versioned source's `_meta.md` supplies it,
     # so the reference-versioned class gate (which refuses a passage that cannot state its version)
     # is satisfied by the source metadata rather than by scraping the passage body.
@@ -195,6 +203,9 @@ def ingest_markdown(
             "domains": list(doc.domains),
             "doc_type": doc_type,
             "confidence": confidence,
+            "raw": doc.raw,
+            "raw_sha256": doc.raw_sha256,
+            "raw_location": doc.raw_location,
             "superseded_by": doc.superseded_by,
             "supersedes": doc.supersedes,
         },
