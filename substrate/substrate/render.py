@@ -106,7 +106,7 @@ def outline_record(h: Hit, *, scope: str, chars: int = SNIPPET_CHARS) -> dict:
     return rec
 
 
-def retrieval_mode(result: RetrievalResult) -> dict:
+def retrieval_mode(result: RetrievalResult, *, unavailable: tuple[str, ...] = ()) -> dict:
     """Which arms actually ran and what that is measured to be worth.
 
     Doc 2 §7 sketched this as embedder/generator; the engine tracks the two generator-backed arms
@@ -114,6 +114,12 @@ def retrieval_mode(result: RetrievalResult) -> dict:
     independently, so both are reported rather than collapsed into one flag. `expected_mrr` is the
     measured tier for THIS exact stack or an honest null — never an estimate, never a number
     generalized from a neighbouring configuration.
+
+    `unavailable` is the one thing `Capability` cannot say. An arm that was requested but could
+    not start reports `off` — correctly, nothing ran — which is byte-identical to an arm nobody
+    asked for. To a caller those are opposite situations: one means "this stack was never
+    measured", the other means "start Ollama and ask again". The condition exists at the point the
+    stack is built and would otherwise die there, which is the Boundary Principle exactly.
     """
     c = result.capability
     return {
@@ -124,6 +130,7 @@ def retrieval_mode(result: RetrievalResult) -> dict:
         "cohort": c.cohort,
         "degraded": c.degraded,
         "fallbacks": list(c.fallbacks),
+        "unavailable": list(unavailable),
     }
 
 
@@ -160,6 +167,7 @@ def search_payload(
     include_sources: bool,
     doc_type: str | None = None,
     chars: int = SNIPPET_CHARS,
+    unavailable: tuple[str, ...] = (),
 ) -> dict:
     """The whole envelope: passages, orientation, capability, applied filters, index_version.
 
@@ -171,7 +179,7 @@ def search_payload(
         "query": query,
         "passages": [passage(h, scope=scope, chars=chars) for h in result.passages],
         "outline_records": [outline_record(h, scope=scope, chars=chars) for h in result.outlines],
-        "retrieval_mode": retrieval_mode(result),
+        "retrieval_mode": retrieval_mode(result, unavailable=unavailable),
         "filters": applied_filters(statuses, include_sources=include_sources, doc_type=doc_type),
         "index_version": result.index_version,
     }

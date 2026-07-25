@@ -699,10 +699,21 @@ def cmd_query(args: argparse.Namespace) -> int:
     from substrate.embed.engine import OllamaEmbedder
     from substrate.retrieve.retriever import retrieve
 
-    from substrate import render
+    from substrate import render, stack as _stack
 
-    cand = OllamaEmbedder()
-    embedder = None if args.no_vector else (cand if cand.available() else None)
+    # Two wirings. The default is the lean lookup config this command has always run (embedder
+    # only, no generator). `--full-stack` builds the SAME arms the MCP server builds, through the
+    # same function — that shared builder is what makes Doc 3a §6's CLI/MCP equivalence a real
+    # test rather than two hand-wired stacks that agree on the day they were written.
+    if args.full_stack:
+        st = _stack.build(lexical_only=args.no_vector)
+        embedder, expander, reranker = st.embedder, st.expander, st.reranker
+        unavailable = st.unavailable
+    else:
+        cand = OllamaEmbedder()
+        embedder = None if args.no_vector else (cand if cand.available() else None)
+        expander = reranker = None
+        unavailable = ()
     statuses = _resolve_statuses(args)
     db_path = _resolve_db(args)
 
@@ -730,7 +741,7 @@ def cmd_query(args: argparse.Namespace) -> int:
         else:
             result = retrieve(
                 store, args.text, k=args.k, document_class=args.doc_class,
-                statuses=statuses, embedder=embedder,
+                statuses=statuses, embedder=embedder, expander=expander, reranker=reranker,
                 include_sources=args.include_sources, with_outlines=n_outlines,
             )
             hits, cap, index_version = result.passages, result.capability, result.index_version
@@ -743,6 +754,7 @@ def cmd_query(args: argparse.Namespace) -> int:
                         result, scope=args.scope or db_path, query=args.text,
                         statuses=statuses, include_sources=args.include_sources,
                         doc_type=args.doc_class, chars=args.chars,
+                        unavailable=unavailable,
                     ),
                     indent=2, ensure_ascii=False,
                 ))
@@ -1129,6 +1141,9 @@ def main(argv: list[str] | None = None) -> int:
     qry.add_argument("--chars", type=int, default=200)
     qry.add_argument("--expand", action="store_true")
     qry.add_argument("--no-vector", action="store_true")
+    qry.add_argument("--full-stack", action="store_true",
+                     help="wire HyDE + reranker as well as the embedder — the measured stack the "
+                          "MCP server runs. Default is the lean embedder-only lookup config")
     qry.add_argument("--json", action="store_true",
                      help="emit the structured result envelope (the same one the MCP server "
                           "returns) instead of the human read-out")
