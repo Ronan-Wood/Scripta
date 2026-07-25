@@ -1,211 +1,118 @@
-# Session handoff — doc_type (§6a) + WRITING.md, then the real-content pilot
+# Session handoff — Doc 2 is built and migrated; next is the MCP client
 
-Written 2026-07-24 mid-task, for a fresh session after a restart. Branch `substrate-engine`, work
-in `substrate/`. Read `VAULT-SPIKE-READOUT.md`, `HANDOFF.md`, `PRINCIPLES.md`, `docs/README.md` (which points at Doc 2, now in core-vault), and
-`vaults/core-vault/00-operator/WRITING.md` for background.
+Written 2026-07-24 at the end of a long session. Branch `substrate-engine`, work in `substrate/`.
+Read `PRINCIPLES.md` first (three laws, all earned this session), then this. `PILOT-READOUT.md` has
+the real-content pilot and migration findings in full; `HANDOFF.md` has the engine's history.
 
 ## Bottom line
 
-**Phases 1 and 2 are both COMPLETE.** Read `PILOT-READOUT.md` first — it supersedes the "NEXT"
-section below, which is kept for the record of what was planned.
+**Doc 2 is built and the real content is migrated.** The engine reads Doc-2 vaults with a
+four-field spine, seven vaults exist holding real operator and project knowledge, and the spec
+family now lives in the vault it describes. 189 assertions green, schema **v6**, eval signature
+`4a4f765c9ad75dc9` unmoved throughout — proven twice at every bump (raw v2 read-only, and a fresh
+reconcile of the same markdown).
 
-State at 2026-07-24 end of session (all uncommitted):
-- **Phase 1** — Doc-2 §6a `doc_type` + WRITING.md. Built, crosschecked, adversary-reviewed.
-- **Phase 2** — the real-content pilot: `vaults/pilot-core-vault` + `vaults/scripta-vault`,
-  12 real notes from ClaudeVault. Composed clean; all axes proven by query. See `PILOT-READOUT.md`.
-- **Three defects found and fixed after the pilot:**
-  - **F8 / A22** — `compose` reported PASS on a corpus containing a note `verify` fails. The
-    per-document A-series now runs on the vault path, split fatal (loss/corruption) vs reported
-    (quality), defaulting to fatal.
-  - **F9** — `reference_domains` was swallowed into `[reference_pins]` by TOML table scoping, in
-    BOTH manifests, shipped since the Phase-1 scaffold. Fixed.
-  - **§6b confidence axis** — schema **v5**. `status` says whether a note is live; `confidence`
-    (proposed/inferred/stated/verified, absent → `unstated`) says why its claims should be
-    believed. Without it an unbuilt design retrieved reading as settled. A23 asserts it.
-- **179 tests green** across 16 files. Eval signature `4a4f765c9ad75dc9` unmoved, proven twice
-  (raw v2 read-only, and a fresh v5 reconcile of the same markdown).
-- **Crosscheck on the confidence axis: COMPLETE**, 7 findings applied (see `PILOT-READOUT.md` §10).
-  Two were vault-refusing landmines from promoting PDF-era assertions to gates over markdown
-  (A1/A1b counting exclamation marks as hyphen artifacts; A17's denominator being the slice's max
-  page anchor). One was the v5 bump silently emptying any existing index on `query`. One was
-  `emit.py` not round-tripping the new axes, which laundered confidence on every regeneration
-  cycle — applied to `emit.py`'s `frontmatter()` ONLY, a different function from the in-flight
-  `_repair_blocks` work, so the two do not overlap.
-- **A-series-vs-markdown sweep: DONE, before migration** (the sequencing matters — a refusal during
-  a supervised migration is ambiguous otherwise). 29 fixtures of legitimate authored markdown,
-  including every shape `reader.py` documents as "not structurally recognised" (setext headings,
-  indented code, nested lists, wrapped list items, borderless tables) and real Obsidian idioms
-  (callouts, task lists, wikilinks, footnotes, math, HTML, emoji headings, `---` dividers).
-  **Result: the family had exactly two members, both already fixed** (A1/A1b, A17). Nothing else
-  fires. A18 — the content-LOSS gate — fired on nothing, so the reader's "content preserved,
-  hierarchy lost" promise holds under test. The only fires were quality-class WARNINGS on a
-  3000-char unbreakable token, which is correct behaviour.
-- **Both A22 regression tests are mutation-verified.** The first A17 fixture was vacuous (span 11%
-  vs a 30% gate — it passed with AND without the fix); it now asserts it trips the pre-fix
-  predicate before asserting the fix handles it. See PRINCIPLES.md "A second law".
-- **The principle is named** in `PRINCIPLES.md`: promoting a check suite to a gate is an audit of
-  every check in it, and should be expected to yield false-rejects proportional to how long the
-  checks ran un-enforced.
-- **VAULTS MOVED OUT OF THE REPO.** `substrate/vaults/` now holds only the EXAMPLE pair
-  (`demo-core-vault` + `demo-vault`, tracked, synthetic, also the regression fixture). The real
-  vaults are at `~/OneDrive/vaults/core-vault` and `~/OneDrive/vaults/scripta-vault`, untracked and **not** covered by
-  `vault-sync.sh` (its allowlist names only ClaudeVault and PropertyPrismVault, and it skips
-  non-git dirs). No manifest edit was needed — a bare `inherits` name resolves against the project
-  vault's parent. Compose with `compose ~/OneDrive/vaults/scripta-vault --db out-vault/real.db`.
-  **Follow-up:** the real vaults are unversioned; `git init` + remote + sync-allowlist is the
-  obvious next step, and until then a bad edit has no undo.
-- **Open, decided but NOT built:** don't embed superseded notes (exclude from the vector arm, keep
-  in FTS — "explicitly query the archive" stays supported; the content-addressed cache makes a
-  later on-demand embed a clean cache miss). And `_read_manifest` should validate all four Doc-2 §2
-  contract keys, not just `name`/`inherits` — its own small unit, next.
+**Next: an MCP server over the engine**, so the core is usable while the frontend is separate work.
+There is an uncommitted sketch at `substrate/substrate/mcp/` — a strawman, not a decision. A Doc 3a
+defining it is being written.
 
-## What shipped this session (Phase 1 — the Doc-2 mid-build changelog)
+## Where things live now (not guessable from the repo)
 
-The user handed a mid-build changelog with three deltas; all implemented:
+| | where | what |
+|---|---|---|
+| **real vaults** | `~/OneDrive/vaults/` | core-vault (46) · scripta (17) · cbre (11) · prism (6) · research (6) · school (4) · clovis (3) |
+| **example pair** | `substrate/vaults/` | `demo-core-vault` + `demo-vault` — synthetic, tracked, **the engine's regression fixture** |
+| **the spec family** | `~/OneDrive/vaults/core-vault/00-operator/specs/` | Doc 1, Doc 2, the LLM-Wiki adoption spec. `substrate/docs/README.md` is a pointer, never a copy |
+| **derived indexes** | `substrate/out-vault/*.db` | gitignored, disposable, one per composed scope |
+| **eval corpus** | `substrate/out/` | raw **v2**, 1811 chunks — read RAW read-only, NEVER via engine code |
+| source vault | `~/vaults/ClaudeVault/` | untouched and still live; the migration COPIED |
 
-1. **`doc_type` spine field** (Diátaxis: `decision` / `explanation` / `reference` / `how-to`),
-   plumbed as an exact parallel to `status`:
-   - `store/schema.py` — **v3→v4**: `documents.doc_type` + `chunks.doc_type NOT NULL DEFAULT
-     'reference'` + indexes. doc_type is a new COLUMN, never in the `(chunk_id, text_with_path)` FTS
-     signature → eval unmoved.
-   - `models.py` `Document.doc_type`; `markdown/reader.py` parses it (pure); `spine.py`
-     `DOC_TYPES` + `DEFAULT_DOC_TYPE='reference'` + `validate_doc_type` (lenient standalone→reference,
-     strict vault path refuses absent, unknown→refuse).
-   - `markdown/ingest.py` `override_doc_type` (from `_meta.md`), validates, writes to run.json spine +
-     `IngestResult.doc_type`; `store/reconcile.py` reads it (pre-doc_type corpus → None → 'reference').
-   - `store/index_store.py` upsert denormalizes onto both tables; `Hit.doc_type` + `_row_to_hit`;
-     **A21** `assert_doc_type_valid` (validity + chunk↔doc denorm; no partition — every doc_type is
-     retrievable, unlike status); `DocTypeError`.
-   - `vault.py` `NoteRef.override_doc_type` + `_source_meta` + `_discover_notes`; **`WRITING.md` added
-     to `SKIP_NAMES`** (read-wholesale standard, not chunked).
-   - `cli.py` compose (override + A21 assert + prints), verify (A19 doc_type, lenient if absent),
-     query (surfaces `doc_type` on the hit).
-   - Server-side doc_type FILTERING **deferred** (carried + surfaced like domains; no gold cases).
-2. **`WRITING.md`** at `vaults/core-vault/00-operator/WRITING.md` — Google devdocs baseline
-   (referenced), 8 override rules, 4 doc_type templates, 10-term glossary.
-3. **Glossary reserved-word check** (`status` vs `capability`): **verified NO-OP** — `status` in
-   `retrieve/` is only the note-lifecycle filter; stack-state is already `capability`. Nothing to
-   rename.
+Compose: `compose ~/OneDrive/vaults/<x>-vault --clean --index-root out-vault/<x>-index --db out-vault/<x>.db`.
+core-vault has no manifest (it is the root), so it is only ever composed as part of a project scope.
 
-Plus: `substrate/CLAUDE.md` (points sessions at WRITING.md; user chose "substrate for now, but the
-rules apply to the vault content — that's the bigger thing"); scaffold notes + templates + `_meta.md`
-carry `doc_type`; `tests/test_doc_type.py` + doc_type tests in `tests/test_spine.py`.
+## The spine — four axes, and why each exists
 
-## Verification done (all passing)
+- **`status`** — the note lifecycle. active/complete included by default; archived/superseded
+  excluded, with the supersession link surfacing via the note that replaced it.
+- **`doc_type`** (§6a) — decision/explanation/reference/how-to. Refused when absent on the vault
+  path, so a note blending two jobs cannot hide behind a default.
+- **`confidence`** (§6b) — **settledness, independent of status**: proposed/inferred/stated/verified,
+  absent → `unstated`. A note can be `active` AND `proposed`. It is a **kind, not a ladder** —
+  `verified` does not outrank `stated`, because a measured number and a ratified decision are
+  different kinds of true, and encoding an order would make retrieval prefer measurements over
+  decisions. Two rules learned the hard way: **an inventory is `stated`, not `verified`** (it is
+  confirmed against reality only when written, so its failure mode is silent staleness), and when
+  the evidence is mixed, **choose the weaker value**.
+- **`class: conversation`** — a SOURCE, not a note. Excluded from default retrieval on a separate
+  axis from status, reachable via `--include-sources`. **Superseded is excluded because it was
+  replaced (nobody wants it); a conversation is excluded because retrieval BY PASSAGE misrepresents
+  it (the whole document is still wanted, on ask).** Same mechanism, opposite reasons — which is why
+  they get different answers on embedding, and must not be collapsed into one rule.
 
-- **154 tests green** — `for t in tests/test_*.py; do uv run python "$t"; done`.
-- **compose** — `uv run python -m substrate.cli compose vaults/demo-vault --clean` → A-compose,
-  A20, **A21 PASS** (by doc_type: decision 2 / explanation 4 / reference 3), schema v4.
-- **doc_type surfaces on hits** (`↳ status=… · doc_type=… · domains=…`); supersession link + inheritance intact.
-- **EVAL UNMOVED (proven)** — `uv run python <scratchpad>/eval_safety.py`: raw v2 `out/substrate.db`
-  reproduces `4a4f765c9ad75dc9`; fresh v4 reconcile of `out/` yields the identical signature; v2==v4
-  under all 42 candidate recipes at 1811 chunks. Recipe: sort by chunk_id, `cid\x00text_with_path`
-  per row, `\n`-joined, `sha256[:16]`. (The scratchpad is session-specific and gone after restart —
-  re-derive with the recipe if needed; read `out/substrate.db` RAW read-only, NEVER via engine code.)
-- **Standalone `ingest-md`** — absent doc_type → `reference` (exit 0); unknown → `FATAL (spine)`;
-  `verify` shows `A19 spine doc_type valid PASS`.
-- **Lint** — my edits are clean. There are **14 PRE-EXISTING lint errors** (reader.py E702 semicolons
-  168/181/194/222, chunker B905, embed B904, test B011) present at committed HEAD — NOT mine, NOT to
-  be fixed here (the spike readout's "lint clean" claim was inaccurate; flag, don't fix).
+Migration convention: a migrated note keeps its originals under `source_status:` /
+`source_confidence:`, which the engine never reads, so every remap stays auditable.
 
-## Crosscheck (Phase 1 change set) — COMPLETE
+## Assertions
 
-Three fresh-context reviewers (correctness / architecture / security), report-only, diff-scoped.
-**Verdict: the change set is sound** — all agreed no injection (doc_type always parameterized),
-validation airtight (runs before any write on both ingest paths), eval unmoved, INSERT counts correct
-(documents 27/27, chunks 28/28), A21 SQL mirrors A20. No blocker/important+high finding.
+A1/A1b (PDF path only) · A12 · A13 (quality-class, warns) · A14 · A17 (report-only on markdown) ·
+A18 loss gate · A19 per-doc spine · **A20** status partition · **A21** doc_type · **A22** per-note
+sweep at compose · **A23** confidence · A-compose.
 
-**APPLIED (1):** the `assert_doc_type_valid` docstring falsely claimed a NULL chunk is caught by the
-`NOT IN` test (SQL `NULL NOT IN (...)` is NULL, not true) — flagged by BOTH security + architecture,
-high confidence, my code. Corrected to attribute NULL-prevention to the `NOT NULL DEFAULT` schema +
-the drift check. Zero behavior change. (index_store.py `assert_doc_type_valid`.)
+**A22 splits fatal from reported, defaulting to FATAL:** loss/corruption refuses the scope; quality
+failures are named against the note that produced them.
 
-**THE ONE DECISION FOR THE USER — A1 (important, medium confidence, single reviewer → below auto-apply
-bar):** doc_type is denormalized onto `chunks` (the *status* idiom) but is currently only *surfaced*,
-never *filtered* — which is the *domains* idiom (documents-only, surfaced via `d.domains` join). The
-chunks column + `DEFAULT` + `idx_chunks_doc_type` + INSERT plumbing + the drift half of A21 exist to
-support a chunk-level WHERE filter that was **deferred**. Reviewer: carry it document-level like domains,
-surface via `d.doc_type`, drop the chunk column + drift check; re-add them when the filter lands.
-**My recommendation: KEEP the current (chunk-denormalized) shape.** Rationale: doc_type is a hard
-FILTER axis per the changelog's own motivation ("a query can ask for the reference and not the
-explanation") — more like `status` than like `domains` (whose filtering is deep-deferred soft-weighting
-needing cross-domain gold cases). The v4 bump is happening now, so the column is free now vs. a v5
-rebuild later; the filter then lands as a one-line `_add_doc_type_filter` mirroring `_add_status_filter`;
-and A21 mirrors A20 cheaply. It's a doctrine-consistency-vs-YAGNI call — surface it explicitly, let the
-user pick. NOT a blocker for Phase 2 (doc_type surfaces on hits either way).
+## Open, in the order I would take them
 
-**REPORTED, not applied (all nit/minor, below bar — triage in /adversary or fold into a cleanup):**
-- **N-C1 (correctness nit):** `require_status` now also gates `validate_doc_type`; name/docstring
-  under-describe it. Rename `require_status`→`require_spine` (ripples to 2 cli.py call sites) or add a
-  docstring line.
-- **S1 (security nit):** bare `cmd_index` (reconcile→upsert) runs NO A21/A20 re-check, so a hand-edited
-  `run.json` doc_type reaches the DB unvalidated. **Symmetric with status** (index skips A20 too), no
-  injection, and anyone who can write run.json already controls chunks.jsonl (indexed verbatim). Design
-  treats `out/` as trusted; `compose` is the strict gate. Leave as-is or add the asserts to `cmd_index`.
-- **S3 (security nit):** `WRITING.md` in `SKIP_NAMES` is a basename match anywhere in the tree, so any
-  file named `WRITING.md` in any subdir is skipped (can only HIDE a note, never inject). Consistent with
-  every other SKIP_NAMES entry. Root-only match or document it.
-- **A3 (arch minor):** `DEFAULT_DOC_TYPE` is defined but used once; `"reference"` is inlined at
-  index_store.py:61/143/198 and the constant lacks `: str`. Either use the constant at those sites or
-  drop it (status inlines `"active"` with no constant).
-- **A4 (arch minor, low):** the validity+drift scan is now near-duplicated between `assert_status_partition`
-  and `assert_doc_type_valid` (~15 lines). Extract a helper, OR keep explicit (the repo's audits are
-  deliberately self-narrating — reviewer's own counter).
-- **A5 (arch nit, low):** scaffold `engine-boundary-{current,old}.md` are labeled `doc_type: decision`
-  but written as explanation prose (don't use WRITING.md's decision/why/rejected/consequence template).
-  The label is defensible (superseded boundary claim = a decision); reshape to the template OR relabel
-  `explanation`. Address when writing the REAL decision notes in Phase 2.
+1. **The MCP client.** Doc 3a pending. Sketch at `substrate/substrate/mcp/` (uncommitted): stdio
+   JSON-RPC 2.0, stdlib only, `--db` per composed index, three tools (`retrieve` / `expand` /
+   `overview`). The property worth keeping whatever else changes: **the result contract crosses the
+   boundary intact** — every passage carries status/doc_type/confidence/domains/vault/citation/
+   supersedes, every response carries the capability envelope + `index_version`. A model that cannot
+   see `confidence=proposed` reads an unbuilt design as settled.
+2. **Doc 2's text is behind its own implementation.** §6 documents `status` and stops; `doc_type`,
+   `confidence` and the conversation class appear nowhere in the body. The spec in core-vault
+   describes a system with one spine axis while the engine enforces three plus a source class.
+3. **`reference_pins` is the last unimplemented §2 feature.** Parsed and shape-validated, acted on
+   by nothing; everything else Doc 2 leaves unbuilt it explicitly defers. Open fork: apply the pin
+   at compose (index only the pinned version) or at query (filter, mirroring status — which the
+   "superseded-for-this-context" framing argues for). **Prerequisite:** only one versioned source
+   exists, so there is nothing to pin *against* — building it now yields a feature whose test cannot
+   distinguish working from no-op.
+4. **The cutover.** `~/.claude/CLAUDE.md` still points every session at ClaudeVault, so the migrated
+   vaults are complete and read by nothing while ClaudeVault keeps accruing. Deliberately waiting on
+   the project being usable — which is what the MCP unblocks.
+5. **Deferred, with reasons:** don't-embed-superseded (cost, not correctness — and the conversation
+   carve-out is recorded as an explicit exception ON that work, so a later `WHERE status NOT IN
+   (...)` cannot sweep it up); domain soft-weighting (eval-gated, needs cross-domain gold cases);
+   the index watcher; the weekly lint (now unblocked, migration is done).
+6. **Housekeeping:** A23 duplicates A21; raw tuples where the repo models records as dataclasses;
+   `document_checks` is assertion policy living in `cli.py`; `unstated` is declarable despite a
+   comment saying it is not.
 
-Disposition rule (crosscheck): apply only blocker/important + high-confidence(or ≥2 reviewers) + in-scope;
-report the rest. `/adversary` (the final gate) re-checks the full diff diff-only before presenting.
+## Constraints that bite
 
-## NEXT — Phase 2: the supervised real-content pilot (track A)
+- **EVAL MUST NOT MOVE** — `4a4f765c9ad75dc9`, 1811 chunks. Re-check after any schema change.
+  `out/substrate.db` is raw **v2**: open it read-only with `sqlite3` and a `mode=ro` URI, NEVER
+  through engine code (`migrate()` drops and rebuilds on a version mismatch).
+- Schema is **v6**, drop-and-rebuild. Read paths refuse a rebuilt-empty index rather than answering
+  `(no results)` from it.
+- **14 pre-existing lint errors** at committed HEAD (reader.py E702 ×4, embed/engine.py ×3, chunker
+  B905, tests). Not mine, not to be fixed opportunistically.
+- Serial model work only; weights on `/Volumes/ExtremeSSD`.
+- Discipline: audit → review → implement → verify. `/crosscheck` after implementing (auto-applies
+  what clears its bar), `/adversary` last before presenting (report-only). **Refuse rather than
+  mislead.**
+- **Do not `git add -A` over the tree.** It swept the operator's in-flight repaired-samples work
+  into an unrelated commit this session; the history had to be rebuilt to separate it. Stage
+  explicit paths.
 
-Goal: does the Doc-2 structure survive REAL content (real frontmatter, real domains, a real
-superseded-vs-preserved call) that synthetic notes can't test? Source vault: **ClaudeVault**
-(`~/vaults/ClaudeVault/`, read from disk — the Obsidian REST API/MCP is down; filesystem works).
-Supervised, hand-picked 5–10 notes, NOT automated migration.
+## What this session shipped
 
-Pilot layout (build under `substrate/vaults/`, derived index in `out-vault/`, NEVER `out/`):
-- **`pilot-core-vault`** — `00-operator/` (real operator notes + `WRITING.md`) + `10-reference/` a
-  real multi-domain reference copied from `out/ddia-2e` (domains `[software-dev, distributed-systems,
-  databases]`, doc_type `reference`).
-- **`scripta-vault`** (Tier 3, inherits pilot-core-vault) — `04-synthesis/` holding the real
-  **Model Engine superseded lineage** from ClaudeVault `02 - Projects/CallTranscriber/`:
-  `Model Engine Design Panel (raw)` = **superseded** (superseded_by the synthesis, doc_type decision);
-  `Local Model Engine Design` (synthesis) = **active** (supersedes the raw panel, doc_type decision);
-  `Decisions - Model Strategy` = active/complete, doc_type decision. NOTE: synthesis→decisions is
-  *elaboration, not supersession* (both stay active) — a real §6 judgment.
+Seven commits on `substrate-engine`, nothing pushed: the `doc_type` + `confidence` axes (v3→v5);
+the example-pair rename + manifest TOML fix; the writing standard + second law + pilot read-out;
+the conversation class + declared-values guard; the spec-family move; §3b raw provenance + manifest
+validation (v6); and the operator's own repaired-samples work as its own commit.
 
-Real-content frictions already identified (the pilot's payload — verify + quantify, then report):
-1. ClaudeVault `00 - User/` notes use **`status: verified`** — NOT one of Doc-2's four → straight move
-   is refused by `validate_status`; needs a real remap (verified→active/complete).
-2. The raw-panel note (judge scores + 2 designs + synthesis) and the CallTranscriber Index (running
-   log) **blend jobs** → WRITING.md rule 8 violations → migration is a rewrite/split, not a copy.
-3. ClaudeVault frontmatter is `type:`/`confidence:`/`sources:` and carries **no domains** → schema map
-   + domain assignment per note.
-4. The superseded chain nuance in #NEXT above (supersession vs elaboration).
-
-Steps: hand-build the notes (WRITING.md-compliant where you rewrite; where you preserve real content
-as-is, FLAG the WRITING.md gaps in the read-out rather than silently fixing) → `compose vaults/scripta-vault
---clean` (→ `out-vault/index.db`) → queries proving inheritance/supersession/status+doc_type axes →
-re-confirm eval signature `4a4f765c9ad75dc9` → short read-out with the **bank-vs-migrate vs. fix-an-
-engine-gap** recommendation.
-
-## Then — the final gate
-
-`/adversary` on the FULL diff (Phase 1 engine + Phase 2 pilot), diff-only, report-only — the last gate
-before presenting. Then present the read-out + diff for the user's review.
-
-## Constraints / gotchas (load-bearing)
-
-- **DO NOT TOUCH** the user's uncommitted in-flight work: `substrate/markdown/emit.py`,
-  `substrate/report/review.py`, `tests/test_repaired_samples.py` (their "repaired words → long words"
-  work). doc_type deliberately routes around emit.py.
-- **EVAL MUST NOT MOVE** (0.698/0.593; semantic_mrr=0.6985; signature `4a4f765c9ad75dc9`). Re-check
-  after any schema/scope change. Read `out/substrate.db` RAW read-only (it's raw **v2**, 1811 chunks) —
-  NEVER open it with engine code (migrate() drops+rebuilds). Derived vault index → `out-vault/`, never `out/`.
-- Schema is now **v5** (drop-and-rebuild). First index/eval against `out/substrate.db` rebuilds it.
-- **WRITING.md governs the vault content itself** (the bigger thing per the user), not just CC sessions.
-- Discipline: audit → review → implement → verify. `/crosscheck` after implementing, `/adversary` last.
-  Serial model work only; weights on `/Volumes/ExtremeSSD`. Refuse rather than mislead.
+Migration: **55 of 57 notes**, supervised note-by-note. Three deliberately not migrated (root
+`MEMORY.md` indexes the dead structure; the Conversations folder README is navigation for a folder
+that no longer exists; the root README was rewritten as `curate-the-vault` rather than copied).
