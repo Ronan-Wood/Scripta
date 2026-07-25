@@ -252,13 +252,13 @@ def _discover_notes(vault: VaultRef) -> list[NoteRef]:
     return notes
 
 
-def resolve_scope(project_vault: Path) -> Scope:
-    """Read a project vault's manifest, resolve its inheritance, and compose the note set to index.
+def resolve_vaults(project_vault: Path) -> tuple[VaultRef, ...]:
+    """The composed vault chain, roots first — inheritance only, no note discovery.
 
-    Refuses (VaultError) rather than mislead: a missing manifest, a malformed one, an inherited
-    vault that does not exist, a scope that composes zero notes, or a doc_id that two notes in the
-    composed scope both claim (reconcile keys the index on doc_id — a collision would silently make
-    one note overwrite the other).
+    Split out so a caller that only needs "what does this scope compose" (scope discovery, a
+    freshness check) does not pay for walking every note, and — more importantly — so it reads the
+    SAME resolution the compose path does. A second, cheaper implementation of "which vaults" is
+    how a discovery surface comes to disagree with what is actually indexed.
     """
     project_vault = project_vault.expanduser().resolve()
     if not (project_vault / MANIFEST).is_file():
@@ -288,6 +288,19 @@ def resolve_scope(project_vault: Path) -> Scope:
         ordered.append(VaultRef(name=vault_dir.name, path=vault_dir))
 
     visit(project_vault, ())
+    return tuple(ordered)
+
+
+def resolve_scope(project_vault: Path) -> Scope:
+    """Read a project vault's manifest, resolve its inheritance, and compose the note set to index.
+
+    Refuses (VaultError) rather than mislead: a missing manifest, a malformed one, an inherited
+    vault that does not exist, a scope that composes zero notes, or a doc_id that two notes in the
+    composed scope both claim (reconcile keys the index on doc_id — a collision would silently make
+    one note overwrite the other).
+    """
+    project_vault = project_vault.expanduser().resolve()
+    ordered = list(resolve_vaults(project_vault))
     project_ref = next(v for v in ordered if v.path == project_vault)
 
     notes: list[NoteRef] = []

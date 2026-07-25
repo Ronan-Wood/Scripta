@@ -808,6 +808,75 @@ def cmd_query(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    """What a composed scope holds and whether it can be trusted — the CLI face of the MCP
+    `status` tool, over the same engine functions so the two cannot answer differently."""
+    from substrate import introspect, stack as _stack
+    from substrate.store.index_store import IndexStore
+
+    if not args.scope:
+        payload = introspect.scopes_payload(args.registry)
+        if args.json:
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 0
+        if not payload["scopes"]:
+            print(f"  no scopes registered in {payload['registry']} — run `substrate compose`")
+            return 0
+        print(f"  registry: {payload['registry']}")
+        for row in payload["scopes"]:
+            src = ", ".join(row["sources"]) if row["sources"] else f"UNRESOLVED ({row['error']})"
+            missing = "" if row["index_present"] else "  ·  INDEX MISSING"
+            print(f"  {row['scope']:<12} <- {src}{missing}")
+            print(f"  {'':<12}    {row['db']}  ·  composed {row['composed']}")
+        return 0
+
+    try:
+        entry = scopes.resolve(args.scope, args.registry)
+    except scopes.ScopeError as e:
+        print(f"FATAL (scope): {e}", file=sys.stderr)
+        return 2
+
+    st = _stack.build(lexical_only=not args.full_stack)
+    with IndexStore(str(entry.db)) as store:
+        if refuse_if_rebuilt(store, repopulates=False):
+            return 2
+        payload = introspect.status_payload(store, entry, stack=st)
+
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"  scope {payload['scope']!r}  ·  {payload['vault']}")
+    print(f"  {payload['documents']} documents · {payload['passages']} passages · "
+          f"{payload['outlines']} outlines  ·  index {payload['index_version']} "
+          f"(schema v{payload['schema_version']})")
+    print(f"  by vault {payload['by_vault']} · by tier {payload['by_tier']}")
+    print(f"  by status {payload['by_status']} · by confidence {payload['by_confidence']}")
+    v = payload["vectors"]
+    if v is None:
+        print("  vectors: no embedder wired (--full-stack to check coverage)")
+    elif v["complete"]:
+        print(f"  vectors: {v['stored']}/{v['chunks']} under {v['model']}  ·  complete")
+    else:
+        print(f"  vectors: {v['stored']}/{v['chunks']} under {v['model']}  ·  INCOMPLETE — "
+              f"{v['note']}")
+    d = payload["drift"]
+    if "error" in d:
+        print(f"  freshness: UNCHECKABLE — {d['error']}")
+    elif not d["stale"]:
+        print(f"  freshness: current  ·  {d['checked']} note(s) verified"
+              + (f", {d['unverifiable']} unverifiable (declared source digest)"
+                 if d["unverifiable"] else ""))
+    else:
+        print(f"  freshness: STALE  ·  {len(d['changed'])} changed · {len(d['added'])} "
+              f"not indexed · {len(d['removed'])} removed — re-run `substrate compose`")
+        for label, paths in (("changed", d["changed"]), ("not indexed", d["added"]),
+                             ("removed", d["removed"])):
+            for p in paths[:5]:
+                print(f"      {label}: {p}")
+    return 0
+
+
 def cmd_eval(args: argparse.Namespace) -> int:
     from substrate.eval.runner import GoldError, report, run
 
@@ -1158,6 +1227,18 @@ def main(argv: list[str] | None = None) -> int:
     qry.add_argument("--all-status", action="store_true",
                      help="no status filter — includes superseded (administrative scan)")
     qry.set_defaults(func=cmd_query)
+
+    stt = sub.add_parser("status",
+                         help="what a composed scope holds, whether its vectors are complete, "
+                              "and whether the vault has changed since it was indexed")
+    stt.add_argument("--scope", default=None,
+                     help="the scope to inspect; omit to list every registered scope")
+    stt.add_argument("--registry", default=None)
+    stt.add_argument("--full-stack", action="store_true",
+                     help="wire the measured stack, so vector coverage is checked against the "
+                          "embedder a real query would use")
+    stt.add_argument("--json", action="store_true")
+    stt.set_defaults(func=cmd_status)
 
     ev = sub.add_parser("eval")
     ev.add_argument("--db", default="out/substrate.db")
