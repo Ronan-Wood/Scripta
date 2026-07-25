@@ -1,5 +1,9 @@
 # The Boundary Principle
 
+> **This document is also the operator note `boundary-principle` in core-vault's
+> `00-operator/patterns/`.** The vault copy is the migrated home; this file stays as the
+> repo's working doc. They are byte-identical below the frontmatter — keep them so.
+
 > **Information that exists but does not cross the boundary to its consumer reads as
 > absence — and absence reads as fine.**
 
@@ -100,3 +104,57 @@ Before any output crosses a boundary, ask:
 1. What did the producer know that the consumer will not?
 2. Would the output look identical if that condition were absent?
 3. If yes to (2) — attach it as a field, or expect to retract the result later.
+
+---
+
+## A second law: promoting a check suite to a gate is an audit of every check in it
+
+The Boundary Principle above is about information that fails to cross. This is its inverse — a
+check that never *ran* against the thing it now judges.
+
+**An assertion that is not a gate is a suggestion, and suggestions accumulate miscalibration
+silently.** Nothing forces a non-gating check to be right; if it is wrong, it prints a row nobody
+acts on. The moment it becomes a gate, every latent calibration error becomes a refusal — all at
+once, proportional to how long the check ran un-enforced.
+
+So promoting a suite to gate status is not a safety improvement with no downside. It is an audit of
+the entire suite, executed in one step, and the correct expectation is a crop of false-rejects.
+
+**Observed.** The per-document A-series lived only in `verify`, which the vault path never called
+(F8). Wiring it into `compose` as **A22** immediately exposed two checks that had been wrong on the
+markdown path since markdown ingestion existed:
+
+| check | calibrated for | what it did on markdown |
+|---|---|---|
+| **A1 hyphen residue** | Docling renders a soft hyphen as `!` | counted ordinary exclamations — `"Wow! it works. No! and then. Yes! but only sometimes."` scores 3 against a gate of 2, so three such sentences in one note refused an entire composed vault |
+| **A17 stale ancestor** | a book's page count as the denominator | for a slice, the denominator is the max page anchor *in the slice* — a faithful Chapter-1 excerpt computes an implausible share, while the same excerpt from page 280 passes only because the denominator is inflated |
+
+Both were latent for as long as the markdown path existed, and both were invisible precisely
+because nothing gated on them.
+
+### The direction of failure is the consolation
+
+These fail **closed**: a false-reject is loud. The dangerous direction — a check calibrated so
+loosely that it passes real damage — is the one this document's five incidents are about. That
+makes this family annoying rather than dangerous, but it does mean a composed vault will refuse
+legitimate content until the suite is swept.
+
+### The sequencing rule that follows
+
+**Sweep before the migration, not during it.** Hitting these refusals mid-migration makes every
+refusal ambiguous — is the note wrong, or the assertion? Sweeping first means every refusal during
+migration is signal.
+
+### And the sweep needs its own guard
+
+A sweep proves nothing unless its fixtures reach the state the check objects to. Writing the A17
+regression test, the first fixture produced `span = 11%` against a `> 30%` gate: it passed with the
+fix and *also* without it. A test that cannot fail is worse than no test, because it manufactures
+confidence. The corrected fixture asserts it trips the pre-fix predicate before asserting the fix
+handles it, and both regression tests were then verified by mutation — revert the fix, watch the
+test fail, restore it.
+
+That is the same defect as the tautological A20 check this project already retracted once
+(`EXCLUDED = STATUSES − INCLUDED`, which restated its own definition). A check and a test are the
+same kind of object: both are worthless if they cannot distinguish the world where they hold from
+the world where they do not.
