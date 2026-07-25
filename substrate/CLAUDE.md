@@ -36,4 +36,4 @@ Non-negotiables from that file:
 `audit → review → implement → verify`. `/crosscheck` right after implementing (auto-applies what
 clears its bar), `/adversary` as the last gate before presenting (report-only). Refuse rather than
 mislead — the engine hard-fails on an incomplete/silently-narrowed state rather than returning a
-plausible-but-wrong result. See `HANDOFF.md`, `PRINCIPLES.md`, `VAULT-SPIKE-READOUT.md`.
+plausible-but-wrong result. See `HANDOFF.md`, `PRINCIPLES.md`, `VAULT-SPIKE-READOUT.md`, and `docs/README.md` for where the structural spec lives (core-vault, not here).

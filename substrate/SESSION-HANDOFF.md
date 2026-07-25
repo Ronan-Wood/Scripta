@@ -1,7 +1,7 @@
 # Session handoff — doc_type (§6a) + WRITING.md, then the real-content pilot
 
 Written 2026-07-24 mid-task, for a fresh session after a restart. Branch `substrate-engine`, work
-in `substrate/`. Read `VAULT-SPIKE-READOUT.md`, `HANDOFF.md`, `PRINCIPLES.md`, `doc2.md`, and
+in `substrate/`. Read `VAULT-SPIKE-READOUT.md`, `HANDOFF.md`, `PRINCIPLES.md`, `docs/README.md` (which points at Doc 2, now in core-vault), and
 `vaults/core-vault/00-operator/WRITING.md` for background.
 
 ## Bottom line
