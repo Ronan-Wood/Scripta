@@ -91,11 +91,18 @@ class NoteRef:
 @dataclass(frozen=True)
 class Scope:
     """The composed retrieval scope: the ordered vaults (roots first, project last) and the notes
-    to index across them. `vaults` is the set assert_composed proves the index actually covers."""
+    to index across them. `vaults` is the set assert_composed proves the index actually covers.
+
+    `name` is the manifest-DECLARED name (Doc 2 §2's `name = "prism"`) and is deliberately not
+    `project.name`, which is the vault DIRECTORY (`prism-vault`) the composition provenance is
+    keyed on. Both are real identifiers for different jobs: the directory names which vault a
+    passage came from, the manifest names the scope a caller asks for.
+    """
 
     project: VaultRef
     vaults: tuple[VaultRef, ...]
     notes: tuple[NoteRef, ...]
+    name: str = ""
 
     @property
     def vault_names(self) -> frozenset[str]:
@@ -312,7 +319,13 @@ def resolve_scope(project_vault: Path) -> Scope:
             )
         ids[eff] = n.path
 
-    return Scope(project=project_ref, vaults=tuple(ordered), notes=tuple(notes))
+    # The project's own manifest is re-read for its declared name. `visit` parsed it already but
+    # kept only `inherits`; the file is size-capped and tiny, and reading it here keeps the name
+    # sourced from the manifest rather than inferred from the directory (they legitimately differ).
+    return Scope(
+        project=project_ref, vaults=tuple(ordered), notes=tuple(notes),
+        name=_read_manifest(project_vault)["name"],
+    )
 
 
 def assert_composed(store, *, ingested_doc_ids: set[str]) -> dict:
