@@ -637,7 +637,10 @@ def cmd_compose(args: argparse.Namespace) -> int:
         reg = scopes.record(scope.name, vault=project, db=Path(args.db), index_root=index_root,
                             registry=args.registry)
         print(f"  scope: {scope.name!r} registered in {reg}")
-    except scopes.ScopeError as e:
+    except (scopes.ScopeError, OSError) as e:
+        # OSError too: `record` writes a file, so an unwritable home or a full disk raised right
+        # through the handler whose comment promised a registry failure is "reported, not fatal" —
+        # a traceback AFTER every gate had passed and the compose had printed PASS.
         print(f"\nWARNING (scope registry): {e}", file=sys.stderr)
         print(f"  scope: {scope.name!r} NOT registered — query with --db {args.db}",
               file=sys.stderr)
@@ -647,7 +650,7 @@ def cmd_compose(args: argparse.Namespace) -> int:
 def _resolve_statuses(args: argparse.Namespace) -> frozenset[str] | None:
     """The status filter for a query, from the flags. Refuses an unknown status rather than
     silently filtering to nothing. None means unfiltered (an explicit administrative scan)."""
-    from substrate.retrieve.retriever import DEFAULT_STATUSES
+    from substrate.retrieve import retriever
     from substrate.spine import STATUSES
 
     if getattr(args, "all_status", False):
@@ -666,9 +669,9 @@ def _resolve_statuses(args: argparse.Namespace) -> frozenset[str] | None:
                   file=sys.stderr)
             raise SystemExit(2)
         return chosen
-    if getattr(args, "include_archived", False):
-        return DEFAULT_STATUSES | {"archived"}
-    return DEFAULT_STATUSES
+    # Through the shared helper, not a local copy of the same rule — `retriever.statuses` claims
+    # to be the one definition both adapters call, and until this line it was not.
+    return retriever.statuses(include_archived=getattr(args, "include_archived", False))
 
 
 def _resolve_db(args: argparse.Namespace) -> str:
@@ -679,8 +682,14 @@ def _resolve_db(args: argparse.Namespace) -> str:
     they did not choose, and the answer would look exactly like the one they wanted.
     """
     name = getattr(args, "scope", None)
-    if not name:
+    if name is None:
         return args.db or "out/substrate.db"
+    # An EMPTY --scope is a supplied argument, not an absent one. Treating it as absent skipped the
+    # conflict refusal below and quietly answered from the legacy default — a scope name the
+    # registry would never register, silently resolving to a different index.
+    if not name.strip():
+        print(f"FATAL: --scope {name!r} names no scope.", file=sys.stderr)
+        raise SystemExit(2)
     if args.db is not None:
         print(f"FATAL: --scope {name!r} and --db {args.db!r} name two different indexes. "
               "Pass one.", file=sys.stderr)
@@ -763,14 +772,12 @@ def cmd_query(args: argparse.Namespace) -> int:
                 # doc_type put an illegal value on that axis and left the filter actually applied
                 # unreported — and the store stands its source exclusion down when a class is
                 # given, so `sources_excluded` was claiming an exclusion that had not happened.
-                payload = render.search_payload(
+                print(json.dumps(render.search_payload(
                     result, scope=args.scope, query=args.text,
                     statuses=statuses, include_sources=args.include_sources,
                     document_class=args.doc_class, chars=args.chars,
-                    unavailable=unavailable,
-                )
-                payload["db"] = db_path
-                print(json.dumps(payload, indent=2, ensure_ascii=False))
+                    unavailable=unavailable, db=db_path,
+                ), indent=2, ensure_ascii=False))
                 return 0
         sset = "all" if statuses is None else ",".join(sorted(statuses))
         print(f"  status filter: {sset}"
@@ -833,7 +840,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     from substrate import introspect, stack as _stack
     from substrate.store.index_store import IndexStore
 
-    if not args.scope:
+    if args.scope is not None and not args.scope.strip():
+        print(f"FATAL: --scope {args.scope!r} names no scope.", file=sys.stderr)
+        return 2
+    if args.scope is None:
         try:
             payload = introspect.scopes_payload(args.registry)
         except scopes.ScopeError as e:
@@ -898,9 +908,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     if "error" in d:
         print(f"  freshness: UNCHECKABLE — {d['error']}")
     elif not d["stale"]:
-        print(f"  freshness: current  ·  {d['checked']} note(s) verified"
-              + (f", {d['unverifiable']} unverifiable (declared source digest)"
-                 if d["unverifiable"] else ""))
+        # `unreadable` notes were neither verified nor found missing — nothing is known about
+        # them. Printing a bare "current" over them is an affirmative all-clear for files that
+        # were never checked, which is the overstated completeness this whole module exists to
+        # refuse. It is computed; until now it was never said.
+        caveats = []
+        if d["unverifiable"]:
+            caveats.append(f"{d['unverifiable']} unverifiable (declared source digest)")
+        if d["unreadable"]:
+            caveats.append(f"{len(d['unreadable'])} UNREADABLE")
+        head = "no changes detected" if d["unreadable"] else "current"
+        print(f"  freshness: {head}  ·  {d['checked']} note(s) verified"
+              + (f", {', '.join(caveats)}" if caveats else ""))
+        for p in d["unreadable"][:5]:
+            print(f"      unreadable: {p}")
     else:
         print(f"  freshness: STALE  ·  {len(d['changed'])} changed · {len(d['added'])} "
               f"not indexed · {len(d['removed'])} removed — re-run `substrate compose`")

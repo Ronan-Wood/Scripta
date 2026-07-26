@@ -152,7 +152,7 @@ def retrieval_mode(result: RetrievalResult, *, unavailable: tuple[str, ...] = ()
 
 def applied_filters(
     statuses: frozenset[str] | None, *, include_sources: bool, doc_type: str | None = None,
-    document_class: str | None = None,
+    document_class: str | None = None, notes: tuple[str, ...] = (),
 ) -> dict:
     """What this result set left out, said out loud.
 
@@ -184,6 +184,11 @@ def applied_filters(
         "sources_excluded": not (include_sources or document_class is not None),
         "doc_type": doc_type,
         "document_class": document_class,
+        # Anything else that narrowed this result set — a clamped `k`, today. ALWAYS present, and
+        # empty when there is nothing to say: an adapter that injected this key only when it had
+        # something to report made the envelope's shape depend on the request, which is the same
+        # "field that disappears" defect the spine fields are emitted unconditionally to avoid.
+        "notes": list(notes),
     }
 
 
@@ -198,19 +203,27 @@ def search_payload(
     document_class: str | None = None,
     chars: int = SNIPPET_CHARS,
     unavailable: tuple[str, ...] = (),
+    db: str | None = None,
+    filter_notes: tuple[str, ...] = (),
 ) -> dict:
     """The whole envelope: passages, orientation, capability, applied filters, index_version.
 
     `scope` and `index_version` travel together because either alone is unfalsifiable — a version
-    hash says nothing about WHICH index it stamps when one server serves several.
+    hash says nothing about WHICH index it stamps when one server serves several. `db` names the
+    file behind them, which is what a scope-less query has instead of a name.
+
+    EVERY key is produced here. Both adapters previously bolted one field on after the fact — the
+    CLI a `db`, the server a clamp note — so the two emitted structurally different envelopes
+    while the help text promised one shape, and the exact-key-set test could not see either.
     """
     return {
         "scope": scope,
+        "db": db,
         "query": query,
         "passages": [passage(h, scope=scope, chars=chars) for h in result.passages],
         "outline_records": [outline_record(h, scope=scope, chars=chars) for h in result.outlines],
         "retrieval_mode": retrieval_mode(result, unavailable=unavailable),
         "filters": applied_filters(statuses, include_sources=include_sources, doc_type=doc_type,
-                                   document_class=document_class),
+                                   document_class=document_class, notes=filter_notes),
         "index_version": result.index_version,
     }

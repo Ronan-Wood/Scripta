@@ -267,13 +267,11 @@ def _tool_search(args: dict, cfg: Config) -> dict:
             embedder=cfg.stack.embedder, expander=cfg.stack.expander,
             reranker=cfg.stack.reranker,
         )
-        payload = render.search_payload(
+        return render.search_payload(
             result, scope=scope, query=query, statuses=statuses,
             include_sources=include_sources, unavailable=cfg.stack.unavailable,
+            db=str(entry.db), filter_notes=(clamp_note,) if clamp_note else (),
         )
-        if clamp_note:
-            payload["filters"]["notes"] = [clamp_note]
-        return payload
     finally:
         store.close()
 
@@ -507,6 +505,16 @@ def handle(msg: object, cfg: Config) -> dict | None:
     """
     if not isinstance(msg, dict):
         return _error(None, -32600, "invalid request: expected a JSON-RPC object")
+    # A NOTIFICATION is a request with no `id` AT ALL — for any method, not just the one that had
+    # its own branch. Deciding it per-branch meant `tools/list` sent as a notification got a reply
+    # carrying `"id": null`, which is a response to nothing and which the docstring above says
+    # does not happen. Decided once, here, and applied to whatever the dispatch returns.
+    notification = "id" not in msg
+    resp = _dispatch(msg, cfg)
+    return None if notification else resp
+
+
+def _dispatch(msg: dict, cfg: Config) -> dict | None:
     method, rid = msg.get("method"), msg.get("id")
 
     if method == "initialize":
@@ -521,6 +529,12 @@ def handle(msg: object, cfg: Config) -> dict | None:
         return _result(rid, {"tools": TOOLS})
     if method == "tools/call":
         params = msg.get("params") or {}
+        # JSON-RPC permits POSITIONAL params — a legal array here reached `.get` and threw out of
+        # the handler, becoming an id-less transport error the client could not match to its
+        # request. The message shape was guarded one function up; this is the same class of input
+        # one line down.
+        if not isinstance(params, dict):
+            return _error(rid, -32602, "params must be an object for tools/call")
         name = params.get("name")
         fn = HANDLERS.get(name)
         if fn is None:
@@ -539,8 +553,6 @@ def handle(msg: object, cfg: Config) -> dict | None:
                 "isError": True,
             })
         return _result(rid, {"content": [{"type": "text", "text": text}]})
-    if rid is None:
-        return None
     return _error(rid, -32601, f"unknown method {method!r}")
 
 

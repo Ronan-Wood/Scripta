@@ -153,6 +153,26 @@ def test_a_token_is_single_use() -> None:
              containing="already been used")
 
 
+def test_the_book_does_not_grow_on_commit() -> None:
+    """commit() used to call plan(), minting a nonce nobody could ever redeem — one stale entry
+    per call, successful or refused, in a per-process dict on a long-lived server. Measured: after
+    three failed commits the book held four entries."""
+    v, book = _vault(), _book()
+    p = _plan(v, book)
+    assert len(book._issued) == 1
+    for _ in range(3):
+        try:
+            notes.commit(project_vault=v, content=GOOD, filename="decision.md",
+                         confirm_token="bogus", book=book)
+        except notes.NoteError:
+            pass
+    assert len(book._issued) == 1, "a failed commit must not mint a token"
+
+    notes.commit(project_vault=v, content=GOOD, filename="decision.md",
+                 confirm_token=p.confirm_token, book=book)
+    assert len(book._issued) == 0, "a redeemed plan must leave the book empty"
+
+
 def test_a_token_does_not_authorise_different_content() -> None:
     """The source changing between plan and commit must refuse, not write unreviewed bytes."""
     v, book = _vault(), _book()

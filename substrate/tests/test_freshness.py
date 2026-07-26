@@ -143,6 +143,18 @@ def test_unreadable_note_gets_its_own_bucket() -> None:
             note.chmod(0o644)
     assert d["unreadable"] == [str(note.resolve())], d
     assert d["checked"] == 0
+    # `stale` stays false — nothing was found to DIFFER — but `checkable` says the sweep was
+    # incomplete. Reporting only the first is an affirmative all-clear over notes never examined.
+    assert d["stale"] is False
+    assert d["checkable"] is False
+
+
+def test_a_clean_vault_is_checkable() -> None:
+    """`checkable` must mean something; always-false is the same defect as always-true."""
+    v = _vault()
+    notes = [_note(v, "a")]
+    with _index(notes) as s:
+        assert freshness.drift(s, notes)["checkable"] is True
 
 
 if __name__ == "__main__":

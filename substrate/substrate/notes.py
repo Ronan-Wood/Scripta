@@ -129,16 +129,15 @@ def _resolve_target(project_vault: Path, folder: str, filename: str) -> Path:
     return target
 
 
-def plan(
-    *, project_vault: Path, content: bytes, filename: str, folder: str = DEFAULT_FOLDER,
-    book: PlanBook,
-) -> Plan:
-    """Validate a note against the real ingestion gates without writing anything, and issue a
-    single-use token for it.
+def _validate(
+    *, project_vault: Path, content: bytes, filename: str, folder: str,
+) -> tuple[Path, dict]:
+    """Run every gate against this note and return (target, the plan's fields). Issues NOTHING.
 
-    Raises NoteError with the gate's own message when the note would be refused — the same
-    refusal compose would give, delivered before the vault is touched rather than after. A refused
-    plan issues no token, so nothing that failed a gate is ever redeemable.
+    Split from `plan` because `commit` needs the validation and must NOT mint a token: minting one
+    per commit left an unredeemable nonce in the PlanBook on every call, successful or refused, so
+    the book grew for the life of the server and its own docstring ("plans issued and not yet
+    redeemed") stopped being true after the first write.
     """
     from substrate import classes
     from substrate.markdown.ingest import CoverageError, ingest_markdown
@@ -158,21 +157,35 @@ def plan(
         except (ValueError, classes.ClassPolicyError, SpineError, CoverageError) as e:
             raise NoteError(f"{type(e).__name__}: {e}") from e
 
-        return Plan(
-            target=target,
-            doc_id=result.doc_id,
-            status=result.status,
-            doc_type=result.doc_type,
-            confidence=result.confidence,
-            domains=list(result.domains),
-            passages=int((result.run.get("chunk") or {}).get("passages", 0)),
-            confirm_token=book.issue(_binding(target, content)),
+        return target, {
+            "doc_id": result.doc_id,
+            "status": result.status,
+            "doc_type": result.doc_type,
+            "confidence": result.confidence,
+            "domains": list(result.domains),
+            "passages": int((result.run.get("chunk") or {}).get("passages", 0)),
             # Named, not implied: the per-note A22 sweep runs at compose, not here, so this plan
             # does not promise the note will pass it.
-            warnings=["the per-note A22 assertion sweep runs at compose, not in this plan"],
-        )
+            "warnings": ["the per-note A22 assertion sweep runs at compose, not in this plan"],
+        }
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def plan(
+    *, project_vault: Path, content: bytes, filename: str, folder: str = DEFAULT_FOLDER,
+    book: PlanBook,
+) -> Plan:
+    """Validate a note against the real ingestion gates without writing anything, and issue a
+    single-use token for it.
+
+    Raises NoteError with the gate's own message when the note would be refused — the same
+    refusal compose would give, delivered before the vault is touched rather than after. A refused
+    plan issues no token, so nothing that failed a gate is ever redeemable.
+    """
+    target, fields = _validate(project_vault=project_vault, content=content, filename=filename,
+                               folder=folder)
+    return Plan(target=target, confirm_token=book.issue(_binding(target, content)), **fields)
 
 
 def commit(
@@ -187,16 +200,16 @@ def commit(
     someone to read — which re-planning alone cannot establish, since the caller supplies both of
     its inputs.
     """
-    fresh = plan(project_vault=project_vault, content=content, filename=filename, folder=folder,
-                 book=book)
-    if not book.redeem(confirm_token, _binding(fresh.target, content)):
+    target, _fields = _validate(project_vault=project_vault, content=content, filename=filename,
+                                folder=folder)
+    if not book.redeem(confirm_token, _binding(target, content)):
         raise NoteError(
             "confirm_token was not issued by this server for this note and destination, or has "
             "already been used. Call again without a token to get a current plan, confirm it with "
             "the human, and pass THAT token."
         )
 
-    fresh.target.parent.mkdir(parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
     # The additive-only and stay-inside-the-vault guarantees are enforced by the SYSCALL, not by
     # the earlier `target.exists()` check — that check is a check-then-act pair with a window, and
     # a staging file at a fixed sibling name (`<note>.md.tmp`) was itself an unguarded write: a
@@ -204,19 +217,19 @@ def commit(
     # what the containment checks above exist to refuse. O_EXCL makes "never overwrite" atomic;
     # O_NOFOLLOW refuses a symlinked target outright.
     try:
-        fd = os.open(fresh.target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
     except FileExistsError as e:
         raise NoteError(
-            f"{fresh.target} appeared between the plan and the write. This path is additive-only; "
+            f"{target} appeared between the plan and the write. This path is additive-only; "
             f"refusing to overwrite it."
         ) from e
     except OSError as e:
-        raise NoteError(f"cannot create {fresh.target}: {e}") from e
+        raise NoteError(f"cannot create {target}: {e}") from e
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(content)
     except OSError as e:
         # A partial note in the vault would compose as a truncated one. Remove it and refuse.
-        fresh.target.unlink(missing_ok=True)
-        raise NoteError(f"failed writing {fresh.target}: {e}") from e
-    return fresh.target
+        target.unlink(missing_ok=True)
+        raise NoteError(f"failed writing {target}: {e}") from e
+    return target
