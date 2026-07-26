@@ -34,7 +34,7 @@ from substrate.store.index_store import Hit  # noqa: E402
 PASSAGE_KEYS = {
     "expand_ref", "citation", "path", "page", "n_chars",
     "status", "doc_type", "confidence", "domains", "vault", "supersedes",
-    "snippet", "truncated",
+    "snippet", "text", "truncated",
 }
 ENVELOPE_KEYS = {
     "scope", "db", "query", "passages", "outline_records", "retrieval_mode", "filters",
@@ -127,7 +127,7 @@ def test_outline_records_carry_the_same_spine() -> None:
 
 def test_snippet_first_does_not_ship_the_passage() -> None:
     p = _payload()["passages"][0]
-    assert "text" not in p, "a search result must not carry full passage text"
+    assert p["text"] is None, "a search result must not carry full passage text"
     assert len(p["snippet"]) <= render.SNIPPET_CHARS
     assert p["truncated"] is True
     assert p["n_chars"] == len(LONG), "the caller must be able to see how much was withheld"
@@ -138,6 +138,20 @@ def test_short_passage_is_not_marked_truncated() -> None:
     p = _payload(_result([_hit(text="short", n_chars=5)]))["passages"][0]
     assert p["snippet"] == "short"
     assert p["truncated"] is False
+
+
+def test_search_and_expand_share_one_passage_shape() -> None:
+    """The docstring promised "same envelope … so a consumer never has to reconcile two different
+    passage shapes" while emitting `text` only on expand and `snippet` only on search — the same
+    disappearing-field defect the spine fields are emitted unconditionally to avoid."""
+    hit = _hit()
+    search = render.passage(hit, scope="demo")
+    expanded = render.passage(hit, scope="demo", full=True)
+    assert set(search) == set(expanded) == PASSAGE_KEYS
+    assert search["text"] is None and expanded["text"] == LONG
+    assert search["snippet"] == expanded["snippet"], "the snippet is the same cut either way"
+    # `truncated` means content was withheld from THIS payload.
+    assert search["truncated"] is True and expanded["truncated"] is False
 
 
 def test_snippet_first_is_actually_cheaper() -> None:

@@ -79,6 +79,10 @@ def status_payload(store, entry, *, stack) -> dict:
         "vault": str(entry.vault),
         "composed": entry.composed,
         "index_version": store.index_version,
+        # A schema bump drops and rebuilds the index EMPTY on open. Every other tool refuses in
+        # that state; this one reports it, because "can I trust this index" is exactly the
+        # question and an empty index answers every search with a plausible no-match.
+        "rebuilt_empty": store.rebuilt,
         "documents": s["documents"],
         "passages": s["passages"],
         "outlines": s["outlines"],

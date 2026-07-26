@@ -89,7 +89,14 @@ def drift(store, note_paths: list[Path]) -> dict:
             unreadable.append(path_str)
             continue
         if was_declared:
-            unverifiable += 1
+            # The declaration itself is still comparable, even though the body is not. A note
+            # whose frontmatter now names a DIFFERENT source is a change the index can see, and
+            # counting it `unverifiable` threw that away — the bucket is for what cannot be
+            # checked, not for everything in its neighbourhood.
+            if sha != indexed[path_str]:
+                changed.append(path_str)
+            else:
+                unverifiable += 1
             continue
         checked += 1
         if sha != indexed[path_str]:

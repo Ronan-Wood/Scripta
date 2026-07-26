@@ -63,9 +63,16 @@ class ToolError(RuntimeError):
 
 # --------------------------------------------------------------------------- scope access
 
-def _open(name: str, registry: str | None):
+def _open(name: str, registry: str | None, *, refuse_rebuilt: bool = True):
     """Resolve a scope and open its index, or refuse. Opened per call, never cached: a recompose
-    replaces the database file, and a cached handle would keep answering from the old one."""
+    replaces the database file, and a cached handle would keep answering from the old one.
+
+    `refuse_rebuilt=False` is for `status` ALONE. Refusing there was backwards: status exists to
+    tell a caller whether an index can be trusted, so going silent in the one state where it
+    demonstrably cannot is the question being asked, answered with an error. Every other tool
+    still refuses — answering a search from an index that was rebuilt empty returns zero results,
+    which is indistinguishable from a genuine no-match.
+    """
     from substrate.store.index_store import IndexStore
 
     try:
@@ -74,14 +81,22 @@ def _open(name: str, registry: str | None):
         raise ToolError(str(e)) from e
 
     store = IndexStore(str(entry.db))
-    if store.rebuilt:
-        # A schema bump dropped and rebuilt the index EMPTY, and this server only reads. Answering
-        # every query with zero results is indistinguishable from a genuine no-match, so refuse.
-        store.close()
-        raise ToolError(
-            f"scope {name!r} was rebuilt empty by a schema change; re-run `substrate compose` "
-            f"before querying it. Refusing to answer from an empty index."
-        )
+    if refuse_rebuilt:
+        # EMPTINESS, not the `rebuilt` flag. `rebuilt` is true only on the open that performed the
+        # migration, so it is consumed by whoever opens first — including `status`, which now
+        # opens without refusing. Keying the refusal on the flag meant a status call could clear
+        # it and leave the next search answering from an empty index with nothing to notice.
+        # Emptiness is the condition that actually matters and it survives any number of opens: a
+        # composed scope always has notes (resolve_scope refuses a zero-note scope), so zero
+        # chunks means something is wrong regardless of how it got that way.
+        if store.stats()["passages"] == 0:
+            store.close()
+            raise ToolError(
+                f"scope {name!r} has an EMPTY index — most likely dropped and rebuilt by a schema "
+                f"change, or composed from a scope that failed. Re-run `substrate compose` before "
+                f"querying it; answering from an empty index is indistinguishable from a genuine "
+                f"no-match. (`status` still reports on it.)"
+            )
     return entry, store
 
 
@@ -458,7 +473,7 @@ def _tool_status(args: dict, cfg: Config) -> dict:
     name = args.get("scope")
     if not name:
         raise ToolError("status requires `scope`.")
-    entry, store = _open(name, cfg.registry)
+    entry, store = _open(name, cfg.registry, refuse_rebuilt=False)
     try:
         return introspect.status_payload(store, entry, stack=cfg.stack)
     finally:

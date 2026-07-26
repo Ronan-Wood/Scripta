@@ -130,6 +130,22 @@ def test_declared_digest_is_counted_unverifiable_not_fresh() -> None:
     assert d["stale"] is False, "and do not claim staleness it cannot see either"
 
 
+def test_a_changed_declaration_is_a_change_not_an_unknown() -> None:
+    """A declared digest hides BODY edits, not edits to the declaration itself. A note whose
+    frontmatter now names a different source is a change the index can see; counting it
+    `unverifiable` threw that away — the bucket is for what cannot be checked, not for everything
+    near it."""
+    v = _vault()
+    note = _note(v, "a", declared_sha="b" * 64)
+    with _index([note]) as s:
+        note.write_text(f"---\nsource_sha256: {'c' * 64}\n---\n\n# a\n\n{BODY}\n",
+                        encoding="utf-8")
+        d = freshness.drift(s, [note])
+    assert d["changed"] == [str(note.resolve())], d
+    assert d["unverifiable"] == 0
+    assert d["stale"] is True
+
+
 def test_unreadable_note_gets_its_own_bucket() -> None:
     """Indexed, composed, and unreadable now: neither fresh nor missing, so it is not silently
     counted as either.
