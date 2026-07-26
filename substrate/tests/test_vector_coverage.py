@@ -101,6 +101,20 @@ def test_vector_coverage_reports_both_counts() -> None:
         assert s.vector_coverage(_KEY) == (1, 3)
 
 
+def test_orphaned_vectors_do_not_count_as_coverage() -> None:
+    """A vector whose chunk is gone is unreachable by any query. Counting it could satisfy
+    `n >= total` on a partly-embedded index — reported complete, with a measured MRR on top,
+    which is the exact failure this guard exists to stop. Both delete paths clean vectors up
+    today, so this is not reachable through the engine; the JOIN makes it structural rather than
+    dependent on every future delete path remembering."""
+    with IndexStore(_fresh_db()) as s:
+        ids = _seed(s, 2)
+        s.store_vectors([(cid, [1.0, 0.0, 0.0, 0.0]) for cid in ids], _KEY)
+        # Orphans, planted directly: the state a missed cleanup would leave behind.
+        s.store_vectors([(f"ghost{i}", [1.0, 0.0, 0.0, 0.0]) for i in range(5)], _KEY)
+        assert s.vector_coverage(_KEY) == (2, 2), "orphans must not inflate the numerator"
+
+
 def test_vectors_under_another_key_do_not_count() -> None:
     """The orphaned-space failure: a key change leaves vectors present but unreachable. Counting
     them would report full coverage for a space the query can never match against."""
