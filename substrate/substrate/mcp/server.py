@@ -27,6 +27,7 @@ to provide: a model reading a proposal would have no way to know it was one.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -63,32 +64,36 @@ class ToolError(RuntimeError):
 
 # --------------------------------------------------------------------------- scope access
 
-def _open(name: str, registry: str | None, *, refuse_rebuilt: bool = True):
+def _open(name: str, registry: str | None, *, refuse_empty: bool = True):
     """Resolve a scope and open its index, or refuse. Opened per call, never cached: a recompose
     replaces the database file, and a cached handle would keep answering from the old one.
 
-    `refuse_rebuilt=False` is for `status` ALONE. Refusing there was backwards: status exists to
+    `refuse_empty=False` is for `status` ALONE. Refusing there was backwards: status exists to
     tell a caller whether an index can be trusted, so going silent in the one state where it
     demonstrably cannot is the question being asked, answered with an error. Every other tool
     still refuses — answering a search from an index that was rebuilt empty returns zero results,
     which is indistinguishable from a genuine no-match.
     """
-    from substrate.store.index_store import IndexStore
+    from substrate.store.index_store import IndexStore, SchemaMismatch
 
     try:
         entry = scopes.resolve(name, registry)
     except scopes.ScopeError as e:
         raise ToolError(str(e)) from e
 
-    store = IndexStore(str(entry.db))
-    if refuse_rebuilt:
-        # EMPTINESS, not the `rebuilt` flag. `rebuilt` is true only on the open that performed the
-        # migration, so it is consumed by whoever opens first — including `status`, which now
-        # opens without refusing. Keying the refusal on the flag meant a status call could clear
-        # it and leave the next search answering from an empty index with nothing to notice.
-        # Emptiness is the condition that actually matters and it survives any number of opens: a
-        # composed scope always has notes (resolve_scope refuses a zero-note scope), so zero
-        # chunks means something is wrong regardless of how it got that way.
+    # migrate=False: every tool on this server READS. A write-open drops and rebuilds an
+    # old-schema index, so a search would have destroyed the index it was asked about and then
+    # truthfully reported it empty.
+    try:
+        store = IndexStore(str(entry.db), migrate=False)
+    except SchemaMismatch as e:
+        raise ToolError(str(e)) from e
+    if refuse_empty:
+        # EMPTINESS, not the `rebuilt` flag. That flag is true only on the open that PERFORMED a
+        # migration, so it is consumed by whoever opens first and cannot be relied on by anyone
+        # after them. Emptiness survives any number of opens and is the condition that actually
+        # matters: a composed scope always has notes (resolve_scope refuses a zero-note scope), so
+        # zero chunks means something is wrong regardless of how it got that way.
         if store.stats()["passages"] == 0:
             store.close()
             raise ToolError(
@@ -103,10 +108,14 @@ def _open(name: str, registry: str | None, *, refuse_rebuilt: bool = True):
 def _clamp_k(raw: object) -> tuple[int, str | None]:
     """`k`, bounded, plus a note when the bound bit. Returns the note rather than swallowing it:
     a result set narrowed without saying so is the failure the filters block exists to prevent."""
-    try:
-        k = int(raw if raw is not None else 5)
-    except (TypeError, ValueError) as e:
-        raise ToolError(f"`k` must be a whole number, got {raw!r}.") from e
+    # Strict, because the schema says integer and the block around this refuses everything else.
+    # `int()` accepted "7", 3.9 (→3) and True (→1), so a malformed argument produced a plausible
+    # result set instead of the refusal its neighbours give.
+    if raw is None:
+        return 5, None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ToolError(f"`k` must be a whole number, got {raw!r}.")
+    k = raw
     if k < 1:
         raise ToolError(f"`k` must be at least 1, got {k}.")
     if k > MAX_K:
@@ -333,7 +342,7 @@ def _note_text(store, doc_id: str) -> dict:
     own), so a PDF-derived passage — whose stored digest names the PDF — reports `unverifiable`
     rather than a false `stale`.
     """
-    from substrate.freshness import _effective_sha
+    from substrate.freshness import effective_sha_of
 
     row = store.db.execute(
         "SELECT source_path, source_sha256 FROM documents WHERE doc_id=?", (doc_id,)
@@ -343,8 +352,13 @@ def _note_text(store, doc_id: str) -> dict:
 
     path = Path(row["source_path"])
     try:
-        text = path.read_bytes().decode("utf-8", errors="replace")
-        sha, declared = _effective_sha(path)
+        # ONE bounded read, and the digest computed from the SAME bytes. Reading twice let a write
+        # land in between, so the returned text and the returned staleness verdict could describe
+        # different versions of the file — and neither read was size-bounded, one function away
+        # from the guards `_read_source` applies for exactly that reason.
+        raw = _read_source(path)
+        text = raw.decode("utf-8", errors="replace")
+        sha, declared = effective_sha_of(raw)
     except OSError as e:
         raise ToolError(
             f"the note for {doc_id!r} is indexed at {path} but cannot be read ({e}). The passage "
@@ -364,29 +378,42 @@ def _note_text(store, doc_id: str) -> dict:
 
 
 def _read_source(src: Path) -> bytes:
-    """A caller-named file, bounded and checked BEFORE it is read.
+    """A caller-named file, bounded by the read ITSELF rather than by a prior check.
 
     The caller here is a model, and its arguments can be influenced by content it just read, so
-    "a path" is untrusted input. Size and regular-file are checked with stat first: an unbounded
-    read of a caller-chosen path means one tool call can hand the server a multi-hundred-MB blob,
-    or a FIFO that never returns. The failure message is deliberately fixed rather than echoing
-    the OSError, which otherwise answers "does /etc/<x> exist and can you read it" for any path.
+    "a path" is untrusted input. An earlier version stat'd then read, which is a check-then-act
+    pair: the path could be swapped for a FIFO or grown past the cap in between, and the bound
+    described an ordering rather than a guarantee. This opens once, non-blocking so a FIFO cannot
+    stall the open, fstats the DESCRIPTOR it will actually read, and reads at most one byte over
+    the cap — so growth after the check cannot exceed it either.
+
+    The failure message is deliberately fixed rather than echoing the OSError, which otherwise
+    answers "does /etc/<x> exist and can you read it" for any path a model cares to name.
     """
     import stat as _stat
 
     try:
-        st = src.stat()
+        fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK)
     except OSError as e:
         raise ToolError(f"cannot read the given source_path ({type(e).__name__}).") from e
-    if not _stat.S_ISREG(st.st_mode):
-        raise ToolError("source_path is not a regular file.")
-    if st.st_size > MAX_SOURCE_BYTES:
-        raise ToolError(f"source_path is {st.st_size} bytes, over the {MAX_SOURCE_BYTES}-byte "
-                        f"limit for a note.")
     try:
-        return src.read_bytes()
+        st = os.fstat(fd)
+        if not _stat.S_ISREG(st.st_mode):
+            raise ToolError("source_path is not a regular file.")
+        chunks, size = [], 0
+        while size <= MAX_SOURCE_BYTES:
+            block = os.read(fd, 1 << 20)
+            if not block:
+                break
+            chunks.append(block)
+            size += len(block)
+        if size > MAX_SOURCE_BYTES:
+            raise ToolError(f"source_path exceeds the {MAX_SOURCE_BYTES}-byte limit for a note.")
+        return b"".join(chunks)
     except OSError as e:
         raise ToolError(f"cannot read the given source_path ({type(e).__name__}).") from e
+    finally:
+        os.close(fd)
 
 
 def _tool_ingest(args: dict, cfg: Config) -> dict:
@@ -459,9 +486,13 @@ def _tool_ingest(args: dict, cfg: Config) -> dict:
         # The note is in the vault and NOT in the index. Said as a field, and `status` will show
         # it under drift.added until the scope is recomposed.
         "index_stale": True,
-        "next": (f"the note is in the vault but not in the index — run `substrate compose "
-                 f"{entry.vault} --index-root {entry.index_root} --db {entry.db}` before it can "
-                 f"be found by search."),
+        # `--index-root` is omitted when the registry entry predates the field: emitting a
+        # defaulted "." would tell the user to write the disposable index tree into whatever
+        # directory they happen to be standing in.
+        "next": ("the note is in the vault but not in the index — run `substrate compose "
+                 + str(entry.vault)
+                 + (f" --index-root {entry.index_root}" if entry.index_root else "")
+                 + f" --db {entry.db}` before it can be found by search."),
     }
 
 
@@ -473,7 +504,7 @@ def _tool_status(args: dict, cfg: Config) -> dict:
     name = args.get("scope")
     if not name:
         raise ToolError("status requires `scope`.")
-    entry, store = _open(name, cfg.registry, refuse_rebuilt=False)
+    entry, store = _open(name, cfg.registry, refuse_empty=False)
     try:
         return introspect.status_payload(store, entry, stack=cfg.stack)
     finally:

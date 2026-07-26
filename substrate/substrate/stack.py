@@ -28,6 +28,7 @@ DEFAULT_EMBED = "qwen3-embedding:0.6b"
 DEFAULT_HYDE = "qwen2.5:7b"
 DEFAULT_RERANK = "qwen2.5:7b"
 DEFAULT_POOL = 20
+APPLE_POOL = 10      # Apple FM overflows above ~10 candidates (measured)
 DEFAULT_CACHE = Path.home() / ".substrate" / "vector-cache.db"
 
 
@@ -51,7 +52,7 @@ def build(
     hyde_model: str | None = DEFAULT_HYDE,
     rerank_model: str | None = DEFAULT_RERANK,
     embed_style: str = "auto",
-    pool: int = DEFAULT_POOL,
+    pool: int | None = None,
     cache_path: str | Path = DEFAULT_CACHE,
     lexical_only: bool = False,
 ) -> Stack:
@@ -114,12 +115,15 @@ def build(
 
             # Apple FM overflows above ~10 candidates (measured): handed 20 it returns empty
             # replies and every query falls back to fused order — a silent no-op wearing a
-            # reranked label. Its own default stands unless the pool was set explicitly.
-            rc = AppleFMReranker(pool=pool if pool != DEFAULT_POOL else 10, cache=_cache())
+            # reranked label. `pool=None` means "this arm's own default"; an explicit value is
+            # honoured. Using DEFAULT_POOL as the sentinel meant a caller asking for exactly the
+            # measured 20 silently got 10 instead.
+            rc = AppleFMReranker(pool=APPLE_POOL if pool is None else pool, cache=_cache())
         else:
             from substrate.retrieve.rerank import LLMReranker
 
-            rc = LLMReranker(model=rerank_model, pool=pool, cache=_cache())
+            rc = LLMReranker(model=rerank_model, pool=DEFAULT_POOL if pool is None else pool,
+                             cache=_cache())
         reranker = rc if rc.available() else None
         if reranker is None:
             unavailable.append(f"reranker {rerank_model!r} unreachable at "
