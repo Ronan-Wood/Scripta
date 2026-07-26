@@ -253,7 +253,8 @@ def test_initialize_and_tools_list() -> None:
     assert init["result"]["protocolVersion"] == server.PROTOCOL_VERSION
 
     listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, cfg)["result"]
-    assert {t["name"] for t in listed["tools"]} == {"search", "expand", "list_scopes", "status"}
+    assert {t["name"] for t in listed["tools"]} == {"search", "expand", "ingest", "list_scopes",
+                                                    "status"}
     assert set(listed["tools"][0]) >= {"name", "description", "inputSchema"}
     for t in listed["tools"]:
         assert t["inputSchema"]["type"] == "object"
@@ -389,6 +390,78 @@ def test_status_is_clean_when_nothing_moved() -> None:
     d = _call("status", {"scope": "demo"}, registry)["drift"]
     assert d["stale"] is False, d
     assert d["checked"] == 1 and d["changed"] == [] and d["added"] == []
+
+
+# ---------------------------------------------------------------- the write gate
+
+_NOTE = """---
+status: active
+doc_type: decision
+confidence: proposed
+---
+
+# A decision
+
+Written through the MCP surface, which is a write and therefore two-phase.
+"""
+
+
+def test_ingest_without_a_token_plans_and_writes_nothing() -> None:
+    root, registry = _fixture(manifest=True)
+    (root / "demo-vault" / "04-synthesis").mkdir()
+    out = _call("ingest", {"scope": "demo", "content": _NOTE, "filename": "d.md"}, registry)
+    assert out["written"] is False
+    assert out["plan"]["confirm_token"]
+    assert out["plan"]["confidence"] == "proposed"
+    assert not (root / "demo-vault" / "04-synthesis" / "d.md").exists()
+    assert "NOTHING HAS BEEN WRITTEN" in out["next"]
+
+
+def test_ingest_with_the_token_writes_and_declares_the_index_stale() -> None:
+    """The note is in the vault and not in the index. Said as a field — and `status` drift will
+    list it — because a note that exists but cannot be found is the silent-omission shape."""
+    root, registry = _fixture(manifest=True)
+    (root / "demo-vault" / "04-synthesis").mkdir()
+    plan = _call("ingest", {"scope": "demo", "content": _NOTE, "filename": "d.md"},
+                 registry)["plan"]
+    out = _call("ingest", {"scope": "demo", "content": _NOTE, "filename": "d.md",
+                           "confirm_token": plan["confirm_token"]}, registry)
+    assert out["written"] is True
+    assert out["index_stale"] is True
+    assert (root / "demo-vault" / "04-synthesis" / "d.md").exists()
+
+    d = _call("status", {"scope": "demo"}, registry)["drift"]
+    assert any(p.endswith("d.md") for p in d["added"]), "the new note must show as unindexed"
+
+
+def test_ingest_refuses_a_pdf_with_the_reason() -> None:
+    """Not a capability gap silently hidden: reviewed markdown is what the engine reads, and the
+    reference tier is not auto-written (Doc 2 §2, §3b)."""
+    root, registry = _fixture(manifest=True)
+    pdf = root / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    body = _call_raw("ingest", {"scope": "demo", "source_path": str(pdf)}, registry)
+    assert body.get("isError")
+    assert "substrate ingest --pdf" in body["content"][0]["text"]
+
+
+def test_ingest_refuses_both_or_neither_source() -> None:
+    _, registry = _fixture(manifest=True)
+    assert _call_raw("ingest", {"scope": "demo"}, registry).get("isError")
+    assert _call_raw("ingest", {"scope": "demo", "content": _NOTE, "filename": "d.md",
+                                "source_path": "/tmp/x.md"}, registry).get("isError")
+
+
+def test_ingest_refuses_a_stale_token() -> None:
+    root, registry = _fixture(manifest=True)
+    (root / "demo-vault" / "04-synthesis").mkdir()
+    plan = _call("ingest", {"scope": "demo", "content": _NOTE, "filename": "d.md"},
+                 registry)["plan"]
+    edited = _NOTE.replace("proposed", "verified")
+    body = _call_raw("ingest", {"scope": "demo", "content": edited, "filename": "d.md",
+                                "confirm_token": plan["confirm_token"]}, registry)
+    assert body.get("isError")
+    assert not (root / "demo-vault" / "04-synthesis" / "d.md").exists()
 
 
 def test_render_defaults_are_shared_not_copied() -> None:

@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from substrate import introspect, render, scopes, stack
+from substrate import introspect, notes, render, scopes, stack
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "substrate"
@@ -157,6 +157,39 @@ TOOLS = [
                          "description": "Default \"passage\"."},
             },
             "required": ["expand_ref"],
+        },
+    },
+    {
+        "name": "ingest",
+        "description": (
+            "Add a NEW markdown note to a project vault. THIS IS A WRITE, and it is two-phase: "
+            "called without `confirm_token` it writes nothing and returns a plan — where the note "
+            "would land, the doc_id and spine values it would get, and any gate that would refuse "
+            "it. Show that plan to the human. Only with their agreement, call again with the same "
+            "arguments plus the plan's `confirm_token`.\n\n"
+            "Additive only: it will not overwrite an existing note (editing goes through diff "
+            "review), it never writes into the shared core tier, and it does not update the "
+            "index — the note is invisible to `search` until the scope is recomposed, which the "
+            "response says explicitly."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "description": "Which scope's project vault to add to."},
+                "content": {"type": "string",
+                            "description": "The note's full markdown, including frontmatter. Use "
+                                           "this OR source_path, not both."},
+                "source_path": {"type": "string",
+                                "description": "Path to an existing .md file to add instead."},
+                "filename": {"type": "string",
+                             "description": "Name in the vault, e.g. 'retrieval-decision.md'. "
+                                            "Required with `content`."},
+                "folder": {"type": "string", "enum": list(notes.WRITABLE_FOLDERS),
+                           "description": "Project folder (Doc 2 §4). Defaults to 04-synthesis."},
+                "confirm_token": {"type": "string",
+                                  "description": "From a previous plan. Omit on the first call."},
+            },
+            "required": ["scope"],
         },
     },
     {
@@ -304,6 +337,83 @@ def _note_text(store, doc_id: str) -> dict:
     }
 
 
+def _tool_ingest(args: dict, cfg: Config) -> dict:
+    """Two-phase by construction. Without a token this PLANS and writes nothing; with one it
+    re-plans and writes only if the token still matches. A client that auto-approves tool calls
+    therefore still cannot write on the first call — the token only exists after a plan came
+    back for someone to read."""
+    name = args.get("scope")
+    if not name:
+        raise ToolError("ingest requires `scope`.")
+
+    source_path = args.get("source_path")
+    content_arg = args.get("content")
+    filename = args.get("filename")
+    if bool(source_path) == bool(content_arg):
+        raise ToolError("pass exactly one of `source_path` (an existing file) or `content` "
+                        "(a note to write), not both and not neither.")
+
+    if source_path:
+        src = Path(source_path).expanduser()
+        if src.suffix.lower() == ".pdf":
+            raise ToolError(
+                "PDF ingestion does not run through this tool. A reference source becomes "
+                "REVIEWED markdown before the engine reads it (Doc 2 §3b), the extraction takes "
+                "minutes and is non-deterministic across Docling versions, and it lands in the "
+                "shared core tier that nothing auto-writes into (Doc 2 §2). Use `substrate "
+                "ingest --pdf` and place the reviewed output deliberately."
+            )
+        try:
+            content = src.read_bytes()
+        except OSError as e:
+            raise ToolError(f"cannot read {src}: {e}") from e
+        filename = filename or src.name
+    else:
+        content = content_arg.encode("utf-8")
+        if not filename:
+            raise ToolError("`content` requires `filename` — the note needs a name in the vault.")
+
+    try:
+        entry = scopes.resolve(name, cfg.registry)
+    except scopes.ScopeError as e:
+        raise ToolError(str(e)) from e
+
+    folder = args.get("folder", notes.DEFAULT_FOLDER)
+    token = args.get("confirm_token")
+    try:
+        if not token:
+            p = notes.plan(project_vault=entry.vault, content=content, filename=filename,
+                           folder=folder)
+            return {
+                "written": False,
+                "plan": {
+                    "scope": name, "target": str(p.target), "doc_id": p.doc_id,
+                    "status": p.status, "doc_type": p.doc_type, "confidence": p.confidence,
+                    "domains": p.domains, "passages": p.passages, "warnings": p.warnings,
+                    "confirm_token": p.confirm_token,
+                },
+                "next": ("NOTHING HAS BEEN WRITTEN. Show this plan to the human, and only with "
+                         "their agreement call ingest again with the same arguments plus "
+                         "`confirm_token`."),
+            }
+        target = notes.commit(project_vault=entry.vault, content=content, filename=filename,
+                              folder=folder, confirm_token=token)
+    except notes.NoteError as e:
+        raise ToolError(str(e)) from e
+
+    return {
+        "written": True,
+        "scope": name,
+        "target": str(target),
+        # The note is in the vault and NOT in the index. Said as a field, and `status` will show
+        # it under drift.added until the scope is recomposed.
+        "index_stale": True,
+        "next": (f"the note is in the vault but not in the index — run `substrate compose "
+                 f"{entry.vault} --index-root {entry.index_root} --db {entry.db}` before it can "
+                 f"be found by search."),
+    }
+
+
 def _tool_list_scopes(args: dict, cfg: Config) -> dict:
     return introspect.scopes_payload(cfg.registry)
 
@@ -319,7 +429,7 @@ def _tool_status(args: dict, cfg: Config) -> dict:
         store.close()
 
 
-HANDLERS = {"search": _tool_search, "expand": _tool_expand,
+HANDLERS = {"search": _tool_search, "expand": _tool_expand, "ingest": _tool_ingest,
             "list_scopes": _tool_list_scopes, "status": _tool_status}
 
 
