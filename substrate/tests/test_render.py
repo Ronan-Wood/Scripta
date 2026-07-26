@@ -37,12 +37,13 @@ PASSAGE_KEYS = {
     "snippet", "truncated",
 }
 ENVELOPE_KEYS = {
-    "scope", "query", "passages", "outline_records", "retrieval_mode", "filters", "index_version",
+    "scope", "db", "query", "passages", "outline_records", "retrieval_mode", "filters",
+    "index_version",
 }
 MODE_KEYS = {"embedder", "hyde", "reranker", "expected_mrr", "cohort", "degraded", "fallbacks",
              "unavailable"}
 FILTER_KEYS = {"statuses_included", "statuses_excluded", "sources_excluded", "doc_type",
-               "document_class"}
+               "document_class", "notes"}
 
 LONG = ("A proposed design that was never built. " * 40).strip()
 

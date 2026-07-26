@@ -132,11 +132,11 @@ def test_mcp_and_cli_render_the_same_envelope() -> None:
     )
     cli = json.loads(proc.stdout)
 
-    assert mcp["passages"] == cli["passages"], "passages diverged — logic leaked into a transport"
-    assert mcp["retrieval_mode"] == cli["retrieval_mode"], "capability diverged"
-    assert mcp["index_version"] == cli["index_version"], "index_version diverged"
-    assert mcp["filters"] == cli["filters"], "applied filters diverged"
-    assert mcp["outline_records"] == cli["outline_records"]
+    # The WHOLE envelope, not a list of named fields. Comparing five keys let both adapters bolt
+    # an extra one on unnoticed — the CLI a `db`, the server a clamp note — so the two emitted
+    # structurally different shapes while every named assertion passed.
+    assert set(mcp) == set(cli), set(mcp) ^ set(cli)
+    assert mcp == cli, "envelope diverged — logic leaked into a transport"
 
 
 # ---------------------------------------------------------------- the contract crosses
@@ -269,9 +269,25 @@ def test_initialize_and_tools_list() -> None:
 
 
 def test_notifications_get_no_reply() -> None:
+    """ANY method sent without an `id` is a notification, not just the one with its own branch.
+    Deciding it per-branch meant `tools/list` as a notification answered with `"id": null` — a
+    response to nothing."""
     _, registry = _fixture()
-    assert server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"},
-                         _cfg(registry)) is None
+    cfg = _cfg(registry)
+    for method in ("notifications/initialized", "initialize", "tools/list", "nonsense"):
+        assert server.handle({"jsonrpc": "2.0", "method": method}, cfg) is None, method
+    # An explicit id — including a falsy one — is NOT a notification.
+    assert server.handle({"jsonrpc": "2.0", "id": 0, "method": "tools/list"}, cfg) is not None
+
+
+def test_positional_params_refuse_instead_of_escaping() -> None:
+    """JSON-RPC permits positional params. An array reached `.get` and threw out of the handler,
+    becoming an id-less transport error the client could not match to its request."""
+    _, registry = _fixture()
+    resp = server.handle({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": [1, 2]},
+                         _cfg(registry))
+    assert resp["id"] == 7, "the refusal must carry the id it is answering"
+    assert resp["error"]["code"] == -32602
 
 
 def test_unknown_method_and_tool() -> None:

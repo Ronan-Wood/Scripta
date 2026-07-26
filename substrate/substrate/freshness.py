@@ -96,7 +96,12 @@ def drift(store, note_paths: list[Path]) -> dict:
             changed.append(path_str)
 
     return {
+        # `stale` means something DEFINITELY differs. Unreadable notes are a different statement —
+        # nothing is known about them — so they get `checkable` rather than being folded in here,
+        # where they would be indistinguishable from a detected change. A consumer must read both:
+        # `stale: false, checkable: false` is "no change found, and some notes were not examined".
         "stale": bool(added or removed or changed),
+        "checkable": not unreadable,
         "added": added,
         "removed": removed,
         "changed": changed,
