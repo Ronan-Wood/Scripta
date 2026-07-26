@@ -132,15 +132,18 @@ def test_declared_digest_is_counted_unverifiable_not_fresh() -> None:
 
 def test_unreadable_note_gets_its_own_bucket() -> None:
     """Indexed, composed, and unreadable now: neither fresh nor missing, so it is not silently
-    counted as either."""
+    counted as either.
+
+    The unreadable condition is a DIRECTORY where a note was, not `chmod 000` — permission bits
+    do not stop uid 0, so the chmod version silently passed as root (checked == 1, unreadable ==
+    []) while claiming to have tested this. A directory raises IsADirectoryError for everyone.
+    """
     v = _vault()
     note = _note(v, "a")
     with _index([note]) as s:
-        note.chmod(0o000)
-        try:
-            d = freshness.drift(s, [note])
-        finally:
-            note.chmod(0o644)
+        note.unlink()
+        note.mkdir()
+        d = freshness.drift(s, [note])
     assert d["unreadable"] == [str(note.resolve())], d
     assert d["checked"] == 0
     # `stale` stays false — nothing was found to DIFFER — but `checkable` says the sweep was
