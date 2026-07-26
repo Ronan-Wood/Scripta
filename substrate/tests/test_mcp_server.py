@@ -47,6 +47,13 @@ def _cfg(registry: Path) -> server.Config:
     return server.Config(str(registry), stack.build(lexical_only=True))
 
 
+def _cfg_embedder(registry: Path) -> server.Config:
+    """An embedder REQUESTED — wired if the daemon is up, `unavailable` if it is not. Either way
+    both adapters must agree, which is the point: this asserts agreement, not a value, so it does
+    not depend on whether Ollama happens to be running. No generator arms, so no model call."""
+    return server.Config(str(registry), stack.build(hyde_model=None, rerank_model=None))
+
+
 def _fixture(*, manifest: bool = False) -> tuple[Path, Path]:
     """A composed-looking scope: one index, one registered name, one note on disk.
 
@@ -137,6 +144,47 @@ def test_mcp_and_cli_render_the_same_envelope() -> None:
     # structurally different shapes while every named assertion passed.
     assert set(mcp) == set(cli), set(mcp) ^ set(cli)
     assert mcp == cli, "envelope diverged — logic leaked into a transport"
+
+
+def test_the_two_cli_renderings_agree_about_what_was_withheld() -> None:
+    """The human read-out judged "sources excluded" from --include-sources alone while --json used
+    the class-aware rule, so `query --doc-class conversation` and the same command with --json
+    made OPPOSITE claims about the same result set."""
+    _, registry = _fixture()
+    base = [sys.executable, "-m", "substrate.cli", "query", "composition", "--scope", "demo",
+            "--registry", str(registry), "--k", "1", "--no-vector", "--doc-class", "conversation"]
+    human = subprocess.run(base, capture_output=True, text=True, cwd=REPO, check=True).stdout
+    envelope = json.loads(subprocess.run([*base, "--json"], capture_output=True, text=True,
+                                         cwd=REPO, check=True).stdout)
+    assert ("sources excluded" in human) is envelope["filters"]["sources_excluded"], human
+
+
+def test_mcp_and_cli_agree_with_a_stack_actually_requested() -> None:
+    """The equivalence above runs both sides lexical-only, so both take `stack.build`'s early
+    return and it compares two identically-empty stacks — it cannot see the divergence the shared
+    builder exists to prevent (a CLI reporting `unavailable: []` while the server names an
+    unreachable daemon, which is exactly what the hand-wired CLI branch used to do).
+
+    This asks BOTH sides for an embedder, matched. It asserts they agree rather than asserting a
+    particular value, so it holds whether or not the daemon is up.
+    """
+    root, registry = _fixture()
+    query = "composition manifest"
+
+    mcp = _call("search", {"scope": "demo", "query": query, "k": 3}, registry,
+                _cfg_embedder(registry))
+    proc = subprocess.run(
+        [sys.executable, "-m", "substrate.cli", "query", query, "--scope", "demo",
+         "--registry", str(registry), "--k", "3", "--json"],   # no --no-vector: embedder asked for
+        capture_output=True, text=True, cwd=REPO, check=True,
+    )
+    cli = json.loads(proc.stdout)
+
+    assert mcp == cli, "envelope diverged once a real arm was requested"
+    # And the arm state actually travelled — otherwise this passes by comparing two empty things
+    # again, which is the defect it was written to close.
+    mode = mcp["retrieval_mode"]
+    assert mode["embedder"] is not None or mode["unavailable"], mode
 
 
 # ---------------------------------------------------------------- the contract crosses

@@ -202,25 +202,40 @@ def test_commit_revalidates_rather_than_trusting_the_token() -> None:
 
 # ---------------------------------------------------------------- the write itself
 
-def test_a_symlinked_target_is_refused() -> None:
-    """Verified escape: the write used to stage through a fixed `<note>.md.tmp` and `replace()`
-    it into place, so a symlink planted at either name redirected the content OUTSIDE the vault —
-    past every containment check, which had only ever examined the intended path."""
+def test_no_reachable_path_writes_through_a_symlink() -> None:
+    """The escape this closes: the write used to stage through a fixed `<note>.md.tmp` and
+    `replace()` it into place, so a symlink planted at either name redirected the content OUTSIDE
+    the vault, past containment checks that had only ever examined the intended path.
+
+    This asserts the OUTCOME — no reachable call writes through a symlink — and names the
+    mechanism that actually fires for each case. It deliberately does NOT claim to exercise
+    O_NOFOLLOW: `_resolve_target` dereferences before the open, so every symlink reachable from
+    here is refused earlier, and the flag covers only the residual window between resolve and
+    open, which no deterministic test can reach.
+    """
     v, book = _vault(), _book()
     outside = Path(tempfile.mkdtemp()) / "outside.md"
     outside.write_bytes(b"# Untouched\n")
+
+    # (a) symlink pointing OUT of the vault: resolves outside, containment refuses.
     (v / "04-synthesis" / "decision.md").symlink_to(outside)
-
-    # `_resolve_target` resolves the path, so a symlinked note resolves to its target and trips
-    # the containment check before the additive-only one — refused for the RIGHT reason.
     _refuses(lambda: _plan(v, book), containing="resolves outside the project vault")
-    assert outside.read_bytes() == b"# Untouched\n"
 
+    # (b) planted between plan and commit: commit re-validates, so it refuses on the same check
+    # rather than writing against the plan it was holding.
     p = notes.plan(project_vault=v, content=GOOD, filename="third.md", book=book)
-    (v / "04-synthesis" / "third.md").symlink_to(outside)   # planted AFTER the plan
+    (v / "04-synthesis" / "third.md").symlink_to(outside)
     _refuses(lambda: notes.commit(project_vault=v, content=GOOD, filename="third.md",
-                                  confirm_token=p.confirm_token, book=book))
-    assert outside.read_bytes() == b"# Untouched\n", "the write must not follow a symlinked target"
+                                  confirm_token=p.confirm_token, book=book),
+             containing="resolves outside the project vault")
+
+    # (c) symlink pointing INSIDE the vault at an existing note: additive-only refuses.
+    (v / "02-areas" / "real.md").write_bytes(b"# Real\n")
+    (v / "04-synthesis" / "fourth.md").symlink_to(v / "02-areas" / "real.md")
+    _refuses(lambda: _plan(v, book, filename="fourth.md"), containing="additive-only")
+
+    assert outside.read_bytes() == b"# Untouched\n", "nothing outside the vault was written"
+    assert (v / "02-areas" / "real.md").read_bytes() == b"# Real\n", "no in-vault note overwritten"
 
 
 # ---------------------------------------------------------------- destination refusals

@@ -779,9 +779,16 @@ def cmd_query(args: argparse.Namespace) -> int:
                     unavailable=unavailable, db=db_path,
                 ), indent=2, ensure_ascii=False))
                 return 0
-        sset = "all" if statuses is None else ",".join(sorted(statuses))
+        # Derived from the SAME function the --json envelope uses, not from a second reading of
+        # the flags. The human path judged `sources excluded` off `--include-sources` alone, so
+        # `query --doc-class conversation` and the same command with `--json` made OPPOSITE claims
+        # about whether sources were withheld — two renderings of one result disagreeing about
+        # what it contains.
+        _f = render.applied_filters(statuses, include_sources=args.include_sources,
+                                    document_class=args.doc_class)
+        sset = "all" if statuses is None else ",".join(_f["statuses_included"])
         print(f"  status filter: {sset}"
-              + ("" if args.include_sources else "  ·  sources excluded (--include-sources)"))
+              + ("  ·  sources excluded (--include-sources)" if _f["sources_excluded"] else ""))
         if not hits:
             print("  (no results)")
         for h in hits:
