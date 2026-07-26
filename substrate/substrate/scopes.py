@@ -28,9 +28,15 @@ import os
 import re
 import tempfile
 import tomllib
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # non-POSIX; the lock degrades, the write does not
+    fcntl = None
 
 DEFAULT_REGISTRY = Path.home() / ".substrate" / "scopes.toml"
 ENV_VAR = "SUBSTRATE_REGISTRY"
@@ -43,6 +49,33 @@ _BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 
 class ScopeError(RuntimeError):
     """A scope is not registered, its registry is malformed, or its index has gone missing."""
+
+
+@contextmanager
+def _exclusive(registry: Path):
+    """Hold an exclusive lock across a whole read-modify-write of the registry.
+
+    `record` reads the file, adds one entry, and writes the WHOLE thing back. An atomic replace
+    makes each write all-or-nothing but does nothing about two composes interleaving: both read
+    the old registry, both write a full snapshot, and the second silently drops the first's scope.
+    Composing several vaults in a shell loop is the obvious way to hit it, and the loss is
+    invisible — the scope simply is not there later.
+
+    The lock file is separate from the registry because the registry is replaced by rename, which
+    would drop a lock held on the old inode. `fcntl` is POSIX; where it is absent the write still
+    happens (a missing lock must not stop a single-process compose from registering) and the
+    concurrent case degrades to the behaviour described above.
+    """
+    lock_path = registry.parent / f".{registry.name}.lock"
+    if fcntl is None:
+        yield
+        return
+    with open(lock_path, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 @dataclass(frozen=True)
@@ -136,8 +169,11 @@ def record(
     a well-formed answer from the wrong source set, which is the failure `resolve_scope` already
     refuses at the doc_id level. Recomposing the same vault (to a new db, or just again) updates.
 
-    The write is atomic. A crash mid-write would otherwise leave a truncated registry, which
-    `load` reports as malformed for every scope, not just the one being recorded.
+    The whole read-modify-write is serialized under a lock, and the write itself is atomic. Those
+    are two different guarantees for two different failures: the atomic replace stops a crash
+    leaving a truncated registry that `load` then reports as malformed for EVERY scope, and the
+    lock stops two concurrent composes each writing a full snapshot, where the second silently
+    drops the first's entry.
     """
     # A scope name becomes the first segment of every `expand_ref` this scope issues, so a name
     # containing the ref separator produces handles that parse back to a DIFFERENT scope — one
@@ -150,7 +186,14 @@ def record(
         )
     path = registry_path(registry)
     vault, db, index_root = (p.expanduser().resolve() for p in (vault, db, index_root))
+    path.parent.mkdir(parents=True, exist_ok=True)
 
+    with _exclusive(path):
+        return _record_locked(path, name, vault=vault, db=db, index_root=index_root)
+
+
+def _record_locked(path: Path, name: str, *, vault: Path, db: Path, index_root: Path) -> Path:
+    """The read-modify-write itself. Called only with the registry lock held."""
     existing = load(path)
     prior = existing.get(name)
     if prior is not None and prior.vault != vault:
@@ -186,10 +229,7 @@ def record(
         ]
     body = "\n".join(lines) + "\n"
 
-    # A UNIQUE staging name, not a fixed `scopes.toml.tmp`: two composes running at once would
-    # otherwise interleave writes into one staging file and publish a registry that `load` reports
-    # as malformed for EVERY scope, not just theirs.
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # A unique staging name, so nothing is shared even if the lock is unavailable (non-POSIX).
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".scopes-", suffix=".toml")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:

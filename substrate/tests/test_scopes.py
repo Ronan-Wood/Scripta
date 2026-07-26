@@ -111,6 +111,32 @@ def test_recompose_same_vault_updates_in_place() -> None:
 
 # ---------------------------------------------------------------- refusals
 
+def test_concurrent_records_do_not_lose_an_entry() -> None:
+    """`record` reads the whole registry, adds one entry and writes it all back. Without a lock
+    two composes both read the OLD file and the second's snapshot silently drops the first's
+    scope — invisible afterwards, the scope simply is not there. Composing several vaults in a
+    shell loop is the obvious way to hit it."""
+    import threading
+
+    root, reg = _tmp(), _registry()
+    names = [f"s{i}" for i in range(12)]
+    prepared = {n: _compose(root, n) for n in names}
+    barrier = threading.Barrier(len(names))
+
+    def go(n: str) -> None:
+        v, d, i = prepared[n]
+        barrier.wait()                      # maximize the overlap on the read-modify-write
+        scopes.record(n, vault=v, db=d, index_root=i, registry=reg)
+
+    threads = [threading.Thread(target=go, args=(n,)) for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert set(scopes.load(reg)) == set(names), sorted(set(names) - set(scopes.load(reg)))
+
+
 def test_unknown_scope_names_what_exists() -> None:
     root, reg = _tmp(), _registry()
     v, d, i = _compose(root, "prism")

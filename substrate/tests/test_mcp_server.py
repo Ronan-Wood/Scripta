@@ -311,8 +311,12 @@ def test_serve_reads_and_writes_line_delimited_json() -> None:
     stdout = io.StringIO()
     server.serve(_cfg(registry), stdin=stdin, stdout=stdout)
     lines = [json.loads(x) for x in stdout.getvalue().splitlines() if x.strip()]
-    # Two replies: the notification and the junk line produce none, and neither kills the loop.
-    assert [m["id"] for m in lines] == [1, 2]
+    # The notification is silent; the junk line is ANSWERED. Swallowing it left a client waiting
+    # on a reply that was never coming — the server's own liveness turned into a hang.
+    assert [m.get("id") for m in lines] == [1, None, 2]
+    assert lines[1]["error"]["code"] == -32700
+    # A blank line is framing noise, not a malformed message, and must stay silent.
+    assert sum(1 for m in lines if m.get("error")) == 1
 
 
 def test_tool_fault_stays_inside_the_result() -> None:

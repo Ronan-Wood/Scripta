@@ -173,15 +173,21 @@ def applied_filters(
     that had actually been applied unreported — a false claim about what was withheld, in the one
     function whose entire contract is that nothing withheld is silent.
 
-    `sources_excluded` follows the STORE's real behaviour: `_add_class_exclusion` stands down when
-    an explicit `document_class` is given, so a class-filtered query does not exclude sources and
-    must not claim to.
+    `sources_excluded` answers the question a caller actually has — "could a conversation-class
+    passage be in these results?" — not "did one particular SQL clause run". Those come apart
+    under a class filter: `_add_class_exclusion` stands down when an explicit `document_class` is
+    given, but a filter naming `reference-frozen` still withholds every conversation, by being the
+    filter. Reporting `false` there said "nothing was withheld" about content that was, which is
+    the failure this whole function exists to prevent. Sources are excluded unless they were asked
+    for — either by `include_sources`, or by naming a source class outright.
     """
+    from substrate.classes import EXCLUDED_CLASSES
+
     included = sorted(STATUSES) if statuses is None else sorted(statuses)
     return {
         "statuses_included": included,
         "statuses_excluded": sorted(STATUSES - set(included)),
-        "sources_excluded": not (include_sources or document_class is not None),
+        "sources_excluded": not (include_sources or document_class in EXCLUDED_CLASSES),
         "doc_type": doc_type,
         "document_class": document_class,
         # Anything else that narrowed this result set — a clamped `k`, today. ALWAYS present, and
