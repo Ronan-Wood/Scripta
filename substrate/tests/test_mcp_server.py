@@ -328,6 +328,38 @@ def test_notifications_get_no_reply() -> None:
     assert server.handle({"jsonrpc": "2.0", "id": 0, "method": "tools/list"}, cfg) is not None
 
 
+def test_batches_are_served_not_rejected() -> None:
+    """A batch is a legal array and this server advertises a protocol version that permits one.
+    Rejecting it failed a conformant client's whole batch — `initialize` included — on a single
+    id-less error."""
+    _, registry = _fixture()
+    cfg = _cfg(registry)
+
+    out = server.handle([{"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+                         {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}], cfg)
+    assert isinstance(out, list)
+    assert [m["id"] for m in out] == [1, 2]
+
+    # An invalid member is an error INSIDE the batch, not a rejection of the whole.
+    mixed = server.handle([{"jsonrpc": "2.0", "id": 3, "method": "tools/list"}, "garbage"], cfg)
+    assert len(mixed) == 2
+    assert mixed[0]["id"] == 3 and mixed[1]["error"]["code"] == -32600
+
+
+def test_a_batch_of_only_notifications_gets_no_reply() -> None:
+    """JSON-RPC: no response at all — not an empty array, which a client would try to parse as
+    results."""
+    _, registry = _fixture()
+    assert server.handle([{"jsonrpc": "2.0", "method": "initialize"},
+                          {"jsonrpc": "2.0", "method": "notifications/initialized"}],
+                         _cfg(registry)) is None
+
+
+def test_an_empty_batch_is_invalid() -> None:
+    _, registry = _fixture()
+    assert server.handle([], _cfg(registry))["error"]["code"] == -32600
+
+
 def test_positional_params_refuse_instead_of_escaping() -> None:
     """JSON-RPC permits positional params. An array reached `.get` and threw out of the handler,
     becoming an id-less transport error the client could not match to its request."""

@@ -495,14 +495,26 @@ def _error(rid: Any, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
 
 
-def handle(msg: object, cfg: Config) -> dict | None:
-    """One JSON-RPC message in, one response out. None for notifications, which take no reply.
+def handle(msg: object, cfg: Config) -> dict | list | None:
+    """One JSON-RPC frame in, one response out — a dict, a batch array, or None for a frame that
+    takes no reply.
 
-    A decoded message is not necessarily an object: a JSON-RPC 2.0 BATCH is a legal array, and a
-    bare scalar is legal JSON. Both used to reach `msg.get(...)` and take the whole session down
-    with an uncaught AttributeError — a dead pipe rather than an error the model can act on, which
-    is the exact outcome the isError design exists to avoid.
+    A decoded frame is not necessarily an object: a batch is a legal array and a bare scalar is
+    legal JSON. Both used to reach `msg.get(...)` and take the whole session down with an uncaught
+    AttributeError — a dead pipe rather than an error the model can act on, which is the exact
+    outcome the isError design exists to avoid.
     """
+    # A BATCH is a legal array of requests, and this server advertises a protocol version that
+    # permits them — rejecting one meant a conformant client's whole batch, `initialize` included,
+    # failed on a single id-less error. Per JSON-RPC 2.0: an empty array is itself invalid; a
+    # batch of only notifications gets NO response at all (not an empty array); otherwise the
+    # replies come back as an array, and an invalid member is an error object inside it rather
+    # than a rejection of the whole.
+    if isinstance(msg, list):
+        if not msg:
+            return _error(None, -32600, "invalid request: empty batch")
+        replies = [r for r in (handle(m, cfg) for m in msg) if r is not None]
+        return replies or None
     if not isinstance(msg, dict):
         return _error(None, -32600, "invalid request: expected a JSON-RPC object")
     # A NOTIFICATION is a request with no `id` AT ALL — for any method, not just the one that had

@@ -704,9 +704,18 @@ class IndexStore:
         Returning the pair rather than a bool is deliberate — the caller names `n/total` in the
         degradation reason, so "never embedded" and "partially embedded" stay distinguishable to
         whoever has to fix it.
+
+        The numerator JOINS chunks so it counts only vectors a query could actually reach. Both
+        delete paths (`_delete_rows`, `clear`) do remove vectors today, so an orphan is not
+        reachable through the engine — but a bare COUNT over `chunk_vectors` makes this guard's
+        correctness depend on every future delete path remembering to, and the failure it would
+        produce is the one this whole function exists to stop: enough orphans to satisfy
+        `n >= total` on a partly-embedded index, reported as complete, with a measured MRR on top.
         """
         n = self.db.execute(
-            "SELECT COUNT(*) FROM chunk_vectors WHERE embed_model=?", (model,)
+            "SELECT COUNT(*) FROM chunk_vectors v JOIN chunks c ON c.chunk_id = v.chunk_id "
+            "WHERE v.embed_model=?",
+            (model,),
         ).fetchone()[0]
         total = self.db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         return n, total
