@@ -566,6 +566,12 @@ def serve(cfg: Config, stdin=None, stdout=None) -> int:
         try:
             msg = json.loads(line)
         except json.JSONDecodeError:
+            # ANSWERED, not swallowed. A client that sent one malformed frame and got silence had
+            # no way to distinguish "rejected" from "still working" and would wait on a reply that
+            # was never coming — the server's own liveness turned into a hang. -32700 with a null
+            # id is what JSON-RPC has for a frame too broken to carry one.
+            stdout.write(json.dumps(_error(None, -32700, "parse error")) + "\n")
+            stdout.flush()
             continue
         # No frame may end the session. `handle` refuses a non-object itself, and this catch-all
         # covers anything it did not anticipate — a server that dies on one malformed line takes

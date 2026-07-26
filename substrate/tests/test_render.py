@@ -200,9 +200,18 @@ def test_document_class_is_its_own_axis() -> None:
     f = _payload(document_class="conversation")["filters"]
     assert f["document_class"] == "conversation"
     assert f["doc_type"] is None
-    # The store stands its source exclusion down when an explicit class is given, so claiming
-    # sources were excluded would be a false statement about what was withheld.
-    assert f["sources_excluded"] is False
+
+
+def test_sources_excluded_answers_the_question_not_the_sql() -> None:
+    """The field means "could a conversation passage be in these results", not "did one SQL
+    clause run". Those come apart under a class filter: the store's source exclusion stands down,
+    but a filter naming `reference-frozen` still withholds every conversation BY BEING the filter.
+    Reporting false there said "nothing was withheld" about content that was."""
+    assert _payload(document_class="reference-frozen")["filters"]["sources_excluded"] is True
+    # Asking for the source class outright is the one case where they really are not withheld.
+    assert _payload(document_class="conversation")["filters"]["sources_excluded"] is False
+    assert _payload(include_sources=True)["filters"]["sources_excluded"] is False
+    assert _payload()["filters"]["sources_excluded"] is True
 
 
 # ---------------------------------------------------------------- the capability envelope
