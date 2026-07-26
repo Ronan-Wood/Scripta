@@ -696,24 +696,26 @@ def _resolve_db(args: argparse.Namespace) -> str:
 def cmd_query(args: argparse.Namespace) -> int:
     from substrate.store.index_store import IndexStore
 
-    from substrate.embed.engine import OllamaEmbedder
     from substrate.retrieve.retriever import retrieve
 
     from substrate import render, stack as _stack
 
-    # Two wirings. The default is the lean lookup config this command has always run (embedder
-    # only, no generator). `--full-stack` builds the SAME arms the MCP server builds, through the
-    # same function — that shared builder is what makes Doc 3a §6's CLI/MCP equivalence a real
-    # test rather than two hand-wired stacks that agree on the day they were written.
-    if args.full_stack:
-        st = _stack.build(lexical_only=args.no_vector)
-        embedder, expander, reranker = st.embedder, st.expander, st.reranker
-        unavailable = st.unavailable
-    else:
-        cand = OllamaEmbedder()
-        embedder = None if args.no_vector else (cand if cand.available() else None)
-        expander = reranker = None
-        unavailable = ()
+    # BOTH wirings go through stack.build. The lean default (embedder only, no generator) is
+    # expressed as arguments to the shared builder rather than as a hand-wired branch: the
+    # hand-wired version could never populate `unavailable`, so with Ollama down the CLI reported
+    # `{"embedder": null, "unavailable": []}` — the encoding for "no vector arm was asked for" —
+    # while the MCP server named the unreachable daemon. That is precisely the Doc 3a §6
+    # divergence the shared builder exists to prevent, hiding on the CLI's most-used JSON path.
+    #
+    # `--no-vector` drops only the VECTOR arm. It used to imply lexical_only under --full-stack,
+    # silently disabling the reranker too, which does not need vectors to reorder a fused list.
+    st = _stack.build(
+        embed_model=None if args.no_vector else _stack.DEFAULT_EMBED,
+        hyde_model=_stack.DEFAULT_HYDE if args.full_stack else None,
+        rerank_model=_stack.DEFAULT_RERANK if args.full_stack else None,
+    )
+    embedder, expander, reranker = st.embedder, st.expander, st.reranker
+    unavailable = st.unavailable
     statuses = _resolve_statuses(args)
     db_path = _resolve_db(args)
 
@@ -733,6 +735,7 @@ def cmd_query(args: argparse.Namespace) -> int:
         if refuse_if_rebuilt(store, repopulates=False):
             return 2
         cap = None
+        result = None
         if args.kind == "outline":
             hits = store.search(args.text, k=args.k, kind="outline",
                                 document_class=args.doc_class, statuses=statuses,
@@ -749,15 +752,25 @@ def cmd_query(args: argparse.Namespace) -> int:
                 # Rendered by the ENGINE, not here. The MCP server calls the same function on the
                 # same result, which is what makes Doc 3a §6's equivalence a single equality
                 # rather than two hand-written serializers that agree until they do not.
-                print(json.dumps(
-                    render.search_payload(
-                        result, scope=args.scope or db_path, query=args.text,
-                        statuses=statuses, include_sources=args.include_sources,
-                        doc_type=args.doc_class, chars=args.chars,
-                        unavailable=unavailable,
-                    ),
-                    indent=2, ensure_ascii=False,
-                ))
+                #
+                # `scope` holds a scope NAME or nothing. Substituting the db path put a filesystem
+                # path into every expand_ref: an absolute one made the ref unparseable, and a
+                # relative one (`out/substrate.db`) parsed SUCCESSFULLY into scope `out` — a
+                # well-formed handle naming a scope that does not exist. `db` is its own field.
+                #
+                # `--doc-class` is the document_class axis (reference-frozen, conversation), NOT
+                # the doc_type spine axis (decision/explanation/reference/how-to). Reporting it as
+                # doc_type put an illegal value on that axis and left the filter actually applied
+                # unreported — and the store stands its source exclusion down when a class is
+                # given, so `sources_excluded` was claiming an exclusion that had not happened.
+                payload = render.search_payload(
+                    result, scope=args.scope, query=args.text,
+                    statuses=statuses, include_sources=args.include_sources,
+                    document_class=args.doc_class, chars=args.chars,
+                    unavailable=unavailable,
+                )
+                payload["db"] = db_path
+                print(json.dumps(payload, indent=2, ensure_ascii=False))
                 return 0
         sset = "all" if statuses is None else ",".join(sorted(statuses))
         print(f"  status filter: {sset}"
@@ -785,6 +798,12 @@ def cmd_query(args: argparse.Namespace) -> int:
                 out = store.outline_for(h.chunk_id)
                 if out:
                     print(f"    ↳ orientation: {out.path_str}")
+        # `--outlines N` was retrieved and then thrown away on this path: a flag accepted and not
+        # honoured, which is the same defect as a filter accepted and not applied.
+        if result is not None and result.outlines:
+            print(f"\n  orientation ({len(result.outlines)} record(s)):")
+            for o in result.outlines:
+                print(f"    · {o.path_str or o.citation}")
         # Surface the capability envelope — which arms actually produced this, the measured tier
         # they imply, and any mid-run fallback — instead of discarding it (the Boundary Principle).
         if cap is not None:
@@ -815,7 +834,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     from substrate.store.index_store import IndexStore
 
     if not args.scope:
-        payload = introspect.scopes_payload(args.registry)
+        try:
+            payload = introspect.scopes_payload(args.registry)
+        except scopes.ScopeError as e:
+            # Every other registry entry point reports this as a FATAL line; this one raised a
+            # traceback, from the single command whose job is diagnosing registry state.
+            print(f"FATAL (scope): {e}", file=sys.stderr)
+            return 2
         if args.json:
             print(json.dumps(payload, indent=2, ensure_ascii=False))
             return 0
@@ -836,7 +861,11 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"FATAL (scope): {e}", file=sys.stderr)
         return 2
 
-    st = _stack.build(lexical_only=not args.full_stack)
+    # The SAME default as the MCP server: the embedder wired, so "can I trust this index" is
+    # answered with real vector coverage. Defaulting to lexical-only here meant the CLI reported
+    # `vectors: null` on a box where the server reported three unreachable arms — the same
+    # question, two answers, under a docstring claiming they could not differ.
+    st = _stack.build(hyde_model=None, rerank_model=None, lexical_only=args.lexical_only)
     with IndexStore(str(entry.db)) as store:
         if refuse_if_rebuilt(store, repopulates=False):
             return 2
@@ -854,7 +883,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"  by status {payload['by_status']} · by confidence {payload['by_confidence']}")
     v = payload["vectors"]
     if v is None:
-        print("  vectors: no embedder wired (--full-stack to check coverage)")
+        # "Not asked for" and "asked for, could not start" are the SAME None here, and stating the
+        # wrong one is the distinction `unavailable` exists to preserve, misreported at the last
+        # step. The payload already carries which it was — read it rather than assume.
+        why = payload["retrieval_arms"]["unavailable"]
+        print(f"  vectors: NOT CHECKED — {'; '.join(why)}" if why
+              else "  vectors: not checked (--lexical-only)")
     elif v["complete"]:
         print(f"  vectors: {v['stored']}/{v['chunks']} under {v['model']}  ·  complete")
     else:
@@ -1234,9 +1268,9 @@ def main(argv: list[str] | None = None) -> int:
     stt.add_argument("--scope", default=None,
                      help="the scope to inspect; omit to list every registered scope")
     stt.add_argument("--registry", default=None)
-    stt.add_argument("--full-stack", action="store_true",
-                     help="wire the measured stack, so vector coverage is checked against the "
-                          "embedder a real query would use")
+    stt.add_argument("--lexical-only", action="store_true",
+                     help="do not wire an embedder (skips the vector-coverage check), mirroring "
+                          "`substrate-mcp --lexical-only`")
     stt.add_argument("--json", action="store_true")
     stt.set_defaults(func=cmd_status)
 

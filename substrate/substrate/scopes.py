@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -138,6 +139,15 @@ def record(
     The write is atomic. A crash mid-write would otherwise leave a truncated registry, which
     `load` reports as malformed for every scope, not just the one being recorded.
     """
+    # A scope name becomes the first segment of every `expand_ref` this scope issues, so a name
+    # containing the ref separator produces handles that parse back to a DIFFERENT scope — one
+    # that either does not exist or, worse, does. Refused at registration, where the manifest can
+    # still be fixed, rather than discovered when a ref fails to round-trip.
+    if not name or "/" in name or name.strip() != name:
+        raise ScopeError(
+            f"scope name {name!r} is unusable: it must be non-empty, carry no '/', and have no "
+            f"leading or trailing whitespace. Fix the vault manifest's `name`."
+        )
     path = registry_path(registry)
     vault, db, index_root = (p.expanduser().resolve() for p in (vault, db, index_root))
 
@@ -176,10 +186,18 @@ def record(
         ]
     body = "\n".join(lines) + "\n"
 
+    # A UNIQUE staging name, not a fixed `scopes.toml.tmp`: two composes running at once would
+    # otherwise interleave writes into one staging file and publish a registry that `load` reports
+    # as malformed for EVERY scope, not just theirs.
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(body, encoding="utf-8")
-    os.replace(tmp, path)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".scopes-", suffix=".toml")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.replace(tmp_name, path)
+    except OSError:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
     return path
 
 

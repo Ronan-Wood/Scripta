@@ -2,11 +2,22 @@
 
 Doc 3a §2: ingest over MCP is a WRITE. "It requires explicit confirmation from the human in the
 loop; it is not a fire-and-forget tool call. Additive-only (new sources); it never edits existing
-notes." The server cannot force a human to look — a client may auto-approve tool calls — so the
-gate is structural rather than social: `plan()` writes nothing and returns a token derived from
-the exact content and destination, and `commit()` refuses any token that does not match a
-freshly-recomputed one. A caller that never received a plan cannot produce a token, and a caller
-whose source changed after planning gets a refusal rather than a surprise.
+notes."
+
+The gate is two-phase and the token is UNFORGEABLE: `plan()` writes nothing, mints a random
+single-use nonce, and records it in a `PlanBook` held by the running process. `commit()` redeems
+it — a token this process never issued is refused, and a redeemed one cannot be replayed.
+
+An earlier version derived the token as `sha256(target + content)`. That was worthless as a gate:
+both inputs come from the caller, so anyone could compute a valid token without ever calling
+`plan()`, and a first-call write with a self-computed digest succeeded. The docstring claimed a
+guarantee the code did not provide, which is the failure PRINCIPLES.md names directly — a stamp
+implying a condition was handled is worse than no stamp, because the next reader trusts it.
+
+Be precise about what this DOES buy, because overstating it once already happened here. It makes
+a write impossible without a plan having been issued and returned for someone to read, and it
+binds that plan to exact bytes at an exact path. It cannot force a human to actually read it —
+that is the client's approval UI, and no server-side mechanism can reach it.
 
 **The plan is executed, not guessed.** It runs the real ingestion into a throwaway directory, so
 the spine validation, class policy and A18 coverage gate that would refuse this note at compose
@@ -26,6 +37,8 @@ this note, and the caller could not tell which had happened.
 from __future__ import annotations
 
 import hashlib
+import os
+import secrets
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -54,14 +67,39 @@ class Plan:
     warnings: list[str]
 
 
-def _digest(target: Path, content: bytes) -> str:
-    """The confirmation token: this exact content, to this exact path. Binding BOTH is the point —
-    a token that covered only the content would authorise writing it somewhere else."""
+def _binding(target: Path, content: bytes) -> str:
+    """What a plan is FOR: this exact content, at this exact path. Binding both is the point — a
+    binding over content alone would let a redeemed plan write it somewhere else."""
     h = hashlib.sha256()
     h.update(str(target).encode("utf-8"))
     h.update(b"\0")
     h.update(content)
     return h.hexdigest()
+
+
+class PlanBook:
+    """The plans this process has issued and not yet had redeemed.
+
+    Process-local by design. A token is a random nonce, so it cannot be derived from anything the
+    caller knows; it is checked against the binding it was issued for, so it cannot be carried to
+    a different note or destination; and it is popped on redemption, so a plan authorises exactly
+    one write. Held by the running server rather than persisted: a token surviving a restart would
+    authorise a write against a plan nobody in this session ever saw.
+    """
+
+    def __init__(self) -> None:
+        self._issued: dict[str, str] = {}
+
+    def issue(self, binding: str) -> str:
+        token = secrets.token_urlsafe(32)
+        self._issued[token] = binding
+        return token
+
+    def redeem(self, token: str, binding: str) -> bool:
+        """True only for a token this process issued FOR THIS binding. Single-use either way — a
+        token presented against the wrong binding is burned, not left available to retry."""
+        issued = self._issued.pop(token, None)
+        return issued is not None and secrets.compare_digest(issued, binding)
 
 
 def _resolve_target(project_vault: Path, folder: str, filename: str) -> Path:
@@ -93,11 +131,14 @@ def _resolve_target(project_vault: Path, folder: str, filename: str) -> Path:
 
 def plan(
     *, project_vault: Path, content: bytes, filename: str, folder: str = DEFAULT_FOLDER,
+    book: PlanBook,
 ) -> Plan:
-    """Validate a note against the real ingestion gates without writing anything.
+    """Validate a note against the real ingestion gates without writing anything, and issue a
+    single-use token for it.
 
     Raises NoteError with the gate's own message when the note would be refused — the same
-    refusal compose would give, delivered before the vault is touched rather than after.
+    refusal compose would give, delivered before the vault is touched rather than after. A refused
+    plan issues no token, so nothing that failed a gate is ever redeemable.
     """
     from substrate import classes
     from substrate.markdown.ingest import CoverageError, ingest_markdown
@@ -125,7 +166,7 @@ def plan(
             confidence=result.confidence,
             domains=list(result.domains),
             passages=int((result.run.get("chunk") or {}).get("passages", 0)),
-            confirm_token=_digest(target, content),
+            confirm_token=book.issue(_binding(target, content)),
             # Named, not implied: the per-note A22 sweep runs at compose, not here, so this plan
             # does not promise the note will pass it.
             warnings=["the per-note A22 assertion sweep runs at compose, not in this plan"],
@@ -136,23 +177,46 @@ def plan(
 
 def commit(
     *, project_vault: Path, content: bytes, filename: str, folder: str = DEFAULT_FOLDER,
-    confirm_token: str,
+    confirm_token: str, book: PlanBook,
 ) -> Path:
-    """Write the note, but only for a token matching a freshly-recomputed plan.
+    """Write the note, but only for a token this process issued for exactly these bytes and path.
 
-    Re-planning rather than trusting the token is the whole mechanism: it re-runs every gate
+    Two independent checks, guarding two different failures. Re-planning re-runs every gate
     against the content being written NOW, so a source edited between plan and commit is refused
-    instead of written unvalidated.
+    rather than written unvalidated. Redeeming the token proves a plan was issued and returned for
+    someone to read — which re-planning alone cannot establish, since the caller supplies both of
+    its inputs.
     """
-    fresh = plan(project_vault=project_vault, content=content, filename=filename, folder=folder)
-    if confirm_token != fresh.confirm_token:
+    fresh = plan(project_vault=project_vault, content=content, filename=filename, folder=folder,
+                 book=book)
+    if not book.redeem(confirm_token, _binding(fresh.target, content)):
         raise NoteError(
-            "confirm_token does not match this note and destination. Call again without a token "
-            "to get a current plan, confirm it with the human, and pass THAT token — a stale "
-            "token means the content or the target changed after the plan was reviewed."
+            "confirm_token was not issued by this server for this note and destination, or has "
+            "already been used. Call again without a token to get a current plan, confirm it with "
+            "the human, and pass THAT token."
         )
+
     fresh.target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = fresh.target.with_name(fresh.target.name + ".tmp")
-    tmp.write_bytes(content)
-    tmp.replace(fresh.target)
+    # The additive-only and stay-inside-the-vault guarantees are enforced by the SYSCALL, not by
+    # the earlier `target.exists()` check — that check is a check-then-act pair with a window, and
+    # a staging file at a fixed sibling name (`<note>.md.tmp`) was itself an unguarded write: a
+    # symlink planted there redirected the content outside the vault entirely, which is exactly
+    # what the containment checks above exist to refuse. O_EXCL makes "never overwrite" atomic;
+    # O_NOFOLLOW refuses a symlinked target outright.
+    try:
+        fd = os.open(fresh.target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    except FileExistsError as e:
+        raise NoteError(
+            f"{fresh.target} appeared between the plan and the write. This path is additive-only; "
+            f"refusing to overwrite it."
+        ) from e
+    except OSError as e:
+        raise NoteError(f"cannot create {fresh.target}: {e}") from e
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(content)
+    except OSError as e:
+        # A partial note in the vault would compose as a truncated one. Remove it and refuse.
+        fresh.target.unlink(missing_ok=True)
+        raise NoteError(f"failed writing {fresh.target}: {e}") from e
     return fresh.target

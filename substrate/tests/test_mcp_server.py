@@ -87,13 +87,18 @@ def _fixture(*, manifest: bool = False) -> tuple[Path, Path]:
     return root, registry
 
 
-def _call(tool: str, args: dict, registry: Path) -> dict:
+def _call(tool: str, args: dict, registry: Path, cfg: server.Config | None = None) -> dict:
     """One tools/call through the real dispatcher; returns the parsed payload or raises on
-    isError, so a test cannot mistake a refusal for a result."""
+    isError, so a test cannot mistake a refusal for a result.
+
+    `cfg` is threaded through for the two-phase ingest tests: a real server holds ONE Config for
+    its lifetime, and the PlanBook that makes a confirm_token unforgeable lives on it. A fresh
+    Config per call would model a server restarting between plan and commit.
+    """
     resp = server.handle(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
          "params": {"name": tool, "arguments": args}},
-        _cfg(registry),
+        cfg or _cfg(registry),
     )
     body = resp["result"]
     text = body["content"][0]["text"]
@@ -102,11 +107,12 @@ def _call(tool: str, args: dict, registry: Path) -> dict:
     return json.loads(text)
 
 
-def _call_raw(tool: str, args: dict, registry: Path) -> dict:
+def _call_raw(tool: str, args: dict, registry: Path,
+              cfg: server.Config | None = None) -> dict:
     return server.handle(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
          "params": {"name": tool, "arguments": args}},
-        _cfg(registry),
+        cfg or _cfg(registry),
     )["result"]
 
 
@@ -417,15 +423,32 @@ def test_ingest_without_a_token_plans_and_writes_nothing() -> None:
     assert "NOTHING HAS BEEN WRITTEN" in out["next"]
 
 
+def test_ingest_token_cannot_be_derived_by_the_caller() -> None:
+    """THE regression, at the tool boundary. The token was sha256(target + content), both of
+    which the caller supplies, so a first call carrying a self-computed digest wrote the note
+    with no plan ever issued — verified against this dispatcher."""
+    import hashlib
+
+    root, registry = _fixture(manifest=True)
+    (root / "demo-vault" / "04-synthesis").mkdir()
+    target = (root / "demo-vault" / "04-synthesis" / "d.md").resolve()
+    forged = hashlib.sha256(str(target).encode() + b"\0" + _NOTE.encode()).hexdigest()
+    body = _call_raw("ingest", {"scope": "demo", "content": _NOTE, "filename": "d.md",
+                                "confirm_token": forged}, registry)
+    assert body.get("isError")
+    assert not target.exists(), "a forged token must never reach the vault"
+
+
 def test_ingest_with_the_token_writes_and_declares_the_index_stale() -> None:
     """The note is in the vault and not in the index. Said as a field — and `status` drift will
     list it — because a note that exists but cannot be found is the silent-omission shape."""
     root, registry = _fixture(manifest=True)
     (root / "demo-vault" / "04-synthesis").mkdir()
+    cfg = _cfg(registry)      # ONE server across both phases, as in production
     plan = _call("ingest", {"scope": "demo", "content": _NOTE, "filename": "d.md"},
-                 registry)["plan"]
+                 registry, cfg)["plan"]
     out = _call("ingest", {"scope": "demo", "content": _NOTE, "filename": "d.md",
-                           "confirm_token": plan["confirm_token"]}, registry)
+                           "confirm_token": plan["confirm_token"]}, registry, cfg)
     assert out["written"] is True
     assert out["index_stale"] is True
     assert (root / "demo-vault" / "04-synthesis" / "d.md").exists()
@@ -455,11 +478,12 @@ def test_ingest_refuses_both_or_neither_source() -> None:
 def test_ingest_refuses_a_stale_token() -> None:
     root, registry = _fixture(manifest=True)
     (root / "demo-vault" / "04-synthesis").mkdir()
+    cfg = _cfg(registry)
     plan = _call("ingest", {"scope": "demo", "content": _NOTE, "filename": "d.md"},
-                 registry)["plan"]
+                 registry, cfg)["plan"]
     edited = _NOTE.replace("proposed", "verified")
     body = _call_raw("ingest", {"scope": "demo", "content": edited, "filename": "d.md",
-                                "confirm_token": plan["confirm_token"]}, registry)
+                                "confirm_token": plan["confirm_token"]}, registry, cfg)
     assert body.get("isError")
     assert not (root / "demo-vault" / "04-synthesis" / "d.md").exists()
 

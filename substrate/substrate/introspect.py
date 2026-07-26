@@ -18,7 +18,16 @@ from substrate import freshness, scopes
 from substrate import vault as _vault
 
 
+# The only columns `_group` may ever see. An f-string is the only way to parameterize a GROUP BY
+# in SQLite, so the identifier is constrained structurally rather than trusted: every call site
+# passes a literal today, and this is what keeps that true through the refactor that eventually
+# wires a caller-supplied axis into a status payload.
+_GROUPABLE = frozenset({"vault", "tier", "status", "doc_type", "confidence"})
+
+
 def _group(store, column: str) -> dict:
+    if column not in _GROUPABLE:
+        raise ValueError(f"{column!r} is not a groupable column; known {sorted(_GROUPABLE)}")
     return {str(r[0]) if r[0] is not None else "(none)": r[1]
             for r in store.db.execute(
                 f"SELECT {column}, COUNT(*) FROM documents GROUP BY {column}")}
@@ -48,11 +57,17 @@ def vector_status(store, stack) -> dict | None:
         return None
     key = getattr(stack.embedder, "key", getattr(stack.embedder, "model", ""))
     n, total = store.vector_coverage(key)
-    return {
-        "model": key, "stored": n, "chunks": total, "complete": n >= total,
-        "note": None if n >= total else
-                f"the vector arm cannot contribute — run `substrate embed --db {store.path}`",
-    }
+    # An EMPTY index satisfies `n >= total` as 0 >= 0. Reporting that as complete claimed full
+    # vector coverage over a store with nothing in it — zero chunks is the absence of coverage,
+    # not the completion of it. Same correction as the per-query guard in _retrieve.
+    complete = total > 0 and n >= total
+    if complete:
+        note = None
+    elif total == 0:
+        note = "the index holds no chunks — recompose this scope"
+    else:
+        note = f"the vector arm cannot contribute — run `substrate embed --db {store.path}`"
+    return {"model": key, "stored": n, "chunks": total, "complete": complete, "note": note}
 
 
 def status_payload(store, entry, *, stack) -> dict:

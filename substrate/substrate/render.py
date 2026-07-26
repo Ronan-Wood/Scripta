@@ -37,10 +37,25 @@ class RefError(ValueError):
     """An expand_ref that does not name a scope and a chunk."""
 
 
-def expand_ref(scope: str, chunk_id: str) -> str:
+def expand_ref(scope: str | None, chunk_id: str) -> str | None:
     """The handle a caller passes back to `expand`. Scope-qualified because ONE server serves
     every scope: a bare chunk_id would be resolved against whichever index the callee guessed,
-    and a wrong guess returns a well-formed passage from the wrong vault."""
+    and a wrong guess returns a well-formed passage from the wrong vault.
+
+    The separator-free scope name is an INVARIANT of the format, not a convention: a scope called
+    `cbre/2026` issues refs that parse to scope `cbre` — which either does not exist, or does and
+    is the wrong index. It is asserted here as well as refused at registration, because a ref that
+    cannot round-trip is worse than no ref at all.
+    """
+    # No scope, no ref. A query addressed by raw db path has no name to resolve back through the
+    # registry, and a handle that cannot round-trip is worse than an absent one — it looks usable.
+    if not scope:
+        return None
+    if REF_SEP in scope:
+        raise RefError(
+            f"scope {scope!r} contains {REF_SEP!r}, so an expand_ref built from it cannot be "
+            f"parsed back to it. Rename the vault's manifest `name`."
+        )
     return f"{scope}{REF_SEP}{chunk_id}"
 
 
@@ -61,7 +76,8 @@ def _snippet(text: str, chars: int) -> tuple[str, bool]:
     return (body[:chars], True) if len(body) > chars else (body, False)
 
 
-def passage(h: Hit, *, scope: str, chars: int = SNIPPET_CHARS, full: bool = False) -> dict:
+def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
+            full: bool = False) -> dict:
     """One hit as a consumer sees it: a snippet, a handle to the rest, and the whole spine.
 
     Every spine axis is present on every passage, with no field dropped for being uninteresting.
@@ -98,7 +114,7 @@ def passage(h: Hit, *, scope: str, chars: int = SNIPPET_CHARS, full: bool = Fals
     return out
 
 
-def outline_record(h: Hit, *, scope: str, chars: int = SNIPPET_CHARS) -> dict:
+def outline_record(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS) -> dict:
     """A section's orientation record — the two-speed layer of Doc 2 §7. Same spine, because an
     orientation record inherits the currency and settledness of the note it orients."""
     rec = passage(h, scope=scope, chars=chars)
@@ -135,7 +151,8 @@ def retrieval_mode(result: RetrievalResult, *, unavailable: tuple[str, ...] = ()
 
 
 def applied_filters(
-    statuses: frozenset[str] | None, *, include_sources: bool, doc_type: str | None = None
+    statuses: frozenset[str] | None, *, include_sources: bool, doc_type: str | None = None,
+    document_class: str | None = None,
 ) -> dict:
     """What this result set left out, said out loud.
 
@@ -148,24 +165,37 @@ def applied_filters(
     (Reporting the complement is not the tautological A20 check this project retracted. That was
     an ASSERTION restating its own definition and proving nothing; this is a report, and telling a
     consumer what it did not receive is the entire job.)
+
+    `doc_type` and `document_class` are DIFFERENT AXES and each gets its own field. `doc_type` is
+    the Diátaxis note-job (decision/explanation/reference/how-to); `document_class` is what kind
+    of artifact a document is (reference-frozen, conversation). Reporting a class under the
+    doc_type key put a value that is not a legal doc_type on that axis while leaving the filter
+    that had actually been applied unreported — a false claim about what was withheld, in the one
+    function whose entire contract is that nothing withheld is silent.
+
+    `sources_excluded` follows the STORE's real behaviour: `_add_class_exclusion` stands down when
+    an explicit `document_class` is given, so a class-filtered query does not exclude sources and
+    must not claim to.
     """
     included = sorted(STATUSES) if statuses is None else sorted(statuses)
     return {
         "statuses_included": included,
         "statuses_excluded": sorted(STATUSES - set(included)),
-        "sources_excluded": not include_sources,
+        "sources_excluded": not (include_sources or document_class is not None),
         "doc_type": doc_type,
+        "document_class": document_class,
     }
 
 
 def search_payload(
     result: RetrievalResult,
     *,
-    scope: str,
+    scope: str | None,
     query: str,
     statuses: frozenset[str] | None,
     include_sources: bool,
     doc_type: str | None = None,
+    document_class: str | None = None,
     chars: int = SNIPPET_CHARS,
     unavailable: tuple[str, ...] = (),
 ) -> dict:
@@ -180,6 +210,7 @@ def search_payload(
         "passages": [passage(h, scope=scope, chars=chars) for h in result.passages],
         "outline_records": [outline_record(h, scope=scope, chars=chars) for h in result.outlines],
         "retrieval_mode": retrieval_mode(result, unavailable=unavailable),
-        "filters": applied_filters(statuses, include_sources=include_sources, doc_type=doc_type),
+        "filters": applied_filters(statuses, include_sources=include_sources, doc_type=doc_type,
+                                   document_class=document_class),
         "index_version": result.index_version,
     }

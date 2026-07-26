@@ -39,7 +39,14 @@ def _effective_sha(path: Path) -> tuple[str, bool]:
     changed, and a report full of false positives trains its reader to ignore it.
     """
     data = path.read_bytes()
-    front, _ = _parse_frontmatter(data.decode("utf-8", errors="replace"))
+    # Line endings normalized before parsing, exactly as `markdown.reader` and `vault._read_capped`
+    # do — the frontmatter regex is LF-anchored, so without this a CRLF-authored note's declared
+    # `source_sha256` is invisible here while the reader saw it. That note would then be counted as
+    # checked and listed as `changed` forever: permanently STALE on a vault nobody touched, and
+    # recomposing would not clear it. The digest is still taken over the RAW bytes, as the reader
+    # takes it.
+    text = data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    front, _ = _parse_frontmatter(text)
     declared = front.get("source_sha256", "")
     if _SHA256.fullmatch(declared):
         return declared, True

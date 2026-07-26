@@ -44,8 +44,12 @@ def _vault() -> Path:
     return root
 
 
-def _plan(vault: Path, **over):
-    kw = dict(project_vault=vault, content=GOOD, filename="decision.md")
+def _book() -> notes.PlanBook:
+    return notes.PlanBook()
+
+
+def _plan(vault: Path, book: notes.PlanBook | None = None, **over):
+    kw = dict(project_vault=vault, content=GOOD, filename="decision.md", book=book or _book())
     kw.update(over)
     return notes.plan(**kw)
 
@@ -95,15 +99,40 @@ def test_plan_refuses_a_note_compose_would_refuse() -> None:
 def test_commit_without_a_token_is_impossible() -> None:
     v = _vault()
     _refuses(lambda: notes.commit(project_vault=v, content=GOOD, filename="decision.md",
-                                  confirm_token=""), containing="confirm_token")
+                                  confirm_token="", book=_book()), containing="confirm_token")
     assert not (v / "04-synthesis" / "decision.md").exists()
 
 
-def test_commit_with_the_plan_token_writes() -> None:
+def test_a_derived_token_is_worthless() -> None:
+    """THE regression. The token used to be sha256(target + content) — both caller-supplied — so a
+    first call carrying a self-computed digest wrote a note with no plan ever issued. Anything
+    derivable from what the caller already knows is not a gate."""
+    import hashlib
+
     v = _vault()
-    p = _plan(v)
+    target = (v / "04-synthesis" / "decision.md").resolve()
+    forged = hashlib.sha256(str(target).encode() + b"\0" + GOOD).hexdigest()
+    _refuses(lambda: notes.commit(project_vault=v, content=GOOD, filename="decision.md",
+                                  confirm_token=forged, book=_book()),
+             containing="not issued by this server")
+    assert not target.exists(), "a forged token must never reach the vault"
+
+
+def test_a_token_from_another_process_is_refused() -> None:
+    """A PlanBook is per-process on purpose: a token surviving a restart would authorise a write
+    against a plan nobody in this session ever saw."""
+    v = _vault()
+    p = _plan(v, _book())                       # issued by one book…
+    _refuses(lambda: notes.commit(project_vault=v, content=GOOD, filename="decision.md",
+                                  confirm_token=p.confirm_token, book=_book()),  # …redeemed by another
+             containing="not issued by this server")
+
+
+def test_commit_with_the_plan_token_writes() -> None:
+    v, book = _vault(), _book()
+    p = _plan(v, book)
     written = notes.commit(project_vault=v, content=GOOD, filename="decision.md",
-                           confirm_token=p.confirm_token)
+                           confirm_token=p.confirm_token, book=book)
     assert written.read_bytes() == GOOD
     # Resolved on both sides: the target is stored resolved, and on macOS a temp dir alone
     # differs (`/var` vs `/private/var`) — the same normalization trap freshness.drift hit.
@@ -111,33 +140,67 @@ def test_commit_with_the_plan_token_writes() -> None:
     assert not written.with_name(written.name + ".tmp").exists(), "no staging file left behind"
 
 
+def test_a_token_is_single_use() -> None:
+    """One plan authorises one write. A replayable token would let a confirmed plan be redeemed
+    again after the human's attention has moved on."""
+    v, book = _vault(), _book()
+    p = _plan(v, book)
+    notes.commit(project_vault=v, content=GOOD, filename="decision.md",
+                 confirm_token=p.confirm_token, book=book)
+    (v / "04-synthesis" / "decision.md").unlink()      # clear the additive-only refusal
+    _refuses(lambda: notes.commit(project_vault=v, content=GOOD, filename="decision.md",
+                                  confirm_token=p.confirm_token, book=book),
+             containing="already been used")
+
+
 def test_a_token_does_not_authorise_different_content() -> None:
     """The source changing between plan and commit must refuse, not write unreviewed bytes."""
-    v = _vault()
-    p = _plan(v)
+    v, book = _vault(), _book()
+    p = _plan(v, book)
     edited = GOOD.replace(b"proposed", b"verified")
     _refuses(lambda: notes.commit(project_vault=v, content=edited, filename="decision.md",
-                                  confirm_token=p.confirm_token), containing="does not match")
+                                  confirm_token=p.confirm_token, book=book))
     assert not (v / "04-synthesis" / "decision.md").exists()
 
 
 def test_a_token_does_not_authorise_a_different_destination() -> None:
     """A token covering only the content would authorise writing it anywhere."""
-    v = _vault()
-    p = _plan(v)
+    v, book = _vault(), _book()
+    p = _plan(v, book)
     _refuses(lambda: notes.commit(project_vault=v, content=GOOD, filename="decision.md",
-                                  folder="02-areas", confirm_token=p.confirm_token),
-             containing="does not match")
+                                  folder="02-areas", confirm_token=p.confirm_token, book=book))
 
 
 def test_commit_revalidates_rather_than_trusting_the_token() -> None:
-    """The token is not a capability to skip the gates — commit re-plans, so content that would
-    now be refused is refused even holding a token that once matched it."""
+    """The token is not a capability to skip the gates — commit re-plans, so content that would be
+    refused is refused before redemption is even attempted."""
     v = _vault()
-    token = notes._digest((v / "04-synthesis" / "bad.md").resolve(), NO_SPINE)
     _refuses(lambda: notes.commit(project_vault=v, content=NO_SPINE, filename="bad.md",
-                                  confirm_token=token))
+                                  confirm_token="anything", book=_book()))
     assert not (v / "04-synthesis" / "bad.md").exists()
+
+
+# ---------------------------------------------------------------- the write itself
+
+def test_a_symlinked_target_is_refused() -> None:
+    """Verified escape: the write used to stage through a fixed `<note>.md.tmp` and `replace()`
+    it into place, so a symlink planted at either name redirected the content OUTSIDE the vault —
+    past every containment check, which had only ever examined the intended path."""
+    v, book = _vault(), _book()
+    outside = Path(tempfile.mkdtemp()) / "outside.md"
+    outside.write_bytes(b"# Untouched\n")
+    (v / "04-synthesis" / "decision.md").symlink_to(outside)
+
+    # `_resolve_target` resolves the path, so a symlinked note resolves to its target and trips
+    # the containment check before the additive-only one — refused for the RIGHT reason.
+    _refuses(lambda: _plan(v, book), containing="resolves outside the project vault")
+    assert outside.read_bytes() == b"# Untouched\n"
+
+    p = notes.plan(project_vault=v, content=GOOD, filename="third.md", book=book)
+    (v / "04-synthesis" / "third.md").symlink_to(outside)   # planted AFTER the plan
+    _refuses(lambda: notes.commit(project_vault=v, content=GOOD, filename="third.md",
+                                  confirm_token=p.confirm_token, book=book))
+    assert outside.read_bytes() == b"# Untouched\n", "the write must not follow a symlinked target"
 
 
 # ---------------------------------------------------------------- destination refusals
