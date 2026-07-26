@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -157,6 +158,19 @@ def test_the_two_cli_renderings_agree_about_what_was_withheld() -> None:
     envelope = json.loads(subprocess.run([*base, "--json"], capture_output=True, text=True,
                                          cwd=REPO, check=True).stdout)
     assert ("sources excluded" in human) is envelope["filters"]["sources_excluded"], human
+
+
+def test_cli_refuses_flags_the_envelope_cannot_carry() -> None:
+    """`--expand` prints a per-hit orientation line the envelope has no field for, and `--db ""`
+    is a supplied argument rather than an absent one. Both were accepted and silently discarded —
+    the same defect as a filter accepted and not applied."""
+    _, registry = _fixture()
+    base = [sys.executable, "-m", "substrate.cli", "query", "composition"]
+    for extra in (["--scope", "demo", "--registry", str(registry), "--json", "--expand"],
+                  ["--db", ""]):
+        r = subprocess.run([*base, *extra], capture_output=True, text=True, cwd=REPO)
+        assert r.returncode == 2, (extra, r.stdout, r.stderr)
+        assert "FATAL" in r.stderr, extra
 
 
 def test_mcp_and_cli_agree_with_a_stack_actually_requested() -> None:
@@ -450,27 +464,44 @@ def test_list_scopes_lists_a_broken_scope_with_its_fault() -> None:
     assert "error" in row
 
 
-def test_status_reports_a_rebuilt_index_instead_of_refusing() -> None:
-    """Refusing here was backwards: status exists to say whether an index can be trusted, so going
-    silent in the one state where it demonstrably cannot is the question, answered with an error.
-    Search still refuses — answering from an empty index returns a plausible no-match."""
+def test_an_old_schema_index_is_refused_not_destroyed() -> None:
+    """Opening for WRITE drops and rebuilds on a version mismatch, so a read-only tool used to
+    annihilate the index it was asked about and then truthfully report it empty. Every tool here
+    reads, so every tool opens with migrate=False: the refusal names both versions and the data
+    survives for `compose` to rebuild deliberately."""
+    import sqlite3
+
     root, registry = _fixture(manifest=True)
     db = scopes.resolve("demo", registry).db
-    # Force the schema-mismatch rebuild the next open performs.
-    import sqlite3
     con = sqlite3.connect(str(db))
     con.execute("PRAGMA user_version = 1")
     con.commit()
     con.close()
 
-    out = _call("status", {"scope": "demo"}, registry)
-    assert out["rebuilt_empty"] is True
-    assert out["documents"] == 0
+    for tool, args in (("status", {"scope": "demo"}),
+                       ("search", {"scope": "demo", "query": "composition"})):
+        body = _call_raw(tool, args, registry)
+        assert body.get("isError"), tool
+        assert "schema v1" in body["content"][0]["text"], tool
 
-    # And search still refuses AFTERWARDS. The `rebuilt` flag is one-shot — status consumed it by
-    # opening — so the refusal keys on EMPTINESS, which survives any number of opens.
+    # THE POINT: the documents are still there. A destructive read would have left zero.
+    con = sqlite3.connect(str(db))
+    assert con.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+    con.close()
+
+
+def test_status_reports_an_empty_index_while_search_refuses_it() -> None:
+    """An index that is current-schema but empty: status answers (that IS the question it exists
+    for), search refuses (an empty result is indistinguishable from a genuine no-match)."""
+    root, registry = _fixture(manifest=True)
+    with IndexStore(str(scopes.resolve("demo", registry).db)) as s:
+        s.clear()
+
+    out = _call("status", {"scope": "demo"}, registry)
+    assert out["documents"] == 0 and out["passages"] == 0
+
     body = _call_raw("search", {"scope": "demo", "query": "composition"}, registry)
-    assert body.get("isError"), "search must refuse an empty index even after status cleared the flag"
+    assert body.get("isError")
     assert "EMPTY index" in body["content"][0]["text"]
 
 
@@ -579,6 +610,39 @@ def test_ingest_with_the_token_writes_and_declares_the_index_stale() -> None:
 
     d = _call("status", {"scope": "demo"}, registry)["drift"]
     assert any(p.endswith("d.md") for p in d["added"]), "the new note must show as unindexed"
+
+
+def test_k_is_strict_about_its_type() -> None:
+    """The schema says integer and every neighbour refuses what it cannot honour; `int()` accepted
+    "7", 3.9 (→3) and True (→1), turning a malformed argument into a plausible result set."""
+    _, registry = _fixture()
+    for bad in ("7", 3.9, True, [5]):
+        assert _call_raw("search", {"scope": "demo", "query": "x", "k": bad},
+                         registry).get("isError"), bad
+    assert _call("search", {"scope": "demo", "query": "composition", "k": 1}, registry)
+
+
+def test_ingest_refuses_a_non_regular_source() -> None:
+    """A caller-named path is untrusted input. The bound is enforced on the DESCRIPTOR that gets
+    read, not by a prior stat — the check-then-act version could be swapped for a FIFO in
+    between, and open() on one blocks forever."""
+    root, registry = _fixture(manifest=True)
+    (root / "demo-vault" / "04-synthesis").mkdir()
+    fifo = root / "pipe.md"
+    os.mkfifo(fifo)
+    body = _call_raw("ingest", {"scope": "demo", "source_path": str(fifo)}, registry)
+    assert body.get("isError")
+    assert "regular file" in body["content"][0]["text"]
+
+
+def test_ingest_refuses_an_oversized_source() -> None:
+    root, registry = _fixture(manifest=True)
+    (root / "demo-vault" / "04-synthesis").mkdir()
+    big = root / "big.md"
+    big.write_bytes(b"x" * (server.MAX_SOURCE_BYTES + 1))
+    body = _call_raw("ingest", {"scope": "demo", "source_path": str(big)}, registry)
+    assert body.get("isError")
+    assert "limit" in body["content"][0]["text"]
 
 
 def test_ingest_refuses_a_pdf_with_the_reason() -> None:

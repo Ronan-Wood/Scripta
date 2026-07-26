@@ -30,15 +30,18 @@ from pathlib import Path
 from substrate.markdown.reader import _SHA256, _parse_frontmatter
 
 
-def _effective_sha(path: Path) -> tuple[str, bool]:
-    """The digest the reader WOULD store for this file, and whether it was declared.
+def effective_sha_of(data: bytes) -> tuple[str, bool]:
+    """The digest the reader WOULD store for these bytes, and whether it was declared.
+
+    Takes bytes rather than a path so a caller that has already read the file does not read it a
+    second time — two reads can straddle a write, leaving the content and the staleness verdict
+    describing different versions.
 
     Mirrors `markdown.reader`: a well-shaped `source_sha256` in frontmatter wins, else the file's
     own digest. Reusing the rule rather than re-deriving one is what stops this check disagreeing
     with the ingest it is auditing — two digest rules would make every PDF passage read as
     changed, and a report full of false positives trains its reader to ignore it.
     """
-    data = path.read_bytes()
     # Line endings normalized before parsing, exactly as `markdown.reader` and `vault._read_capped`
     # do — the frontmatter regex is LF-anchored, so without this a CRLF-authored note's declared
     # `source_sha256` is invisible here while the reader saw it. That note would then be counted as
@@ -51,6 +54,11 @@ def _effective_sha(path: Path) -> tuple[str, bool]:
     if _SHA256.fullmatch(declared):
         return declared, True
     return hashlib.sha256(data).hexdigest(), False
+
+
+def _effective_sha(path: Path) -> tuple[str, bool]:
+    """`effective_sha_of` for a caller that has only a path."""
+    return effective_sha_of(path.read_bytes())
 
 
 def drift(store, note_paths: list[Path]) -> dict:

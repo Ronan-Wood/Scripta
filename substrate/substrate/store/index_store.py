@@ -185,11 +185,36 @@ FROM chunks c JOIN documents d ON d.doc_id = c.doc_id
 """
 
 
+class SchemaMismatch(RuntimeError):
+    """A read-only open found an index built by a different schema version."""
+
+
 class IndexStore:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, migrate: bool = True):
+        """Open an index, migrating by default.
+
+        `migrate=False` is the READ path. Migration is drop-and-rebuild on a version mismatch, so
+        merely opening an old index destroys it — which meant a nominally read-only tool (`query`,
+        `status`, an MCP `search`) annihilated the index it was asked to report on, then reported
+        that it was empty. Recoverable, since markdown is the source of truth, but a diagnostic
+        that destroys what it diagnoses is the wrong shape. A read open refuses instead, naming
+        both versions, and leaves the data for `compose` to rebuild deliberately.
+        """
         self.path = str(path)
         self.db = schema.connect(self.path)
-        self.rebuilt = schema.migrate(self.db)
+        if migrate:
+            self.rebuilt = schema.migrate(self.db)
+            return
+        self.rebuilt = False
+        found = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if found != schema.SCHEMA_VERSION:
+            self.db.close()
+            raise SchemaMismatch(
+                f"{self.path} " + ("has no schema — it was never composed"
+                                   if found == 0 else f"was built by schema v{found}")
+                + f", this engine is v{schema.SCHEMA_VERSION}. Opening it for WRITE would drop "
+                  f"and rebuild it; refusing to do that on a read. Run `substrate compose`."
+            )
 
     def close(self) -> None:
         self.db.close()

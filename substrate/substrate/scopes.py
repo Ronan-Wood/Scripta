@@ -86,7 +86,7 @@ class ScopeEntry:
     name: str
     vault: Path
     db: Path
-    index_root: Path
+    index_root: Path | None    # None when the registry entry predates the field
     composed: str
 
 
@@ -148,8 +148,13 @@ def load(registry: str | Path | None = None) -> dict[str, ScopeEntry]:
             name=name,
             vault=Path(row["vault"]),
             db=Path(row["db"]),
-            index_root=Path(row.get("index_root", "")),
-            composed=row.get("composed", ""),
+            # An ABSENT index_root stays None. Defaulting it to Path("") stringifies as "." and
+            # the ingest hint then told the user to write the disposable index tree into whatever
+            # directory they happened to be standing in.
+            index_root=Path(row["index_root"]) if row.get("index_root") else None,
+            # Coerced, not assumed: a TOML datetime is valid TOML and what a hand-edit naturally
+            # produces, and a non-str here breaks json.dumps for every list_scopes and status.
+            composed=str(row.get("composed", "") or ""),
         )
     return out
 
@@ -179,10 +184,12 @@ def record(
     # containing the ref separator produces handles that parse back to a DIFFERENT scope — one
     # that either does not exist or, worse, does. Refused at registration, where the manifest can
     # still be fixed, rather than discovered when a ref fails to round-trip.
-    if not name or "/" in name or name.strip() != name:
+    from substrate.render import REF_SEP  # lazy: keeps this module free of the retrieval stack
+
+    if not name or REF_SEP in name or name.strip() != name:
         raise ScopeError(
-            f"scope name {name!r} is unusable: it must be non-empty, carry no '/', and have no "
-            f"leading or trailing whitespace. Fix the vault manifest's `name`."
+            f"scope name {name!r} is unusable: it must be non-empty, carry no {REF_SEP!r}, and "
+            f"have no leading or trailing whitespace. Fix the vault manifest's `name`."
         )
     path = registry_path(registry)
     vault, db, index_root = (p.expanduser().resolve() for p in (vault, db, index_root))

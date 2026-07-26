@@ -180,6 +180,40 @@ def test_name_collision_across_vaults_refuses() -> None:
     assert scopes.resolve("prism", reg).vault == v1.resolve(), "the original must survive"
 
 
+def test_a_name_carrying_the_ref_separator_refuses() -> None:
+    """A scope name is the first segment of every expand_ref it issues, so one containing the
+    separator produces handles that parse back to a DIFFERENT scope."""
+    root, reg = _tmp(), _registry()
+    v, d, i = _compose(root, "x")
+    for bad in ("cbre/2026", " prism", "prism ", ""):
+        try:
+            scopes.record(bad, vault=v, db=d, index_root=i, registry=reg)
+        except scopes.ScopeError:
+            continue
+        raise AssertionError(f"{bad!r} must not be registrable")
+
+
+def test_an_entry_without_index_root_stays_none() -> None:
+    """Defaulting it to Path("") stringifies as "." — the ingest hint then told the user to write
+    the disposable index tree into whatever directory they were standing in."""
+    reg = _registry()
+    reg.write_text('version = 1\n\n[scopes.old]\nvault = "/v"\ndb = "/d.db"\n', encoding="utf-8")
+    assert scopes.load(reg)["old"].index_root is None
+
+
+def test_a_toml_datetime_composed_does_not_break_serialization() -> None:
+    """A bare datetime is valid TOML and what a hand-edit naturally produces; a non-str here broke
+    json.dumps for every list_scopes and status call."""
+    import json
+
+    reg = _registry()
+    reg.write_text('version = 1\n\n[scopes.old]\nvault = "/v"\ndb = "/d.db"\n'
+                   "composed = 2026-07-26T09:00:00Z\n", encoding="utf-8")
+    entry = scopes.load(reg)["old"]
+    assert isinstance(entry.composed, str)
+    json.dumps({"composed": entry.composed})
+
+
 def test_absent_registry_is_empty_not_an_error() -> None:
     """No scope composed yet is a state, not a fault."""
     assert scopes.load(_tmp() / "nothing-here.toml") == {}

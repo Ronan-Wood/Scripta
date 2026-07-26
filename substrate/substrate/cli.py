@@ -682,6 +682,9 @@ def _resolve_db(args: argparse.Namespace) -> str:
     they did not choose, and the answer would look exactly like the one they wanted.
     """
     name = getattr(args, "scope", None)
+    if args.db is not None and not args.db.strip():
+        print("FATAL: --db '' names no index.", file=sys.stderr)
+        raise SystemExit(2)
     if name is None:
         return args.db or "out/substrate.db"
     # An EMPTY --scope is a supplied argument, not an absent one. Treating it as absent skipped the
@@ -690,7 +693,7 @@ def _resolve_db(args: argparse.Namespace) -> str:
     if not name.strip():
         print(f"FATAL: --scope {name!r} names no scope.", file=sys.stderr)
         raise SystemExit(2)
-    if args.db is not None:
+    if args.db is not None:  # including "" — a supplied argument, not an absent one
         print(f"FATAL: --scope {name!r} and --db {args.db!r} name two different indexes. "
               "Pass one.", file=sys.stderr)
         raise SystemExit(2)
@@ -703,11 +706,35 @@ def _resolve_db(args: argparse.Namespace) -> str:
 
 
 def cmd_query(args: argparse.Namespace) -> int:
-    from substrate.store.index_store import IndexStore
+    from substrate.store.index_store import IndexStore, SchemaMismatch
 
     from substrate.retrieve.retriever import retrieve
 
     from substrate import render, stack as _stack
+
+    # EVERY argument is resolved and refused before the stack is built, because building it probes
+    # the local daemon over the network — paying live probes to produce an error decidable from
+    # the arguments alone is the defect already corrected on the MCP side.
+    if args.json and args.kind == "outline":
+        # The JSON envelope carries outline records as a FIELD beside the passages (Doc 2 §7's
+        # two-speed shape). An outline-only result would be the same key holding a different
+        # thing, which a consumer cannot tell apart from a passage search that matched nothing.
+        print("FATAL: --json returns outline records alongside passages; use --outlines N "
+              "rather than --kind outline.", file=sys.stderr)
+        return 2
+    if args.json and args.expand:
+        # `--expand` prints a per-hit orientation line the envelope has no field for, and adding
+        # one would make the CLI's shape differ from the server's. Accepted-and-discarded is the
+        # same defect as a filter accepted and not applied.
+        print("FATAL: --expand has no place in the JSON envelope; use --outlines N, which "
+              "returns orientation records as a field.", file=sys.stderr)
+        return 2
+    statuses = _resolve_statuses(args)
+    db_path = _resolve_db(args)
+    # Human output is unchanged unless asked; --json defaults to the shared count so a bare
+    # `query --json` and a bare MCP `search` produce the SAME envelope (Doc 3a §6).
+    n_outlines = (args.outlines if args.outlines is not None
+                  else (render.OUTLINE_RECORDS if args.json else 0))
 
     # BOTH wirings go through stack.build. The lean default (embedder only, no generator) is
     # expressed as arguments to the shared builder rather than as a hand-wired branch: the
@@ -725,24 +752,15 @@ def cmd_query(args: argparse.Namespace) -> int:
     )
     embedder, expander, reranker = st.embedder, st.expander, st.reranker
     unavailable = st.unavailable
-    statuses = _resolve_statuses(args)
-    db_path = _resolve_db(args)
 
-    if args.json and args.kind == "outline":
-        # The JSON envelope carries outline records as a FIELD beside the passages (Doc 2 §7's
-        # two-speed shape). An outline-only result would be the same key holding a different
-        # thing, which a consumer cannot tell apart from a passage search that matched nothing.
-        print("FATAL: --json returns outline records alongside passages; use --outlines N "
-              "rather than --kind outline.", file=sys.stderr)
+    # Read-only open: a write-open drops and rebuilds an old-schema index, so merely querying a
+    # stale one destroyed it and then answered from the empty result.
+    try:
+        store_cm = IndexStore(db_path, migrate=False)
+    except SchemaMismatch as e:
+        print(f"FATAL (schema): {e}", file=sys.stderr)
         return 2
-    # Human output is unchanged unless asked; --json defaults to the shared count so a bare
-    # `query --json` and a bare MCP `search` produce the SAME envelope (Doc 3a §6).
-    n_outlines = (args.outlines if args.outlines is not None
-                  else (render.OUTLINE_RECORDS if args.json else 0))
-
-    with IndexStore(db_path) as store:
-        if refuse_if_rebuilt(store, repopulates=False):
-            return 2
+    with store_cm as store:
         cap = None
         result = None
         if args.kind == "outline":
@@ -845,7 +863,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     """What a composed scope holds and whether it can be trusted — the CLI face of the MCP
     `status` tool, over the same engine functions so the two cannot answer differently."""
     from substrate import introspect, stack as _stack
-    from substrate.store.index_store import IndexStore
+    from substrate.store.index_store import IndexStore, SchemaMismatch
 
     if args.scope is not None and not args.scope.strip():
         print(f"FATAL: --scope {args.scope!r} names no scope.", file=sys.stderr)
@@ -886,7 +904,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     # Deliberately NOT refuse_if_rebuilt: this command exists to say whether an index can be
     # trusted, so refusing in the one state where it demonstrably cannot is the question, answered
     # with an error. It is reported as a field instead. `query` still refuses.
-    with IndexStore(str(entry.db)) as store:
+    try:
+        store_cm = IndexStore(str(entry.db), migrate=False)
+    except SchemaMismatch as e:
+        print(f"FATAL (schema): {e}", file=sys.stderr)
+        return 2
+    with store_cm as store:
         payload = introspect.status_payload(store, entry, stack=st)
 
     if args.json:
@@ -894,9 +917,6 @@ def cmd_status(args: argparse.Namespace) -> int:
         return 0
 
     print(f"  scope {payload['scope']!r}  ·  {payload['vault']}")
-    if payload["rebuilt_empty"]:
-        print("  REBUILT EMPTY by a schema change — every query answers from nothing. "
-              "Re-run `substrate compose`.")
     print(f"  {payload['documents']} documents · {payload['passages']} passages · "
           f"{payload['outlines']} outlines  ·  index {payload['index_version']} "
           f"(schema v{payload['schema_version']})")
