@@ -42,6 +42,18 @@ SERVER_VERSION = "0.1.0"
 # avoid, so a truncated note says so as a field.
 NOTE_CHAR_CAP = 20_000
 
+# A caller-chosen `k` is a caller-chosen response size: every passage is a full spine record plus
+# a snippet, serialized indented, straight into the caller's context. Capped for the same reason
+# NOTE_CHAR_CAP exists one field over, and REPORTED when it bites — a silently narrowed result set
+# is the thing the filters block exists to prevent.
+MAX_K = 50
+
+# `source_path` ingest reads a caller-named file before anything else can validate it. Bounded and
+# restricted to regular files so one tool call cannot hand the server a 200MB blob, a FIFO that
+# blocks forever, or /dev/zero. Mirrors the markdown reader's own cap, applied BEFORE the read
+# rather than after it.
+MAX_SOURCE_BYTES = 8 * 1024 * 1024
+
 
 class ToolError(RuntimeError):
     """A condition the CALLER can act on — an unknown scope, a stale index, a bad ref. Returned
@@ -73,18 +85,18 @@ def _open(name: str, registry: str | None):
     return entry, store
 
 
-def _statuses(*, include_archived: bool) -> frozenset[str]:
-    """The status filter. Archived and conversation-class content are excluded on SEPARATE axes
-    and are reachable by separate flags, deliberately: a note is archived because it was filed
-    away, a conversation is excluded because retrieving it BY PASSAGE misrepresents a document
-    whose confidence varies within it. Same mechanism, opposite reasons — collapsing them into one
-    'include everything' flag would encode a conflation this project has already identified as
-    wrong. Superseded stays out of both: it is a dead fact, reachable only as the `supersedes`
-    link on the note that replaced it (Doc 2 §6).
-    """
-    from substrate.retrieve.retriever import DEFAULT_STATUSES
-
-    return DEFAULT_STATUSES | {"archived"} if include_archived else DEFAULT_STATUSES
+def _clamp_k(raw: object) -> tuple[int, str | None]:
+    """`k`, bounded, plus a note when the bound bit. Returns the note rather than swallowing it:
+    a result set narrowed without saying so is the failure the filters block exists to prevent."""
+    try:
+        k = int(raw if raw is not None else 5)
+    except (TypeError, ValueError) as e:
+        raise ToolError(f"`k` must be a whole number, got {raw!r}.") from e
+    if k < 1:
+        raise ToolError(f"`k` must be at least 1, got {k}.")
+    if k > MAX_K:
+        return MAX_K, f"k was clamped from {k} to the server maximum of {MAX_K}"
+    return k, None
 
 
 # --------------------------------------------------------------------------- tools
@@ -104,7 +116,9 @@ TOOLS = [
             "replaced a dead one.\n\n"
             "Check `filters` for what was withheld and `retrieval_mode` for which arms actually "
             "ran: `expected_mrr` is null when the running stack has no measured number, which "
-            "means the ranking is weaker than a measured one, not that it is unmeasurable."
+            "means the ranking is weaker than a measured one, not that it is unmeasurable.\n\n"
+            "Every passage also carries its `doc_type` (the one job the note does). There is no "
+            "doc_type filter — filter the returned passages yourself."
         ),
         "inputSchema": {
             "type": "object",
@@ -112,12 +126,8 @@ TOOLS = [
                 "scope": {"type": "string",
                           "description": "Which composed scope to search. `list_scopes` names them."},
                 "query": {"type": "string", "description": "What to look for, in natural words."},
-                "k": {"type": "integer", "description": "Max passages (default 5)."},
-                "doc_type": {
-                    "type": "string",
-                    "enum": ["decision", "explanation", "reference", "how-to"],
-                    "description": "Restrict to notes doing one job. Omit to search all four.",
-                },
+                "k": {"type": "integer",
+                      "description": f"Max passages (default 5, server maximum {MAX_K})."},
                 "include_sources": {
                     "type": "boolean",
                     "description": (
@@ -226,41 +236,44 @@ TOOLS = [
 
 
 def _tool_search(args: dict, cfg: Config) -> dict:
-    from substrate.retrieve.retriever import retrieve
+    from substrate.retrieve import retriever
 
     scope = args.get("scope")
     query = args.get("query")
     if not scope or not query:
         raise ToolError("search requires both `scope` and `query`.")
 
-    doc_type = args.get("doc_type")
+    # EVERY argument is validated before anything expensive runs. doc_type is carried on each
+    # passage but is not a server-side filter in the engine yet (Doc 2 §6a ships the axis and
+    # defers the filter); applying it here would be retrieval logic in the transport, and
+    # accepting it silently would return unfiltered results under a filtered label. Refusing after
+    # `retrieve()` — as this did — meant paying a full retrieval plus, on a wired stack, a HyDE
+    # generation and a rerank pass to produce an error decidable from the arguments alone.
+    if args.get("doc_type"):
+        raise ToolError(
+            f"doc_type filtering is not implemented in the engine yet, so `doc_type="
+            f"{args['doc_type']!r}` cannot be honoured. Every passage carries its doc_type — "
+            f"search without it and filter the results."
+        )
+    k, clamp_note = _clamp_k(args.get("k"))
     include_sources = bool(args.get("include_sources", False))
-    statuses = _statuses(include_archived=bool(args.get("include_archived", False)))
+    statuses = retriever.statuses(include_archived=bool(args.get("include_archived", False)))
 
     entry, store = _open(scope, cfg.registry)
     try:
-        result = retrieve(
-            store, query, k=int(args.get("k", 5)), statuses=statuses,
+        result = retriever.retrieve(
+            store, query, k=k, statuses=statuses,
             include_sources=include_sources, with_outlines=render.OUTLINE_RECORDS,
             embedder=cfg.stack.embedder, expander=cfg.stack.expander,
             reranker=cfg.stack.reranker,
         )
-        # doc_type is carried on every passage but is not yet a server-side filter in the engine
-        # (Doc 2 §6a: the axis ships, filtering deferred). Applying it HERE would be retrieval
-        # logic in the transport — the one thing Doc 3a §5 forbids — so it is refused rather than
-        # quietly ignored, which would return unfiltered results under a filtered label.
-        if doc_type:
-            raise ToolError(
-                f"doc_type filtering is not implemented in the engine yet, so `doc_type="
-                f"{doc_type!r}` cannot be honoured. Every passage carries its doc_type — filter "
-                f"the results, or omit the argument. (Refusing rather than returning unfiltered "
-                f"results under a filtered label.)"
-            )
-        return render.search_payload(
+        payload = render.search_payload(
             result, scope=scope, query=query, statuses=statuses,
-            include_sources=include_sources, doc_type=None,
-            unavailable=cfg.stack.unavailable,
+            include_sources=include_sources, unavailable=cfg.stack.unavailable,
         )
+        if clamp_note:
+            payload["filters"]["notes"] = [clamp_note]
+        return payload
     finally:
         store.close()
 
@@ -337,6 +350,32 @@ def _note_text(store, doc_id: str) -> dict:
     }
 
 
+def _read_source(src: Path) -> bytes:
+    """A caller-named file, bounded and checked BEFORE it is read.
+
+    The caller here is a model, and its arguments can be influenced by content it just read, so
+    "a path" is untrusted input. Size and regular-file are checked with stat first: an unbounded
+    read of a caller-chosen path means one tool call can hand the server a multi-hundred-MB blob,
+    or a FIFO that never returns. The failure message is deliberately fixed rather than echoing
+    the OSError, which otherwise answers "does /etc/<x> exist and can you read it" for any path.
+    """
+    import stat as _stat
+
+    try:
+        st = src.stat()
+    except OSError as e:
+        raise ToolError(f"cannot read the given source_path ({type(e).__name__}).") from e
+    if not _stat.S_ISREG(st.st_mode):
+        raise ToolError("source_path is not a regular file.")
+    if st.st_size > MAX_SOURCE_BYTES:
+        raise ToolError(f"source_path is {st.st_size} bytes, over the {MAX_SOURCE_BYTES}-byte "
+                        f"limit for a note.")
+    try:
+        return src.read_bytes()
+    except OSError as e:
+        raise ToolError(f"cannot read the given source_path ({type(e).__name__}).") from e
+
+
 def _tool_ingest(args: dict, cfg: Config) -> dict:
     """Two-phase by construction. Without a token this PLANS and writes nothing; with one it
     re-plans and writes only if the token still matches. A client that auto-approves tool calls
@@ -353,6 +392,13 @@ def _tool_ingest(args: dict, cfg: Config) -> dict:
         raise ToolError("pass exactly one of `source_path` (an existing file) or `content` "
                         "(a note to write), not both and not neither.")
 
+    # The scope is resolved BEFORE any file is touched, so a call naming an unknown scope costs
+    # nothing — it previously read the whole source into memory first and then refused.
+    try:
+        entry = scopes.resolve(name, cfg.registry)
+    except scopes.ScopeError as e:
+        raise ToolError(str(e)) from e
+
     if source_path:
         src = Path(source_path).expanduser()
         if src.suffix.lower() == ".pdf":
@@ -363,27 +409,19 @@ def _tool_ingest(args: dict, cfg: Config) -> dict:
                 "shared core tier that nothing auto-writes into (Doc 2 §2). Use `substrate "
                 "ingest --pdf` and place the reviewed output deliberately."
             )
-        try:
-            content = src.read_bytes()
-        except OSError as e:
-            raise ToolError(f"cannot read {src}: {e}") from e
+        content = _read_source(src)
         filename = filename or src.name
     else:
         content = content_arg.encode("utf-8")
         if not filename:
             raise ToolError("`content` requires `filename` — the note needs a name in the vault.")
 
-    try:
-        entry = scopes.resolve(name, cfg.registry)
-    except scopes.ScopeError as e:
-        raise ToolError(str(e)) from e
-
     folder = args.get("folder", notes.DEFAULT_FOLDER)
     token = args.get("confirm_token")
     try:
         if not token:
             p = notes.plan(project_vault=entry.vault, content=content, filename=filename,
-                           folder=folder)
+                           folder=folder, book=cfg.plans)
             return {
                 "written": False,
                 "plan": {
@@ -397,7 +435,7 @@ def _tool_ingest(args: dict, cfg: Config) -> dict:
                          "`confirm_token`."),
             }
         target = notes.commit(project_vault=entry.vault, content=content, filename=filename,
-                              folder=folder, confirm_token=token)
+                              folder=folder, confirm_token=token, book=cfg.plans)
     except notes.NoteError as e:
         raise ToolError(str(e)) from e
 
@@ -436,12 +474,19 @@ HANDLERS = {"search": _tool_search, "expand": _tool_expand, "ingest": _tool_inge
 # --------------------------------------------------------------------------- protocol
 
 class Config:
-    """Server-wide configuration: the registry to resolve scopes against and the stack to query
-    with. Deliberately NOT a scope — one server serves them all (Doc 3a §3)."""
+    """Server-wide configuration: the registry to resolve scopes against, the stack to query with,
+    and the plans this process has issued. Deliberately NOT a scope — one server serves them all
+    (Doc 3a §3).
+
+    The PlanBook lives here because it must be per-PROCESS: it is what makes an ingest token
+    unforgeable, and a token that outlived the server would authorise a write against a plan
+    nobody in this session ever saw.
+    """
 
     def __init__(self, registry: str | None, retrieval: stack.Stack):
         self.registry = registry
         self.stack = retrieval
+        self.plans = notes.PlanBook()
 
 
 def _result(rid: Any, payload: dict) -> dict:
@@ -452,8 +497,16 @@ def _error(rid: Any, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
 
 
-def handle(msg: dict, cfg: Config) -> dict | None:
-    """One JSON-RPC message in, one response out. None for notifications, which take no reply."""
+def handle(msg: object, cfg: Config) -> dict | None:
+    """One JSON-RPC message in, one response out. None for notifications, which take no reply.
+
+    A decoded message is not necessarily an object: a JSON-RPC 2.0 BATCH is a legal array, and a
+    bare scalar is legal JSON. Both used to reach `msg.get(...)` and take the whole session down
+    with an uncaught AttributeError — a dead pipe rather than an error the model can act on, which
+    is the exact outcome the isError design exists to avoid.
+    """
+    if not isinstance(msg, dict):
+        return _error(None, -32600, "invalid request: expected a JSON-RPC object")
     method, rid = msg.get("method"), msg.get("id")
 
     if method == "initialize":
@@ -473,7 +526,10 @@ def handle(msg: dict, cfg: Config) -> dict | None:
         if fn is None:
             return _error(rid, -32602, f"unknown tool {name!r}")
         try:
-            payload = fn(params.get("arguments") or {}, cfg)
+            # The serialization is INSIDE the try: a payload that will not serialize is a tool
+            # fault like any other, and leaving json.dumps outside made it a second way to kill
+            # the session rather than an isError the caller could read.
+            text = json.dumps(fn(params.get("arguments") or {}, cfg), indent=2, ensure_ascii=False)
         except Exception as e:  # noqa: BLE001 — a tool fault must not kill the session
             # isError keeps the failure INSIDE the result, so the model sees the condition and can
             # act on it (compose the scope, search again) rather than a transport error it cannot
@@ -482,10 +538,7 @@ def handle(msg: dict, cfg: Config) -> dict | None:
                 "content": [{"type": "text", "text": f"{type(e).__name__}: {e}"}],
                 "isError": True,
             })
-        return _result(rid, {
-            "content": [{"type": "text",
-                         "text": json.dumps(payload, indent=2, ensure_ascii=False)}]
-        })
+        return _result(rid, {"content": [{"type": "text", "text": text}]})
     if rid is None:
         return None
     return _error(rid, -32601, f"unknown method {method!r}")
@@ -502,9 +555,16 @@ def serve(cfg: Config, stdin=None, stdout=None) -> int:
             msg = json.loads(line)
         except json.JSONDecodeError:
             continue
-        resp = handle(msg, cfg)
-        if resp is not None:
-            stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
+        # No frame may end the session. `handle` refuses a non-object itself, and this catch-all
+        # covers anything it did not anticipate — a server that dies on one malformed line takes
+        # every later tool call in the conversation with it.
+        try:
+            resp = handle(msg, cfg)
+            out = None if resp is None else json.dumps(resp, ensure_ascii=False)
+        except Exception as e:  # noqa: BLE001 — the read loop outlives any single message
+            out = json.dumps(_error(None, -32603, f"internal error: {type(e).__name__}: {e}"))
+        if out is not None:
+            stdout.write(out + "\n")
             stdout.flush()
     return 0
 

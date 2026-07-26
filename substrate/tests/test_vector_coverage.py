@@ -128,6 +128,19 @@ def test_no_vectors_refuses_the_measured_tier() -> None:
         assert r.passages, "lexical retrieval should still return results"
 
 
+def test_an_empty_index_is_not_full_coverage() -> None:
+    """0 >= 0 is true, so a bare completeness comparison called an EMPTY index fully covered and
+    let the measured tier through on a store with nothing in it. Reachable whenever a registered
+    db exists but holds nothing: an interrupted compose, a clear(), a reconcile that removed every
+    doc. Zero chunks is the absence of coverage, not the completion of it."""
+    with IndexStore(_fresh_db()) as s:
+        assert s.vector_coverage(_KEY) == (0, 0)
+        r = _full_stack(s)
+        assert r.capability.expected_mrr is None, r.capability
+        assert r.capability.embedder == ""
+        assert any("no chunks" in f for f in r.capability.fallbacks), r.capability.fallbacks
+
+
 def test_partial_vectors_refuse_the_measured_tier_too() -> None:
     """Presence is not completeness. One vector of three is the shape that reported a confident
     MRR over 14% of a corpus."""

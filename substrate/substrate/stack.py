@@ -44,14 +44,10 @@ class Stack:
     reranker: object | None = None
     unavailable: tuple[str, ...] = ()
 
-    @property
-    def lexical_only(self) -> bool:
-        return self.embedder is None
-
 
 def build(
     *,
-    embed_model: str = DEFAULT_EMBED,
+    embed_model: str | None = DEFAULT_EMBED,
     hyde_model: str | None = DEFAULT_HYDE,
     rerank_model: str | None = DEFAULT_RERANK,
     embed_style: str = "auto",
@@ -62,39 +58,50 @@ def build(
     """Wire the query-time arms that are actually reachable.
 
     `lexical_only` skips all three — the zero-dependency path, and the one the eval calls a
-    catastrophic 0.343 tier. Passing None for `hyde_model` or `rerank_model` disables that arm
-    alone, which is a different statement from it being unreachable and is reported as such
-    (an arm nobody asked for is not "unavailable").
+    catastrophic 0.343 tier. Passing None for any single model disables that arm alone, which is a
+    different statement from it being unreachable and is reported as such: an arm nobody asked for
+    is NOT "unavailable", and conflating the two would erase the distinction `unavailable` exists
+    to preserve.
 
     Vector COMPLETENESS is deliberately not checked here — it is a property of an index, not of a
     stack, and one stack serves many scopes. `_retrieve` checks it per query and degrades.
     """
-    if lexical_only:
+    if lexical_only or not (embed_model or hyde_model or rerank_model):
         return Stack()
 
-    cache_path = Path(cache_path).expanduser()
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-
     unavailable: list[str] = []
+    cache = None
 
-    from substrate.embed.cache import VectorCache
-    from substrate.embed.engine import AppleEmbedder, OllamaEmbedder
+    def _cache():
+        """Built ONLY when a generator arm asks for it. The embedder does not use it, so eagerly
+        constructing one made every plain `substrate query` create a database in the user's home
+        directory as a side effect of asking a question."""
+        nonlocal cache
+        if cache is None:
+            from substrate.embed.cache import VectorCache
 
-    cand = (AppleEmbedder() if embed_model.startswith("apple")
-            else OllamaEmbedder(model=embed_model, prefix_style=embed_style))
-    embedder = cand if cand.available() else None
-    if embedder is None:
-        unavailable.append(f"embedder {embed_model!r} unreachable at "
-                           f"{getattr(cand, 'host', 'the local daemon')}")
+            resolved = Path(cache_path).expanduser()
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            cache = VectorCache(str(resolved))
+        return cache
 
-    cache = VectorCache(str(cache_path))
+    embedder = None
+    if embed_model:
+        from substrate.embed.engine import AppleEmbedder, OllamaEmbedder
+
+        cand = (AppleEmbedder() if embed_model.startswith("apple")
+                else OllamaEmbedder(model=embed_model, prefix_style=embed_style))
+        embedder = cand if cand.available() else None
+        if embedder is None:
+            unavailable.append(f"embedder {embed_model!r} unreachable at "
+                               f"{getattr(cand, 'host', 'the local daemon')}")
 
     expander = None
     if hyde_model:
         from substrate.retrieve.expand import AppleFMExpander, HyDE
 
-        hc = (AppleFMExpander(cache=cache) if hyde_model in ("apple", "apple-fm")
-              else HyDE(model=hyde_model, cache=cache))
+        hc = (AppleFMExpander(cache=_cache()) if hyde_model in ("apple", "apple-fm")
+              else HyDE(model=hyde_model, cache=_cache()))
         expander = hc if hc.available() else None
         if expander is None:
             unavailable.append(f"hyde {hyde_model!r} unreachable at "
@@ -108,11 +115,11 @@ def build(
             # Apple FM overflows above ~10 candidates (measured): handed 20 it returns empty
             # replies and every query falls back to fused order — a silent no-op wearing a
             # reranked label. Its own default stands unless the pool was set explicitly.
-            rc = AppleFMReranker(pool=pool if pool != DEFAULT_POOL else 10, cache=cache)
+            rc = AppleFMReranker(pool=pool if pool != DEFAULT_POOL else 10, cache=_cache())
         else:
             from substrate.retrieve.rerank import LLMReranker
 
-            rc = LLMReranker(model=rerank_model, pool=pool, cache=cache)
+            rc = LLMReranker(model=rerank_model, pool=pool, cache=_cache())
         reranker = rc if rc.available() else None
         if reranker is None:
             unavailable.append(f"reranker {rerank_model!r} unreachable at "

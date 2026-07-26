@@ -41,7 +41,8 @@ ENVELOPE_KEYS = {
 }
 MODE_KEYS = {"embedder", "hyde", "reranker", "expected_mrr", "cohort", "degraded", "fallbacks",
              "unavailable"}
-FILTER_KEYS = {"statuses_included", "statuses_excluded", "sources_excluded", "doc_type"}
+FILTER_KEYS = {"statuses_included", "statuses_excluded", "sources_excluded", "doc_type",
+               "document_class"}
 
 LONG = ("A proposed design that was never built. " * 40).strip()
 
@@ -189,6 +190,18 @@ def test_include_sources_is_reported() -> None:
 
 def test_doc_type_filter_is_reported() -> None:
     assert _payload(doc_type="decision")["filters"]["doc_type"] == "decision"
+
+
+def test_document_class_is_its_own_axis() -> None:
+    """`doc_type` (the note's job) and `document_class` (what kind of artifact it is) are
+    different axes. Reporting a class under the doc_type key put an illegal value on that axis
+    and left the filter that HAD been applied unreported — both directions wrong at once."""
+    f = _payload(document_class="conversation")["filters"]
+    assert f["document_class"] == "conversation"
+    assert f["doc_type"] is None
+    # The store stands its source exclusion down when an explicit class is given, so claiming
+    # sources were excluded would be a false statement about what was withheld.
+    assert f["sources_excluded"] is False
 
 
 # ---------------------------------------------------------------- the capability envelope

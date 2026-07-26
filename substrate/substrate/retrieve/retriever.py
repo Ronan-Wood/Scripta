@@ -57,6 +57,22 @@ from substrate.store.index_store import Hit, IndexStore
 # archived on an explicit request, or None for an unfiltered administrative scan) to override it.
 DEFAULT_STATUSES = INCLUDED_STATUSES
 
+
+def statuses(*, include_archived: bool = False) -> frozenset[str]:
+    """The status filter for a query, as ONE definition both adapters call.
+
+    Archived and conversation-class content are excluded on SEPARATE axes and broadened by
+    separate flags: a note is archived because it was filed away, a conversation is excluded
+    because retrieving it BY PASSAGE misrepresents a document whose confidence varies within it.
+    Superseded is in neither — it is a dead fact, reachable only as the `supersedes` link on the
+    note that replaced it (Doc 2 §6).
+
+    It lives here rather than in each adapter because a filtering rule copied into a transport is
+    how the CLI and the MCP server come to return different passages while both report the filters
+    they each believe they applied.
+    """
+    return DEFAULT_STATUSES | {"archived"} if include_archived else DEFAULT_STATUSES
+
 RRF_K = 60
 OUTLINE_ROUTES = 3      # how many outline records may route
 ROUTE_DEPTH = 12        # passages pulled per routed section
@@ -246,12 +262,16 @@ def _retrieve(
     if embedder is not None:
         vec_key = getattr(embedder, "key", getattr(embedder, "model", ""))
         n_vec, n_chunks = store.vector_coverage(vec_key)
-        if n_vec < n_chunks:
-            _degrade(
-                trace, "embedder",
-                f"{'no vectors' if n_vec == 0 else 'INCOMPLETE'}: {n_vec}/{n_chunks} under "
-                f"{vec_key!r} — run `substrate embed`",
-            )
+        # An EMPTY index satisfies `n_vec >= n_chunks` as 0 >= 0, so a bare completeness comparison
+        # called it fully covered and let the measured tier through on a store with nothing in it —
+        # `Capability(embedder=…, expected_mrr=0.603)` over zero passages. Reachable whenever a
+        # registered db exists but holds nothing: an interrupted compose, a `clear()`, a reconcile
+        # that removed every doc. Zero chunks is the absence of coverage, not the completion of it.
+        if n_chunks == 0 or n_vec < n_chunks:
+            reason = ("the index holds no chunks" if n_chunks == 0
+                      else f"{'no vectors' if n_vec == 0 else 'INCOMPLETE'}: {n_vec}/{n_chunks} "
+                           f"under {vec_key!r} — run `substrate embed`")
+            _degrade(trace, "embedder", reason)
             embedder = None
 
     # Query set: the original, plus register-varied paraphrases. A relevant chunk only has
