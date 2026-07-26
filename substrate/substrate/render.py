@@ -88,7 +88,14 @@ def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
     no claim" is information, and it is not the same as "nobody looked".
 
     `full=True` is the `expand` path — same envelope, whole text, so a consumer never has to
-    reconcile two different passage shapes.
+    reconcile two different passage shapes. ONE key set either way: `text` is null on a search
+    result rather than absent, and `snippet` is present on an expanded one. Emitting `text` only
+    when populated made the shape depend on which call produced it, which is the same
+    disappearing-field defect the spine fields are emitted unconditionally to avoid — and it
+    contradicted the sentence above it.
+
+    `truncated` means content was withheld from THIS payload: true for a cut snippet, false when
+    the full text is included.
     """
     snippet, truncated = _snippet(h.text, chars)
     out = {
@@ -105,12 +112,9 @@ def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
         "vault": h.vault,
         "supersedes": h.supersedes,
     }
-    if full:
-        out["text"] = h.text
-        out["truncated"] = False
-    else:
-        out["snippet"] = snippet
-        out["truncated"] = truncated
+    out["snippet"] = snippet
+    out["text"] = h.text if full else None
+    out["truncated"] = False if full else truncated
     return out
 
 

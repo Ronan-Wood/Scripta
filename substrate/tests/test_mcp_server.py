@@ -204,7 +204,7 @@ def test_search_is_snippet_first_with_a_usable_ref() -> None:
     _, registry = _fixture()
     env = _call("search", {"scope": "demo", "query": "composition"}, registry)
     p = env["passages"][0]
-    assert "text" not in p and p["truncated"] is True
+    assert p["text"] is None and p["truncated"] is True
     full = _call("expand", {"expand_ref": p["expand_ref"]}, registry)
     assert full["passage"]["text"] == _LONG, "the ref search issued must resolve to the passage"
 
@@ -448,6 +448,30 @@ def test_list_scopes_lists_a_broken_scope_with_its_fault() -> None:
     row = next(s for s in _call("list_scopes", {}, registry)["scopes"] if s["scope"] == "demo")
     assert row["sources"] is None
     assert "error" in row
+
+
+def test_status_reports_a_rebuilt_index_instead_of_refusing() -> None:
+    """Refusing here was backwards: status exists to say whether an index can be trusted, so going
+    silent in the one state where it demonstrably cannot is the question, answered with an error.
+    Search still refuses — answering from an empty index returns a plausible no-match."""
+    root, registry = _fixture(manifest=True)
+    db = scopes.resolve("demo", registry).db
+    # Force the schema-mismatch rebuild the next open performs.
+    import sqlite3
+    con = sqlite3.connect(str(db))
+    con.execute("PRAGMA user_version = 1")
+    con.commit()
+    con.close()
+
+    out = _call("status", {"scope": "demo"}, registry)
+    assert out["rebuilt_empty"] is True
+    assert out["documents"] == 0
+
+    # And search still refuses AFTERWARDS. The `rebuilt` flag is one-shot — status consumed it by
+    # opening — so the refusal keys on EMPTINESS, which survives any number of opens.
+    body = _call_raw("search", {"scope": "demo", "query": "composition"}, registry)
+    assert body.get("isError"), "search must refuse an empty index even after status cleared the flag"
+    assert "EMPTY index" in body["content"][0]["text"]
 
 
 def test_status_reports_counts_and_the_spine_distribution() -> None:

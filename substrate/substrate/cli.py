@@ -883,9 +883,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     # `vectors: null` on a box where the server reported three unreachable arms — the same
     # question, two answers, under a docstring claiming they could not differ.
     st = _stack.build(hyde_model=None, rerank_model=None, lexical_only=args.lexical_only)
+    # Deliberately NOT refuse_if_rebuilt: this command exists to say whether an index can be
+    # trusted, so refusing in the one state where it demonstrably cannot is the question, answered
+    # with an error. It is reported as a field instead. `query` still refuses.
     with IndexStore(str(entry.db)) as store:
-        if refuse_if_rebuilt(store, repopulates=False):
-            return 2
         payload = introspect.status_payload(store, entry, stack=st)
 
     if args.json:
@@ -893,6 +894,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         return 0
 
     print(f"  scope {payload['scope']!r}  ·  {payload['vault']}")
+    if payload["rebuilt_empty"]:
+        print("  REBUILT EMPTY by a schema change — every query answers from nothing. "
+              "Re-run `substrate compose`.")
     print(f"  {payload['documents']} documents · {payload['passages']} passages · "
           f"{payload['outlines']} outlines  ·  index {payload['index_version']} "
           f"(schema v{payload['schema_version']})")
