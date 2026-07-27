@@ -18,21 +18,6 @@ from substrate import freshness, scopes
 from substrate import vault as _vault
 
 
-# The only columns `_group` may ever see. An f-string is the only way to parameterize a GROUP BY
-# in SQLite, so the identifier is constrained structurally rather than trusted: every call site
-# passes a literal today, and this is what keeps that true through the refactor that eventually
-# wires a caller-supplied axis into a status payload.
-_GROUPABLE = frozenset({"vault", "tier", "status", "doc_type", "confidence"})
-
-
-def _group(store, column: str) -> dict:
-    if column not in _GROUPABLE:
-        raise ValueError(f"{column!r} is not a groupable column; known {sorted(_GROUPABLE)}")
-    return {str(r[0]) if r[0] is not None else "(none)": r[1]
-            for r in store.db.execute(
-                f"SELECT {column}, COUNT(*) FROM documents GROUP BY {column}")}
-
-
 def arms(stack) -> dict:
     """Which arms this PROCESS is wired with — distinct from what any one query achieved, which is
     what the per-response capability envelope reports."""
@@ -86,11 +71,11 @@ def status_payload(store, entry, *, stack) -> dict:
         "passages": s["passages"],
         "outlines": s["outlines"],
         "schema_version": s["schema_version"],
-        "by_vault": _group(store, "vault"),
-        "by_tier": _group(store, "tier"),
-        "by_status": _group(store, "status"),
-        "by_doc_type": _group(store, "doc_type"),
-        "by_confidence": _group(store, "confidence"),
+        "by_vault": store.counts_by("vault"),
+        "by_tier": store.counts_by("tier"),
+        "by_status": store.counts_by("status"),
+        "by_doc_type": store.counts_by("doc_type"),
+        "by_confidence": store.counts_by("confidence"),
         "retrieval_arms": arms(stack),
         "vectors": vector_status(store, stack),
     }

@@ -365,14 +365,6 @@ def assert_composed(store, *, ingested_doc_ids: set[str]) -> dict:
 
     Raises VaultError on any breach; returns per-vault / per-tier counts for the read-out.
     """
-    rows = store.db.execute(
-        "SELECT COALESCE(vault,'') AS vault, tier, COUNT(*) AS n FROM documents "
-        "GROUP BY vault, tier ORDER BY vault, tier"
-    ).fetchall()
-    indexed_by_vault: dict[str, int] = {}
-    for r in rows:
-        indexed_by_vault[r["vault"]] = indexed_by_vault.get(r["vault"], 0) + r["n"]
-
     # Which vault each indexed doc belongs to — so a missing/stale doc can be named with its vault.
     doc_vault = {
         r["doc_id"]: (r["vault"] or "")
@@ -399,7 +391,7 @@ def assert_composed(store, *, ingested_doc_ids: set[str]) -> dict:
             "out-of-scope content — re-run with --clean so a deleted note leaves no stale dir."
         )
 
-    by_tier: dict[int, int] = {}
-    for r in rows:
-        by_tier[r["tier"]] = by_tier.get(r["tier"], 0) + r["n"]
-    return {"by_vault": indexed_by_vault, "by_tier": by_tier}
+    # Counted by the store, not here: this hand-rolled its own GROUP BY with a third missing-value
+    # convention (`COALESCE(vault,'')`, so a NULL vault and an empty one shared a bucket). The
+    # query it replaced fed only this read-out — both membership proofs above run off `doc_vault`.
+    return {"by_vault": store.counts_by("vault"), "by_tier": store.counts_by("tier")}

@@ -493,12 +493,33 @@ class IndexStore:
 
     # ------------------------------------------------------- status audit
 
-    def status_counts(self) -> dict[str, int]:
-        """Document count per status value. NULL statuses report under the key ''."""
-        rows = self.db.execute(
-            "SELECT COALESCE(status,'') AS s, COUNT(*) AS n FROM documents GROUP BY s"
-        ).fetchall()
-        return {r["s"]: r["n"] for r in rows}
+    # The only columns `counts_by` may ever see. An f-string is the only way to parameterize a
+    # GROUP BY in SQLite, so the identifier is constrained structurally rather than trusted: every
+    # call site passes a literal today, and this is what keeps that true through the refactor that
+    # eventually wires a caller-supplied axis into a status payload.
+    _GROUPABLE = frozenset({"vault", "tier", "status", "doc_type", "confidence"})
+
+    def counts_by(self, column: str) -> dict:
+        """Document count per value of one spine axis.
+
+        One owner for a grouping that had five hand-rolled copies disagreeing about the
+        missing-value key. Keys stay NATIVE: `tier` is an INTEGER and reads back as one, so a
+        count still sorts numerically and still answers an `int` lookup, and `json.dumps` renders
+        it as a string at the JSON boundary without being asked. NULL groups under `'(none)'`.
+
+        That sentinel is reachable only for `vault` and `tier`. It is NOT the schema that rules it
+        out elsewhere — on `documents` all five columns are nullable, the NOT NULL DEFAULT trio
+        being on `chunks` — but the Python default applied at upsert (`doc.status or 'active'`, and
+        so on), which `vault` and `tier` do not get. Note this is per-value, not a COALESCE: an
+        empty-string vault and a NULL vault are two buckets here, where three of the replaced
+        copies merged them.
+        """
+        if column not in self._GROUPABLE:
+            raise ValueError(
+                f"{column!r} is not a groupable column; known {sorted(self._GROUPABLE)}")
+        return {r[0] if r[0] is not None else "(none)": r[1]
+                for r in self.db.execute(
+                    f"SELECT {column}, COUNT(*) FROM documents GROUP BY {column}")}
 
     def _count_status_filtered(self, statuses: frozenset[str] | None) -> int:
         """Count chunks the PRODUCTION filter builder selects for a status set — the same
@@ -586,15 +607,8 @@ class IndexStore:
             )
         return {
             "included_chunks": n_in_filter, "excluded_chunks": n_ex_filter, "total_chunks": total,
-            "by_status": self.status_counts(),
+            "by_status": self.counts_by("status"),
         }
-
-    def doc_type_counts(self) -> dict[str, int]:
-        """Document count per doc_type value. NULL doc_types report under the key ''."""
-        rows = self.db.execute(
-            "SELECT COALESCE(doc_type,'') AS t, COUNT(*) AS n FROM documents GROUP BY t"
-        ).fetchall()
-        return {r["t"]: r["n"] for r in rows}
 
     def assert_doc_type_valid(self) -> dict:
         """A21 — every indexed doc_type is one of the four §6a jobs, and the chunk denormalization
@@ -644,14 +658,7 @@ class IndexStore:
                 f"{drift} chunk(s) carry a doc_type that disagrees with their document — the "
                 "denormalized job has drifted from the source note."
             )
-        return {"by_doc_type": self.doc_type_counts()}
-
-    def confidence_counts(self) -> dict[str, int]:
-        """Document count per confidence value. NULL confidences report under the key ''."""
-        rows = self.db.execute(
-            "SELECT COALESCE(confidence,'') AS c, COUNT(*) AS n FROM documents GROUP BY c"
-        ).fetchall()
-        return {r["c"]: r["n"] for r in rows}
+        return {"by_doc_type": self.counts_by("doc_type")}
 
     def assert_confidence_valid(self) -> dict:
         """A23 — every indexed confidence is a storable value, and the chunk denormalization has
@@ -702,15 +709,9 @@ class IndexStore:
                 f"{drift} chunk(s) carry a confidence that disagrees with their document — a "
                 "passage would state a settledness its note never claimed."
             )
-        return {"by_confidence": self.confidence_counts()}
+        return {"by_confidence": self.counts_by("confidence")}
 
     # ------------------------------------------------------- vector slot
-
-    def has_vectors(self, model: str) -> bool:
-        n = self.db.execute(
-            "SELECT COUNT(*) FROM chunk_vectors WHERE embed_model=?", (model,)
-        ).fetchone()[0]
-        return n > 0
 
     def vector_coverage(self, model: str) -> tuple[int, int]:
         """(vectors stored under `model`, total chunks) — COMPLETENESS, not presence.
