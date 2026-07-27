@@ -407,3 +407,48 @@ across 23 files, lint clean on every changed file.
   replaces the whole drift payload with `{"error": …}` for ANY `VaultError`, so a misplaced digest
   now reads the same as a vault that no longer exists. Accurate but coarse; the comment there now
   says so.
+
+---
+
+## 13. The Backend slice — migrated 2026-07-27
+
+**Nothing refused.** 26 notes into `prism-vault/02-areas/backend/`; the composed scope is 66
+documents (36 core-vault + 30 prism-vault), every assertion PASS, **0 quality warnings**, vectors
+1109/1109, freshness current. That is §2's prediction holding on real migrated content rather than
+on a synthesized spine.
+
+Built in a staging copy of the vault first and composed there; only after it passed clean were the
+files copied into the live vault. A full backup was taken first, since the vault is unversioned.
+
+| axis | outcome |
+|---|---|
+| `doc_type` | decision 6 · reference 8 · explanation 8 · how-to 4 |
+| `status` | active 25 · complete 1 (the resolved debugging note) |
+| `confidence` | stated 5 · proposed 1 · **verified 1** · unstated 19 |
+| `domains` | seeded from `area`, refined per note; introduced `architecture`, `tooling`, `cre` |
+
+**One deviation from §8's policy, named rather than buried.** `prism-rls-lookup-before-context`
+takes `confidence: verified`, where §8 predicted zero. WRITING.md reserves `verified` for "a bug
+confirmed and fixed", which is exactly what that note documents — symptom, root cause, fix,
+lesson. The policy's "nothing was measured" held for the corpus as a whole and was wrong for the
+one debugging note in this slice; expect the same for the other 7 `debugging`/`incident` notes.
+
+**Two notes had a stale frontmatter `status` that the body contradicted**, and the body won:
+`warehouse-integration` was `status: draft` while its body says *"Pull-first DECIDED (2026-06-25) …
+first code shipped"* → `active` / `stated`; the two frontmatter-less ADRs carried their status in a
+body header (`> Status: **Proposed**`, `> Status: **Accepted — shipped to qa**`) → `proposed` /
+`stated`. **Reading only the frontmatter would have mislabelled three of 26.** The originals are
+preserved verbatim under `source_status`, including the parenthetical form where there was none.
+
+**Link repair is part of migrating, not a follow-up.** Renaming Title Case → kebab `doc_id` broke
+107 intra-slice wikilinks across 22 targets — breakage the migration itself caused, so it was
+repaired here: fence-aware rewrite to the new ids, verified 107 → 0. The 66 links that remain
+unresolved all point at areas not yet migrated and will resolve as those land.
+
+**Known rule-8 candidate, preserved rather than split:** `warehouse-integration` carries a
+superseded push-centric proposal *and* the current pull-first implementation in one note, and has a
+duplicated H1. Preserved verbatim per Doc 2 §8 (migration preserves; it does not silently rewrite),
+flagged here so the split is a decision rather than an oversight.
+
+`.substrate.toml`'s `reference_domains` was extended to the seven values now in use, so the manifest
+and the corpus agree.
