@@ -330,6 +330,133 @@ def test_a_correct_manifest_still_parses() -> None:
     m = V._read_manifest(p)
     assert m["reference_domains"] == ["software-dev", "retrieval"]
     assert m["reference_pins"] == {"go": "1.21"}
+# ------------------------------------------------- skipped files that declare a spine (§6a)
+
+def _nav_vault(tmp: Path, nav_rel: str, content: str) -> Path:
+    """A minimal project vault with one real note plus a skipped file at `nav_rel`."""
+    v = tmp / "proj"
+    (v / "02-areas").mkdir(parents=True, exist_ok=True)
+    (v / ".substrate.toml").write_text('name = "proj"\ninherits = []\n', encoding="utf-8")
+    (v / "02-areas" / "real.md").write_text(
+        "---\nstatus: active\ndoc_type: reference\n---\n\n# Real\n\nBody.\n", encoding="utf-8")
+    nav = v / nav_rel
+    nav.parent.mkdir(parents=True, exist_ok=True)
+    nav.write_text(content, encoding="utf-8")
+    return v
+
+
+
+def _refusal(v: Path) -> str | None:
+    """The VaultError message resolve_scope raises for this vault, or None if it composed."""
+    try:
+        V.resolve_scope(v)
+    except V.VaultError as e:
+        return str(e)
+    return None
+
+
+def test_skipped_file_declaring_a_spine_is_refused_not_dropped() -> None:
+    """Every guarded filename, and every spine key, must refuse rather than vanish.
+
+    Asserts on values that VARY per case — the full path and the declared key names — because the
+    refusal message also contains static guidance, and asserting on that proved nothing: an earlier
+    version of this test passed with the path interpolation deleted entirely.
+    """
+    for nav in ("00-index/MEMORY.md", "log.md", "structure.md", "WRITING.md"):
+        for key, val in (("doc_type", "digest"), ("status", "active"),
+                         ("confidence", "stated"), ("domains", "[software-dev]")):
+            with tempfile.TemporaryDirectory() as td:
+                v = _nav_vault(Path(td), nav, f"---\n{key}: {val}\n---\n\n# Nav\n\nBody.\n")
+                msg = _refusal(v)
+                assert msg is not None, f"{nav} declaring {key} was accepted, not refused"
+                assert str(v / nav) in msg, f"refusal must name the offending path: {msg}"
+                assert key in msg, f"refusal must name the declared key {key!r}: {msg}"
+
+
+def test_the_reader_decides_what_frontmatter_is() -> None:
+    """Shapes the READER treats as body must not refuse — the gate shares its rule, not its own.
+
+    Each of these has a leading `---` and a spine-looking line, but `_parse_frontmatter` classifies
+    the block as a thematic break (any non-blank line lacking a colon voids the whole block), so the
+    file has no spine at all. A second hand-rolled parser refused all three.
+    """
+    shapes = {
+        "block-list": "---\ntags:\n  - a\nstatus: active\n---\n\n# Nav\n",
+        "prose-line": "---\nProject memory\nstatus: active\n---\n\n# Nav\n",
+        "unclosed-rule": "---\n\n# Log\n\nstatus: done was reached\n",
+    }
+    for label, content in shapes.items():
+        with tempfile.TemporaryDirectory() as td:
+            v = _nav_vault(Path(td), "log.md", content)
+            assert _refusal(v) is None, f"{label}: refused a file the reader reads as pure body"
+
+
+def test_a_spine_beyond_any_fixed_read_window_still_refuses() -> None:
+    """A declaration far into a large frontmatter block must still be caught.
+
+    Pins the bug a 4096-char slice introduced: the gate silently reverted to the exact drop it
+    exists to prevent, and every other test still passed.
+    """
+    padding = "".join(f"k{i}: v\n" for i in range(700))
+    with tempfile.TemporaryDirectory() as td:
+        v = _nav_vault(Path(td), "00-index/MEMORY.md",
+                       f"---\n{padding}doc_type: digest\n---\n\n# Nav\n")
+        msg = _refusal(v)
+        assert msg is not None and "doc_type" in msg, f"spine past a read window was missed: {msg}"
+
+
+def test_unreadable_skipped_file_is_skipped_not_fatal() -> None:
+    """A file that cannot be read declared nothing, and never used to be opened at all.
+
+    Guards the regression the gate introduced by reading paths compose previously ignored: a broken
+    symlink or non-UTF-8 `log.md` must not become the reason an entire scope fails.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        v = _nav_vault(Path(td), "log.md", "")
+        (v / "log.md").unlink()
+        (v / "log.md").symlink_to(v / "does-not-exist")
+        assert _refusal(v) is None, "a broken symlink made compose fatal"
+    with tempfile.TemporaryDirectory() as td:
+        v = _nav_vault(Path(td), "00-index/MEMORY.md", "")
+        (v / "00-index/MEMORY.md").write_bytes(b"---\nstatus: active\n---\n\xff\xfe")
+        assert _refusal(v) is None, "non-UTF-8 bytes made compose fatal"
+
+
+def test_navigation_file_without_a_spine_is_still_skipped_silently() -> None:
+    """A frontmatter-less MEMORY.md/log.md stays scaffolding — the case that must not regress."""
+    for nav in ("00-index/MEMORY.md", "log.md"):
+        with tempfile.TemporaryDirectory() as td:
+            v = _nav_vault(Path(td), nav, "# Nav\n\nBody.\n")
+            scope = V.resolve_scope(v)
+            assert [n.path.name for n in scope.notes] == ["real.md"]
+
+
+def test_title_alone_does_not_refuse() -> None:
+    """`title` is not a spine key — a nav file may carry one without claiming to be indexed."""
+    with tempfile.TemporaryDirectory() as td:
+        v = _nav_vault(Path(td), "00-index/MEMORY.md", "---\ntitle: Content map\n---\n\n# Nav\n")
+        assert _refusal(v) is None, "refused on `title`, which is not a spine key"
+
+
+def test_meta_md_may_carry_a_spine_and_still_feeds_its_passages() -> None:
+    """`_meta.md` is the one skip-list entry NOT guarded — reading its spine is its job.
+
+    Placed under `passages/`, which is what `_source_meta` actually requires, so this proves the
+    inherited value reaches the note rather than merely that the gate stayed quiet.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        v = _nav_vault(Path(td), "log.md", "# Log\n")
+        src = v / "03-references" / "src"
+        (src / "passages").mkdir(parents=True, exist_ok=True)
+        (src / "_meta.md").write_text(
+            "---\nstatus: active\ndoc_type: reference\nclass: reference-frozen\n"
+            "domains: [software-dev]\n---\n", encoding="utf-8")
+        (src / "passages" / "p1.md").write_text("# P1\n\nPassage body.\n", encoding="utf-8")
+        scope = V.resolve_scope(v)
+        p1 = [n for n in scope.notes if n.path.name == "p1.md"]
+        assert p1, [n.path.name for n in scope.notes]
+        assert p1[0].override_doc_type == "reference", p1[0]
+        assert "software-dev" in p1[0].extra_domains, p1[0]
 
 
 if __name__ == "__main__":

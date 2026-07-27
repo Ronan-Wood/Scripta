@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from substrate.models import Document  # noqa: E402
-from substrate.spine import SpineError, validate_doc_type, validate_status  # noqa: E402
+from substrate.spine import DOC_TYPES, SpineError, validate_doc_type, validate_status  # noqa: E402
 
 
 def _doc(**kw: object) -> Document:
@@ -90,8 +90,23 @@ def test_unknown_doc_type_refused_in_both_modes() -> None:
         raise AssertionError(f"expected SpineError for an unknown doc_type (require={req})")
 
 
+def test_doc_type_vocabulary_is_the_documented_set() -> None:
+    """Pin the vocabulary ITSELF against a literal — Doc 2 §6a's five jobs.
+
+    Deliberately a hand-written set, not a derivation. The sibling test below iterates DOC_TYPES to
+    prove the validator agrees with the constant; that check CANNOT see a value going missing,
+    because shrinking the constant just shrinks the loop. Only a literal catches a deletion, and
+    changing the vocabulary should cost a deliberate edit to a test that names the spec.
+    """
+    assert DOC_TYPES == {
+        "decision", "explanation", "reference", "how-to", "digest"
+    }, f"DOC_TYPES drifted from Doc 2 §6a: {sorted(DOC_TYPES)}"
+
+
 def test_each_valid_doc_type_accepted() -> None:
-    for dt in ("decision", "explanation", "reference", "how-to"):
+    # Iterates the CONSTANT so the validator can never fall behind a newly-added value. Pairs with
+    # the literal pin above, which is what catches a value being REMOVED.
+    for dt in sorted(DOC_TYPES):
         assert validate_doc_type(_doc(doc_type=dt), require_present=True) == dt
 
 

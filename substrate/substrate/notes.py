@@ -10,7 +10,7 @@ it — a token this process never issued is refused, and a redeemed one cannot b
 
 An earlier version derived the token as `sha256(target + content)`. That was worthless as a gate:
 both inputs come from the caller, so anyone could compute a valid token without ever calling
-`plan()`, and a first-call write with a self-computed digest succeeded. The docstring claimed a
+`plan()`, and a first-call write with a self-computed checksum succeeded. The docstring claimed a
 guarantee the code did not provide, which is the failure PRINCIPLES.md names directly — a stamp
 implying a condition was handled is worse than no stamp, because the next reader trusts it.
 
@@ -43,6 +43,8 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from substrate.vault import SKIP_NAMES
 
 # Doc 2 §4's project skeleton. A note lands in one of these, and `04-synthesis` is the default
 # because that is the folder the spec designates for model-entered synthesis notes.
@@ -114,6 +116,15 @@ def _resolve_target(project_vault: Path, folder: str, filename: str) -> Path:
         )
     if Path(filename).name != filename:
         raise NoteError(f"{filename!r} must be a bare filename, not a path.")
+    # A skip-list filename in a writable folder is a note that would be written, reported as
+    # indexed, and then refused by every subsequent compose — and this path is additive-only, so
+    # the MCP surface offers no way to undo it. Refuse at plan time, before anything is on disk.
+    if filename in SKIP_NAMES:
+        raise NoteError(
+            f"{filename!r} is in the engine's skip list, so a note under that name is never "
+            f"indexed no matter which folder it is in. Give it an ordinary filename "
+            f"(e.g. `{folder}/<area>-digest.md` for a Doc 2 §6a digest)."
+        )
 
     project_vault = project_vault.expanduser().resolve()
     target = (project_vault / folder / filename).resolve()

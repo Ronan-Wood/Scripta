@@ -132,7 +132,10 @@ TOOLS = [
             "Search a composed vault scope for relevant passages. Returns SNIPPETS — use `expand` "
             "with a passage's `expand_ref` to read the rest.\n\n"
             "READ THE SPINE ON EVERY PASSAGE. `status` is the note's currency; `doc_type` is the "
-            "one job it does (decision/explanation/reference/how-to); `confidence` is how SETTLED "
+            "one job it does (decision/explanation/reference/how-to, or `digest` — a maintained "
+            "per-area summary that POINTS at atomic notes rather than containing them; its links "
+            "are titles, not resolvable refs, so treat a digest hit as evidence the area exists "
+            "and run a narrower query for the specifics); `confidence` is how SETTLED "
             "the claim is (proposed/inferred/stated/verified/unstated) and is INDEPENDENT of "
             "status — a note can be active AND proposed, i.e. a design that was never built. "
             "Treating a `proposed` note as a settled decision is the specific failure this "
@@ -246,7 +249,7 @@ TOOLS = [
             "whether the VAULT has changed since the index was built.\n\n"
             "Read `drift` before concluding something is absent: a note listed under `added` is "
             "one the scope composes but the index does not hold, which looks exactly like a "
-            "question the corpus cannot answer. `unverifiable` counts notes whose stored digest "
+            "question the corpus cannot answer. `unverifiable` counts notes whose stored checksum "
             "names a source PDF rather than themselves, so an edit to them cannot be seen from "
             "the index alone."
         ),
@@ -338,8 +341,8 @@ def _note_text(store, doc_id: str) -> dict:
     hand the caller a normalized copy of the note rather than the note — always agreeing with the
     index and therefore never able to report that the vault had moved on.
 
-    Freshness uses the reader's own digest rule (a declared `source_sha256` wins, else the file's
-    own), so a PDF-derived passage — whose stored digest names the PDF — reports `unverifiable`
+    Freshness uses the reader's own checksum rule (a declared `source_sha256` wins, else the
+    file's own), so a PDF-derived passage — whose stored checksum names the PDF — is `unverifiable`
     rather than a false `stale`.
     """
     from substrate.freshness import effective_sha_of
@@ -352,7 +355,7 @@ def _note_text(store, doc_id: str) -> dict:
 
     path = Path(row["source_path"])
     try:
-        # ONE bounded read, and the digest computed from the SAME bytes. Reading twice let a write
+        # ONE bounded read, and the checksum computed from the SAME bytes. Reading twice let a write
         # land in between, so the returned text and the returned staleness verdict could describe
         # different versions of the file — and neither read was size-bounded, one function away
         # from the guards `_read_source` applies for exactly that reason.
@@ -371,7 +374,7 @@ def _note_text(store, doc_id: str) -> dict:
         "n_chars": len(text),
         "truncated": len(text) > NOTE_CHAR_CAP,
         # A note that no longer matches what was indexed: the passages came from the OLD content.
-        # `null` where the stored digest is a declared one and an edit cannot be seen from here —
+        # `null` where the stored checksum is a declared one and an edit cannot be seen from here —
         # false is a claim, and this is the case where no claim can honestly be made.
         "stale": None if declared else (sha != (row["source_sha256"] or "")),
     }

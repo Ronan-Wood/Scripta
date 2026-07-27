@@ -83,8 +83,11 @@ def status_payload(store, entry, *, stack) -> dict:
         notes = [n.path for n in _vault.resolve_scope(entry.vault).notes]
         out["drift"] = freshness.drift(store, notes)
     except _vault.VaultError as e:
-        # A scope whose vault no longer resolves cannot be drift-checked. Reported as an error IN
-        # the drift slot rather than omitted: a missing key reads as "nothing has changed".
+        # A scope that cannot be RESOLVED cannot be drift-checked — the vault is gone, a manifest
+        # is malformed, or a skip-list file declares a spine (`_refuse_skipped_note_with_a_spine`).
+        # Reported as an error IN the drift slot rather than omitted: a missing key reads as
+        # "nothing has changed". Note the coarseness — the whole added/changed/removed breakdown is
+        # replaced by the message, so `status` says UNCHECKABLE for an authoring fault too.
         out["drift"] = {"error": str(e)}
     return out
 

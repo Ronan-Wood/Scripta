@@ -265,6 +265,30 @@ def test_non_markdown_refuses() -> None:
     _refuses(lambda: _plan(_vault(), filename="paper.pdf"), containing="not markdown")
 
 
+def test_ingest_refuses_a_skip_list_filename() -> None:
+    """A skip-list name in a writable folder plans fine, writes, then refuses every later compose.
+
+    `notes.py` is additive-only, so the MCP surface has no way to undo such a write — the refusal
+    has to happen at plan time, before anything reaches disk.
+    """
+    import tempfile
+    from substrate.notes import NoteError, _resolve_target
+    from substrate.vault import SKIP_NAMES
+
+    with tempfile.TemporaryDirectory() as td:
+        v = Path(td) / "proj"
+        (v / "02-areas").mkdir(parents=True)
+        for name in sorted(SKIP_NAMES):
+            try:
+                _resolve_target(v, "02-areas", name)
+            except NoteError as e:
+                assert name in str(e), e
+                continue
+            raise AssertionError(f"{name} was accepted into a writable folder")
+        # an ordinary filename is unaffected
+        assert _resolve_target(v, "02-areas", "area-digest.md").name == "area-digest.md"
+
+
 if __name__ == "__main__":
     _tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     _failed = 0

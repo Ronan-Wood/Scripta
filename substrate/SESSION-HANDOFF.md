@@ -149,10 +149,12 @@ New guards this session, all mutation-verified:
 
 1. **Run it.** Compose + embed the six scopes, wire one client, use it for a week. Everything below
    is speculation until the surface has met real content.
-2. **Doc 2's text is behind its own implementation.** §6 documents `status` and stops; `doc_type`,
-   `confidence` and the conversation class appear nowhere in the body. Doc 3a is now also behind:
-   it describes a `doc_type` filter that refuses, and folds archived into `include_sources` where
-   the engine deliberately keeps two axes.
+2. **Doc 2's text is behind its own implementation — PARTLY CLOSED 2026-07-27.** §6 documented
+   `status` and stopped. **§6a is now written** (doc_type, including the fifth value `digest`, its
+   placement rule and the boundary that governs adding a sixth) — see `MIGRATION-VOCABULARY.md`.
+   Still absent from the body: `confidence` (WRITING.md cites a §6b that does not exist) and the
+   conversation class. Doc 3a is also still behind: it describes a `doc_type` filter that refuses,
+   and folds archived into `include_sources` where the engine deliberately keeps two axes.
 3. **`reference_pins` is the last unimplemented §2 feature.** Prerequisite unchanged: only one
    versioned source exists, so there is nothing to pin against.
 4. **The cutover.** `~/.claude/CLAUDE.md` still points every session at ClaudeVault, so the migrated

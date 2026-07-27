@@ -24,12 +24,19 @@ STATUSES: frozenset[str] = frozenset({"active", "complete", "archived", "superse
 INCLUDED_STATUSES: frozenset[str] = frozenset({"active", "complete"})
 EXCLUDED_STATUSES: frozenset[str] = STATUSES - INCLUDED_STATUSES  # {archived, superseded}
 
-# The four Doc-2 §6a doc_types (Diátaxis-derived): the JOB a note does. Unlike status, doc_type has
-# no default-retrieval partition — every value is retrievable — so there is no included/excluded
-# split, only membership. `reference` is the lenient default: a standalone ingest is reference
-# lookup material (the PDF corpus), and a note that reaches the store without a declared type is
-# treated as reference rather than mislabelled as a decision/explanation it may not be.
-DOC_TYPES: frozenset[str] = frozenset({"decision", "explanation", "reference", "how-to"})
+# The five Doc-2 §6a doc_types: the JOB a note does. Four are Diátaxis-derived; `digest` (a
+# maintained per-area summary that POINTS at atomic notes, never contains them) is not. The
+# rationale, the placement rule and the discipline are Doc 2 §6a — docs/README.md: this repo
+# implements the contract, it does not define it, and a summary here would drift out of agreement.
+#
+# What IS this code's business: unlike status, doc_type has no default-retrieval partition — every
+# value is retrievable — so there is no included/excluded split, only membership. `reference` is
+# the lenient default: a standalone ingest is reference lookup material (the PDF corpus), and a
+# note that reaches the store without a declared type is treated as reference rather than
+# mislabelled as a decision/explanation it may not be.
+DOC_TYPES: frozenset[str] = frozenset(
+    {"decision", "explanation", "reference", "how-to", "digest"}
+)
 DEFAULT_DOC_TYPE = "reference"
 
 # CONFIDENCE — how settled a note's claims are, and the axis `status` was silently absorbing.
@@ -99,10 +106,11 @@ def validate_doc_type(doc: Document, *, require_present: bool) -> str:
 
     Mirrors validate_status's two strictness modes (chosen by the caller, not the reader):
       * doc_type absent where required (the vault path) — every note must DECLARE its job. Defaulting
-        it would defeat the point of the field: the split into decision/explanation/reference/how-to
-        is what keeps a note readable, and a silent default hides a note that blends two jobs (§6a
-        rule 8). A reference source supplies `doc_type: reference` via its `_meta.md`, same as status.
-      * doc_type outside the known four — an unknown value is not a retrieval job the engine or a
+        it would defeat the point of the field: the split into decision/explanation/reference/how-to/
+        digest is what keeps a note readable, and a silent default hides a note that blends two jobs
+        (§6a rule 8). A reference source supplies `doc_type: reference` via its `_meta.md`, same as
+        status.
+      * doc_type outside the known five — an unknown value is not a retrieval job the engine or a
         reader can act on; refuse it rather than carry a phantom axis value.
 
     Absent-and-lenient (the standalone ingest of the existing reference corpus) returns the

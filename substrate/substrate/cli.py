@@ -359,8 +359,8 @@ def cmd_compose(args: argparse.Namespace) -> int:
     for n in scope.notes:
         # A per-note out dir: vault + filename stem + a short path hash, so two same-named files
         # (e.g. each source's passages/00-*.md) never collide on one ingest directory.
-        digest = _hl.sha256(str(n.path).encode()).hexdigest()[:8]
-        out_dir = index_root / f"{n.vault}__{n.path.stem}__{digest}"
+        checksum = _hl.sha256(str(n.path).encode()).hexdigest()[:8]
+        out_dir = index_root / f"{n.vault}__{n.path.stem}__{checksum}"
         try:
             r = ingest_markdown(
                 n.path, out_dir, doc_class=n.doc_class, require_status=True,
@@ -619,7 +619,7 @@ def cmd_query(args: argparse.Namespace) -> int:
                 # well-formed handle naming a scope that does not exist. `db` is its own field.
                 #
                 # `--doc-class` is the document_class axis (reference-frozen, conversation), NOT
-                # the doc_type spine axis (decision/explanation/reference/how-to). Reporting it as
+                # the doc_type spine axis (spine.DOC_TYPES). Reporting it as
                 # doc_type put an illegal value on that axis and left the filter actually applied
                 # unreported — and the store stands its source exclusion down when a class is
                 # given, so `sources_excluded` was claiming an exclusion that had not happened.
@@ -805,7 +805,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         # refuse. It is computed; until now it was never said.
         caveats = []
         if d["unverifiable"]:
-            caveats.append(f"{d['unverifiable']} unverifiable (declared source digest)")
+            caveats.append(f"{d['unverifiable']} unverifiable (declared source checksum)")
         if d["unreadable"]:
             caveats.append(f"{len(d['unreadable'])} UNREADABLE")
         head = "no changes detected" if d["unreadable"] else "current"

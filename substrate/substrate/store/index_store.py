@@ -30,7 +30,7 @@ class StatusPartitionError(RuntimeError):
 
 
 class DocTypeError(RuntimeError):
-    """An indexed doc_type is outside the known four, or drifted between a chunk and its document."""
+    """An indexed doc_type is outside `spine.DOC_TYPES`, or drifted between a chunk and its document."""
 
 
 class ConfidenceError(RuntimeError):
@@ -611,14 +611,14 @@ class IndexStore:
         }
 
     def assert_doc_type_valid(self) -> dict:
-        """A21 — every indexed doc_type is one of the four §6a jobs, and the chunk denormalization
+        """A21 — every indexed doc_type is one of the §6a jobs (`spine.DOC_TYPES`), and the chunk denormalization
         has not drifted from its document.
 
         doc_type has no default-retrieval partition (every job is retrievable — unlike status, which
         excludes archived/superseded), so this is validity + denormalization integrity, not a
         partition proof. Two checks over the ACTUAL indexed rows, mirroring A20's first two:
 
-          1. no doc_type outside the known four on either table — an unknown value is a phantom
+          1. no doc_type outside `spine.DOC_TYPES` on either table — an unknown value is a phantom
              retrieval-axis value nothing can act on; refuse it rather than carry it unseen. (A NULL
              cannot occur in practice: documents.doc_type defaults at upsert (`doc.doc_type or
              'reference'`) and chunks.doc_type is `NOT NULL DEFAULT 'reference'`. If one somehow
