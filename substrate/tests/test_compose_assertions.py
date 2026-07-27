@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from substrate import cli as C  # noqa: E402
+from substrate import checks as C  # noqa: E402
 from substrate.markdown.ingest import ingest_markdown  # noqa: E402
 
 

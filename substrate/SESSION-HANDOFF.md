@@ -127,11 +127,28 @@ New guards this session, all mutation-verified:
    vaults are read by nothing while ClaudeVault accrues. The MCP unblocks this; (1) is the gate.
 5. **Deferred, with reasons:** don't-embed-superseded (cost, not correctness); domain
    soft-weighting (eval-gated, needs cross-domain gold cases); the index watcher; the weekly lint.
-6. **Housekeeping:** A23 duplicates A21; `cmd_eval` keeps two hand-rolled copies of the vector
-   guard that `IndexStore.vector_coverage` now supersedes (deliberately untouched — it guards the
-   number that must not move); `introspect._group` re-implements three `IndexStore` count methods
-   with a different NULL convention; `has_vectors` is now dead; `document_checks` is assertion
-   policy living in `cli.py`.
+6. **Housekeeping:** `cmd_eval` keeps two hand-rolled copies of the vector guard that
+   `IndexStore.vector_coverage` now supersedes — deliberately untouched, it guards the number that
+   must not move. The A21/A23 "duplication" is **closed as won't-fix, and the earlier reason for
+   that was wrong**: it is not that the two are merely parallel, it is that the duplication is
+   THREE-way — `assert_status_partition`'s first two checks are the same unknown-value-then-drift
+   scan — so collapsing A21 into A23 would leave the third copy and make the family less uniform
+   than it is now. Either unify all three behind one `_assert_axis_valid(column, vocabulary, error,
+   …)` or leave them; a two-way merge is the one move that makes things worse. Evidence the
+   duplication does cost something: the `NULL NOT IN (...)` subtlety was corrected in A21's
+   docstring and independently re-derived in A23's.
+
+   Done: `introspect._group`, three `IndexStore` count methods and a fifth copy in
+   `vault.assert_composed` now share `IndexStore.counts_by` — keys stay native, so `compose` and
+   `status` finally print `by tier` the same way and the JSON payload is unchanged;
+   `has_vectors` deleted; `document_checks` moved to `substrate/checks.py`.
+
+   Two user-visible changes rode along and are NOT housekeeping, so they are named here rather
+   than left to a bisect: `substrate status`'s human read-out now prints `by doc_type` (the
+   payload always carried it; only the rendering dropped it), and the §6 equivalence test's
+   liveness guard admits a third capability state — a reachable, wired embedder that the
+   vector-coverage guard degrades over a vectorless index. That test could only ever pass with
+   the daemon DOWN; it went red the moment Ollama came up.
 
 ## Constraints that bite
 
