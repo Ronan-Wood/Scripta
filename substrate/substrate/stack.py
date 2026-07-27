@@ -110,7 +110,36 @@ def build(
 
     reranker = None
     if rerank_model:
-        if rerank_model in ("apple", "apple-fm"):
+        from substrate.retrieve.rerank_cross import DEFAULT_MODEL as CROSS_MODEL
+
+        # The real model tag is matched alongside the sentinels, because `--rerank-model
+        # dengcao/Qwen3-Reranker-4B:Q4_K_M` is the obvious thing to type and used to fall through
+        # to the LISTWISE branch, where it IS reachable: the chat endpoint answers, the reply
+        # parses to the identity permutation, and the query returns fused order under a
+        # `reranker: ran` label with no fallback recorded. A wrong arm that reports success is
+        # worse than one that refuses. "cross-encoder" is matched for the same reason — it is the
+        # CLI flag's spelling, and it otherwise reported a daemon fault for a bad arm name.
+        # The bare repo name matches too: `dengcao/Qwen3-Reranker-4B` is the `:latest` spelling
+        # `CrossEncoderReranker.available()` already honours, and it missed this test while
+        # `LLMReranker.available()` accepted it on a family-prefix match — so the one spelling most
+        # likely to be typed from memory routed to the wrong arm and reported success.
+        if rerank_model in ("cross", "cross-encoder", CROSS_MODEL, CROSS_MODEL.split(":")[0]):
+            from substrate.retrieve.rerank_cross import POOL as CROSS_POOL
+            from substrate.retrieve.rerank_cross import CrossEncoderReranker
+
+            # A SENTINEL, not a model name — same shape as the "apple" branch below, and for the
+            # same reason: the arm is the choice, its measured model is not the caller's to guess.
+            # Whether the latency is worth it is corpus-dependent and measured in both directions;
+            # EXPERIMENTS.md holds both runs. That is why this is a per-caller arm, not a default.
+            #
+            # `gate` is stated rather than defaulted because it is the one non-obvious choice here,
+            # and the two corpora disagree about it: -0.008 (gate hurts) at 44 reference cases,
+            # but on the vaults gate-off loses two lexical cases and gains nothing semantic. On
+            # is right for the shared path by measurement, not by inheriting the dataclass default.
+            # `eval --cross-encoder --no-gate` reaches the other configuration.
+            rc = CrossEncoderReranker(model=CROSS_MODEL, cache=_cache(), gate=True,
+                                      pool=CROSS_POOL if pool is None else pool)
+        elif rerank_model in ("apple", "apple-fm"):
             from substrate.retrieve.rerank import AppleFMReranker
 
             # Apple FM overflows above ~10 candidates (measured): handed 20 it returns empty
@@ -126,7 +155,10 @@ def build(
                              cache=_cache())
         reranker = rc if rc.available() else None
         if reranker is None:
-            unavailable.append(f"reranker {rerank_model!r} unreachable at "
+            # The ARM's model, not the caller's word for it: `cross` is a sentinel, and the whole
+            # value of naming an unreachable arm is that the reader can act on it — which means
+            # printing the tag they have to pull, not the alias they typed.
+            unavailable.append(f"reranker {getattr(rc, 'model', rerank_model)!r} unreachable at "
                                f"{getattr(rc, 'host', 'the local daemon')}")
 
     return Stack(embedder=embedder, expander=expander, reranker=reranker,

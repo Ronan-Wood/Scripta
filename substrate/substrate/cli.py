@@ -559,10 +559,29 @@ def cmd_query(args: argparse.Namespace) -> int:
     #
     # `--no-vector` drops only the VECTOR arm. It used to imply lexical_only under --full-stack,
     # silently disabling the reranker too, which does not need vectors to reorder a fused list.
+    # Refused rather than ignored: --cross-encoder selects a rerank ARM, and THREE other flags
+    # each drop that arm on the floor while the flag still labels the run.
+    #   --full-stack absent : no reranker is wired at all.
+    #   --no-vector         : with no embedder and no routing, `lists` is length 1, so _retrieve
+    #                         never reaches the rerank stage (retriever.py `if embedder is not
+    #                         None or len(lists) > 1`). The note below about the reranker not
+    #                         needing vectors is true of the ARM and false of this call path.
+    #   --kind outline      : the outline branch calls store.search directly and returns before
+    #                         any capability exists, so nothing even reports the arm was dropped.
+    # Each was verified to silently ignore the flag before this guard existed.
+    if args.cross_encoder and (not args.full_stack or args.no_vector or args.kind == "outline"):
+        why = ("--full-stack is what wires a reranker at all" if not args.full_stack
+               else "--no-vector leaves the pipeline unable to reach the rerank stage"
+               if args.no_vector else "--kind outline returns before any reranker runs")
+        print(f"FATAL: --cross-encoder selects the rerank arm, but {why}. Refusing a config "
+              "where it would be silently ignored.", file=sys.stderr)
+        return 2
+
     st = _stack.build(
         embed_model=None if args.no_vector else _stack.DEFAULT_EMBED,
         hyde_model=_stack.DEFAULT_HYDE if args.full_stack else None,
-        rerank_model=_stack.DEFAULT_RERANK if args.full_stack else None,
+        rerank_model=(("cross" if args.cross_encoder else _stack.DEFAULT_RERANK)
+                      if args.full_stack else None),
     )
     embedder, expander, reranker = st.embedder, st.expander, st.reranker
     unavailable = st.unavailable
@@ -655,7 +674,26 @@ def cmd_query(args: argparse.Namespace) -> int:
         if cap is not None:
             print(f"\n  capability: embedder={cap.embedder or 'lexical-only'} · "
                   f"hyde={cap.hyde} · rerank={cap.reranker}")
-            if cap.expected_mrr is not None:
+            # An arm ASKED FOR that could not start is not an arm nobody wanted, and only the
+            # first is fixable by pulling a model. `unavailable` carries that distinction and the
+            # JSON envelope has always had it; the human read-out dropped it on the floor, so a
+            # requested arm that never started printed the lower tier as a confident measured
+            # number with nothing saying the config had silently changed underneath. The
+            # cross-encoder makes this the likely FIRST run — it is a community GGUF the user must
+            # pull, where `--full-stack`'s model is already required.
+            if unavailable:
+                print(f"  UNAVAILABLE (requested, could not start): {'; '.join(unavailable)}")
+            if unavailable:
+                # Checked FIRST, because every branch below describes the stack that ran and this
+                # is the case where that is NOT the stack the caller asked for. Both orderings
+                # were wrong before: with the reranker dead, `_expected_mrr` returns the genuine
+                # no-rerank tier and branch 2 printed it as a confident "measured tier"; with BOTH
+                # generator arms dead it returns None and the final branch called that
+                # "embedder-only by design" — a fault reported as a deliberate config.
+                got = (f"~{cap.expected_mrr} ({cap.cohort}) for what ACTUALLY ran"
+                       if cap.expected_mrr is not None else "unmeasured")
+                q = f"expected mrr: {got} — a requested arm did not start (see UNAVAILABLE above)"
+            elif cap.expected_mrr is not None:
                 q = f"expected mrr: ~{cap.expected_mrr} (measured tier, {cap.cohort})"
             elif cap.fallbacks:
                 q = "expected mrr: unmeasured (a wired arm fell back — see below)"
@@ -663,6 +701,13 @@ def cmd_query(args: argparse.Namespace) -> int:
                 # No embedder was available (or --no-vector): a lexical-only run, distinct from the
                 # embedder-only default below. Say so rather than claim a config it isn't.
                 q = "expected mrr: n/a — lexical-only (no vector arm)"
+            elif cap.reranker in ("ran", "skipped"):
+                # A full stack DID run, so "embedder-only by design" below would be a false reason
+                # for the same absent number. This is the unmeasured-CONFIG case — swapping in an
+                # arm the tier was not measured with (--cross-encoder) correctly yields None, and
+                # saying which arm is what lets the reader tell it from a fault.
+                q = (f"expected mrr: unmeasured — rerank={cap.reranker} via an arm never measured "
+                     f"at {cap.cohort}; per-corpus runs are in EXPERIMENTS.md")
             else:
                 # No number because `query` runs embedder-only BY DESIGN (no HyDE/rerank); this is
                 # a lean lookup config, not a fault. The measured tiers live on the full stack (eval).
@@ -1114,6 +1159,12 @@ def main(argv: list[str] | None = None) -> int:
     qry.add_argument("--full-stack", action="store_true",
                      help="wire HyDE + reranker as well as the embedder — the measured stack the "
                           "MCP server runs. Default is the lean embedder-only lookup config")
+    qry.add_argument("--cross-encoder", action="store_true",
+                     help="rerank with the pointwise cross-encoder instead of the listwise chat "
+                          "model (requires --full-stack). Much slower per query, and whether it "
+                          "pays depends on the corpus — both runs are in EXPERIMENTS.md. When it "
+                          "runs, expected_mrr is null: this arm was never measured at the 44 cases "
+                          "that number comes from")
     qry.add_argument("--json", action="store_true",
                      help="emit the structured result envelope (the same one the MCP server "
                           "returns) instead of the human read-out")

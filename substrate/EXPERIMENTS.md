@@ -656,3 +656,55 @@ split ligatures. Both bugs are evidence of a text-layer path.
    select noise.
 3. **Expand the gold set before trusting any multi-factor winner.**
 4. **Latency is a scored axis.** A config is only best if it is affordable on every query.
+
+---
+
+## The rerank arm does not transfer between corpora (2026-07-27)
+
+Every number above is the reference corpus (ddia-2e · go-spec · paper-moral) — at 44 cases where
+this section compares against it, and at 7, 24 and 28 elsewhere, which §"READ THE SCALES" exists
+to keep separate. The first run against the MIGRATED VAULTS reverses this file's own conclusion
+about reranking.
+
+**Setup.** `substrate eval --db out-vault/scripta.db --gold eval/gold-vault.json --baseline
+eval/.baseline-vault.json [arm flags]` — the scripta scope, 51 notes (15 project + 36 inherited
+core-vault). Gold set is 34 cases, split **21 lexical / 13 semantic** by measured query-to-note
+content-word overlap, not by hand. Embedder `qwen3-embedding:0.6b#raw`, 919/919 vectors, HyDE
+`qwen2.5:7b`, pool 20 throughout. Only the rerank arm varies.
+
+| rerank arm | lexical pass | lexical MRR | semantic pass | **semantic MRR** |
+|---|---|---|---|---|
+| none | 19/21 | 0.5873 | 9/13 | 0.455 |
+| **listwise `qwen2.5:7b`** (shipped) | **20/21** | 0.6325 | 9/13 | **0.351** |
+| cross-encoder, gate on | 19/21 | **0.6548** | **10/13** | **0.635** |
+| cross-encoder, gate off | 17/21 | 0.6349 | 10/13 | 0.635 |
+
+**The shipped arm is worse than no reranker at all on paraphrased queries here** — 0.351 against
+0.455. It keeps the highest lexical PASS count (20/21), but not the highest lexical MRR: the
+cross-encoder leads on that too (0.6548 against 0.6325), so the listwise arm's remaining claim is
+one case, not the lexical half. The cross-encoder nearly doubles the semantic cohort. On the reference cohort the same swap was worth +0.010 and §"reranking is
+saturated" was the right reading; on this corpus it is worth +0.284. Neither generalises, which is
+why `stack.build` exposes the arm per caller instead of changing the default.
+
+**The gate reverses too.** Above, at 44 cases, gate-off scored +0.008 and the gate was called "a
+chat-model crutch". On the vaults gate-off is strictly worse — it loses two lexical cases and
+matches on semantic — so the shared path keeps `gate=True`, now for a measured reason rather than
+an inherited one.
+
+**Denominators, because these are small.** 13 semantic cases. 0.351 → 0.635 is four cases moving
+to rank 1 plus one miss becoming a hit; read it as "clearly better", not as a precise figure. The
+two cohorts are within one run over one corpus and ARE comparable to each other; none of them is
+comparable to the 44-case numbers above (HANDOFF §6).
+
+**Latency is not measured here, and the runs cannot be compared.** They shared a warm cache in an
+order nobody controlled, so the p50s (listwise 299ms · cross gated 5692ms · cross gate-off 566ms)
+are not results. Note the gate-off figure is not explained by simple cache reuse either: gate-off
+scores exactly the lexically-precise queries the gated run SKIPPED, so those pairs were never
+cached and should have run cold. The number is unexplained, which is the reason to discard it
+rather than reason from it. A real comparison needs a cold cache per arm. What is safe to say:
+the cross-encoder is roughly an order of magnitude slower, consistent with 385ms → 4,558ms above.
+
+**Unfixed by any arm:** three of the remaining semantic misses are one chunk — `locked-decisions`
+holds a 7-row decision table in a single 1528-char chunk, so a question about one row competes
+with six unrelated decisions. Both rerankers fail them identically. That is a chunking problem,
+and no rerank arm addresses it.
