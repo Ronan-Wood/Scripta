@@ -1,0 +1,471 @@
+{
+  "_doc": [
+    "Gold cases for the MIGRATED VAULT corpus — a different corpus from eval/gold.json, which",
+    "measures the three reference documents (ddia-2e, go-spec, paper-moral). Nothing here reads or",
+    "writes out/substrate.db. Run against a composed scope:",
+    "",
+    "  substrate eval --db out-vault/scripta.db --gold eval/gold-vault.json \\",
+    "                 --baseline eval/.baseline-vault.json",
+    "",
+    "scripta is the scope with the most project notes (15) on top of the 36 inherited core-vault",
+    "notes, so one run exercises both tiers and the inheritance path. The core-vault cases",
+    "generalise to every other scope, since all six inherit the same core.",
+    "",
+    "METHOD — the constraint that makes these worth running:",
+    "Every case was written from the NOTE, read in the vault, never from retrieval output. Cases read",
+    "off current output would be tautological — they would confirm whatever the engine already does,",
+    "which is the failure eval/gold.json's own header records. Three topics (launchd, Clerk, the",
+    "on-device table decision) had been queried by hand in the session that authored this file, so",
+    "their behaviour was already known; assertions were still taken from the note text, but they are",
+    "the least blind cases here and should be the first suspected if this set ever looks too easy.",
+    "",
+    "SHAPE — deliberately no `doc` and no `expect_doc`:",
+    "Both scope the search by an output-directory key, and for vault notes that key carries a content",
+    "hash (core-vault__launchd-over-sandbox-schedulers__f06bc63c) which changes on any edit — a case",
+    "would silently become 'doc not indexed'. Every case here searches the WHOLE composed scope, and",
+    "`path` carries the attribution: it names the note's H1, so only a chunk from the intended note",
+    "can satisfy it. 'The right note must win out of 51' is the question a vault corpus poses.",
+    "",
+    "COHORT — assigned by measurement, not by feel:",
+    "`_overlap` is the fraction of the query's content words (stopwords and <=3-char tokens removed)",
+    "appearing VERBATIM anywhere in the target note. >= 0.75 is `lexical`, below is `semantic`. It is",
+    "computed from the query and the note alone, so it cannot be fitted to a result. This matters:",
+    "the first 26 cases were hand-labelled and came out 2 lexical / 24 semantic, which put the entire",
+    "CI gate — report() gates on the LEXICAL cohort only — on two cases. Measured, the same 26 are 21",
+    "lexical / 5 semantic: the questions had been written in the notes' own vocabulary without anyone",
+    "intending it. The eight `vault-p-*` cases were then added deliberately paraphrased, to give the",
+    "semantic cohort a usable denominator rather than leave it at five.",
+    "",
+    "  answer   - a phrase the correct passage must contain. The SEMANTIC gate.",
+    "  path     - fragments the chunk's structural path must contain. The ATTRIBUTION gate, and here",
+    "             also the which-note gate.",
+    "",
+    "A case passes only if ONE returned chunk satisfies answer AND path together. Every case was",
+    "checked satisfiable against the index before the first run — for each, at least one chunk",
+    "carries both gates — so a failure is a retrieval result and never a malformed assertion.",
+    "",
+    "STATUS: only active/complete notes are eligible. The default filter excludes archived and",
+    "superseded, so on-device-table-llm-rejected (archived), superseded-decisions and",
+    "model-engine-panel-raw (superseded) are absent — a case over them could only fail, and would",
+    "measure the filter rather than retrieval.",
+    "",
+    "GATES are DECLARED TARGETS, fixed before the first run and NOT moved after seeing it. If a run",
+    "misses them that is a finding about retrieval on this corpus, not a reason to lower the bar."
+  ],
+  "gates": {
+    "answer_at_5": 0.8,
+    "answer_at_1": 0.5,
+    "attribution_at_5": 0.8,
+    "mrr": 0.6
+  },
+  "cases": [
+    {
+      "id": "vault-launchd-vs-sandbox",
+      "query": "why not use the agent sandbox scheduler for a recurring local build command",
+      "answer": [
+        "isolated Linux sandbox"
+      ],
+      "path": [
+        "launchd over sandbox"
+      ],
+      "cohort": "lexical",
+      "_overlap": 1.0
+    },
+    {
+      "id": "vault-launchd-missed-runs",
+      "query": "does a scheduled job still run if the mac was asleep when it was due",
+      "answer": [
+        "fires on wake"
+      ],
+      "path": [
+        "launchd over sandbox"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.71
+    },
+    {
+      "id": "vault-launchd-when-not",
+      "query": "when is launchd the wrong tool for a recurring task",
+      "answer": [
+        "no judgment can happen per run"
+      ],
+      "path": [
+        "launchd over sandbox"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.8
+    },
+    {
+      "id": "vault-swr-two-rows",
+      "query": "why does a single request appear twice in the browser network panel",
+      "answer": [
+        "stale-while-revalidate"
+      ],
+      "path": [
+        "SWR Looks Like Duplicate Fetches"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.86
+    },
+    {
+      "id": "vault-swr-initiator",
+      "query": "how do I distinguish a browser cache revalidation from a duplicate app fetch",
+      "answer": [
+        "Initiator: Other"
+      ],
+      "path": [
+        "SWR Looks Like Duplicate Fetches"
+      ],
+      "cohort": "lexical",
+      "_overlap": 1.0
+    },
+    {
+      "id": "vault-swr-selective",
+      "query": "only some endpoints on the page show doubled requests, what does that indicate",
+      "answer": [
+        "selective duplication was the tell"
+      ],
+      "path": [
+        "SWR Looks Like Duplicate Fetches"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.57
+    },
+    {
+      "id": "vault-pg-egress-first",
+      "query": "database GUI fails instantly with a generic connection error, what should I check first",
+      "answer": [
+        "nc -vz"
+      ],
+      "path": [
+        "Postgres Connection Failure Triage"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.89
+    },
+    {
+      "id": "vault-pg-cold-start",
+      "query": "why would the first connection to a serverless postgres time out",
+      "answer": [
+        "scales to zero"
+      ],
+      "path": [
+        "Postgres Connection Failure Triage"
+      ],
+      "cohort": "lexical",
+      "_overlap": 1.0
+    },
+    {
+      "id": "vault-pg-sslmode-jdbc",
+      "query": "where does sslmode belong for the postgres jdbc driver",
+      "answer": [
+        "belongs in the URL query string"
+      ],
+      "path": [
+        "Postgres Connection Failure Triage"
+      ],
+      "cohort": "lexical",
+      "_overlap": 1.0
+    },
+    {
+      "id": "vault-pg-network-tell",
+      "query": "how do I tell a blocked port from a real authentication failure",
+      "answer": [
+        "error appears instantly"
+      ],
+      "path": [
+        "Postgres Connection Failure Triage"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.67
+    },
+    {
+      "id": "vault-mirror-icloud-tcc",
+      "query": "why did the automated vault sync silently stop working on the icloud path",
+      "answer": [
+        "denies LaunchAgents access to iCloud"
+      ],
+      "path": [
+        "ClaudeVault Git Mirror"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.88
+    },
+    {
+      "id": "vault-mirror-interval",
+      "query": "how often does the vault sync launch agent run",
+      "answer": [
+        "900s"
+      ],
+      "path": [
+        "ClaudeVault Git Mirror"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.83
+    },
+    {
+      "id": "vault-mirror-never-commit",
+      "query": "which vault file holds a secret that must stay out of the git mirror",
+      "answer": [
+        "NEVER commit"
+      ],
+      "path": [
+        "ClaudeVault Git Mirror"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.86
+    },
+    {
+      "id": "vault-mcp-tool-prefix",
+      "query": "what decides the prefix an mcp tool shows up under",
+      "answer": [
+        "whatever key the config block used"
+      ],
+      "path": [
+        "How MCP works"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.33
+    },
+    {
+      "id": "vault-mcp-desktop-scope",
+      "query": "can the desktop client load an mcp server for just one project",
+      "answer": [
+        "no project scope at all"
+      ],
+      "path": [
+        "How MCP works"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.83
+    },
+    {
+      "id": "vault-mcp-shell-inheritance",
+      "query": "why does an mcp server work in one claude client and fail in the other",
+      "answer": [
+        "does not inherit your shell"
+      ],
+      "path": [
+        "How MCP works"
+      ],
+      "cohort": "lexical",
+      "_overlap": 1.0
+    },
+    {
+      "id": "vault-audit-why-split",
+      "query": "why should the pass that finds problems not also fix them",
+      "answer": [
+        "seen and declined is information"
+      ],
+      "path": [
+        "Why the audit cycle keeps finding and fixing apart"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.75
+    },
+    {
+      "id": "vault-audit-while-here",
+      "query": "what is wrong with an opportunistic fix during implementation",
+      "answer": [
+        "a change with no finding behind it"
+      ],
+      "path": [
+        "Why the audit cycle keeps finding and fixing apart"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.8
+    },
+    {
+      "id": "vault-audit-review-order",
+      "query": "why run the context-rich review before the diff-only one",
+      "answer": [
+        "rationalise a wrong change"
+      ],
+      "path": [
+        "Why the audit cycle keeps finding and fixing apart"
+      ],
+      "cohort": "lexical",
+      "_overlap": 1.0
+    },
+    {
+      "id": "vault-scripta-tcc-rebuild",
+      "query": "why do macos permissions re-prompt after every rebuild of the app",
+      "answer": [
+        "cdhash"
+      ],
+      "path": [
+        "macOS platform gotchas"
+      ],
+      "cohort": "lexical",
+      "_overlap": 1.0
+    },
+    {
+      "id": "vault-scripta-window-behind",
+      "query": "menu bar app windows keep opening behind every other app",
+      "answer": [
+        "ignoringOtherApps"
+      ],
+      "path": [
+        "macOS platform gotchas"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.8
+    },
+    {
+      "id": "vault-scripta-xcode-mcp",
+      "query": "xcode mcp server registers but advertises no tools",
+      "answer": [
+        "serves no tools until Xcode is restarted"
+      ],
+      "path": [
+        "macOS platform gotchas"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.83
+    },
+    {
+      "id": "vault-scripta-speaker-labels",
+      "query": "how are the two speakers told apart in a recorded call",
+      "answer": [
+        "rather than inferred by a model"
+      ],
+      "path": [
+        "Locked platform decisions"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.6
+    },
+    {
+      "id": "vault-scripta-raw-audio-delete",
+      "query": "when is the original audio file deleted after a recording",
+      "answer": [
+        "only after the transcript verifies non-empty"
+      ],
+      "path": [
+        "Locked platform decisions"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.83
+    },
+    {
+      "id": "vault-scripta-pruner-recursion",
+      "query": "why must the retention pruner never recurse into subfolders",
+      "answer": [
+        "unrecoverable"
+      ],
+      "path": [
+        "Locked platform decisions"
+      ],
+      "cohort": "lexical",
+      "_overlap": 0.8
+    },
+    {
+      "id": "vault-scripta-transcriber-choice",
+      "query": "which speech to text engine was chosen for the app and why",
+      "answer": [
+        "SpeechTranscriber"
+      ],
+      "path": [
+        "Locked platform decisions"
+      ],
+      "cohort": "lexical",
+      "_overlap": 1.0
+    },
+    {
+      "id": "vault-p-launchd-home",
+      "query": "how do I make a repeating job that can actually see my home directory",
+      "answer": [
+        "isolated Linux sandbox"
+      ],
+      "path": [
+        "launchd over sandbox"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.43
+    },
+    {
+      "id": "vault-p-swr-two-lines",
+      "query": "one call shows as two lines in devtools but the app only asked once",
+      "answer": [
+        "stale-while-revalidate"
+      ],
+      "path": [
+        "SWR Looks Like Duplicate Fetches"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.29
+    },
+    {
+      "id": "vault-p-pg-start",
+      "query": "client says it cannot connect and gives no useful detail, where do I start",
+      "answer": [
+        "nc -vz"
+      ],
+      "path": [
+        "Postgres Connection Failure Triage"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.5
+    },
+    {
+      "id": "vault-p-mcp-missing",
+      "query": "tools defined for one app never show up in the other",
+      "answer": [
+        "does not inherit your shell"
+      ],
+      "path": [
+        "How MCP works"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.5
+    },
+    {
+      "id": "vault-p-audit-same",
+      "query": "should the pass that spots problems also repair them",
+      "answer": [
+        "seen and declined is information"
+      ],
+      "path": [
+        "Why the audit cycle keeps finding and fixing apart"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.5
+    },
+    {
+      "id": "vault-p-pruner-nested",
+      "query": "why is the cleanup job forbidden from walking into nested folders",
+      "answer": [
+        "unrecoverable"
+      ],
+      "path": [
+        "Locked platform decisions"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.0
+    },
+    {
+      "id": "vault-p-who-said-what",
+      "query": "how does it work out who said what",
+      "answer": [
+        "rather than inferred by a model"
+      ],
+      "path": [
+        "Locked platform decisions"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.0
+    },
+    {
+      "id": "vault-p-permission-nag",
+      "query": "the app keeps asking for permission again every time I build it",
+      "answer": [
+        "cdhash"
+      ],
+      "path": [
+        "macOS platform gotchas"
+      ],
+      "cohort": "semantic",
+      "_overlap": 0.62
+    }
+  ]
+}

@@ -35,6 +35,38 @@ unique embedding work is far less than 6 × the chunk count.
 Then verify with `substrate status --scope prism` — it reports counts, vector completeness, and
 whether the vault has changed since the index was built.
 
+## Deployed, 2026-07-27 — where the moving parts live
+
+All six scopes are composed, embedded (vector-complete) and registered. None of the following is
+in this repo, so it is written down here or it is lost:
+
+| what | where |
+|---|---|
+| CLI wrapper | `~/.local/bin/substrate` — cds into this repo, `uv run python -m substrate.cli` |
+| MCP wrapper | `~/.local/bin/substrate-mcp` — `--quiet` so nothing but JSON-RPC reaches stdout |
+| MCP registration | `~/.claude.json` user scope, added via `claude mcp add -s user` |
+| Claude Code skill | `~/.claude/skills/substrate/SKILL.md` — the read path, ~20 tokens idle |
+| refresh job | `~/.local/bin/substrate-refresh` + `~/Library/LaunchAgents/com.ronanwood.substrate-refresh.plist`, 15-min |
+| refresh log | `~/Library/Logs/substrate-refresh.log` (quiet unless something changed or failed) |
+| scope registry | `~/.substrate/scopes.toml`, written by `compose` |
+
+The refresh job checks Ollama FIRST and skips the whole run if it is down. That ordering is
+load-bearing: `compose --clean` drops an index and rebuilds it with no vectors, and `embed` puts
+them back, so a run that composed and then could not embed would leave a working scope 0-vector.
+It also checks drift per scope, so an unchanged vault is never torn down. A quiet tick is ~2.5s.
+
+**Ollama is the unowned dependency.** It is CLI-only here — no brew service, no LaunchAgent, no
+Ollama.app — so nothing restarts it at login. Without it the refresh job skips every tick and
+every query runs lexical-only, which the capability envelope reports honestly but which is the
+0.343 tier. `brew services start ollama` would fix it, but its launchd context will NOT inherit
+`OLLAMA_MODELS=/Volumes/ExtremeSSD/ollama-models`, and the weights are on that external volume —
+so it needs an explicit `EnvironmentVariables` block, and it is still wrong whenever the SSD is
+unmounted. Not done; decide deliberately.
+
+**The retrieval quality on this corpus is measured now**, and it is not 0.698 — see
+`eval/gold-vault.json`. Lexical 20/21 (MRR 0.63), paraphrase 9/13 (MRR 0.35). Different cohorts
+from the 44-case reference-book tier; not subtractable.
+
 ## What the MCP surface is
 
 One server, `substrate-mcp`, stdio JSON-RPC 2.0, stdlib only. **Scope is a parameter**, not server
