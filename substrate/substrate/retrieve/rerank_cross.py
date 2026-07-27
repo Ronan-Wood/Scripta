@@ -66,6 +66,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -81,6 +82,15 @@ DEFAULT_HOST = "http://127.0.0.1:11434"
 POOL = 20
 SNIPPET = 900          # cross-encoders see one doc at a time, so it can exceed listwise's 320
 TIMEOUT = 120
+# AGGREGATE ceiling across the whole pool, because TIMEOUT is per call and this arm makes up to
+# POOL of them in sequence: 20 x 120s is a 40-minute worst case, which was tolerable while this
+# ran only under `eval` and is not now that `query` and the MCP `search` tool reach it. The
+# per-call timeout only fires on a call that FAILS; twenty merely-slow calls (a daemon paging 4B
+# weights off an external volume, say) each return fine and nothing bounds the total. An MCP
+# search is worse than slow — `serve()` is a single-threaded line loop, so an in-flight call
+# blocks every later frame INCLUDING the client's cancellation, making it look like a dead server.
+# 45s against a measured ~8-11s typical: generous for a warm run, and a hard stop for a sick one.
+BUDGET = 45.0
 NUM_PREDICT = 1        # a single verdict token — see note 2
 TEMPERATURE = 0.0
 
@@ -166,9 +176,14 @@ class CrossEncoderReranker:
     #   fallback_queries   — EVERY fallback: transport failures PLUS all-abstain queries (no
     #                        candidate produced a yes/no verdict). This is what the eval reads.
     # abstentions is PER-CANDIDATE (one unparseable verdict), not per-query.
+    budget_s: float = BUDGET
     transport_failures: int = field(default=0, init=False)
     abstentions: int = field(default=0, init=False)
     fallback_queries: int = field(default=0, init=False)
+    budget_exhaustions: int = field(default=0, init=False)
+    # Deliberately NOT counted in fallback_queries: the arm ran and judged. Separate so the
+    # distinction between "declined to reorder" and "could not" stays visible in a sweep.
+    declined_all_no: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         require_loopback(self.host, sends="the query and passages", suggest=DEFAULT_HOST)
@@ -244,7 +259,18 @@ class CrossEncoderReranker:
         # left the top 20 — which is every embedder change, making the five-embedder sweep
         # share almost no cache hits despite heavily overlapping candidate sets.
         scores: list[float] = []
+        deadline = time.monotonic() + self.budget_s
         for h in pool:
+            # Checked BEFORE each call, so the budget bounds the call we are about to start rather
+            # than noticing afterwards. Partial scores are deliberately discarded: ranking on a
+            # prefix of the pool would promote whatever happened to be scored first, which is a
+            # ranking artefact of how long the daemon took, not a relevance judgement. Fail open
+            # to fused order and RECORD it, the same shape as the transport failure below — a
+            # slow arm and a dead one both have to reach the caller as a degradation.
+            if time.monotonic() >= deadline:
+                self.budget_exhaustions += 1
+                self.fallback_queries += 1
+                return hits, False
             # Keyed on the CONTENT scored, not chunk_id: a re-chunk that reuses an id but
             # changes the text would otherwise serve the old verdict forever. A score is a pure
             # function of (query, this document's text).
@@ -283,6 +309,23 @@ class CrossEncoderReranker:
             # An empty pool (e.g. --rerank-pool 0) or a pool where no candidate yielded a
             # yes/no verdict: no rerank actually happened, so this is a fallback, not a reorder.
             self.fallback_queries += 1
+            return hits, False
+
+        if not any(s == YES for s in scores):
+            # Every candidate was judged NO. The sort key is `scores[i] != YES`, so with no YES
+            # present every key is (True, i) and the permutation is the IDENTITY — the arm returns
+            # fused order while previously reporting `changed=True`, the rerank-OFF config wearing
+            # the reranked label. It must report `changed=False`.
+            #
+            # But it is NOT a fallback, and counting it as one was worse than the bug: the model
+            # answered every question, so nothing degraded — `fallback_queries` drives the eval's
+            # mixed-arm refusal, and three legitimate all-NO verdicts made it FATAL an otherwise
+            # clean 34-case run. A verdict of "none of these is relevant" is the arm WORKING.
+            # Returning False without a fallback lands it in `Capability.reranker = "skipped"`,
+            # beside the adaptive gate-skip, which is the same statement: the stage was reached
+            # and declined to reorder. All-NO is routine on a small scope — INSTRUCTION tells the
+            # model that merely mentioning the topic is not relevance.
+            self.declined_all_no += 1
             return hits, False
 
         # Promote every "yes" above the rest; the stable sort preserves fused order within each
