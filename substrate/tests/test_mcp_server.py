@@ -196,9 +196,11 @@ def test_mcp_and_cli_agree_with_a_stack_actually_requested() -> None:
 
     assert mcp == cli, "envelope diverged once a real arm was requested"
     # And the arm state actually travelled — otherwise this passes by comparing two empty things
-    # again, which is the defect it was written to close.
+    # again, the defect it was written to close. Three states satisfy that, not two: over a
+    # vectorless index (this fixture) the coverage guard degrades a reachable, wired embedder,
+    # reporting `embedder: None` with an EMPTY `unavailable` and the condition in `fallbacks`.
     mode = mcp["retrieval_mode"]
-    assert mode["embedder"] is not None or mode["unavailable"], mode
+    assert mode["embedder"] is not None or mode["unavailable"] or mode["fallbacks"], mode
 
 
 # ---------------------------------------------------------------- the contract crosses
