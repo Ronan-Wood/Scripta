@@ -921,7 +921,8 @@ def cmd_status(args: argparse.Namespace) -> int:
           f"{payload['outlines']} outlines  ·  index {payload['index_version']} "
           f"(schema v{payload['schema_version']})")
     print(f"  by vault {payload['by_vault']} · by tier {payload['by_tier']}")
-    print(f"  by status {payload['by_status']} · by confidence {payload['by_confidence']}")
+    print(f"  by status {payload['by_status']} · by doc_type {payload['by_doc_type']}")
+    print(f"  by confidence {payload['by_confidence']}")
     v = payload["vectors"]
     if v is None:
         # "Not asked for" and "asked for, could not start" are the SAME None here, and stating the
