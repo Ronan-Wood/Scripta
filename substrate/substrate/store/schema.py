@@ -25,8 +25,10 @@ SCHEMA_VERSION = 6
 #     vault / tier (supersedes/superseded_by already existed, previously always NULL); chunks
 #     gains status, DENORMALIZED like the rest of the spine so the default-retrieval filter reads
 #     currency off the chunk without a join. Drop-and-rebuild from markdown, no data loss.
-# v4 (2026-07-24) Doc-2 §6a doc_type — the Diátaxis-derived note-job axis (decision / explanation /
-#     reference / how-to). documents + chunks each gain doc_type, DENORMALIZED like status so a
+# v4 (2026-07-24) Doc-2 §6a doc_type — the note-job axis, four values at the time. The column is
+#     TEXT and `spine.DOC_TYPES` is the only authority, so a later value needs no bump and this
+#     line is history, not the current set (a fifth, `digest`, was added without one).
+#     documents + chunks each gain doc_type, DENORMALIZED like status so a
 #     passage states its own job without a join. A retrieval axis alongside status/domains; the
 #     value is carried + surfaced now, server-side filtering deferred (like domains). Drop-and-
 #     rebuild. Adds a column, not text: the (chunk_id, text_with_path) eval signature is unmoved.

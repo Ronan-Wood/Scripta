@@ -25,7 +25,8 @@ Non-negotiables from that file:
 - **Lead with the conclusion; no preamble/postamble.**
 - **Structure over prose** for anything enumerable (decisions, tradeoffs, options → tables/lists).
 - **Preserve decision history and confidence markers; attach conditions to every number.**
-- **One note, one job** — declare a `doc_type` (decision / explanation / reference / how-to); if a
+- **One note, one job** — declare a `doc_type` (the vocabulary is `spine.DOC_TYPES`: decision /
+  explanation / reference / how-to / digest); if a
   note does two jobs, split it.
 - **Glossary:** one word per concept (passage, supersede, vault, tier, engine, retrieval, ingest,
   manifest, domain, capability). **Reserved:** `status` = the note lifecycle only

@@ -342,7 +342,7 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
         version=front.get("version"),
         version_date=front.get("version_date"),
         page_label_offset=_bounded_int(front.get("page_label_offset", ""), -_I64, _I64),
-        # §3b raw provenance. `raw_sha256` is shape-checked like source_sha256: a malformed digest
+        # §3b raw provenance. `raw_sha256` is shape-checked like source_sha256: a malformed checksum
         # is dropped rather than carried, because a pointer that cannot identify the file it names
         # is worse than an absent one — it reads as provenance while being unusable.
         raw=(front.get("raw") or None),

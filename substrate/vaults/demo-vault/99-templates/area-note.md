@@ -1,7 +1,7 @@
 ---
 title: <title>
 status: active
-doc_type: <decision | explanation | reference | how-to>
+doc_type: <decision | explanation | reference | how-to | digest>
 domains: [<domain>]
 ---
 

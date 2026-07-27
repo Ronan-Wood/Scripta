@@ -16,7 +16,7 @@ freshness result over a vault the user had rewritten. `source_path` is the note 
 
 **One class of change is undetectable, and it is named rather than hidden.** The reader (Doc 2
 §3b) honours a `source_sha256` declared in frontmatter — that is how a PDF-derived passage points
-at the PDF it came from rather than at itself — so for those notes the stored digest is the
+at the PDF it came from rather than at itself — so for those notes the stored checksum is the
 PDF's, and a body edit leaves it unchanged. Rather than report those as fresh, they are counted
 as `unverifiable`. A freshness report whose completeness is overstated is the failure this whole
 project keeps finding; a report that names the part it could not check is not.
@@ -31,22 +31,22 @@ from substrate.markdown.reader import _SHA256, _parse_frontmatter
 
 
 def effective_sha_of(data: bytes) -> tuple[str, bool]:
-    """The digest the reader WOULD store for these bytes, and whether it was declared.
+    """The checksum the reader WOULD store for these bytes, and whether it was declared.
 
     Takes bytes rather than a path so a caller that has already read the file does not read it a
     second time — two reads can straddle a write, leaving the content and the staleness verdict
     describing different versions.
 
     Mirrors `markdown.reader`: a well-shaped `source_sha256` in frontmatter wins, else the file's
-    own digest. Reusing the rule rather than re-deriving one is what stops this check disagreeing
-    with the ingest it is auditing — two digest rules would make every PDF passage read as
+    own checksum. Reusing the rule rather than re-deriving one is what stops this check disagreeing
+    with the ingest it is auditing — two checksum rules would make every PDF passage read as
     changed, and a report full of false positives trains its reader to ignore it.
     """
     # Line endings normalized before parsing, exactly as `markdown.reader` and `vault._read_capped`
     # do — the frontmatter regex is LF-anchored, so without this a CRLF-authored note's declared
     # `source_sha256` is invisible here while the reader saw it. That note would then be counted as
     # checked and listed as `changed` forever: permanently STALE on a vault nobody touched, and
-    # recomposing would not clear it. The digest is still taken over the RAW bytes, as the reader
+    # recomposing would not clear it. The checksum is still taken over the RAW bytes, as the reader
     # takes it.
     text = data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
     front, _ = _parse_frontmatter(text)
@@ -121,7 +121,7 @@ def drift(store, note_paths: list[Path]) -> dict:
         "removed": removed,
         "changed": changed,
         "checked": checked,
-        # Notes whose stored digest is a DECLARED one (it names a PDF, per Doc 2 §3b), so an edit
+        # Notes whose stored checksum is a DECLARED one (it names a PDF, per Doc 2 §3b), so an edit
         # to the note body cannot be detected from the index alone. Named, not folded into
         # "unchanged" — this count is the honest boundary of what `stale: false` means.
         "unverifiable": unverifiable,

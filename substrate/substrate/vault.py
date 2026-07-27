@@ -35,12 +35,18 @@ MANIFEST = ".substrate.toml"
 _MAX_BYTES = 64 * 1024 * 1024
 
 # Files/dirs that are scaffolding, not retrievable notes. `_meta.md` is a source's metadata (read
-# for domains/class, never indexed); `structure.md` is an orientation outline Doc 2 explicitly
-# calls "not itself a retrieval target"; MEMORY.md and log.md are navigation/history; WRITING.md is
-# the read-wholesale authoring standard (§6a/rules) — a multi-job document by nature, so it is read
-# in full like a README, not chunked into single-job passages; templates are templates. Excluding
-# them is not a silent drop — they are not notes, and the count check in assert_composed is over the
-# notes actually selected here, so nothing indexable goes missing.
+# for domains/class by `_source_meta`, never indexed); `structure.md` is an orientation outline Doc
+# 2 explicitly calls "not itself a retrieval target"; MEMORY.md and log.md are navigation/history;
+# WRITING.md is the authoring standard, a multi-job document by nature, so it is excluded rather
+# than chunked into single-job passages; templates are templates. Nothing in this package reads
+# `structure.md` or `WRITING.md` — they are excluded, full stop, and a reader who needs the standard
+# opens it directly.
+#
+# Excluding them is not a silent drop for two reasons: the count check in assert_composed is over
+# the notes actually selected here, and `_refuse_skipped_note_with_a_spine` refuses any of these
+# that DECLARES itself a note. That second guard exists because the first argument — "they are not
+# notes" — stopped being self-evident once §6a named `digest`, a doc_type that describes exactly
+# what a MEMORY.md contains.
 SKIP_NAMES: frozenset[str] = frozenset(
     {"_meta.md", "structure.md", "MEMORY.md", "log.md", "WRITING.md"}
 )
@@ -229,6 +235,56 @@ def _source_meta(note_path: Path, vault_root: Path) -> dict:
     }
 
 
+# SKIP_NAMES entries that nothing reads and that a writer could plausibly believe are indexable
+# notes. `_meta.md` is the one exclusion NOT guarded: `_source_meta` genuinely reads it, so spine
+# keys there are its job rather than a misplaced note.
+_NAVIGATION_NAMES: frozenset[str] = frozenset(
+    {"MEMORY.md", "log.md", "structure.md", "WRITING.md"}
+)
+
+# The keys whose presence means "this file declared itself a retrievable note". `title` and `class`
+# are deliberately absent — a navigation file may legitimately carry either without claiming to be
+# indexed, so refusing on them would be a false positive.
+_SPINE_KEYS: frozenset[str] = frozenset({"doc_type", "status", "confidence", "domains"})
+
+
+def _refuse_skipped_note_with_a_spine(path: Path) -> None:
+    """Refuse a skipped file that declares a spine, rather than dropping it silently.
+
+    Doc 2 §4 names `00-index/MEMORY.md` as the project content map, and §6a's `digest` is exactly
+    that shape — so the obvious move is to put `doc_type: digest` on MEMORY.md, and before this
+    check that produced a fully green compose with the note absent from the index. SKIP_NAMES'
+    own comment argues the exclusion is not a silent drop because these files "are not notes";
+    that reasoning held only while no doc_type could describe them, and `digest` ended it.
+
+    Uses `_parse_frontmatter` rather than a local parser. A second implementation of "is this
+    frontmatter" disagreed with the reader in BOTH directions: it refused a YAML block list (which
+    the reader classifies as a thematic break, so the file has no spine at all) and it missed a
+    real declaration past a fixed read window. Sharing the reader's rule is what makes "declared"
+    here mean the same thing it means at ingest.
+
+    An unreadable file is skipped, not refused: it cannot have declared anything, and these paths
+    were never opened before this check existed — so a broken symlink or a non-UTF-8 `log.md` must
+    not become the reason a whole scope fails to compose.
+    """
+    if path.name not in _NAVIGATION_NAMES:
+        return
+    try:
+        text = _read_capped(path)
+    except VaultError:
+        return
+    front, _ = _parse_frontmatter(text)
+    declared = sorted(k for k in front if k in _SPINE_KEYS)
+    if not declared:
+        return
+    raise VaultError(
+        f"{path} declares spine fields ({', '.join(declared)}) but its filename is in the engine's "
+        f"skip list, so it is never indexed. Doc 2 §6a: a `digest` is an ordinary indexed note — "
+        f"give it a normal filename under 02-areas/ or 04-synthesis/. Refusing rather than "
+        f"dropping a file that declared itself retrievable."
+    )
+
+
 def _discover_notes(vault: VaultRef) -> list[NoteRef]:
     notes: list[NoteRef] = []
     for path in sorted(vault.path.rglob("*.md")):
@@ -238,6 +294,7 @@ def _discover_notes(vault: VaultRef) -> list[NoteRef]:
         if any(part in SKIP_DIRS for part in rel_parts):
             continue
         if path.name in SKIP_NAMES:
+            _refuse_skipped_note_with_a_spine(path)
             continue
         meta = _source_meta(path, vault.path)
         notes.append(NoteRef(

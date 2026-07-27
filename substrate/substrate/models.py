@@ -164,7 +164,7 @@ class Document:
     # supersession link — a superseded note is excluded directly but its link surfaces via the
     # note that replaced it. `domains` is the multi-valued reference-retrieval tag (§3a), carried
     # as a field only — the soft-weighting feature is deferred, so nothing filters or weights on it.
-    # `doc_type` is the Diátaxis note-job axis (§6a: decision/explanation/reference/how-to), carried
+    # `doc_type` is the note-job axis (§6a; the vocabulary is spine.DOC_TYPES), carried
     # + surfaced like domains — an axis a query CAN filter on, server-side filtering deferred.
     # `confidence` is the SETTLEDNESS axis, independent of status: status says whether a note is
     # live, confidence says why its claims should be believed. A note can be active AND proposed;
@@ -179,7 +179,7 @@ class Document:
     # pointer being RECORDED is what cannot be deferred, because every source ingested without one
     # has a regeneration path that is silently lost. Names match the `_meta.md` keys exactly.
     raw: str | None = None            # the source artifact, e.g. "ddia-2e.pdf"
-    raw_sha256: str | None = None     # its digest — identity, so the right file can be recognised
+    raw_sha256: str | None = None     # its checksum — identity, so the right file is recognised
     raw_location: str | None = None   # where it is kept. User-owned (§0); the POINTER is contract
     status: str | None = None
     superseded_by: str | None = None

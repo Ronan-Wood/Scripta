@@ -30,7 +30,7 @@ Rules 5–7 are the ones no external style guide provides — they are the subst
 write time. Every failure this project has hit (the five retractions, the cohort distortion, the
 chapter-title bug) is a version of one of them being violated.
 
-## doc_type — the four jobs (Doc 2 §6a)
+## doc_type — the five jobs (Doc 2 §6a)
 
 Every note declares one `doc_type` in frontmatter. It is a retrieval axis alongside `status` and
 `domains`, and declaring it forces rule 8's split.
@@ -41,8 +41,24 @@ Every note declares one `doc_type` in frontmatter. It is a retrieval axis alongs
 | `explanation` | understanding — why it is the way it is | prose acceptable; conclusion first |
 | `reference` | look-up, stable, scannable | tables / definition lists, no narrative |
 | `how-to` | task steps for a reader who knows why | prerequisites / steps / verify |
+| `digest` | orientation in an AREA — what it holds, what state it is in, where to go next | links + one-line glosses; **points, never contains** |
 
 If a note answers two of these, it is two notes.
+
+**`digest` is the one that can be abused, so it carries an extra rule: a digest POINTS, it does not
+CONTAIN.** It links to the atomic notes and says in one line why you'd open each; the substance
+lives in them. The moment a digest inlines the decision instead of linking it, it is two notes
+wearing one filename — the exact shape rule 8 exists to split. Write one per area, not per topic,
+and treat its length as a warning sign.
+
+A digest is an inventory, so `stated` is its **ceiling** and `verified` is never right. That is a
+cap, not a default: if the digest makes no claim of its own, omit the key — the rule below against
+picking a value to fill the field applies here too.
+
+**A digest is an ordinary note and lives in an indexed folder** — `02-areas/<area>-digest.md` or
+`04-synthesis/<area>.md`. Never write one as `00-index/MEMORY.md` or `log.md`: those keep their own
+jobs (the human content map, the append-only history), are never indexed, and putting a spine on one
+is refused rather than silently dropped.
 
 ## confidence — how settled a claim is (Doc 2 §6b)
 
@@ -165,6 +181,26 @@ domains: [<domain>]
 **Verify:** <how to know it worked.>
 ```
 
+### digest
+```markdown
+---
+title: <the area>
+status: active
+doc_type: digest
+domains: [<domain>]
+---
+
+# <the area>
+
+<What this area is, and its current state. Two sentences.>
+
+## <grouping>
+- [[note-id]] — <doc_type> · <confidence>. <One line: why you would open this one.>
+
+## Open
+<What is unresolved here, or a pointer to the log.>
+```
+
 ## Glossary
 
 One word per concept. Consistent terminology is the one style property that measurably helps
@@ -183,6 +219,8 @@ retrieval. Start here; grow from observed drift.
 | domain | category, topic, subject area |
 | capability | mode, state, status (of the retrieval stack) |
 | confidence | settledness, maturity, certainty, sureness (of a claim) |
+| digest | (the `doc_type` only — a per-area summary note) |
+| checksum | digest, hash (of bytes — never call a content hash a "digest") |
 
 ## Reserved frontmatter keys
 

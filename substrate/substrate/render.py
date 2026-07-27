@@ -171,7 +171,7 @@ def applied_filters(
     consumer what it did not receive is the entire job.)
 
     `doc_type` and `document_class` are DIFFERENT AXES and each gets its own field. `doc_type` is
-    the Diátaxis note-job (decision/explanation/reference/how-to); `document_class` is what kind
+    the note-job (the vocabulary is spine.DOC_TYPES); `document_class` is what kind
     of artifact a document is (reference-frozen, conversation). Reporting a class under the
     doc_type key put a value that is not a legal doc_type on that axis while leaving the filter
     that had actually been applied unreported — a false claim about what was withheld, in the one
