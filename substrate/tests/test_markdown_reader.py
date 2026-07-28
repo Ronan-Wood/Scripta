@@ -437,6 +437,22 @@ def test_bad_source_sha256_derived() -> None:
     assert _SHA256.fullmatch(doc.source_sha256)  # derived from file bytes, 64 hex
 
 
+def test_multi_digit_list_markers_are_not_counted_as_lost_content() -> None:
+    """An ordered list running past item 9 must not read as dropped content.
+
+    The block extractor strips list markers from what it stores; the source side counted them.
+    `_TOKEN` requires >=2 characters, so markers `1.`-`9.` were never counted and the asymmetry was
+    invisible until a list reached 10 — at which point `10`..`17` appeared in `src`, never in
+    `got`, and A18 refused a note that had lost nothing. Found on a real migrated note
+    (a 17-item numbered exam-review list) which reported coverage 0.9554 against a 0.99 gate.
+    """
+    body = "# Q\n\n" + "\n".join(f"{i}. Question about alpha beta gamma delta" for i in range(1, 18))
+    captured = [b.text for b in _blocks(body)]
+    cov, missing = content_coverage(body, captured)
+    assert not [m for m in missing if m.isdigit()], f"list markers counted as lost: {missing}"
+    assert cov >= 0.99, f"coverage {cov} with missing {missing}"
+
+
 if __name__ == "__main__":
     _tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     _failed = 0
