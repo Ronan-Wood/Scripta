@@ -69,6 +69,7 @@ def ingest_markdown(
     *,
     doc_class: str | None = None,
     require_status: bool = False,
+    require_confidence: bool = False,
     override_status: str | None = None,
     override_doc_type: str | None = None,
     override_confidence: str | None = None,
@@ -142,9 +143,14 @@ def ingest_markdown(
     try:
         status = spine.validate_status(doc, require_present=require_status)
         doc_type = spine.validate_doc_type(doc, require_present=require_status)
-        # No require_present: confidence is optional on every path (absent → `unstated`), so it is
-        # deliberately NOT gated on require_status. Only an unknown value is refused.
-        confidence = spine.validate_confidence(doc)
+        # Confidence rides its OWN flag, not require_status, because the two gates have different
+        # blast radii. require_status is safe to demand everywhere: the migration authored a status
+        # for every note. Demanding confidence on the same flag would refuse 530 of 657 indexed
+        # notes at the next compose — run unattended every 15 minutes by a launchd agent, and
+        # silent, because compose returns before opening the IndexStore, so each scope keeps
+        # answering queries from its last good DB while frozen. So `notes.py` (a human is writing
+        # this note now) passes True and `compose` does not. See spine.validate_confidence.
+        confidence = spine.validate_confidence(doc, require_present=require_confidence)
     except spine.SpineError as e:
         # Attach the ORIGIN of the offending value. Which field failed is in the message already;
         # what the operator cannot see is that the value came from a `_meta.md` one directory up.

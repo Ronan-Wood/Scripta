@@ -157,7 +157,7 @@ def frontmatter(doc: Document, extra: dict | None = None) -> str:
     # ALL FIVE axes must be here. §3b makes re-ingestion a designed operation (index regenerates
     # from markdown, markdown from raw), so an axis missing from this block is laundered on every
     # regeneration cycle, by the engine, on its own artifact: doc_type would return as `reference`
-    # and confidence as `unstated`, turning a proposal into an unqualified reference passage. That
+    # and confidence as `unjudged`, turning a proposal into an unqualified reference passage. That
     # is the exact failure the confidence axis exists to prevent, and the comment above would be
     # asserting an invariant the code beneath it broke.
     if doc.status:

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from substrate.models import Chunk, Document
+from substrate.spine import UNJUDGED_CONFIDENCE
 from substrate.store import fts, schema, sections
 
 
@@ -63,7 +64,10 @@ class Hit:
     # retrieval, so its `superseded_by` never shows.)
     status: str = "active"
     doc_type: str = "reference"
-    confidence: str = "unstated"
+    # 'unjudged' (nobody looked), never 'unstated' (judged, claims nothing) — a Hit built without an
+    # explicit confidence has no declaration behind it, and defaulting to the declared value would
+    # manufacture one.
+    confidence: str = UNJUDGED_CONFIDENCE
     supersedes: str | None = None
     domains: list[str] = field(default_factory=list)
     vault: str | None = None
@@ -168,7 +172,9 @@ def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
         # aliased d_* so they never collide with the chunks table's own like-named columns.
         status=_col(r, "status", "active") or "active",
         doc_type=_col(r, "doc_type", "reference") or "reference",
-        confidence=_col(r, "confidence", "unstated") or "unstated",
+        # 'unjudged', not 'unstated': this fallback fires only when the column is absent or empty,
+        # which is the never-judged state. A row that genuinely declares 'unstated' carries it.
+        confidence=_col(r, "confidence", UNJUDGED_CONFIDENCE) or UNJUDGED_CONFIDENCE,
         supersedes=_col(r, "d_supersedes"),
         domains=json.loads(_col(r, "d_domains") or "[]"),
         vault=_col(r, "d_vault"),
@@ -249,11 +255,14 @@ class IndexStore:
             # as a JSON array so the multi-valued tag survives a round-trip losslessly.
             status = doc.status or "active"
             doc_type = doc.doc_type or "reference"
-            # `confidence` defaults to 'unstated', which is the one default here that is NOT a
+            # `confidence` defaults to 'unjudged', which is the one default here that is NOT a
             # convenience: a note that declared nothing must not acquire a settledness it never
-            # claimed. Unlike status/doc_type this default is also what the VAULT path produces —
-            # confidence is optional everywhere by design (spine.validate_confidence).
-            confidence = doc.confidence or "unstated"
+            # claimed. It is 'unjudged' rather than 'unstated' because those are different facts —
+            # nobody looked, versus judged-and-claims-nothing — and collapsing them made six
+            # deliberate `confidence: unstated` declarations indistinguishable from 530 unexamined
+            # notes (spine.UNJUDGED_CONFIDENCE). Unlike status/doc_type this default is also what
+            # the compose path produces; only the vault WRITE path requires a declaration.
+            confidence = doc.confidence or UNJUDGED_CONFIDENCE
             db.execute(
                 """INSERT INTO documents(
                     doc_id, source_path, source_sha256, source_pages, markdown_path,
@@ -670,12 +679,13 @@ class IndexStore:
         stop confidence laundering — a chunk whose settledness drifted from its note would state a
         settledness the note never claimed, which is the precise failure the field was added for.
 
-          1. no value outside STORED_CONFIDENCES on either table. `unstated` IS a member: absence
-             is a real, surfaced value here, not a NULL. A NULL cannot occur — documents defaults at
-             upsert (`doc.confidence or 'unstated'`) and chunks.confidence is `NOT NULL DEFAULT
-             'unstated'` — and the schema constraint, not this query, is what guarantees it: SQL
-             `NULL NOT IN (...)` evaluates to NULL rather than true, so this test alone would not
-             see one. The documents side is additionally covered by the Python membership test
+          1. no value outside STORED_CONFIDENCES on either table. Both `unstated` (declared: judged,
+             claims nothing) and `unjudged` (absent: nobody looked) are members — absence is a real,
+             surfaced value here, not a NULL. A NULL cannot occur — documents defaults at upsert
+             (`doc.confidence or UNJUDGED_CONFIDENCE`) and chunks.confidence is `NOT NULL DEFAULT
+             'unjudged'` — and the schema constraint, not this query, is what guarantees it:
+             SQL `NULL NOT IN (...)` evaluates to NULL rather than true, so this test alone would
+             not see one. The documents side is additionally covered by the Python membership test
              below, for which None is simply not a member.
           2. the chunk-denormalized confidence agrees with its document's.
 

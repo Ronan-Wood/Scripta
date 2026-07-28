@@ -340,8 +340,11 @@ def cmd_compose(args: argparse.Namespace) -> int:
 
     Strict where a single-file ingest is lenient: every note must declare a status and a doc_type
     (require_status=True), and the whole scope is refused if ANY note fails to ingest — a partially
-    composed scope is a silently-wrong retrieval set. Confidence stays optional on this path too
-    (absent → `unstated`), because a forced settledness marker is a guessed one.
+    composed scope is a silently-wrong retrieval set. Confidence stays optional on this path
+    (absent → `unjudged`), because a forced settledness marker is a guessed one and this path must
+    keep accepting a migrated corpus that is 530/657 unjudged. The vault WRITE path (`notes.py`) is
+    stricter and requires it — the one place a gate here is looser than the gate upstream of it,
+    because that is what let the gate ship without freezing six scopes at the next refresh tick.
 
     Five assertions run, so a green run is a proof rather than a hope:
 
@@ -685,7 +688,7 @@ def cmd_query(args: argparse.Namespace) -> int:
             # Spine ON the hit (the Boundary Principle): its currency, its settledness, domain
             # tags, and — when this is a live note that replaced a dead one — the supersession link
             # that surfaces the superseded fact's identity without ever retrieving the superseded
-            # note directly. `confidence` is printed ALWAYS, including `unstated`: the whole point
+            # note directly. `confidence` is printed ALWAYS, including `unstated`/`unjudged`: the whole point
             # of the axis is that a proposal must not read like a settled decision, and a value
             # that disappears when it is inconvenient is prose, not a field.
             meta = [f"status={h.status}", f"doc_type={h.doc_type}",

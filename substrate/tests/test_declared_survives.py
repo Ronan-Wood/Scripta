@@ -38,7 +38,7 @@ from substrate.store.reconcile import reconcile  # noqa: E402
 DECLARED = [
     ("status",         "complete",           "status",         "active"),
     ("doc_type",       "decision",           "doc_type",       "reference"),
-    ("confidence",     "verified",           "confidence",     "unstated"),
+    ("confidence",     "verified",           "confidence",     "unjudged"),
     ("document_class", "conversation",       "document_class", "reference-frozen"),
     ("class",          "conversation",       "document_class", "reference-frozen"),
     ("title",          "A Declared Title",   "title",          None),
@@ -117,7 +117,7 @@ def test_an_undeclared_field_still_takes_its_default() -> None:
     assert doc.confidence is None, "the reader must not invent a confidence"
     assert doc.document_class == "reference-frozen"
     r = ingest_markdown(_note(tmp, "bare2.md", {}), tmp / "out2", require_status=True)
-    assert r.confidence == "unstated", "absence must resolve to unstated at the gate, not earlier"
+    assert r.confidence == "unjudged", "absence must resolve to unjudged at the gate, not earlier"
 
 
 def test_every_meta_key_the_vault_maps_is_read_by_the_reader() -> None:
