@@ -189,8 +189,18 @@ New guards this session, all mutation-verified:
 - **EVAL MUST NOT MOVE** — `4a4f765c9ad75dc9`, 1811 chunks, complete vectors under
   `qwen3-embedding:0.6b#raw`. Open `out/substrate.db` read-only with `sqlite3` and a `mode=ro` URI,
   NEVER through engine code.
-- Schema is **v6**, drop-and-rebuild. Read paths now refuse a version mismatch rather than
-  rebuilding; only `compose`/`index` migrate.
+- Schema is **v7**, drop-and-rebuild. Read paths refuse a version mismatch rather than rebuilding;
+  only `compose`/`index` migrate.
+- **A SCHEMA BUMP SILENTLY BREAKS EVERY ALREADY-RUNNING MCP CLIENT.** Python imports at process
+  start and an MCP server lives as long as the client session that spawned it, so after a bump the
+  running servers hold the old `SCHEMA_VERSION` while every index on disk is new. `IndexStore`
+  then raises `SchemaMismatch` on each read — correctly, that guard is what stops a read-only tool
+  destroying an index — but the user sees "substrate is broken", not "your client aged out".
+  Observed at the v7 bump: fourteen `mcp.server` processes were live, the newest 85 minutes older
+  than the change and two of them from the previous day. A fresh spawn worked the whole time.
+  **There is no way for the server to tell a client it has aged out, so the bump commit has to say
+  it**: restart Claude Code (`/mcp` reconnect or a new session), fully quit-and-relaunch Claude
+  Desktop (a window close is not enough), and restart Zed. Applies again at v8.
 - **14 pre-existing lint errors** at HEAD. Not mine, not to be fixed opportunistically.
 - Serial model work only; weights on `/Volumes/ExtremeSSD`.
 - Discipline: audit → review → implement → verify. `/crosscheck` after implementing (auto-applies
