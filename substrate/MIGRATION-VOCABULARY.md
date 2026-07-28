@@ -570,5 +570,46 @@ intra-Backend links broken by the rename, and **9 wikilinks split across a line 
   the symptom was a chunk path reading `Cross-Cutting — Synthesis` under a note titled
   *"Cross-cutting — how it fits together"*. Provenance pointing at the wrong name is the
   chapter-title bug's shape, and only reading a real result surfaced it.
-- **`prism-sharp-edges` and the five area catalogues now overlap.** Not resolved here; the
-  cross-area note predates the split and some of its entries are now duplicated area-side.
+- ~~`prism-sharp-edges` and the five area catalogues now overlap.~~ **Measured, and the claim was
+  wrong: the overlap is ZERO.** Comparing bolded lead-ins and table-row keys across all six notes,
+  `prism-sharp-edges` (10 entries) shares nothing with backend (26), cross-cutting (16), domain
+  (14), frontend (17) or infrastructure (21). The cross-area note holds failure *classes* — Swagger
+  contract drift, CSP gaps, ad blockers eating analytics — and the area notes hold specific traps.
+  The split was cleaner than the claim assumed; recorded because an unmeasured claim in a readout
+  is the same defect as an unchecked docstring.
+
+---
+
+## 16. The remaining open items, closed 2026-07-28
+
+**All seven vaults are under version control.** `git init --separate-git-dir` per vault, with the
+repos in `~/.local/share/vault-git/` — the working tree stays cloud-synced (Doc 2 §0 sanctions
+that for markdown) while `.git` does not, so a concurrent OneDrive sync cannot corrupt a repo
+mid-write. An earlier caution here was **wrong**: `vault-sync.sh` selects vaults from an explicit
+`VAULTS` allowlist naming only the two `~/vaults/` repos, so its `.git` test is a guard inside the
+loop, not the selector. Adding `.git` to a OneDrive vault opts nothing into anything.
+
+**The 74 session logs are migrated** to `prism-vault/_sources/` as `class: conversation`, following
+the convention core-vault, cbre-vault and school-vault already use. `status: complete` — a session
+log is done and correct — and they are excluded from default retrieval by CLASS, not by status, so
+the two axes stay independent. Verified both ways: a default query returns the durable notes, and
+`--include-sources` puts the session log first for its own content.
+
+Scope is now **306 documents · 3001 passages · 5798 vectors**, freshness current, 0 fatal, 3
+quality warnings.
+
+**Link integrity ended at 2348 of 2428 resolving.** The 80 that do not are 25 Linear tickets that
+were never vault notes and 55 forward-references the source vault never had. Migrating the sessions
+resolved 200 links in one sweep — each migration pass only knows its own slice's names, so a final
+full-map sweep is part of the pattern, not an afterthought.
+
+**`--clean` can no longer delete a vault.** `cli.py:_refuse_destructive_clean` refuses three shapes
+before `shutil.rmtree`: a directory holding a `.substrate.toml` (that makes it a vault, whoever
+owns it), a path equal to / inside / a parent of any vault in the scope, and a directory holding
+markdown this tool did not write. A genuine index root stays deletable or `--clean` is useless.
+Four regression tests, mutation-verified.
+
+Worth recording: the first version of that guard referenced a module the CLI imports *inside*
+`cmd_compose`, so it raised `NameError` — and because it raised before the `rmtree`, it failed
+closed. A guard that crashes is still a bug, but the direction of failure was the safe one, which
+is the property PRINCIPLES.md's second law says to prefer.

@@ -158,6 +158,38 @@ def cmd_ingest_md(args: argparse.Namespace) -> int:
     return 0
 
 
+def _refuse_destructive_clean(index_root: Path, scope) -> str:
+    """Why `--clean` must NOT rmtree this path, or "" if it is safe to remove.
+
+    `--clean` exists to drop a stale index dir, and an index dir is disposable by design. A VAULT
+    is not: it is the source of truth, it is markdown a human wrote, and the vaults live one
+    directory away from the index roots in `~/.substrate/scopes.toml`, so the two get typed into
+    the same command. Nothing stopped `--index-root ~/OneDrive/vaults/prism-vault --clean` from
+    recursively deleting 272 hand-written notes.
+
+    Three refusals, cheapest first. The manifest check is the load-bearing one — a directory
+    holding a `.substrate.toml` IS a vault whether or not this scope inherits it.
+    """
+    from substrate import vault as _v
+
+    root = index_root.resolve()
+    if (root / _v.MANIFEST).exists():
+        return (f"{root} contains a {_v.MANIFEST} — that makes it a vault, not an index root. "
+                f"Refusing to delete it. Point --index-root at a disposable directory "
+                f"(the default, out-vault/index, is repo-local and gitignored).")
+    for v in scope.vaults:
+        vp = v.path.resolve()
+        if root == vp or root in vp.parents or vp in root.parents:
+            return (f"{root} is the same as, inside, or a parent of the vault {vp}. Refusing to "
+                    f"delete it — an index root must be disposable, and a vault never is.")
+    stray = [p for p in root.rglob("*.md") if p.name != "document.md"][:3]
+    if stray:
+        return (f"{root} holds markdown this tool did not write "
+                f"({', '.join(str(p.relative_to(root)) for p in stray)}). An index root contains "
+                f"only generated artifacts; refusing to delete a directory that looks authored.")
+    return ""
+
+
 def refuse_if_rebuilt(store, *, repopulates: bool) -> bool:
     """A schema bump drops-and-rebuilds the index on open. Announce it — and on a READ path, refuse.
 
@@ -344,6 +376,10 @@ def cmd_compose(args: argparse.Namespace) -> int:
     print(f"  {len(scope.notes)} notes across {len(scope.vaults)} vault(s)")
 
     if index_root.exists() and args.clean:
+        refuse = _refuse_destructive_clean(index_root, scope)
+        if refuse:
+            print(f"FATAL (--clean): {refuse}", file=sys.stderr)
+            return 2
         import shutil
         shutil.rmtree(index_root)
     index_root.mkdir(parents=True, exist_ok=True)
