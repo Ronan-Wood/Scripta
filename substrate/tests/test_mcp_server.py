@@ -555,6 +555,78 @@ def test_status_is_clean_when_nothing_moved() -> None:
     assert d["checked"] == 1 and d["changed"] == [] and d["added"] == []
 
 
+# ---------------------------------------------------------------- the freeze signal
+
+def test_a_frozen_scope_does_not_answer_like_a_healthy_one() -> None:
+    """The failure this field closes, asserted end-to-end through the real tool call.
+
+    `compose` returns before it opens the index database, so when it refuses the OLD index stays
+    and every query keeps answering from it. Before `refresh`, the two responses were identical —
+    so this asserts a DIFFERENCE rather than a value: pinning `frozen is True` alone would still
+    pass if the healthy case reported True as well.
+    """
+    from substrate import refresh_state
+
+    _, registry = _fixture()
+    healthy = _call("search", {"scope": "demo", "query": "composition"}, registry)
+
+    refresh_state.record("demo", "compose_failed", registry=registry)
+    frozen = _call("search", {"scope": "demo", "query": "composition"}, registry)
+
+    assert healthy["refresh"] != frozen["refresh"], "a refused recompose crossed as nothing"
+    assert frozen["refresh"]["frozen"] is True
+    assert frozen["refresh"]["known"] is True
+    # And nothing ELSE moved: the passages are the same because the index is the same. That is
+    # exactly why the condition had to be attached to the result rather than inferred from it.
+    assert healthy["passages"] == frozen["passages"]
+
+
+def test_the_freeze_signal_reaches_both_adapters_identically() -> None:
+    """Doc 3a §6 applied to the new field. It is read inside `search_payload` rather than passed
+    in by each adapter, so a divergence here would mean one of them resolved a different registry —
+    the same class of fault as the CLI reporting `unavailable: []` while the server named a dead
+    daemon."""
+    from substrate import refresh_state
+
+    _, registry = _fixture()
+    refresh_state.record("demo", "compose_failed", registry=registry)
+    query = "composition manifest"
+
+    mcp = _call("search", {"scope": "demo", "query": query, "k": 3}, registry)
+    proc = subprocess.run(
+        [sys.executable, "-m", "substrate.cli", "query", query, "--scope", "demo",
+         "--registry", str(registry), "--k", "3", "--json", "--no-vector"],
+        capture_output=True, text=True, cwd=REPO, check=True,
+    )
+    cli = json.loads(proc.stdout)
+
+    assert mcp == cli, "envelope diverged on the refresh record"
+    assert mcp["refresh"]["frozen"] is True, "both adapters agreed on the wrong thing"
+
+
+def test_status_carries_the_same_refresh_block_as_search() -> None:
+    """One reader, one key set. A caller that learned to read this on a search result must not
+    have to learn a second dialect on `status`."""
+    from substrate import refresh_state
+
+    _, registry = _fixture(manifest=True)
+    refresh_state.record("demo", "embed_failed", registry=registry)
+
+    searched = _call("search", {"scope": "demo", "query": "composition"}, registry)["refresh"]
+    stated = _call("status", {"scope": "demo"}, registry)["refresh"]
+    assert searched == stated
+
+
+def test_an_unrecorded_scope_reports_no_verdict_rather_than_a_clean_one() -> None:
+    """The default state of every scope until an agent records one. It must not be the state that
+    looks healthiest — absence of a record is absence of evidence."""
+    _, registry = _fixture()
+    r = _call("search", {"scope": "demo", "query": "composition"}, registry)["refresh"]
+    assert r["known"] is False
+    assert r["frozen"] is None, "no record read as a clean bill of health"
+    assert r["note"]
+
+
 # ---------------------------------------------------------------- the write gate
 
 _NOTE = """---

@@ -147,6 +147,15 @@ TOOLS = [
             "Check `filters` for what was withheld and `retrieval_mode` for which arms actually "
             "ran: `expected_mrr` is null when the running stack has no measured number, which "
             "means the ranking is weaker than a measured one, not that it is unmeasurable.\n\n"
+            "READ `refresh` BEFORE TRUSTING A RESULT AS CURRENT. A background job keeps each "
+            "scope's index in step with its vault; this is what it last managed. "
+            "`frozen: true` means the vault changed and the rebuild REFUSED, so these passages "
+            "come from content that has since been edited — say so rather than presenting them "
+            "as current. `frozen: false` means the last pass left index and vault in agreement. "
+            "`frozen: null` means no verdict is possible (nothing was attempted, or nothing has "
+            "ever been recorded) — that is ABSENT EVIDENCE, not a clean bill of health. Compare "
+            "`attempted` with `succeeded`: a gap between them is how long the scope has been "
+            "going wrong. `status` computes the vault-vs-index comparison directly.\n\n"
             "Every passage also carries its `doc_type` (the one job the note does). There is no "
             "doc_type filter — filter the returned passages yourself."
         ),
@@ -262,7 +271,11 @@ TOOLS = [
             "one the scope composes but the index does not hold, which looks exactly like a "
             "question the corpus cannot answer. `unverifiable` counts notes whose stored checksum "
             "names a source PDF rather than themselves, so an edit to them cannot be seen from "
-            "the index alone."
+            "the index alone.\n\n"
+            "`refresh` is the same block `search` returns — what the background job last managed "
+            "on this scope. Read it WITH `drift`, not instead of it: `drift.stale` with "
+            "`refresh.frozen` is an index whose rebuild refused, while `drift.stale` with a clean "
+            "refresh is only an edit made since the last pass."
         ),
         "inputSchema": {
             "type": "object",
@@ -309,6 +322,7 @@ def _tool_search(args: dict, cfg: Config) -> dict:
             result, scope=scope, query=query, statuses=statuses,
             include_sources=include_sources, unavailable=cfg.stack.unavailable,
             db=str(entry.db), filter_notes=(clamp_note,) if clamp_note else (),
+            registry=cfg.registry,
         )
     finally:
         store.close()
@@ -520,7 +534,7 @@ def _tool_status(args: dict, cfg: Config) -> dict:
         raise ToolError("status requires `scope`.")
     entry, store = _open(name, cfg.registry, refuse_empty=False)
     try:
-        return introspect.status_payload(store, entry, stack=cfg.stack)
+        return introspect.status_payload(store, entry, stack=cfg.stack, registry=cfg.registry)
     finally:
         store.close()
 

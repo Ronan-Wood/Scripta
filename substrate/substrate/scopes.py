@@ -52,8 +52,12 @@ class ScopeError(RuntimeError):
 
 
 @contextmanager
-def _exclusive(registry: Path):
+def exclusive(registry: Path):
     """Hold an exclusive lock across a whole read-modify-write of the registry.
+
+    Public because `refresh_state` writes the OTHER machine-local file in this directory and needs
+    exactly this guarantee. One definition rather than two near-identical ones: a lock helper that
+    exists twice is a lock helper that will be fixed once.
 
     `record` reads the file, adds one entry, and writes the WHOLE thing back. An atomic replace
     makes each write all-or-nothing but does nothing about two composes interleaving: both read
@@ -195,7 +199,7 @@ def record(
     vault, db, index_root = (p.expanduser().resolve() for p in (vault, db, index_root))
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    with _exclusive(path):
+    with exclusive(path):
         return _record_locked(path, name, vault=vault, db=db, index_root=index_root)
 
 

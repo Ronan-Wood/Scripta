@@ -563,7 +563,7 @@ def cmd_query(args: argparse.Namespace) -> int:
 
     from substrate.retrieve.retriever import retrieve
 
-    from substrate import render, stack as _stack
+    from substrate import refresh_state, render, stack as _stack
 
     # EVERY argument is resolved and refused before the stack is built, because building it probes
     # the local daemon over the network — paying live probes to produce an error decidable from
@@ -666,7 +666,7 @@ def cmd_query(args: argparse.Namespace) -> int:
                     result, scope=args.scope, query=args.text,
                     statuses=statuses, include_sources=args.include_sources,
                     document_class=args.doc_class, chars=args.chars,
-                    unavailable=unavailable, db=db_path,
+                    unavailable=unavailable, db=db_path, registry=args.registry,
                 ), indent=2, ensure_ascii=False))
                 return 0
         # Derived from the SAME function the --json envelope uses, not from a second reading of
@@ -679,6 +679,19 @@ def cmd_query(args: argparse.Namespace) -> int:
         sset = "all" if statuses is None else ",".join(_f["statuses_included"])
         print(f"  status filter: {sset}"
               + ("  ·  sources excluded (--include-sources)" if _f["sources_excluded"] else ""))
+        # The same record the --json envelope carries, said out loud. A reader of the human
+        # rendering is the one LEAST likely to go and check `status`, so the condition has to
+        # travel with the results rather than be available beside them. Only the states worth
+        # acting on are printed — a healthy scope stays quiet, or the line becomes furniture.
+        # Unlike the line above this is a SECOND, independent read of the state file rather than a
+        # projection of the envelope, because the human path never builds one; the two agree
+        # because `report` is the only reader, not because anything checks that they do.
+        _r = refresh_state.report(args.scope, args.registry)
+        if _r["frozen"]:
+            print(f"  REFRESH FROZEN since {_r['frozen_since']}  ·  last success "
+                  f"{_r['succeeded'] or 'never'}  ·  {_r['note']}")
+        elif _r["note"] and args.scope:
+            print(f"  refresh: {_r['note']}")
         if not hits:
             print("  (no results)")
         for h in hits:
@@ -784,7 +797,11 @@ def cmd_status(args: argparse.Namespace) -> int:
         for row in payload["scopes"]:
             src = ", ".join(row["sources"]) if row["sources"] else f"UNRESOLVED ({row['error']})"
             missing = "" if row["index_present"] else "  ·  INDEX MISSING"
-            print(f"  {row['scope']:<12} <- {src}{missing}")
+            # Beside INDEX MISSING, because they are the same kind of news: this scope cannot
+            # answer correctly right now. A frozen scope has an index and resolves fine, so
+            # without this marker it is the one broken state that reads as healthy here.
+            frozen = "  ·  FROZEN" if row["refresh"]["frozen"] else ""
+            print(f"  {row['scope']:<12} <- {src}{missing}{frozen}")
             print(f"  {'':<12}    {row['db']}  ·  composed {row['composed']}")
         return 0
 
@@ -808,7 +825,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"FATAL (schema): {e}", file=sys.stderr)
         return 2
     with store_cm as store:
-        payload = introspect.status_payload(store, entry, stack=st)
+        payload = introspect.status_payload(store, entry, stack=st, registry=args.registry)
 
     if args.json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -834,6 +851,22 @@ def cmd_status(args: argparse.Namespace) -> int:
     else:
         print(f"  vectors: {v['stored']}/{v['chunks']} under {v['model']}  ·  INCOMPLETE — "
               f"{v['note']}")
+    # Printed BEFORE drift, because it changes how the drift line reads: a stale scope whose last
+    # recompose refused is a frozen index, while a stale scope with a clean refresh record is just
+    # an edit made since the last tick. Same two numbers, opposite conclusions.
+    r = payload["refresh"]
+    if not r["known"]:
+        print(f"  refresh: NO RECORD — {r['note']}")
+    elif r["frozen"]:
+        print(f"  refresh: FROZEN  ·  last attempt {r['attempted']} ({r['outcome']})  ·  "
+              f"last success {r['succeeded'] or 'never'}")
+        print(f"      {r['note']}")
+    elif r["note"]:
+        print(f"  refresh: {r['outcome']}  ·  last attempt {r['attempted']}  ·  "
+              f"last success {r['succeeded'] or 'never'}")
+        print(f"      {r['note']}")
+    else:
+        print(f"  refresh: {r['outcome']}  ·  {r['attempted']}")
     d = payload["drift"]
     if "error" in d:
         print(f"  freshness: UNCHECKABLE — {d['error']}")
@@ -860,6 +893,44 @@ def cmd_status(args: argparse.Namespace) -> int:
             for p in paths[:5]:
                 print(f"      {label}: {p}")
     return 0
+
+
+def _refresh_outcomes() -> list[str]:
+    """The outcome vocabulary, read from the module that INTERPRETS it rather than restated here.
+    A hand-copied `choices` list is how an outcome becomes recordable but unreadable."""
+    from substrate import refresh_state
+
+    return sorted(refresh_state.OUTCOMES)
+
+
+def cmd_refresh_record(args: argparse.Namespace) -> int:
+    """Record what an unattended refresh pass did to one or more scopes.
+
+    The engine owns this write rather than the shell script that calls it, and that is the point
+    of having a subcommand at all. A bash heredoc could emit the same JSON — and then the format
+    would have two authors, with the reader in Python and the writer in shell drifting exactly as
+    PRINCIPLES.md's third law describes: a key one side stops writing is invisible to the other,
+    which reads the default and reports a healthy scope.
+
+    Deliberately says nothing about WHETHER the scope is registered. The freeze signal must be
+    recordable for a scope whose compose just refused, which is the state most likely to leave the
+    registry disagreeing with reality.
+    """
+    from substrate import refresh_state
+
+    failed = 0
+    for name in args.scope:
+        try:
+            path = refresh_state.record(name, args.outcome, registry=args.registry)
+        except refresh_state.RefreshStateError as e:
+            # Per scope, and the loop continues: one unusable name must not silently cost the
+            # other six their record, which would leave them looking un-refreshed forever.
+            print(f"FATAL (refresh-record {name}): {e}", file=sys.stderr)
+            failed += 1
+            continue
+        if not args.quiet:
+            print(f"  {name}: {args.outcome}  ->  {path}")
+    return 2 if failed else 0
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
@@ -1230,6 +1301,24 @@ def main(argv: list[str] | None = None) -> int:
                           "`substrate-mcp --lexical-only`")
     stt.add_argument("--json", action="store_true")
     stt.set_defaults(func=cmd_status)
+
+    rr = sub.add_parser("refresh-record",
+                        help="record what an unattended refresh pass did to a scope, so a search "
+                             "response can say whether its index is still being maintained")
+    rr.add_argument("--scope", action="append", required=True, default=[],
+                    help="repeatable — one call can record the same outcome for every scope, "
+                         "which is what a pass that skipped everything needs")
+    # `choices` from the same table the reader interprets, so an outcome nothing can read cannot
+    # be recorded in the first place.
+    rr.add_argument("--outcome", required=True, choices=sorted(_refresh_outcomes()),
+                    help="unchanged/refreshed leave the scope verified; compose_failed is the "
+                         "freeze; embed_failed leaves it current but vectorless; skipped means "
+                         "nothing was attempted")
+    rr.add_argument("--registry", default=None,
+                    help=f"the refresh record is written beside this registry (default "
+                         f"${scopes.ENV_VAR}, else {scopes.DEFAULT_REGISTRY})")
+    rr.add_argument("--quiet", action="store_true", help="print nothing on success")
+    rr.set_defaults(func=cmd_refresh_record)
 
     ev = sub.add_parser("eval")
     ev.add_argument("--db", default="out/substrate.db")
