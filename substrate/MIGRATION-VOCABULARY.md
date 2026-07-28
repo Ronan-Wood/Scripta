@@ -613,3 +613,77 @@ Worth recording: the first version of that guard referenced a module the CLI imp
 `cmd_compose`, so it raised `NameError` — and because it raised before the `rmtree`, it failed
 closed. A guard that crashes is still a bug, but the direction of failure was the safe one, which
 is the property PRINCIPLES.md's second law says to prefer.
+
+---
+
+## 17. Four more vaults — and the audit that found them, 2026-07-28
+
+**"Are all vaults migrated" was answered NO, by an audit that nearly repeated this project's
+signature failure.** After prism completed, a coverage check across `~/vaults` and `~/OneDrive`
+looked complete. It was not: six Obsidian vaults live in
+`~/Library/Mobile Documents/iCloud~md~obsidian/Documents/` and **`find` does not follow symlinks
+without `-L`**, so `~/Documents/SchoolVault` — a symlink into that tree — reported zero notes. The
+brief warned that a previous session "measured against ClaudeVault, declared victory, and missed a
+261-note vault entirely"; this was the same shape, one directory further out.
+
+| iCloud vault | notes | verdict |
+|---|---|---|
+| ClaudeVault (38) · PropertyPrismVault (255) | — | **stale duplicates** — superseded by the `~/vaults` copies, which are newer and larger |
+| **ResearchVault** | 98 | live, **modified the same day**, while the `research` scope held 8 notes |
+| **SchoolVault** | 93 | live; `school-context.md` already said the substance lived here |
+| **NoteVault** | 276 | **named in no handoff, spec or CLAUDE.md** |
+| WorkVault | 7 | 1 substantive note |
+
+Containment measured 0 of 94 ResearchVault and 0 of 89 SchoolVault notes present in substrate.
+These were never partially migrated; they were never touched.
+
+### The Tier 2 question, answered no
+
+Research papers looked like Tier 2 material. They are not: `02 - Papers` holds notes **about**
+papers — `## Summary` / `## Key Findings` / `## Methodology` with `doi`, `authors` and a
+`zotero://` pointer. Doc 2's Tier 2 is the ingested SOURCE TEXT, chunked into `passages/` under a
+`_meta.md`. A reading note is the operator's synthesis of an external work, which is Tier 3. Real
+Tier 2 here means ingesting the PDFs out of Zotero — Doc 2's "reference-tier ingestion at scale"
+thread, a separate job. The `zotero://` links are already the §3b raw pointer done right.
+
+### A reserved-key collision that would have refused the scope
+
+SchoolVault puts a COURSE NAME in `class:` — "Catholic Social Tradition" (60), "Philosophy of Karl
+Marx" (25). The reader treats `class` as an alias for `document_class` and `classes.apply` refuses
+anything outside the three known classes, so all 85 would have refused `school` at ingest. Renamed
+to `course:`, preserving the value as documentation. Same family as the `confidence: high`
+collision, on a different reserved key — worth expecting once per source vault.
+
+### An engine defect real content found
+
+`school-mv-phl-154-exam-two-review-questions` — a 17-item numbered list — was **refused for content
+it had not lost**: A18 coverage 0.9554 against the 0.99 gate, `missing` naming exactly
+`['10','11',…,'17']`. `_LIST_MARKER` strips ordered-list markers from what the extractor stores,
+but `content_coverage` counted them on the source side. `_TOKEN` requires ≥2 characters, so
+markers `1.`–`9.` were never counted and **the asymmetry was invisible until a list reached item
+10**. `reader.py`'s own comment stated the assumption — "a bare list-marker digit (1.–9.) is not a
+phantom token" — and stopped there. Fixed by stripping markers from the source side too;
+regression test mutation-verified.
+
+That is the Rank-3 hazard the pre-migration engine survey predicted and the 187-note prism corpus
+never triggered. Two notes there sat at 0.9906 against the gate; it took a different vault to cross
+it.
+
+### Routed
+
+| from | n | to |
+|---|---|---|
+| SchoolVault | 82 | `school` — readings → `03-references`, topics → `02-areas` |
+| ResearchVault | 95 | `research` — papers → `03-references` (`reference`), synthesis → `explanation` |
+| NoteVault subject folders | 142 | `school` 102 · `cbre` 22 (incl. WorkVault) · `prism` 13 · `research` 5 |
+| NoteVault `Daily` + `Quick Note` | 135 | **not migrated** — a capture inbox, not curated knowledge |
+
+**NoteVault carried no spine to remap: 5 of 276 notes had frontmatter.** Every field was authored,
+which is different in kind from every other migration here, and each note records
+`source_status: "(mobile capture; no frontmatter in the source)"` so a reader knows the spine was
+assigned rather than carried. The register is informal in-class writing; routing 102 of them into
+`school` puts uncurated captures beside SchoolVault's 82 curated notes, which is worth revisiting
+if `school` retrieval gets noisy.
+
+**Final:** prism 319 · school 222 · research 140 · cbre 67 · scripta 51 · clovis 37. All six
+vector-complete, freshness current, 0 fatal.

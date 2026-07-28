@@ -246,7 +246,17 @@ def content_coverage(body_md: str, captured: list[str]) -> tuple[float, list[str
     `text_with_path`, each fence-language, and heading block texts (see cmd_ingest_md). Page
     anchors are stripped (a linear, bounded strip — never an unterminated-comment scan).
     """
-    src = Counter(_TOKEN.findall(_PAGE_ANCHOR.sub("", body_md)))
+    # Strip ordered/bulleted list MARKERS from the source before tokenising, because the block
+    # extractor strips them from what it stores (`_LIST_MARKER.sub` where list items are built).
+    # Counting them on one side only makes a marker look like dropped content. This bit exactly
+    # where the token class and the marker syntax disagree: `_TOKEN` needs ≥2 characters, so
+    # single-digit markers `1.`–`9.` were never counted and the asymmetry stayed invisible — until
+    # a list ran to item 10. A real migrated note (`PHL 154 - Exam Two Review Questions`, a
+    # 17-item numbered list) reported coverage 0.9554 against the 0.99 gate with `missing`
+    # naming exactly ['10','11',…,'17'], and was refused for content it had not lost.
+    src = Counter(_TOKEN.findall(
+        "\n".join(_LIST_MARKER.sub("", ln) for ln in _PAGE_ANCHOR.sub("", body_md).split("\n"))
+    ))
     got: Counter[str] = Counter()
     for t in captured:
         got.update(_TOKEN.findall(t))
