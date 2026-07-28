@@ -62,7 +62,7 @@ def _hit(**over) -> Hit:
         n_chars=len(LONG), score=1.0, document_class="reference-frozen", version=None,
         title="Note A", prev_id=None, next_id=None,
         status="active", doc_type="explanation", confidence="unstated",
-        supersedes=None, domains=[], vault=None,
+        supersedes=[], domains=[], vault=None,
     )
     base.update(over)
     return Hit(**base)
@@ -100,7 +100,7 @@ def test_every_spine_field_is_present_even_at_its_emptiest() -> None:
     assert set(p) == PASSAGE_KEYS, set(p) ^ PASSAGE_KEYS
     # The values a conditional renderer would have dropped.
     assert p["confidence"] == "unstated"
-    assert p["supersedes"] is None
+    assert p["supersedes"] == []
     assert p["domains"] == []
     assert p["vault"] is None
     assert p["page"] is None
@@ -116,8 +116,8 @@ def test_proposed_confidence_crosses() -> None:
 def test_supersession_link_crosses() -> None:
     """A superseded note is never retrieved directly; the ONLY way its identity reaches a caller
     is this field on the live note that replaced it (Doc 2 §6)."""
-    p = _payload(_result([_hit(supersedes="old-decision")]))
-    assert p["passages"][0]["supersedes"] == "old-decision"
+    p = _payload(_result([_hit(supersedes=["old-decision", "older-decision"])]))
+    assert p["passages"][0]["supersedes"] == ["old-decision", "older-decision"]
 
 
 def test_envelope_shape() -> None:

@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from substrate.markdown import reader
 from substrate.models import Chunk, Document
 from substrate.spine import UNJUDGED_CONFIDENCE
 from substrate.store import fts, schema, sections
@@ -68,7 +69,10 @@ class Hit:
     # explicit confidence has no declaration behind it, and defaulting to the declared value would
     # manufacture one.
     confidence: str = UNJUDGED_CONFIDENCE
-    supersedes: str | None = None
+    # LIST-valued (v8): one live note can replace several dead ones. Empty, never None — an absent
+    # link is "replaced nothing", and the same value shape either way is what stops a consumer
+    # writing `supersedes or []` at every use site and getting it wrong at one of them.
+    supersedes: list[str] = field(default_factory=list)
     domains: list[str] = field(default_factory=list)
     vault: str | None = None
 
@@ -175,7 +179,14 @@ def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
         # 'unjudged', not 'unstated': this fallback fires only when the column is absent or empty,
         # which is the never-judged state. A row that genuinely declares 'unstated' carries it.
         confidence=_col(r, "confidence", UNJUDGED_CONFIDENCE) or UNJUDGED_CONFIDENCE,
-        supersedes=_col(r, "d_supersedes"),
+        # JSON array in a TEXT column as of v8. `or "[]"` covers a NULL and an empty string alike,
+        # so an absent link is an empty list rather than a crash — and the decoded value goes
+        # through `doc_id_list` because json.loads does NOT guarantee a list: `json.loads("123")`
+        # returns an int, and `_DOC_ID` admits all-digit ids, so a legal doc_id stored under the
+        # v7 contract decodes silently to a non-sequence. The schema gate refuses a v7 index long
+        # before this, but that makes the property depend on a guard two modules away; here it is
+        # local. Every consumer below (`list(h.supersedes)`, `','.join(...)`) assumes a sequence.
+        supersedes=reader.doc_id_list(json.loads(_col(r, "d_supersedes") or "[]")),
         domains=json.loads(_col(r, "d_domains") or "[]"),
         vault=_col(r, "d_vault"),
     )
@@ -277,7 +288,18 @@ class IndexStore:
                     markdown_path, markdown_mtime, markdown_sha256, doc.title,
                     doc.document_class, doc.version, doc.version_date, doc.page_label_offset,
                     doc.extractor, doc.extractor_arm, doc.layout_model, doc.pipeline_version,
-                    _now(), _now(), doc.supersedes, doc.superseded_by,
+                    # json.dumps, like `domains` two lines down — v8 stores the supersession link
+                    # as a JSON array in the same TEXT column, so the multi-valued link survives a
+                    # round-trip losslessly instead of being flattened to whichever one came first.
+                    #
+                    # Through `doc_id_list`, not `list()`, because THIS is the single write
+                    # boundary into the store and a bare `list()` on a string is the exact hazard
+                    # that function exists to name: `list("old-note")` is eight one-character
+                    # links, well-formed at every layer below and wrong at all of them. The read
+                    # side was defended and this was not, which is the asymmetry that lets a bad
+                    # value in once and then reads back cleanly forever.
+                    _now(), _now(), json.dumps(reader.doc_id_list(doc.supersedes)),
+                    doc.superseded_by,
                     status, json.dumps(list(doc.domains)), doc_type, confidence, doc.vault,
                     doc.tier, coverage, doc.raw, doc.raw_sha256, doc.raw_location,
                 ),

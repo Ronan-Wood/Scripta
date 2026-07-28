@@ -15,6 +15,7 @@ Two properties make this more than a dump:
 
 from __future__ import annotations
 
+from substrate.markdown import reader
 from substrate.models import Block, Document, Kind
 from substrate.text.hyphens import Calibration, calibrate, dehyphenate
 from substrate.text.normalize import clean_block, repair_ligatures
@@ -165,7 +166,14 @@ def frontmatter(doc: Document, extra: dict | None = None) -> str:
     if doc.superseded_by:
         f["superseded_by"] = doc.superseded_by
     if doc.supersedes:
-        f["supersedes"] = doc.supersedes
+        # `doc_id_list`, not `list()`. This is the THIRD write boundary and the only one that
+        # writes into the operator's vault, so it is the one where a wrong shape becomes permanent:
+        # a Document still carrying the pre-v8 scalar emitted `supersedes: [o, l, d, -, n, o, t, e]`
+        # into a real note, and because every fragment is a legal single-character doc_id it then
+        # reads back as six phantom supersession links FOREVER rather than being refused. Verified
+        # by writing one and reading it back. The coercion also handles a tuple, which the writer
+        # below (dispatching on `isinstance(v, list)`) would otherwise send to the scalar branch.
+        f["supersedes"] = reader.doc_id_list(doc.supersedes)
     if doc.domains:
         f["domains"] = list(doc.domains)
     if doc.doc_type:

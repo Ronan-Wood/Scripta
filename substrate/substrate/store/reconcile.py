@@ -21,6 +21,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from substrate.markdown import reader
 from substrate.models import Chunk, Document
 from substrate.store.index_store import IndexStore
 
@@ -72,7 +73,13 @@ def _load_dir(d: Path) -> tuple[Document, list[Chunk], dict, bytes, str] | None:
         version_date=cls.get("version_date"),
         status=spine.get("status"),
         superseded_by=spine.get("superseded_by"),
-        supersedes=spine.get("supersedes"),
+        # Normalised rather than taken raw: `run.json` is a PERSISTED artifact and the ones on
+        # disk predate v8, where this key held a bare string. `list()` over one of those would
+        # explode a doc_id into its characters, so the shape is decided by the reader's own rule.
+        # `IndexStore.upsert` normalises again on the way in — not redundant but a different entry
+        # point: that one covers every writer, this one makes the `Document` built HERE correctly
+        # typed rather than carrying a str under a `list[str]` annotation to whoever reads it next.
+        supersedes=reader.doc_id_list(spine.get("supersedes")),
         domains=list(spine.get("domains", [])),
         doc_type=spine.get("doc_type"),
         confidence=spine.get("confidence"),

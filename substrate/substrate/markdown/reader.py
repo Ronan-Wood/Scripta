@@ -64,13 +64,18 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")               # accepted frontmatter sourc
 _DOMAIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,63}")  # accepted domain-tag shape
 
 
-def _parse_list(v: str | None) -> list[str]:
-    """Parse a frontmatter flow list — `[a, b, c]` — into a clean, shape-checked tag list.
+def _parse_list(v: str | None, pattern: re.Pattern[str] = _DOMAIN) -> list[str]:
+    """Parse a frontmatter flow list — `[a, b, c]` — into a clean, shape-checked list.
 
     The reader keeps frontmatter values as raw strings, so `domains: [software-dev, databases]`
-    arrives here as the literal `"[software-dev, databases]"`. Only well-shaped tags survive (a
-    stray value is dropped, not carried as a phantom domain); a bare value with no brackets is
-    treated as a single tag. Deliberately narrow — domains is a tag axis, not free text.
+    arrives here as the literal `"[software-dev, databases]"`. Only well-shaped values survive (a
+    stray one is dropped, not carried as a phantom tag); a bare value with no brackets is treated
+    as a single entry. Deliberately narrow — these are tag axes, not free text.
+
+    `pattern` is the vocabulary, because two list-valued spine fields need the SAME splitting and
+    DIFFERENT shapes: `domains` admits uppercase and `/`, a `supersedes` entry must be a legal
+    doc_id. Parameterised rather than copied — a second splitter is a second place for the
+    quote-stripping and dedup rules to drift, and only one of the two would get the next fix.
     """
     if not v:
         return []
@@ -80,7 +85,52 @@ def _parse_list(v: str | None) -> list[str]:
     out: list[str] = []
     for part in v.split(","):
         t = part.strip().strip('"').strip("'")
-        if t and _DOMAIN.fullmatch(t) and t not in out:
+        if t and pattern.fullmatch(t) and t not in out:
+            out.append(t)
+    return out
+
+
+def doc_id_list(value: object) -> list[str]:
+    """A `supersedes` value, from any of the three shapes it legitimately arrives in, as doc_ids.
+
+    v8 makes `supersedes` list-valued: one live note can replace SEVERAL dead ones, and the scalar
+    field could name only one of them — "a field that states half a fact in the shape of a whole
+    one", which is the Boundary Principle's own failure. (`superseded_by` stays scalar: a dead note
+    has exactly one live replacement, and a list there would invent a case that does not exist.)
+
+    Three shapes, one function, because the same field is read from three places:
+      * a frontmatter flow list, `supersedes: [a, b]` — the v8 form;
+      * a frontmatter scalar, `supersedes: a` — every note written before v8, which `_parse_list`
+        already treats as a one-entry list, so those notes keep working untouched;
+      * a JSON value out of a `run.json`, already a list (v8) or a string (v7 and earlier).
+
+    Those three are the LEGITIMATE shapes. The parameter is `object` because a `run.json` is
+    arbitrary JSON on disk that a person may have edited by hand, so it can also hold a dict, an
+    int, or a nested list, and no union type would be honest about that — the two isinstance
+    guards below are what actually decides. A bare `list(value)` over a v7 run.json would explode
+    `"old-note"` into ['o','l','d',…] — eight phantom supersession links on a note that had one.
+
+    Per-element validated: an entry that is not a legal doc_id is DROPPED, exactly as a malformed
+    `source_sha256` is, because a link that cannot identify what it names reads as provenance while
+    being unusable. Order preserved and duplicates removed.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return _parse_list(value, _DOC_ID)
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        # Cleaned the SAME way `_parse_list` cleans a split entry. Matching raw here made one shape
+        # stricter than the other — `" a "` survived as a string and was dropped as a list element,
+        # so a hand-edited run.json lost a real supersession link that the equivalent frontmatter
+        # would have recovered. Two normalisation rules for one field is precisely the drift this
+        # function's own docstring says a second splitter would cause.
+        t = item.strip().strip('"').strip("'")
+        if t and _DOC_ID.fullmatch(t) and t not in out:
             out.append(t)
     return out
 
@@ -360,7 +410,10 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
         raw_location=(front.get("raw_location") or None),
         status=(front.get("status") or None),
         superseded_by=fsup_by if _DOC_ID.fullmatch(fsup_by) else None,
-        supersedes=fsup if _DOC_ID.fullmatch(fsup) else None,
+        # List-valued as of v8. `superseded_by` one line up stays scalar, and the asymmetry is the
+        # fact rather than an inconsistency: a dead note has exactly one live replacement, a live
+        # note can have replaced several.
+        supersedes=doc_id_list(fsup),
         domains=_parse_list(front.get("domains")),
         # doc_type (§6a) is carried raw like status; spine.validate_doc_type is the gate that
         # refuses an unknown value or an absent one on the strict vault path. The reader stays a

@@ -185,7 +185,12 @@ class Document:
     raw_location: str | None = None   # where it is kept. User-owned (§0); the POINTER is contract
     status: str | None = None
     superseded_by: str | None = None
-    supersedes: str | None = None
+    # LIST-valued (v8). One live note can replace several dead ones — `substrate-topology` replaced
+    # both `multi-vault-mcp` and `connections-topology` — and a scalar could name only one of them,
+    # so the case was recorded in PROSE instead, which the boundary principle forbids as a field's
+    # job. `superseded_by` stays scalar directly above: a dead note has exactly one replacement,
+    # and making it a list would invent a case that does not exist.
+    supersedes: list[str] = field(default_factory=list)
     domains: list[str] = field(default_factory=list)
     doc_type: str | None = None
     confidence: str | None = None
