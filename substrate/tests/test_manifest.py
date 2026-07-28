@@ -459,6 +459,44 @@ def test_meta_md_may_carry_a_spine_and_still_feeds_its_passages() -> None:
         assert "software-dev" in p1[0].extra_domains, p1[0]
 
 
+def test_clean_refuses_to_delete_anything_vault_shaped() -> None:
+    """`--clean` rmtree's --index-root unconditionally; a vault must never be a valid target.
+
+    The vaults and the index roots sit side by side in `~/.substrate/scopes.toml`, so the two get
+    typed into the same command, and the vaults are the source of truth. Four shapes must refuse.
+    """
+    import tempfile
+    from substrate.cli import _refuse_destructive_clean
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        core, proj = root / "core-vault", root / "proj"
+        for v, name in ((core, "core"), (proj, "proj")):
+            (v / "02-areas").mkdir(parents=True)
+            (v / "02-areas" / f"{name}-note.md").write_text(
+                f"---\nstatus: active\ndoc_type: reference\n---\n\n# {name}\n\nBody.\n",
+                encoding="utf-8")
+        (proj / ".substrate.toml").write_text(
+            'name = "proj"\ninherits = ["core-vault"]\n', encoding="utf-8")
+        scope = V.resolve_scope(proj)
+
+        assert "not an index root" in _refuse_destructive_clean(proj, scope), "the project vault"
+        assert _refuse_destructive_clean(core, scope), "an inherited vault"
+        assert _refuse_destructive_clean(root, scope), "a parent of a vault"
+
+        authored = root / "authored"
+        authored.mkdir()
+        (authored / "mine.md").write_text("# mine\n", encoding="utf-8")
+        assert "did not write" in _refuse_destructive_clean(authored, scope), "authored markdown"
+
+        # a real index root stays deletable, or --clean is useless
+        idx = root / "idx" / "proj__n__abcd1234"
+        idx.mkdir(parents=True)
+        (idx / "document.md").write_text("# generated\n", encoding="utf-8")
+        (idx / "run.json").write_text("{}", encoding="utf-8")
+        assert _refuse_destructive_clean(root / "idx", scope) == "", "a genuine index root"
+
+
 if __name__ == "__main__":
     _tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     _failed = 0
