@@ -452,3 +452,60 @@ flagged here so the split is a decision rather than an oversight.
 
 `.substrate.toml`'s `reference_domains` was extended to the seven values now in use, so the manifest
 and the corpus agree.
+
+---
+
+## 14. The MOC question — resolved 2026-07-27, and Backend done as the pattern
+
+**§7 mapped `digest` to the wrong file, and this corrects it.** `digest` as written into Doc 2 §6a
+is *"orientation in an AREA — links + one-line glosses; points, never contains"*. That is the **MOC**,
+not the Synthesis note. Each area has both, and they point at each other.
+
+| | `00 - MOC/<Area> MOC.md` | `04 - Synthesis/<Area> - Synthesis.md` |
+|---|---|---|
+| shape | pure link index, no frontmatter | 286 lines, **five** jobs |
+| becomes | `doc_type: digest`, no rewrite needed | split by job |
+
+The Synthesis note was doing five jobs, not the three §7 assumed: §1–9 orientation, §10 a 30-entry
+gotcha catalogue, §11 a running activity log, §12 an open-work register, §13 related links.
+
+**Backend, as the pattern for the other four areas:**
+
+| source | → | doc_type |
+|---|---|---|
+| `Backend MOC` | `02-areas/backend/backend-digest.md` | `digest` |
+| Synthesis §1–9 | `02-areas/backend/backend-overview.md` | `explanation` |
+| Synthesis §10 | `03-references/backend-sharp-edges.md` | `reference` |
+| Synthesis §11 | `log.md`, area-tagged, merged chronologically | — |
+| Synthesis §12 | `log.md` → `## Open follow-ups`, area-scoped | — |
+
+**Measured, not asserted:** after the split the digest carries a wikilink on **96%** of its body
+lines, the overview on **21%**, the sharp-edges reference on 26%. That is §6a's "points, does not
+contain" holding as a number.
+
+**One deviation from how the option was framed.** §10's gotchas were to merge into the existing
+`prism-sharp-edges`. They did not: 30 entries × 5 areas would make one ~150-entry mixed-area note,
+so they became an area-scoped `prism-backend-sharp-edges` with a pointer from the cross-area one.
+
+### Two things the split surfaced
+
+**A digest competes lexically with the notes it points at — but rarely.** Measured over 6 backend
+queries, the digest reached the top 3 exactly **once**, on a query whose gloss text ("Middleware
+Stack — 14-stage HTTP chain") happened to match. It did not crowd out the substance on the other
+five. Worth re-measuring once four more digests exist; not worth acting on at n=1.
+
+**A core-vault note asserted the old convention and outranked the new one.**
+`vault-structure-numbering` said *"Each area has one long-form Synthesis … This is the LLM entry
+point"* — accurate for the source vaults, inherited by all six scopes, and it beat the new digest on
+*"what is in the backend area and where do I start"*. Amended in place rather than deleted (rule 5):
+the Johnny Decimal pattern still describes `~/vaults/*`, and a `**Superseded for migrated vaults**`
+block now records that a migrated vault's entry point is its digest. **All six scopes recomposed** so
+none keeps serving the old claim.
+
+### Still open
+
+- **The 6th MOC, `00 - MOC/Index.md`** — the vault-level router, prose-heavy. Maps to
+  `00-index/MEMORY.md`, which already exists and now points at the Backend digest. No decision
+  needed; it just has not been merged.
+- **`type: roadmap`** (1 note) — still unmapped. Doc 2 §6a's boundary rule says a sixth doc_type
+  needs a *job* none of the five expresses; a roadmap plausibly reads as `explanation`.
