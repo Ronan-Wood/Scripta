@@ -59,9 +59,33 @@ CONFIDENCES: frozenset[str] = frozenset({"proposed", "inferred", "stated", "veri
 # how settled it is, and that is information — so it is stored as a real value rather than NULL.
 # Defaulting an absent marker to anything confident would BE the laundering this axis exists to
 # stop, and a NULL would reintroduce the `NULL NOT IN (…)` hole the doc_type audit already had to
-# correct. UNSTATED is therefore storable and valid, but never declarable-with-meaning.
+# correct.
+#
+# But "the author judged this note and it claims nothing" and "nobody has looked yet" are DIFFERENT
+# FACTS, and until 2026-07-28 both stored `unstated`. Measured then, from the composed databases and deduplicated by doc_id
+# (core-vault is re-counted in every scope): 530 of 657 distinct notes had no
+# confidence key at all, while six `_sources` conversation notes DECLARED `confidence: unstated`
+# deliberately — a transcript's settledness varies within it, so no single marker is true of the
+# whole. Those six were byte-identical in the store to the 530 nobody had judged — a declared value
+# that did not survive into anything downstream, which is PRINCIPLES.md's third law on this axis.
+#
+# Be precise about the blast radius rather than overstating it: all six are `class: conversation`
+# under `_sources/`, so they are already outside DEFAULT retrieval and no ordinary query was
+# mislabelled by the collapse. What it did cost is real but narrower — A23's per-value counts, any
+# `--include-sources` hit, and every future filter on this axis, none of which could tell a
+# deliberate no-claim from an unexamined note. The reason to fix it is that the axis is meant to be
+# filterable, and a value that cannot be distinguished cannot be filtered on.
+#
+#   unstated  — DECLARED. Judged; makes no settledness claim of its own. Satisfies a write gate.
+#   unjudged  — ABSENT. Nobody has decided. The migration's honest default.
+#
+# `unjudged` is storable but NEVER declarable: it is the absence marker, so accepting it in
+# frontmatter would let an author satisfy `require_present` while declaring nothing — the gate
+# bypassed by the very value that means "ungated". A note meaning "no claim" writes `unstated`.
 UNSTATED_CONFIDENCE = "unstated"
-STORED_CONFIDENCES: frozenset[str] = CONFIDENCES | {UNSTATED_CONFIDENCE}
+UNJUDGED_CONFIDENCE = "unjudged"
+DECLARABLE_CONFIDENCES: frozenset[str] = CONFIDENCES | {UNSTATED_CONFIDENCE}
+STORED_CONFIDENCES: frozenset[str] = DECLARABLE_CONFIDENCES | {UNJUDGED_CONFIDENCE}
 
 
 class SpineError(RuntimeError):
@@ -133,27 +157,47 @@ def validate_doc_type(doc: Document, *, require_present: bool) -> str:
     return dt
 
 
-def validate_confidence(doc: Document) -> str:
+def validate_confidence(doc: Document, *, require_present: bool = False) -> str:
     """Enforce the confidence contract and return the effective value. Raises SpineError on an
-    unknown one.
+    unknown value, on the absence marker being declared, and on absence where required.
 
-    Deliberately NOT gated on require_present, unlike status and doc_type: confidence is optional
-    on every path. A note that declares none returns UNSTATED, which is a real, surfaced value —
-    the reader learns the note said nothing about how settled it is, rather than being handed a
-    default that reads as confident. Requiring it would instead force a guess per note during
-    migration, and a guessed confidence marker is worse than an absent one.
+    `require_present` DEFAULTS TO FALSE, unlike status and doc_type, and the asymmetry is the whole
+    sequencing decision (2026-07-28). Flipping it globally would refuse 530 of 657 indexed notes at
+    the next compose — which a launchd agent runs unattended every 15 minutes. Worse than loud:
+    `cmd_compose` returns before it opens the IndexStore, so the DB keeps its last good content and
+    every scope would answer queries normally while silently frozen, with no drift field on the
+    result envelope to say so. That is PRINCIPLES.md's second law (promoting a check to a gate
+    audits every value it now judges) landing in the one place the first law makes invisible.
 
-    An unknown value is still refused. Carrying `confidence: mostly` would put an axis value on
-    every chunk of that note that no reader or filter can act on, which is the phantom-axis failure
-    doc_type refuses for the same reason.
+    So the gate is per-caller: the vault WRITE path (`notes.py`) passes True, because a note being
+    authored now has someone present to judge it. `compose` leaves it False, grandfathering a corpus
+    whose `unjudged` majority is not a defect — `MIGRATION-VOCABULARY.md` §8 records it as the
+    ratified source-signal policy, and WRITING.md forbids inventing a marker to fill the field.
+
+    Absence returns UNJUDGED, not UNSTATED: see the vocabulary comment above. Declaring UNJUDGED is
+    refused, so `require_present` cannot be satisfied by the value that means "not judged".
     """
     c = doc.confidence
     if c is None or c == "":
-        return UNSTATED_CONFIDENCE
-    if c not in STORED_CONFIDENCES:
+        if require_present:
+            raise SpineError(
+                f"{doc.doc_id}: no confidence. A note written into a vault must declare one of "
+                f"{sorted(DECLARABLE_CONFIDENCES)} — including {UNSTATED_CONFIDENCE!r}, which is "
+                "the honest value for a note that makes no settledness claim. Absence is reserved "
+                f"for {UNJUDGED_CONFIDENCE!r}, the state of a note nobody has judged yet."
+            )
+        return UNJUDGED_CONFIDENCE
+    if c == UNJUDGED_CONFIDENCE:
         raise SpineError(
-            f"{doc.doc_id}: confidence {c!r} is not one of {sorted(CONFIDENCES)} (or "
-            f"{UNSTATED_CONFIDENCE!r}). Confidence answers how SETTLED a claim is — a certainty "
+            f"{doc.doc_id}: confidence {UNJUDGED_CONFIDENCE!r} is the ABSENCE marker and cannot be "
+            f"declared — declaring it would assert that nobody judged this note, which the act of "
+            f"writing it contradicts. Omit the key, or write {UNSTATED_CONFIDENCE!r} if the note "
+            "makes no settledness claim."
+        )
+    if c not in DECLARABLE_CONFIDENCES:
+        raise SpineError(
+            f"{doc.doc_id}: confidence {c!r} is not one of {sorted(DECLARABLE_CONFIDENCES)}. "
+            "Confidence answers how SETTLED a claim is — a certainty "
             "word like 'high' belongs in the note body, not on this axis."
         )
     return c

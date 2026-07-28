@@ -24,6 +24,11 @@ the spine validation, class policy and A18 coverage gate that would refuse this 
 refuse it here, before anything is written. What it does NOT run is the per-note A22 sweep, which
 lives with the compose command; the plan says so rather than implying it checked everything.
 
+**One gate here is STRICTER than compose**, so this path is not simply "compose, earlier":
+`require_confidence=True`. A note authored now has someone present to judge its settledness, while
+compose must keep accepting a migrated corpus that is 530/657 `unjudged`. The asymmetry is the
+point — it stops that number growing without a flag day that would refuse six scopes unattended.
+
 **Never into core.** Doc 2 §2: projects read FROM core, nothing auto-writes INTO it — promoting
 something to the tier every context inherits is a deliberate manual act. The destination is
 always the scope's own project vault, and a path that escapes it is refused rather than clamped.
@@ -164,7 +169,17 @@ def _validate(
             # require_status=True is what the VAULT path uses: a note entering a vault must
             # declare its status and doc_type, so a note that would be refused at compose is
             # refused here instead of landing in the vault and refusing the whole scope later.
-            result = ingest_markdown(staged, tmp / "out", require_status=True)
+            #
+            # require_confidence=True is STRICTER than compose, and deliberately so — the one gate
+            # in this system that does not mirror its read path. A note being written now has an
+            # author present to judge it, so absence here means "not decided", not "no signal
+            # survived a migration". Grandfathering the corpus (compose stays lenient) while gating
+            # new writes is what stops the 530 unjudged notes from growing, without a flag day that
+            # would freeze six scopes unattended. `unstated` satisfies this gate; `unjudged` cannot
+            # be declared, so the gate has no bypass.
+            result = ingest_markdown(
+                staged, tmp / "out", require_status=True, require_confidence=True
+            )
         except (ValueError, classes.ClassPolicyError, SpineError, CoverageError) as e:
             raise NoteError(f"{type(e).__name__}: {e}") from e
 

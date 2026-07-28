@@ -8,11 +8,17 @@ applied to the vault layer.
 
 What is pinned here:
 
-  * absence is `unstated` — a REAL, stored, surfaced value on every path, never a NULL and never
+  * absence is `unjudged` — a REAL, stored, surfaced value on every path, never a NULL and never
     coerced to something confident. This is the property that makes the axis honest; a default of
     `verified` (or a silently-dropped field) would BE the laundering it exists to stop.
-  * confidence is OPTIONAL everywhere — deliberately not gated on require_status, unlike doc_type,
-    because forcing a value per note during migration produces guessed markers.
+  * a DECLARED `unstated` is distinct from absence. "The author judged this and it claims nothing"
+    and "nobody has looked" are different facts; collapsing them (as this axis did until
+    2026-07-28) makes a deliberate declaration invisible to every consumer downstream.
+  * `unjudged` is storable but NEVER declarable — otherwise an author could satisfy the write gate
+    with the one value that means "ungated".
+  * confidence is optional on the COMPOSE path and REQUIRED on the vault write path, via
+    `require_confidence`. Forcing a value per note during migration produces guessed markers, so
+    the corpus is grandfathered; a note authored now has someone present to judge it.
   * an unknown value is refused on every path, including a certainty word like `high` — the axis
     that the source vaults actually wrote, and the one this field is NOT.
   * status and confidence are genuinely independent: every (status, confidence) pair is legal.
@@ -34,7 +40,9 @@ from substrate.markdown.reader import read_markdown  # noqa: E402
 from substrate.models import Chunk, Document  # noqa: E402
 from substrate.spine import (  # noqa: E402
     CONFIDENCES,
+    DECLARABLE_CONFIDENCES,
     STORED_CONFIDENCES,
+    UNJUDGED_CONFIDENCE,
     UNSTATED_CONFIDENCE,
     SpineError,
     validate_confidence,
@@ -62,12 +70,49 @@ def test_every_declared_value_validates() -> None:
         assert validate_confidence(_doc(c)) == c
 
 
-def test_absent_becomes_unstated_not_something_confident() -> None:
-    """The load-bearing default. Absence must never acquire a settledness the note never claimed."""
+def test_absent_becomes_unjudged_not_something_confident() -> None:
+    """The load-bearing default. Absence must never acquire a settledness the note never claimed,
+    and must not be conflated with a DECLARED no-claim either — see the next test."""
     for absent in (None, ""):
-        assert validate_confidence(_doc(absent)) == UNSTATED_CONFIDENCE
-    assert UNSTATED_CONFIDENCE not in CONFIDENCES, "unstated is storable but never declarable-with-meaning"
-    assert UNSTATED_CONFIDENCE in STORED_CONFIDENCES
+        assert validate_confidence(_doc(absent)) == UNJUDGED_CONFIDENCE
+    assert UNSTATED_CONFIDENCE not in CONFIDENCES, "unstated is not a claim-bearing value"
+    assert UNSTATED_CONFIDENCE in DECLARABLE_CONFIDENCES, "but it IS declarable"
+    assert UNJUDGED_CONFIDENCE not in CONFIDENCES
+    assert {UNSTATED_CONFIDENCE, UNJUDGED_CONFIDENCE} <= STORED_CONFIDENCES
+
+
+def test_declared_unstated_is_distinguishable_from_absence() -> None:
+    """The 2026-07-28 split, and the whole reason it exists. Six `_sources` conversation notes
+    DECLARE `confidence: unstated` — a transcript's settledness varies within it, so no single
+    marker is true of the whole. Before the split they stored the same string as the 530 notes
+    nobody had judged, so a deliberate declaration was invisible to every consumer downstream.
+
+    Asserts the two are DIFFERENT, not their literal values: the property is the distinction."""
+    declared = validate_confidence(_doc(UNSTATED_CONFIDENCE))
+    absent = validate_confidence(_doc(None))
+    assert declared != absent, "a declared no-claim must not collapse into absence"
+    assert declared == UNSTATED_CONFIDENCE
+    assert absent == UNJUDGED_CONFIDENCE
+
+
+def test_unjudged_cannot_be_declared() -> None:
+    """`unjudged` is the ABSENCE marker, so accepting it in frontmatter would let an author satisfy
+    require_present while declaring nothing — the write gate bypassed by the one value meaning
+    'ungated'. It must be storable and refused-on-declaration at once."""
+    assert UNJUDGED_CONFIDENCE in STORED_CONFIDENCES, "storable"
+    assert UNJUDGED_CONFIDENCE not in DECLARABLE_CONFIDENCES, "never declarable"
+    try:
+        validate_confidence(_doc(UNJUDGED_CONFIDENCE))
+    except SpineError as e:
+        assert UNSTATED_CONFIDENCE in str(e), "the refusal must name the value the author wanted"
+    else:
+        raise AssertionError("expected SpineError when 'unjudged' is declared")
+    # And the bypass is closed under the gate too, which is where it would actually be attempted.
+    try:
+        validate_confidence(_doc(UNJUDGED_CONFIDENCE), require_present=True)
+    except SpineError:
+        return
+    raise AssertionError("declaring 'unjudged' must not satisfy require_present")
 
 
 def test_certainty_words_are_refused() -> None:
@@ -111,14 +156,43 @@ def test_status_and_confidence_are_independent_axes() -> None:
 # ---------------------------------------------------------------- the ingest paths
 
 
-def test_confidence_is_optional_on_the_strict_vault_path() -> None:
-    """Unlike doc_type, an absent confidence must NOT fail the strict path: forcing a value per
-    note during migration produces guessed markers, which are worse than absent ones."""
+def test_confidence_is_optional_on_the_compose_path() -> None:
+    """Unlike doc_type, an absent confidence must NOT fail the COMPOSE path: forcing a value per
+    note during migration produces guessed markers, which are worse than absent ones. This is also
+    the sequencing guard — flipping it would refuse 530 of 657 indexed notes at the next
+    unattended refresh tick, so the gate lives on the write path only (test below)."""
     tmp = Path(tempfile.mkdtemp())
     note = _note(tmp, "a.md", "status: active\ndoc_type: reference")
     r = ingest_markdown(note, tmp / "out", require_status=True)
-    assert r.confidence == UNSTATED_CONFIDENCE, r.confidence
-    assert r.run["spine"]["confidence"] == UNSTATED_CONFIDENCE
+    assert r.confidence == UNJUDGED_CONFIDENCE, r.confidence
+    assert r.run["spine"]["confidence"] == UNJUDGED_CONFIDENCE
+
+
+def test_require_confidence_gates_only_when_asked() -> None:
+    """The asymmetry that let this ship. The SAME note, same ingest function: accepted under the
+    compose path, refused under the write path. Asserts both directions, because a gate that is
+    always-on and a gate that is never-on each pass a one-directional test."""
+    tmp = Path(tempfile.mkdtemp())
+    body = "status: active\ndoc_type: reference"
+
+    lenient = ingest_markdown(_note(tmp, "l.md", body), tmp / "outl", require_status=True)
+    assert lenient.confidence == UNJUDGED_CONFIDENCE
+
+    try:
+        ingest_markdown(_note(tmp, "s.md", body), tmp / "outs",
+                        require_status=True, require_confidence=True)
+    except SpineError as e:
+        assert "no confidence" in str(e), e
+    else:
+        raise AssertionError("require_confidence=True must refuse a note that declares none")
+
+    # `unstated` is a real declaration and must SATISFY the gate — otherwise the gate forces an
+    # invented marker, which is the failure mode WRITING.md forbids and the reason the axis rotted.
+    ok = ingest_markdown(
+        _note(tmp, "u.md", body + f"\nconfidence: {UNSTATED_CONFIDENCE}"), tmp / "outu",
+        require_status=True, require_confidence=True,
+    )
+    assert ok.confidence == UNSTATED_CONFIDENCE
 
 
 def test_declared_confidence_survives_ingest_into_the_run_spine() -> None:
@@ -166,10 +240,16 @@ def _db() -> str:
 def test_a23_passes_and_counts_a_clean_corpus() -> None:
     with IndexStore(_db()) as s:
         _seed(s, "a", "proposed")
-        _seed(s, "b", None)          # → unstated
+        _seed(s, "b", None)                     # absent      → unjudged
         _seed(s, "c", "verified")
+        _seed(s, "d", UNSTATED_CONFIDENCE)      # declared    → unstated
         rep = s.assert_confidence_valid()
-        assert rep["by_confidence"] == {"proposed": 1, "unstated": 1, "verified": 1}, rep
+        # b (absent) and d (declared) must land in SEPARATE buckets. A store that collapsed them
+        # would report {"unstated": 2} and still pass every validity and drift check A23 runs, so
+        # this equality — not a spot-check of one key — is what distinguishes the two worlds.
+        assert rep["by_confidence"] == {
+            "proposed": 1, "unjudged": 1, "verified": 1, "unstated": 1,
+        }, rep
 
 
 def test_a23_refuses_an_unknown_stored_value() -> None:

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # v1 (2026-07-21) initial: documents, chunks, chunks_fts (external-content), chunk_vectors.
 # v2 (2026-07-21) chunks.section_kind — references sections were acting as retrieval
@@ -43,12 +43,25 @@ SCHEMA_VERSION = 6
 #     Not on chunks: identical per source, and the hit query already joins documents.
 # v5 (2026-07-24) confidence — lands together with v4 in one change set, so no database
 #     ever carried v4; the split is kept because they are separate contracts.
-#     The settledness axis (proposed/inferred/stated/verified, absent
-#     → 'unstated'). status says whether a note is LIVE; confidence says why its claims should
+#     The settledness axis (proposed/inferred/stated/verified, absent → 'unstated';
+#     see v7, which splits that). status says whether a note is LIVE; confidence says why its claims should
 #     be believed, and a note can be active AND proposed. Without it an unbuilt design
 #     retrieves reading as settled — WRITING.md rule 6 with no carrier past the note body.
 #     Denormalized onto chunks like status/doc_type. Never in the (chunk_id, text_with_path)
 #     FTS signature, so the eval is unmoved.
+# v7 (2026-07-28) confidence vocabulary split — absent confidence now stores 'unjudged';
+#     'unstated' is reserved for a note that DECLARES it makes no settledness claim. No column
+#     changes: only the DDL default and the meaning of stored values move.
+#
+#     THE BUMP IS THE POINT, and it is the reason to bump on a value-vocabulary change at all.
+#     `user_version` guards the CONTRACT of the stored data, not just the shape of the table. Rows
+#     written under v6 hold 'unstated' meaning ABSENT, while every consumer now reads it as a
+#     deliberate no-claim — so a v6 index answering a v7 query mislabels ~80% of the corpus as
+#     judged. Without a bump nothing detects that: `freshness` compares VAULT checksums, so a
+#     code-only vocabulary change reports `current` forever, and A23 passes green because
+#     'unstated' is still a legal value. With it, a read refuses (SchemaMismatch) until `compose`
+#     rebuilds from markdown, which is the source of truth. Refuse rather than mislead.
+#     Adds no column and no text: the (chunk_id, text_with_path) eval signature is unmoved.
 
 DDL = """
 CREATE TABLE IF NOT EXISTS documents(
@@ -79,7 +92,7 @@ CREATE TABLE IF NOT EXISTS documents(
     -- v5 replaces a dead `confidence REAL` column here (declared, bound to NULL at every
     -- insert, never read) that was meant for the extractor's run stats. Those live in
     -- run.json under `extract`, the only place they ever reached, so the column is deleted
-    -- rather than kept beside this one. NOT NULL on chunks: absence is `unstated`, not NULL.
+    -- rather than kept beside this one. NOT NULL on chunks: absence is `unjudged`, not NULL.
     confidence        TEXT,
     -- §3b markdown→raw provenance, which Doc 2 calls system-contract. Raw is the ONLY
     -- irreplaceable layer: the index rebuilds from markdown and markdown regenerates from raw,
@@ -130,10 +143,15 @@ CREATE TABLE IF NOT EXISTS chunks(
     status           TEXT NOT NULL DEFAULT 'active',
     doc_type         TEXT NOT NULL DEFAULT 'reference',
     -- Denormalized like status/doc_type so a passage states how settled it is without a join.
-    -- DEFAULT 'unstated', never NULL: a NULL would reintroduce the `NULL NOT IN (…)` hole the
-    -- doc_type audit had to correct, and would read as absence rather than as 'the note did
-    -- not say' — which is the distinction this axis exists to preserve.
-    confidence       TEXT NOT NULL DEFAULT 'unstated'
+    -- NOT NULL, never NULL: a NULL would reintroduce the `NULL NOT IN (…)` hole the doc_type
+    -- audit had to correct, and would read as absence rather than as 'the note did not say' —
+    -- which is the distinction this axis exists to preserve.
+    --
+    -- v7 moves this default from 'unstated' to 'unjudged' with the vocabulary split, so the DDL
+    -- and `spine` agree on what an unwritten value means. `upsert` is the sole chunk writer and
+    -- binds the column explicitly on every row, so the default is unreachable in practice —
+    -- but a default that contradicted the vocabulary would be a trap for the next writer.
+    confidence       TEXT NOT NULL DEFAULT 'unjudged'
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_doc      ON chunks(doc_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_kind     ON chunks(kind);

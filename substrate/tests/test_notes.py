@@ -36,6 +36,16 @@ The MCP surface runs the measured stack, so a caller can tell a 0.698 answer fro
 
 NO_SPINE = b"# Just a heading\n\nNo frontmatter at all, so the vault path must refuse it.\n"
 
+# The confidence gate's fixtures. NO_SPINE cannot exercise it — it fails on `status` first — so
+# without these the one production wiring of `require_confidence=True` is unfalsifiable: deleting
+# that argument from `notes._validate` leaves the whole suite green (mutation-verified 2026-07-28).
+_BODY = b"\n# Retrieval stack decision\n\nThe MCP surface runs the measured stack, so a caller can tell a 0.698 answer from a lexical one.\n"
+NO_CONFIDENCE = b"---\nstatus: active\ndoc_type: decision\ndomains: [retrieval]\n---\n" + _BODY
+DECLARED_UNJUDGED = (b"---\nstatus: active\ndoc_type: decision\nconfidence: unjudged\n"
+                     b"domains: [retrieval]\n---\n" + _BODY)
+DECLARED_UNSTATED = (b"---\nstatus: active\ndoc_type: decision\nconfidence: unstated\n"
+                     b"domains: [retrieval]\n---\n" + _BODY)
+
 
 def _vault() -> Path:
     root = Path(tempfile.mkdtemp()) / "demo-vault"
@@ -92,6 +102,40 @@ def test_plan_refuses_a_note_compose_would_refuse() -> None:
     v = _vault()
     _refuses(lambda: _plan(v, content=NO_SPINE))
     assert list((v / "04-synthesis").iterdir()) == [], "a refused plan leaves nothing behind"
+
+
+def test_the_write_path_requires_a_declared_confidence() -> None:
+    """This path is STRICTER than compose, and this test is what pins that.
+
+    `compose` accepts a note with no confidence (530 of 657 indexed notes have none, and
+    MIGRATION-VOCABULARY §8 ratifies that), so the gate exists only here — a note authored now has
+    an author present to judge it. Asserted at the `notes.plan` boundary rather than at
+    `ingest_markdown`, because the defect being guarded is not "does the flag work" but "does this
+    caller still pass it": deleting `require_confidence=True` from `notes._validate` left all 323
+    tests green before this existed.
+    """
+    v = _vault()
+    _refuses(lambda: _plan(v, content=NO_CONFIDENCE), containing="no confidence")
+    assert list((v / "04-synthesis").iterdir()) == [], "a refused plan leaves nothing behind"
+
+
+def test_the_absence_marker_cannot_be_declared_on_the_write_path() -> None:
+    """`unjudged` means "nobody judged this", so declaring it to clear a gate that exists to force
+    a judgement would be the bypass that makes the gate decorative.
+
+    Note what this does NOT pin: `validate_confidence` refuses a declared `unjudged` regardless of
+    `require_present`, so this test stays green if `require_confidence=True` is deleted from
+    `_validate`. The wiring is pinned by `test_the_write_path_requires_a_declared_confidence`
+    alone; this one guards the vocabulary rule that closes the bypass."""
+    _refuses(lambda: _plan(_vault(), content=DECLARED_UNJUDGED), containing="ABSENCE marker")
+
+
+def test_a_declared_no_claim_satisfies_the_write_gate() -> None:
+    """The other half, and the reason the gate does not force an invented marker: a note that
+    genuinely claims nothing has a TRUE value to write. Without this, `require_confidence` would
+    push authors toward guessing `stated` — the laundering the axis exists to stop."""
+    p = _plan(_vault(), content=DECLARED_UNSTATED)
+    assert p.confidence == "unstated", p.confidence
 
 
 # ---------------------------------------------------------------- the token gate

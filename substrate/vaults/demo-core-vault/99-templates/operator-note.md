@@ -2,7 +2,7 @@
 title: <title>
 status: active
 doc_type: <explanation | how-to | decision>
-confidence: <proposed | inferred | stated | verified>
+confidence: <proposed | inferred | stated | verified | unstated>
 domains: [operator]
 ---
 

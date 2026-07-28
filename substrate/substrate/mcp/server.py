@@ -136,7 +136,10 @@ TOOLS = [
             "per-area summary that POINTS at atomic notes rather than containing them; its links "
             "are titles, not resolvable refs, so treat a digest hit as evidence the area exists "
             "and run a narrower query for the specifics); `confidence` is how SETTLED "
-            "the claim is (proposed/inferred/stated/verified/unstated) and is INDEPENDENT of "
+            "the claim is (proposed/inferred/stated/verified, plus `unstated` = the author judged "
+            "it and it claims nothing, and `unjudged` = nobody has judged it yet — treat "
+            "`unjudged` as ABSENT SIGNAL, never as 'uncertain'; most migrated notes are in it) "
+            "and is INDEPENDENT of "
             "status — a note can be active AND proposed, i.e. a design that was never built. "
             "Treating a `proposed` note as a settled decision is the specific failure this "
             "contract exists to prevent. A passage carrying `supersedes` is the live note that "
@@ -207,7 +210,15 @@ TOOLS = [
             "Additive only: it will not overwrite an existing note (editing goes through diff "
             "review), it never writes into the shared core tier, and it does not update the "
             "index — the note is invisible to `search` until the scope is recomposed, which the "
-            "response says explicitly."
+            "response says explicitly.\n\n"
+            "REQUIRED FRONTMATTER: `status`, `doc_type`, AND `confidence` — the last is required "
+            "HERE even though `compose` accepts notes without it, because a note being written now "
+            "has an author present to judge it. Pick the value from evidence, never to fill the "
+            "field: `verified` only for something measured or reproduced, `stated` for an "
+            "authority's assertion or any inventory, `inferred` for a conclusion drawn, `proposed` "
+            "for a design not yet built. If the note makes no settledness claim, write "
+            "`confidence: unstated` — that is a real declaration and satisfies this gate. "
+            "`unjudged` is the absence marker and is REFUSED if declared."
         ),
         "inputSchema": {
             "type": "object",

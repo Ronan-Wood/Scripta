@@ -169,7 +169,9 @@ class Document:
     # `confidence` is the SETTLEDNESS axis, independent of status: status says whether a note is
     # live, confidence says why its claims should be believed. A note can be active AND proposed;
     # without this field that pair collapses and an unbuilt design retrieves reading as settled.
-    # Absent → `unstated`, surfaced as such — never defaulted to something confident.
+    # Absent → `unjudged`; a declared no-claim → `unstated`. Both surfaced as such, never defaulted
+    # to something confident, and never collapsed into each other — "nobody looked" and "looked,
+    # claims nothing" are different facts about a note.
     # `vault`/`tier` are composition provenance: which scoped vault a note came from, set by the
     # manifest-composition path so "did inheritance actually compose" is checkable, not inferred.
     # §3b markdown→raw provenance. Doc 2 calls this "system-contract provenance": raw is the ONLY

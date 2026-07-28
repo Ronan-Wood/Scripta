@@ -269,6 +269,25 @@ retrieval half but still leaves the shape unnamed, so the next writer has no wor
 Adopted 2026-07-27. Nothing is invented; every value traces to declared source signal, and the
 absence of signal is carried as `unstated` rather than filled.
 
+> **Superseded 2026-07-28 in VOCABULARY only — the policy itself stands.** Absence now stores
+> `unjudged`; `unstated` is reserved for a note that DECLARES it makes no settledness claim.
+>
+> **The two counts in play have different cohorts and must not be compared.** The `165` tabled
+> below is *this section's* cohort: the 187 durable PropertyPrismVault notes, projected before
+> migration. The `530 of 657` quoted in `spine.py` and elsewhere is a different measurement
+> entirely — **distinct documents across all six composed scopes, deduplicated by `doc_id`**
+> (core-vault is re-counted in every scope), taken from the databases on 2026-07-28. One is a
+> pre-migration projection over one vault; the other is a post-migration census over all of them.
+>
+> Those 165 declared no `confidence` key, so they store `unjudged`. Six notes corpus-wide — all
+> `class: conversation` under `_sources/`, none of them in this cohort — do declare `unstated`
+> deliberately, which is the distinction the split exists to keep.
+>
+> The tables are left as the dated record of the decision, per rule 5. `spine.validate_confidence`
+> cites this section as the reason `compose` stays lenient, and that reason is unchanged: a
+> guessed marker is still worse than an absent one. What changed is that absence is now
+> nameable, so "nobody judged this" no longer masquerades as a judgement.
+
 | → `confidence` | n | drawn from |
 |---|---|---|
 | `proposed` | 5 | source says `proposed` ×3, `draft`, `design-agreed-unbuilt` |

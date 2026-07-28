@@ -367,8 +367,13 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
         # pure parser and does not decide strictness.
         doc_type=(front.get("doc_type") or None),
         # confidence likewise: parsed raw, gated by spine.validate_confidence. Absent stays None
-        # here and becomes `unstated` at the gate — the reader never invents a value, so "the note
+        # here and becomes `unjudged` at the gate — the reader never invents a value, so "the note
         # said nothing" and "the note said unstated" arrive at the gate distinguishable.
+        #
+        # They arrive distinguishable and, until 2026-07-28, LEFT indistinguishable: the gate mapped
+        # None to `unstated` too. This comment described the property correctly while the code one
+        # layer down discarded it — the reader was never the defect, which is why no reader test
+        # could have caught it.
         confidence=(front.get("confidence") or None),
         extractor="markdown-reader/0.1.0",
         extractor_arm="markdown",

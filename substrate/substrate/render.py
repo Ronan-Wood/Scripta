@@ -87,6 +87,12 @@ def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
     confidence and a null `supersedes` are emitted exactly like any other value: "this note made
     no claim" is information, and it is not the same as "nobody looked".
 
+    That last sentence was aspirational until 2026-07-28 — both states stored `unstated`, so the
+    distinction it promised did not exist below this layer. It does now: `unstated` is the declared
+    no-claim, `unjudged` the absence. A reader ranking a hit should treat `unjudged` as "not yet
+    judged" and NEVER as "uncertain"; it is the state of 530 of 657 migrated notes and carries no
+    signal about the claim at all.
+
     `full=True` is the `expand` path — same envelope, whole text, so a consumer never has to
     reconcile two different passage shapes. ONE key set either way: `text` is null on a search
     result rather than absent, and `snippet` is present on an expanded one. Emitting `text` only

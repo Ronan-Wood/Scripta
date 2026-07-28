@@ -52,8 +52,9 @@ wearing one filename — the exact shape rule 8 exists to split. Write one per a
 and treat its length as a warning sign.
 
 A digest is an inventory, so `stated` is its **ceiling** and `verified` is never right. That is a
-cap, not a default: if the digest makes no claim of its own, omit the key — the rule below against
-picking a value to fill the field applies here too.
+cap, not a default: if the digest makes no claim of its own, write `unstated` — see *`unstated` is
+declared; `unjudged` is what absence becomes* below for why that is not the same as picking a value
+to fill the field.
 
 **A digest is an ordinary note and lives in an indexed folder** — `02-areas/<area>-digest.md` or
 `04-synthesis/<area>.md`. Never write one as `00-index/MEMORY.md` or `log.md`: those keep their own
@@ -73,14 +74,36 @@ two lets a proposal retrieve reading as a settled decision, which is confidence 
 | `inferred` | derived from observation or reasoning; could be wrong | a pattern read off usage data |
 | `stated` | asserted directly by an authority — the operator, or a published source | a ratified decision; a textbook passage |
 | `verified` | measured, tested, or confirmed against reality | a finding with a number and conditions behind it |
+| `unstated` | judged, and the note makes no settledness claim of its own | a transcript whose settledness varies within it |
 
-**Omit the line entirely if the note makes no claim** — do not write a placeholder, and do not
-leave a trailing `# comment` on the value. Frontmatter values are taken verbatim to end-of-line, so
-`confidence: proposed   # omit if …` parses as that whole string and is refused at ingest.
+**Do not leave a trailing `# comment` on the value.** Frontmatter values are taken verbatim to
+end-of-line, so `confidence: proposed   # omit if …` parses as that whole string and is refused.
 
-Declaring it is OPTIONAL. A note that omits it stores and surfaces `unstated`, which is honest —
-the note made no claim about how settled it is. Never pick a value to fill the field; an invented
-confidence marker is worse than an absent one, and `unstated` is what the axis is for.
+### `unstated` is declared; `unjudged` is what absence becomes
+
+A sixth value, **`unjudged`**, lives in the store and can NEVER be written in frontmatter — it is
+what an ABSENT `confidence` key becomes. Declaring it is refused, because a note asserting that
+nobody judged it is contradicted by the act of writing it.
+
+| you write | stored | means |
+|---|---|---|
+| `confidence: unstated` | `unstated` | someone judged this note; it claims no particular settledness |
+| *(no `confidence` key)* | `unjudged` | nobody has judged it yet |
+
+Before 2026-07-28 both stored `unstated`, so a deliberate declaration was indistinguishable from an
+unexamined note — and 530 of 657 indexed notes are unexamined, so the declared handful drowned. If
+you mean *"I looked, and there is no settledness to claim"*, **write `unstated`**; omitting the key
+says something different and weaker.
+
+**Never pick a value to fill the field.** An invented confidence marker is worse than an absent
+one — that rule is what keeps the axis honest, and `unstated` is the escape hatch that makes it
+compatible with being asked: a note that genuinely claims nothing has a true value to write, so no
+one ever needs to guess `stated` to satisfy a gate.
+
+**Writing through `mcp__substrate__ingest` REQUIRES the key** (`unstated` counts). `compose` does
+not, because it must keep accepting the migrated corpus. That asymmetry is deliberate: a note being
+authored now has someone present to judge it, while a bulk-migrated one may have carried no signal
+at all. Treat a retrieved `unjudged` as **"not yet judged"**, never as "uncertain".
 
 **An inventory is `stated`, not `verified`.** A list of what is installed, connected, or present is
 confirmed against reality only at the instant it is written, and establishes nothing durable — its
@@ -113,7 +136,7 @@ Where certainty goes depends on where the note came from:
 title: <what was decided>
 status: active
 doc_type: decision
-confidence: <proposed | inferred | stated | verified>
+confidence: <proposed | inferred | stated | verified | unstated>
 domains: [<domain>]
 ---
 
@@ -132,7 +155,7 @@ domains: [<domain>]
 title: <the thing understood>
 status: active
 doc_type: explanation
-confidence: <proposed | inferred | stated | verified>
+confidence: <proposed | inferred | stated | verified | unstated>
 domains: [<domain>]
 ---
 
@@ -148,7 +171,7 @@ Prose is acceptable here; this is the one type where it is.>
 title: <what this lists>
 status: active
 doc_type: reference
-confidence: <proposed | inferred | stated | verified>
+confidence: <proposed | inferred | stated | verified | unstated>
 domains: [<domain>]
 ---
 
@@ -167,7 +190,7 @@ domains: [<domain>]
 title: <the task>
 status: active
 doc_type: how-to
-confidence: <proposed | inferred | stated | verified>
+confidence: <proposed | inferred | stated | verified | unstated>
 domains: [<domain>]
 ---
 
@@ -187,6 +210,7 @@ domains: [<domain>]
 title: <the area>
 status: active
 doc_type: digest
+confidence: <stated | unstated>
 domains: [<domain>]
 ---
 
@@ -230,7 +254,7 @@ exactly one meaning, because a key that means two things is a value nobody can a
 | key | means ONLY | read by the engine? |
 |---|---|---|
 | `status` | the note LIFECYCLE — active / complete / archived / superseded | yes — drives the default retrieval set |
-| `confidence` | how SETTLED a claim is — proposed / inferred / stated / verified, absent → `unstated` | yes — carried onto every passage, surfaced on every hit |
+| `confidence` | how SETTLED a claim is — proposed / inferred / stated / verified / `unstated` (declared no-claim); absent → `unjudged` | yes — carried onto every passage, surfaced on every hit |
 | `capability` | the RETRIEVAL STACK's state (which arms ran) | n/a — a result-envelope field, never note frontmatter |
 
 - Never use `status` for the stack; that is `capability`.
