@@ -6,15 +6,22 @@ status would answer a different question from the other adapter's, and the discr
 show up when someone compared them.
 
 The honest ordering matters here. `index_version` says what the index was built from. Vector
-coverage says whether the arm the capability envelope names can actually contribute. Drift says
-whether the vault has moved since. A caller that reads only the first concludes an index is fine
-when two of the three say otherwise — which is the whole reason `status` exists as a tool rather
-than as a line in the search response.
+coverage says whether the arm the capability envelope names can actually contribute. `refresh` says
+what the unattended agent last managed to do. Drift says whether the vault has moved since. A
+caller that reads only the first concludes an index is fine when three of the four say otherwise —
+which is the whole reason `status` exists as a tool rather than as a line in the search response.
+
+`refresh` and `drift` answer neighbouring questions and neither replaces the other. Drift is
+computed HERE, live, from the notes on disk — authoritative, and a sweep over every note in the
+scope. The refresh record is a lookup of what an agent reported, and it is the only one of the two
+cheap enough to ride on every search response. They also disagree usefully: `drift.stale` with
+`refresh.frozen` is a scope whose rebuild refused, while `drift.stale` with a clean refresh is
+simply an edit made since the last tick.
 """
 
 from __future__ import annotations
 
-from substrate import freshness, scopes
+from substrate import freshness, refresh_state, scopes
 from substrate import vault as _vault
 
 
@@ -55,8 +62,15 @@ def vector_status(store, stack) -> dict | None:
     return {"model": key, "stored": n, "chunks": total, "complete": complete, "note": note}
 
 
-def status_payload(store, entry, *, stack) -> dict:
-    """Everything `status` reports for one composed scope."""
+def status_payload(store, entry, *, stack, registry: str | None = None) -> dict:
+    """Everything `status` reports for one composed scope.
+
+    The `refresh` block is the SAME shape `render.search_payload` emits — one reader, one key set,
+    so a caller that learned to read it on a search result does not have to learn a second dialect
+    here. It carries no clock-derived field for the reason given in `render`: the envelope is
+    compared as a whole object across two processes, and a shape that varied between the two
+    payloads would put that comparison back where it started.
+    """
     s = store.stats()
     out = {
         "scope": entry.name,
@@ -78,6 +92,7 @@ def status_payload(store, entry, *, stack) -> dict:
         "by_confidence": store.counts_by("confidence"),
         "retrieval_arms": arms(stack),
         "vectors": vector_status(store, stack),
+        "refresh": refresh_state.report(entry.name, registry),
     }
     try:
         notes = [n.path for n in _vault.resolve_scope(entry.vault).notes]
@@ -103,7 +118,13 @@ def scopes_payload(registry: str | None = None) -> dict:
     out = []
     for name, entry in sorted(scopes.load(registry).items()):
         row = {"scope": name, "db": str(entry.db), "vault": str(entry.vault),
-               "composed": entry.composed, "index_present": entry.db.is_file()}
+               "composed": entry.composed, "index_present": entry.db.is_file(),
+               # This is the "how are all my scopes doing" view — it already reports
+               # `index_present` and a per-scope fault, so a frozen scope rendering here exactly
+               # like a healthy one is the same indistinguishability the field exists to remove,
+               # moved one surface over. Someone triaging with a bare `substrate status` would see
+               # six clean lines while one had been answering from a superseded index for a week.
+               "refresh": refresh_state.report(name, registry)}
         try:
             row["sources"] = [v.name for v in _vault.resolve_vaults(entry.vault)]
         except _vault.VaultError as e:

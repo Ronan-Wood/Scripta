@@ -49,6 +49,7 @@ in this repo, so it is written down here or it is lost:
 | refresh job | `~/.local/bin/substrate-refresh` + `~/Library/LaunchAgents/com.ronanwood.substrate-refresh.plist`, 15-min |
 | refresh log | `~/Library/Logs/substrate-refresh.log` (quiet unless something changed or failed) |
 | scope registry | `~/.substrate/scopes.toml`, written by `compose` |
+| refresh record | `~/.substrate/refresh.json`, written by `substrate refresh-record` (the agent calls it) |
 
 The refresh job checks Ollama FIRST and skips the whole run if it is down. That ordering is
 load-bearing: `compose --clean` drops an index and rebuilds it with no vectors, and `embed` puts
@@ -107,6 +108,43 @@ argument instead of returning unfiltered results under a filtered label.
 | `freshness.py` | vault-vs-index drift, honest about what it cannot check |
 | `introspect.py` | the `status` / `list_scopes` payloads |
 | `notes.py` | the vault write path: plan, unforgeable token, `O_EXCL\|O_NOFOLLOW` |
+
+## The freeze signal (2026-07-28) — and the producer that lives outside this repo
+
+Every result envelope now carries `refresh`: what the unattended agent last managed on that scope.
+`index_version` says what the index was BUILT from and stops there, so a scope whose recompose
+refused kept answering from the superseded index in an envelope byte-identical to a healthy run —
+`compose` returns before it opens the database, so the old index simply stays. PRINCIPLES.md
+predicted this before the agent existed; the agent then made it worse by converting freshness a
+human checked into freshness a human assumes.
+
+`refresh_state.py` holds the record and the outcome vocabulary. `render.search_payload` and
+`introspect.status_payload` both READ it — not passed in by either adapter, because an adapter that
+has to remember to attach it is one that eventually will not. `frozen` is tri-state: `true`
+(a recompose refused, results are superseded), `false` (the last pass left index and vault in
+agreement), `null` (no basis — nothing recorded, or the tick checked nothing). A freeze is STICKY:
+carried across any outcome that cannot disprove it, cleared only by one that can.
+
+**No clock reaches the envelope**, deliberately. Doc 3a §6 compares the two adapters' envelopes as
+whole dicts across two processes; a derived age would flake, and the flake would read as the
+divergence the shared render layer exists to prevent. `attempted` and `succeeded` cross as recorded
+values and nothing ages them — not `render`, not `status`.
+
+**The producer is `~/.local/bin/substrate-refresh`, which git does not track.** It now records on
+every path, including the Ollama-down early exit and a genuine failure to acquire its own lock. The
+review found the writer had the exact bug the reader exists to catch: its drift probe read
+`["drift"].get("stale")`, and an unresolvable vault returns `{"error": …}` with no `stale` key, so
+`status` exited 0 and the probe printed `current` — recording `unchanged`, the strongest healthy
+claim in the vocabulary, for a scope nobody could check. `checkable: false` fell through the same
+hole. Both are `unknown` now, and there is a default arm so an unrecognised probe result cannot be
+silent. **A change to `status --json`'s drift shape breaks this producer with nothing in CI to
+notice** — a reviewer proposed moving it to `tools/` alongside `embedder-sweep.sh`; not done,
+because where the operator's machine config lives is a decision, not a cleanup.
+
+**Adding an envelope field ages out running MCP clients too**, though quietly rather than fatally:
+a server started before this change holds the old `render` and emits no `refresh` key at all, so
+the freeze signal is invisible there until it is restarted. No `SchemaMismatch`, no error — just
+the field silently absent, which is the state it was built to make impossible.
 
 ## Two failure patterns this session earned
 

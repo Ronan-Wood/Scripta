@@ -221,17 +221,46 @@ def search_payload(
     unavailable: tuple[str, ...] = (),
     db: str | None = None,
     filter_notes: tuple[str, ...] = (),
+    registry: str | None = None,
 ) -> dict:
-    """The whole envelope: passages, orientation, capability, applied filters, index_version.
+    """The whole envelope: passages, orientation, capability, applied filters, index_version, and
+    what the refresh agent last did to this scope.
 
     `scope` and `index_version` travel together because either alone is unfalsifiable — a version
     hash says nothing about WHICH index it stamps when one server serves several. `db` names the
     file behind them, which is what a scope-less query has instead of a name.
 
+    `refresh` closes the gap PRINCIPLES.md predicted and the unattended refresh agent then opened.
+    `index_version` says what the index was BUILT from; nothing said whether the job that keeps it
+    current had succeeded. So a scope whose recompose refused kept answering from the superseded
+    index in an envelope byte-identical to a healthy run — the Boundary Principle at the one seam a
+    background job creates. It is READ here, not passed in, precisely because an adapter that had
+    to remember to attach it is an adapter that will one day not: the field exists to survive the
+    person who forgets to look for it. Cost is one small JSON read; the real drift check
+    (`freshness.drift`) is a stat-and-hash sweep over every note and is `status`'s job, not this
+    one's.
+
+    NOTHING HERE READS A CLOCK, and that is a constraint rather than an omission. Doc 3a §6's
+    verification compares the CLI's envelope to the server's as whole dicts, produced by two
+    processes at two instants; a derived age would make that equality flaky and the flake would be
+    read as divergence. So the timestamps cross as RECORDED VALUES and no component ages them —
+    not this one, not `status`. A consumer that wants an interval compares `attempted` against
+    `succeeded`, both of which are here. (An earlier draft of this paragraph handed the ageing
+    verdict off to `status`, which does not implement one and whose own docstring says it does
+    not — a docstring asserting a property nobody implemented, which is the failure this repo has
+    now recorded five times.)
+
     EVERY key is produced here. Both adapters previously bolted one field on after the fact — the
     CLI a `db`, the server a clamp note — so the two emitted structurally different envelopes
     while the help text promised one shape, and the exact-key-set test could not see either.
     """
+    # Imported here rather than at module top so `render` stays importable without dragging in
+    # `scopes` (and `fcntl`) — the shape a Swift port reimplements is the payload, not the
+    # machine-local state beside it. Nothing about a cycle: `scopes` imports `render` only inside
+    # `record()`, and an earlier version of this comment claimed an import-weight saving that was
+    # not real, since `render` already imports the retriever at module top.
+    from substrate import refresh_state
+
     return {
         "scope": scope,
         "db": db,
@@ -242,4 +271,5 @@ def search_payload(
         "filters": applied_filters(statuses, include_sources=include_sources, doc_type=doc_type,
                                    document_class=document_class, notes=filter_notes),
         "index_version": result.index_version,
+        "refresh": refresh_state.report(scope, registry),
     }

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -38,8 +39,12 @@ PASSAGE_KEYS = {
 }
 ENVELOPE_KEYS = {
     "scope", "db", "query", "passages", "outline_records", "retrieval_mode", "filters",
-    "index_version",
+    "index_version", "refresh",
 }
+# What the unattended refresh agent last managed on this scope. `index_version` says what the
+# index was BUILT from and stops there, so a scope whose recompose refused kept answering from
+# the superseded index in an envelope byte-identical to a healthy run.
+REFRESH_KEYS = {"known", "outcome", "attempted", "succeeded", "frozen", "frozen_since", "note"}
 MODE_KEYS = {"embedder", "hyde", "reranker", "expected_mrr", "cohort", "degraded", "fallbacks",
              "unavailable"}
 FILTER_KEYS = {"statuses_included", "statuses_excluded", "sources_excluded", "doc_type",
@@ -74,8 +79,16 @@ def _result(hits=None, *, cap=None, outlines=None) -> RetrievalResult:
     )
 
 
+# An empty directory standing in for the registry, so `refresh` is read from a location this test
+# owns. Without it these tests read the OPERATOR's ~/.substrate/refresh.json and their result
+# depends on what a launchd job happened to record five minutes ago — an ambient dependency that
+# would pass today and fail on the first machine where the agent had touched a scope called demo.
+_ISOLATED = str(Path(tempfile.mkdtemp(prefix="substrate-render-")) / "scopes.toml")
+
+
 def _payload(result=None, **over) -> dict:
-    kw = dict(scope="demo", query="q", statuses=INCLUDED_STATUSES, include_sources=False)
+    kw = dict(scope="demo", query="q", statuses=INCLUDED_STATUSES, include_sources=False,
+              registry=_ISOLATED)
     kw.update(over)
     return render.search_payload(result or _result(), **kw)
 
@@ -112,8 +125,42 @@ def test_envelope_shape() -> None:
     assert set(env) == ENVELOPE_KEYS, set(env) ^ ENVELOPE_KEYS
     assert set(env["retrieval_mode"]) == MODE_KEYS
     assert set(env["filters"]) == FILTER_KEYS
+    assert set(env["refresh"]) == REFRESH_KEYS
     assert env["index_version"] == "v6:deadbeef"
     assert env["scope"] == "demo"
+
+
+def test_the_envelope_carries_a_refresh_verdict_without_being_asked() -> None:
+    """`refresh` is READ by `search_payload`, not passed in. An adapter that had to remember to
+    attach it is an adapter that will one day not — and the field exists precisely to survive the
+    person who forgets to look. This asserts it arrives on a bare call.
+
+    `frozen: null` here rather than false: this fixture has no refresh record, and absence of a
+    record is absence of evidence. A default of `false` would make the healthy-looking state the
+    one that requires nothing to have happened.
+    """
+    r = _payload()["refresh"]
+    assert r["known"] is False
+    assert r["frozen"] is None, "no record became a clean bill of health"
+    assert r["note"], "the condition crossed as a bare null with nothing explaining it"
+
+
+def test_the_envelope_reads_no_clock() -> None:
+    """Doc 3a §6 compares the CLI's envelope to the server's as whole dicts, produced by two
+    processes at two instants. Any clock-derived field would make that equality flaky, and a flake
+    there reads as the divergence the shared render layer exists to prevent.
+
+    Rendering twice in a row proves nothing on its own — microseconds apart, an `age_days` or
+    `hours_since_success` field would agree and sail through, and those are exactly the fields
+    someone would add. So this pins the key set instead: a clock-derived value has to LIVE
+    somewhere, and there is nowhere for it to go that this assertion does not see. That is the
+    A17-fixture rule — a check that cannot distinguish the world where it holds from the world
+    where it does not manufactures confidence.
+    """
+    result = _result()
+    assert _payload(result) == _payload(result)
+    assert set(_payload(result)["refresh"]) == REFRESH_KEYS, "a new key appeared in the block"
+    assert set(_payload(result)) == ENVELOPE_KEYS, "a new key appeared in the envelope"
 
 
 def test_outline_records_carry_the_same_spine() -> None:
