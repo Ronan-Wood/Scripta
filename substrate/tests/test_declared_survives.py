@@ -162,6 +162,155 @@ def test_a_malformed_raw_digest_is_dropped_not_carried() -> None:
     assert doc.raw_sha256 is None, "a malformed digest must not be carried as if it were provenance"
 
 
+def test_a_multi_valued_supersession_survives_the_whole_pipeline() -> None:
+    """v8: `supersedes` is list-valued, and every stage has to carry ALL of it.
+
+    This is the third law aimed at the field that motivated the bump. `substrate-topology` replaced
+    two notes and could not say so, so the pair was recorded in prose — and the failure a scalar
+    would reintroduce is not a crash but a QUIET TRUNCATION: one link survives, the payload is
+    well-formed, and the note reads as having replaced exactly one thing. Asserting the whole list
+    at both ends is the only check that can tell those apart.
+    """
+    tmp = Path(tempfile.mkdtemp())
+    note = _note(tmp, "multi.md", {
+        "doc_id": "live-note", "supersedes": "[dead-one, dead-two, dead-three]",
+    })
+    doc, _b, _s = read_markdown(note)
+    assert doc.supersedes == ["dead-one", "dead-two", "dead-three"], doc.supersedes
+
+    ingest_markdown(note, tmp / "out" / "n", require_status=True)
+    with IndexStore(str(tmp / "i.db")) as s:
+        reconcile(s, tmp / "out")
+        hit = s.chunk(s.db.execute(
+            "SELECT chunk_id FROM chunks WHERE doc_id=? LIMIT 1", ("live-note",)).fetchone()[0])
+        assert hit.supersedes == ["dead-one", "dead-two", "dead-three"], (
+            f"the supersession list was truncated on the way to a Hit: {hit.supersedes}")
+
+
+def test_a_pre_v8_scalar_supersedes_still_reads() -> None:
+    """Two notes in `scripta-vault` declare a bare `supersedes: old-note` (plus one in the repo's
+    `demo-vault` fixture), and nobody is going to rewrite them — so the scalar form has to keep
+    meaning what it always meant, a one-entry list, rather than becoming a parse failure."""
+    tmp = Path(tempfile.mkdtemp())
+    note = _note(tmp, "scalar.md", {"doc_id": "live-note", "supersedes": "dead-one"})
+    doc, _b, _s = read_markdown(note)
+    assert doc.supersedes == ["dead-one"], doc.supersedes
+
+
+def test_a_malformed_supersession_entry_is_dropped_not_carried() -> None:
+    """Per-element validation, mirroring the malformed-`raw_sha256` rule directly above: a link
+    that cannot identify the note it names reads as provenance while being unusable. The LEGAL
+    entries beside it must survive — dropping the whole list because one entry was bad would lose
+    real supersession history to a typo."""
+    tmp = Path(tempfile.mkdtemp())
+    note = _note(tmp, "mixed.md", {
+        "doc_id": "live-note",
+        "supersedes": "[dead-one, Not A Doc Id, [[wikilink]], dead-two, dead-one]",
+    })
+    doc, _b, _s = read_markdown(note)
+    assert doc.supersedes == ["dead-one", "dead-two"], doc.supersedes
+
+
+def test_supersession_round_trips_through_emitted_markdown() -> None:
+    """§3b makes re-ingestion a designed operation, so the emitter has to write the list back in
+    the form the reader reads. A shape that only survives one direction is laundered on every
+    regeneration cycle — by the engine, on its own artifact."""
+    from substrate.markdown.emit import frontmatter
+
+    tmp = Path(tempfile.mkdtemp())
+    note = _note(tmp, "rt.md", {"doc_id": "live-note", "supersedes": "[dead-one, dead-two]"})
+    doc, _b, _s = read_markdown(note)
+
+    emitted = tmp / "emitted.md"
+    emitted.write_text(frontmatter(doc) + "\n# Heading\n\n" + "Body words repeated. " * 8)
+    again, _b2, _s2 = read_markdown(emitted)
+    # The literal is asserted as well as the agreement. Comparing only the two sides — both
+    # produced by the same reader — stays green in any world where the reader is symmetrically
+    # wrong, and truncating `doc_id_list` to one entry was verified to leave this test passing.
+    assert again.supersedes == ["dead-one", "dead-two"] == doc.supersedes, (
+        f"emit/read disagree: wrote {doc.supersedes}, read back {again.supersedes}")
+
+
+def test_no_write_boundary_can_put_an_exploded_link_on_disk() -> None:
+    """All three write boundaries, given the shape that breaks them.
+
+    `Document.supersedes` is annotated `list[str]` and nothing enforces that at runtime, so the
+    question is what each writer does when handed the pre-v8 scalar. `emit` is the one that
+    matters most and was the last to be fixed: it writes into the OPERATOR'S VAULT, and
+    `supersedes: [o, l, d, -, n, o, t, e]` is not merely wrong, it is durable — every fragment is
+    a legal single-character doc_id, so it reads back clean forever instead of being refused.
+    """
+    import json as _json
+
+    from substrate.markdown.emit import frontmatter
+    from substrate.models import Document
+
+    scalar = Document(doc_id="live-note", source_path="p", source_sha256="a" * 64, source_pages=1,
+                      document_class="reference-frozen", status="active", doc_type="reference",
+                      supersedes="dead-one")
+
+    # 1. the vault-markdown boundary
+    line = [ln for ln in frontmatter(scalar).splitlines() if ln.startswith("supersedes")]
+    assert line == ["supersedes: [dead-one]"], line
+
+    # 2. the store boundary
+    tmp = Path(tempfile.mkdtemp())
+    from substrate.models import Chunk
+    with IndexStore(str(tmp / "i.db")) as s:
+        s.upsert(scalar, [Chunk(chunk_id="live-note#c0", doc_id="live-note", kind="passage",
+                                text="w " * 40, path=["T"], level=1, n_chars=80,
+                                document_class="reference-frozen")],
+                 markdown_path="m", markdown_mtime=0.0, markdown_sha256="d" * 64)
+        stored = s.db.execute("SELECT supersedes FROM documents").fetchone()[0]
+        assert _json.loads(stored) == ["dead-one"], stored
+        # 3. and back out through the read path, which does not trust the column either.
+        hit = s.chunk("live-note#c0")
+        assert hit.supersedes == ["dead-one"], hit.supersedes
+
+        # The read guard needs a value the WRITE guard cannot produce, or it is unfalsifiable:
+        # upsert always stores a proper array, so nothing else can exercise it. A v7 row reaching
+        # a v8 read is refused by the schema gate two modules away — this asserts the property
+        # locally instead of inheriting it. `json.loads` returns an int here, not a list, and
+        # every consumer below (`list(...)`, `','.join(...)`) assumes a sequence.
+        s.db.execute("UPDATE documents SET supersedes='123' WHERE doc_id='live-note'")
+        assert s.chunk("live-note#c0").supersedes == [], "a non-array column reached a consumer"
+
+
+def test_a_pre_v8_run_json_reconciles_without_exploding_into_characters() -> None:
+    """The v7-artifact path, which no other test reaches.
+
+    `run.json` is a PERSISTED artifact; ones written before v8 are on disk in `out-vault/` right
+    now, holding `"supersedes": "model-engine-design"` as a bare string. Every other supersedes
+    test goes through `ingest_markdown`, which writes a v8 run.json, so they exercise the list
+    branch and never the string one.
+
+    This asserts the CONTRACT — a v7 scalar reconciles to a one-entry list — not which guard
+    delivers it. Two do, at different entry points: `reconcile` normalises the legacy artifact so
+    the `Document` it builds is correctly typed, and `IndexStore.upsert` normalises every writer,
+    including a caller that constructs a `Document` by hand. So removing either one alone leaves
+    this green; removing both turns it red. Stated plainly because a test docstring claiming to
+    isolate a line it cannot isolate is worse than one that says what it actually covers.
+    """
+    import json as _json
+
+    tmp = Path(tempfile.mkdtemp())
+    note = _note(tmp, "legacy.md", {"doc_id": "live-note"})
+    ingest_markdown(note, tmp / "out" / "n", require_status=True)
+
+    run_path = tmp / "out" / "n" / "run.json"
+    run = _json.loads(run_path.read_text())
+    run["spine"]["supersedes"] = "dead-one"          # the v7 shape, exactly as it sits on disk
+    run_path.write_text(_json.dumps(run))
+
+    with IndexStore(str(tmp / "i.db")) as s:
+        reconcile(s, tmp / "out")
+        stored = s.db.execute(
+            "SELECT supersedes FROM documents WHERE doc_id=?", ("live-note",)).fetchone()[0]
+        assert _json.loads(stored) == ["dead-one"], (
+            f"a v7 scalar reconciled to {stored!r} — one link per character is well-formed at "
+            f"every layer below and wrong at all of them")
+
+
 if __name__ == "__main__":
     _tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     _failed = 0

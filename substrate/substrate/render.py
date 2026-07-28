@@ -83,9 +83,10 @@ def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
     Every spine axis is present on every passage, with no field dropped for being uninteresting.
     `status` is the note's currency, `doc_type` its job, `confidence` its SETTLEDNESS (independent
     of status — a note can be active AND proposed), `domains` its retrieval tags, `vault` which
-    tier it composed from, and `supersedes` the dead note this live one replaced. `unstated`
-    confidence and a null `supersedes` are emitted exactly like any other value: "this note made
-    no claim" is information, and it is not the same as "nobody looked".
+    tier it composed from, and `supersedes` the LIST of dead notes this live one replaced — `[]`
+    when it replaced nothing, several entries when it consolidated several. `unstated` confidence
+    and an empty `supersedes` are emitted exactly like any other value: "this note made no claim"
+    is information, and it is not the same as "nobody looked".
 
     That last sentence was aspirational until 2026-07-28 — both states stored `unstated`, so the
     distinction it promised did not exist below this layer. It does now: `unstated` is the declared
@@ -116,7 +117,9 @@ def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
         "confidence": h.confidence,
         "domains": list(h.domains),
         "vault": h.vault,
-        "supersedes": h.supersedes,
+        # A LIST as of v8 — `[]` when this note replaced nothing, never null. One live note can
+        # replace several dead ones, and a scalar could name only one of them.
+        "supersedes": list(h.supersedes),
     }
     out["snippet"] = snippet
     out["text"] = h.text if full else None

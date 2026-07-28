@@ -22,6 +22,7 @@ from pathlib import Path
 from substrate import classes, spine
 from substrate.chunk.chunker import chunk
 from substrate.markdown.emit import emit, frontmatter
+from substrate.markdown import reader
 from substrate.markdown.reader import content_coverage, read_markdown, uncovered_content_blocks
 from substrate.models import Kind
 
@@ -213,7 +214,12 @@ def ingest_markdown(
             "raw_sha256": doc.raw_sha256,
             "raw_location": doc.raw_location,
             "superseded_by": doc.superseded_by,
-            "supersedes": doc.supersedes,
+            # Normalised on the way OUT as well as in. `reconcile` normalises on the way back, so
+            # this is not what stops a bad shape reaching the store — it is what stops the ARTIFACT
+            # itself being wrong. run.json is read by more than one consumer and is what a person
+            # inspects when a note looks wrong; an artifact that disagrees with the note it
+            # describes sends the next reader after the wrong component.
+            "supersedes": reader.doc_id_list(doc.supersedes),
         },
     }
     if vault is not None or tier is not None:

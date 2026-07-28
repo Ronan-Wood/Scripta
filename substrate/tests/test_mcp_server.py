@@ -83,7 +83,7 @@ def _fixture(*, manifest: bool = False) -> tuple[Path, Path]:
                        source_pages=1, document_class="reference-frozen", title="Composition",
                        status="active", doc_type="explanation", confidence="proposed",
                        vault="demo-vault", tier=3, domains=["retrieval"],
-                       supersedes="old-composition")
+                       supersedes=["old-composition", "older-composition"])
         ch = Chunk(chunk_id="composition#c00000", doc_id="composition", kind="passage",
                    text=_LONG, path=["Composition"], level=1, n_chars=len(_LONG),
                    document_class="reference-frozen")
@@ -211,7 +211,7 @@ def test_search_carries_the_whole_spine() -> None:
     assert p["confidence"] == "proposed", "an unbuilt design must not read as settled"
     assert p["status"] == "active", "status and confidence are independent axes"
     assert p["doc_type"] == "explanation"
-    assert p["supersedes"] == "old-composition"
+    assert p["supersedes"] == ["old-composition", "older-composition"]
     assert p["vault"] == "demo-vault"
     assert p["domains"] == ["retrieval"]
 

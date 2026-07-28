@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # v1 (2026-07-21) initial: documents, chunks, chunks_fts (external-content), chunk_vectors.
 # v2 (2026-07-21) chunks.section_kind — references sections were acting as retrieval
@@ -62,6 +62,23 @@ SCHEMA_VERSION = 7
 #     'unstated' is still a legal value. With it, a read refuses (SchemaMismatch) until `compose`
 #     rebuilds from markdown, which is the source of truth. Refuse rather than mislead.
 #     Adds no column and no text: the (chunk_id, text_with_path) eval signature is unmoved.
+# v8 (2026-07-28) `supersedes` becomes LIST-VALUED. Same TEXT column, new contract: it holds a
+#     JSON array, exactly as `documents.domains` already does. One live note can replace SEVERAL
+#     dead ones — `substrate-topology` replaced both `multi-vault-mcp` and `connections-topology` —
+#     and the scalar could name only one, so that case was being recorded in PROSE, which is
+#     precisely the "a field, not prose" rule the boundary principle exists to enforce.
+#
+#     A VALUE-SHAPE change, so it bumps for the same reason v7 did: `user_version` guards the
+#     CONTRACT of stored data, not the table shape. A v7 row holds the bare string `old-note` where
+#     every v8 consumer calls json.loads — which raises on most such values and, on the rest,
+#     decodes SILENTLY to a non-list (`_DOC_ID` admits all-digit ids, and json.loads("123") returns
+#     an int rather than raising). A reader that guessed instead of refusing would explode an
+#     8-character doc_id into eight one-character links. Nothing else detects any of it:
+#     `freshness` compares VAULT checksums, so a code-only change reports `current` forever. The
+#     read refuses until `compose` rebuilds from markdown.
+#
+#     `superseded_by` deliberately stays scalar — a dead note has exactly one live replacement.
+#     Adds no column and no indexed text: the (chunk_id, text_with_path) eval signature is unmoved.
 
 DDL = """
 CREATE TABLE IF NOT EXISTS documents(

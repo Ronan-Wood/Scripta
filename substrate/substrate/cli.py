@@ -141,7 +141,8 @@ def cmd_ingest_md(args: argparse.Namespace) -> int:
     print(f"  status     : {r.status}  ·  doc_type {r.doc_type}"
           + f"  ·  confidence {r.confidence}"
           + (f"  ·  domains {r.domains}" if r.domains else "")
-          + (f"  ·  supersedes {run['spine']['supersedes']}" if run["spine"]["supersedes"] else "")
+          + (f"  ·  supersedes {','.join(run['spine']['supersedes'])}"
+             if run["spine"]["supersedes"] else "")
           + (f"  ·  superseded_by {run['spine']['superseded_by']}"
              if run["spine"]["superseded_by"] else ""))
     print(f"  blocks     : {rstats['blocks']}  "
@@ -709,7 +710,7 @@ def cmd_query(args: argparse.Namespace) -> int:
             if h.domains:
                 meta.append(f"domains={h.domains}")
             if h.supersedes:
-                meta.append(f"supersedes={h.supersedes}")
+                meta.append(f"supersedes={','.join(h.supersedes)}")
             print(f"    ↳ {' · '.join(meta)}")
             if args.expand and h.kind == "passage":
                 out = store.outline_for(h.chunk_id)

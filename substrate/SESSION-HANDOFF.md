@@ -146,6 +146,43 @@ a server started before this change holds the old `render` and emits no `refresh
 the freeze signal is invisible there until it is restarted. No `SchemaMismatch`, no error — just
 the field silently absent, which is the state it was built to make impossible.
 
+## v8 — `supersedes` is list-valued (2026-07-28)
+
+Same TEXT column, JSON array inside it, exactly as `domains` already worked. One live note can
+replace SEVERAL dead ones: `substrate-topology` replaced both `multi-vault-mcp` and
+`connections-topology`, the scalar could name only one, so the pair was written in PROSE — "a field,
+not prose" is the boundary principle's own rule, broken by the field it was written about.
+`superseded_by` stays scalar: a dead note has exactly one live replacement, and a list there would
+invent a case that does not exist.
+
+`reader.doc_id_list` is the one parser, and it takes all three shapes the field legitimately
+arrives in — a v8 flow list, a pre-v8 frontmatter scalar, and a `run.json` value that is a list or
+a string. That last shape is why it takes `object`: a bare `list()` over a v7 run.json explodes
+`"old-note"` into eight one-character links, and `reconcile` reads artifacts written by every prior
+version. The same normalisation guards `IndexStore.upsert`, so a `Document` built by hand with a
+string cannot put the exploded form on disk either.
+
+**Exactly one note had to be rewritten**, and it is the one the bump was made for:
+`core-vault/00-operator/patterns/substrate-topology.md` now declares
+`supersedes: [multi-vault-mcp, connections-topology]` and the paragraph explaining why it could
+not is gone. The two pre-existing scalar declarations in `scripta-vault` were left alone — they
+read back as one-entry lists.
+
+**The envelope contract changed**: `supersedes` went from `"doc-id"`/`null` to `["doc-id"]`/`[]`.
+Updated in the same pass — `~/.claude/skills/substrate/SKILL.md`, `~/.claude/CLAUDE.md`, and the
+`search` tool description. Claude Desktop and Zed configs only launch the binary and describe no
+fields, so they needed nothing beyond the restart.
+
+All seven scopes recomposed and re-embedded at v8 by hand rather than left to the agent: a schema
+bump does not move a vault, so drift reports `current` and the agent would not have rebuilt on that
+signal. It would have self-healed anyway — `status` refuses on a version mismatch, the probe reads
+no JSON, and the `unknown` arm recomposes — but only after up to fifteen minutes of every scope
+refusing every read.
+
+**`out/substrate.db` is untouched** (`7311ffbf…`), and it was already at `user_version 2` before
+this change — the eval fixture rebuilds from markdown via `substrate index` whenever it is next
+run, and v8 adds no column and no indexed text, so the signature is unmoved.
+
 ## Two failure patterns this session earned
 
 Both were found by review, not by testing. **Neither has been promoted into `PRINCIPLES.md` yet** —
