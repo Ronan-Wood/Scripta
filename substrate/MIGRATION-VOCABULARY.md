@@ -509,3 +509,66 @@ none keeps serving the old claim.
   needed; it just has not been merged.
 - **`type: roadmap`** (1 note) — still unmapped. Doc 2 §6a's boundary rule says a sixth doc_type
   needs a *job* none of the five expresses; a roadmap plausibly reads as `explanation`.
+
+---
+
+## 15. Migration complete — all five areas, 2026-07-28
+
+**187 durable notes → 196, composed clean.** 232 documents in scope (36 core-vault + 196
+prism-vault), 3814/3814 vectors, freshness current, **0 fatal**, 1 quality warning (A13 fragments,
+warn-only by design).
+
+| source | n | → |
+|---|---|---|
+| `02 - Notes/<Area>/` | 169 | `02-areas/<area>/` — 26 backend + 143 across four areas |
+| `03 - References/` | 7 | `03-references/` — vendor notes |
+| `00 - MOC/<Area> MOC` | 5 | 5 × `doc_type: digest` |
+| `00 - MOC/Index.md` | 1 | `00-index/MEMORY.md` + [[prism-platform-now]] |
+| `04 - Synthesis/` | 5 | 5 × `*-overview` (explanation) + 5 × `*-sharp-edges` (reference) + `log.md` |
+
+Final axes: decision 19 · **digest 5** · explanation 56 · how-to 27 · reference 125. Status: active
+228 · complete 2 · superseded 2. Confidence: unstated 163 · stated 34 · verified 23 · proposed 6.
+
+### The finding the Backend slice could not have surfaced
+
+**`type: concept` does different jobs in different areas.** In backend/frontend/infrastructure/
+cross-cutting it is architectural understanding → `explanation`. In **domain** it is an entity
+definition with an Attributes list — *"what is a Building and what fields does it have"* is look-up,
+so those 34 notes are `reference`. §3's flat `concept → explanation` rule would have mislabelled
+every Domain note. One source vocabulary, two jobs, decided by area.
+
+### Everything else that needed a judgement
+
+- **Two real supersessions encoded.** `prism-auth-clerk → prism-auth-workos` (the source's only
+  working `superseded-by` link, re-keyed to the underscore spelling the engine reads), and
+  `prism-domain-spaces-lineage → prism-spaces` — the source said `design-agreed-unbuilt` while
+  `prism-spaces` records it shipping 2026-06-22. Verified by query: excluded by default, and under
+  `--all-status` the superseded note ranks **first** for its own content, so the exclusion changes
+  the answer rather than decorating it.
+- **`Index.md`'s substance was not buried in MEMORY.md.** The platform inventory and the skills
+  table became [[prism-platform-now]] (`reference` · `stated`, with `last-updated`) precisely
+  because `MEMORY.md` is never indexed. An inventory in an unindexed file is an inventory nobody
+  can retrieve.
+- **`type: roadmap`** → `explanation`. Doc 2 §6a's boundary rule: a sixth doc_type needs a job none
+  of the five expresses, and "the current plan and why" is explanation.
+
+### Link integrity
+
+2015 wikilinks; **1902 resolve**. The 113 that do not break down as 74 session logs (still in
+PropertyPrismVault — the `_sources/` migration is the remaining decided-but-undone work), 14 Linear
+tickets that were never vault notes, and 25 forward-references to notes the source vault never had.
+
+Three link defects were introduced by the migration and repaired: cross-area links left unrewritten
+because each pass only knew its own slice's names (199 fixed by a final full-map sweep), 107
+intra-Backend links broken by the rename, and **9 wikilinks split across a line by the log's
+`textwrap`** — a defect of my own tooling, caught only by re-running the resolver after the merge.
+
+### Two defects found by verifying rather than by any gate
+
+- **Four of five `*-overview` notes carried a duplicate H1**, because the H1-stripping regex was
+  `\A#` and a blank line preceded the heading after frontmatter removal. Every assertion passed;
+  the symptom was a chunk path reading `Cross-Cutting — Synthesis` under a note titled
+  *"Cross-cutting — how it fits together"*. Provenance pointing at the wrong name is the
+  chapter-title bug's shape, and only reading a real result surfaced it.
+- **`prism-sharp-edges` and the five area catalogues now overlap.** Not resolved here; the
+  cross-area note predates the split and some of its entries are now duplicated area-side.
