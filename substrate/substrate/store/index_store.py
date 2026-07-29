@@ -203,7 +203,19 @@ FROM chunks c JOIN documents d ON d.doc_id = c.doc_id
 
 
 class SchemaMismatch(RuntimeError):
-    """A read-only open found an index built by a different schema version."""
+    """A non-migrating open found an index built by a different schema version.
+
+    Carries `found` and `expected` as fields rather than only inside the message, because the
+    REMEDY differs by caller and a message that names one is wrong for the others: `query`,
+    `status` and the MCP server want "run `compose`", while `index` can rebuild this itself and
+    wants "re-run with `--migrate`". The default message therefore states the two versions and
+    stops; a caller that has a better remedy composes its own from these fields.
+    """
+
+    def __init__(self, message: str, *, found: int, expected: int):
+        super().__init__(message)
+        self.found = found
+        self.expected = expected
 
 
 class IndexStore:
@@ -218,7 +230,31 @@ class IndexStore:
         both versions, and leaves the data for `compose` to rebuild deliberately.
         """
         self.path = str(path)
-        self.db = schema.connect(self.path)
+        # A non-migrating open must not CREATE what it was asked to read. `schema.connect` is a
+        # plain `sqlite3.connect`, which makes the file before any version can be read — so a
+        # typo'd `--db` silently materialised an empty database and then refused with "has no
+        # schema — it was never composed", describing a real-but-uncomposed index. The operator's
+        # next step from that message is `index --migrate --db <typo>`, which builds a genuine
+        # index at the wrong path while they believe they rebuilt the right one. `found=-1`
+        # because 0 is a legitimate on-disk value (a stamp that never landed) and this is the
+        # absence of a file, which is a different fact.
+        if not migrate and not Path(self.path).exists():
+            raise SchemaMismatch(
+                f"{self.path} does not exist. Refusing to create it on a read.",
+                found=-1, expected=schema.SCHEMA_VERSION,
+            )
+        try:
+            self.db = schema.connect(self.path)
+        except sqlite3.DatabaseError as e:
+            # `found=-2`: not an index, and distinct from -1 ("no file") because `cmd_index`
+            # BOOTSTRAPS on -1. A corrupt or non-SQLite file must never be bootstrapped into —
+            # that would write our schema over whatever it actually is. Without this the caller
+            # got a raw `sqlite3.DatabaseError` out of `PRAGMA journal_mode=WAL`, from the one
+            # path every neighbouring command was rewritten to make refuse cleanly.
+            raise SchemaMismatch(
+                f"{self.path} is not a readable SQLite database: {e}",
+                found=-2, expected=schema.SCHEMA_VERSION,
+            ) from e
         if migrate:
             self.rebuilt = schema.migrate(self.db)
             return
@@ -229,8 +265,9 @@ class IndexStore:
             raise SchemaMismatch(
                 f"{self.path} " + ("has no schema — it was never composed"
                                    if found == 0 else f"was built by schema v{found}")
-                + f", this engine is v{schema.SCHEMA_VERSION}. Opening it for WRITE would drop "
-                  f"and rebuild it; refusing to do that on a read. Run `substrate compose`."
+                + f", this engine is v{schema.SCHEMA_VERSION}. Migration is drop-and-rebuild, so "
+                  f"opening it to migrate would DESTROY it; refusing to do that implicitly.",
+                found=found, expected=schema.SCHEMA_VERSION,
             )
 
     def close(self) -> None:

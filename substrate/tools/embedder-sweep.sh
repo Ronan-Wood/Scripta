@@ -22,12 +22,20 @@ for m in $MODELS; do
     fi
 
     embed_out=$(uv run python -m substrate.cli embed --model "$m" 2>&1 | tail -2)
+    # migrate=False. This reads ONE integer, and with the default it dropped and rebuilt
+    # `out/substrate.db` — the eval fixture — on the first mismatched version, one line after the
+    # `embed` above had correctly refused to. `2>/dev/null` meant it did so in silence, and `dim`
+    # just came back `?`. The sixth call site of the five this guard was written for.
     dim=$(uv run python -c "
 from substrate.store.index_store import IndexStore
-with IndexStore('out/substrate.db') as s:
+with IndexStore('out/substrate.db', migrate=False) as s:
     r=s.db.execute('SELECT dim FROM chunk_vectors WHERE embed_model=? LIMIT 1',('$m',)).fetchone()
     print(r['dim'] if r else '?')
 " 2>/dev/null)
+    # A refused read now yields an EMPTY string, where the pre-guard version printed `?`.
+    # `mrr` and `lex` carry `${...:-?}` on the printf line; this one did not, so the column
+    # silently blanked rather than saying "not known".
+    dim=${dim:-?}
 
     line=$(uv run python -m substrate.cli eval --embed-model "$m" 2>&1 \
            | grep -E "SEMANTIC COHORT|LEXICAL ")
