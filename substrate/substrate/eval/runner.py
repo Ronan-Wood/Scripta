@@ -263,16 +263,12 @@ def run(db: str, gold_path: Path, k: int = K, route: bool = True, embedder=None,
     t0 = time.monotonic()
     from substrate.retrieve.retriever import _COHORT
 
-    with IndexStore(db) as store:
-        if store.rebuilt:
-            # A schema bump dropped and rebuilt the index EMPTY on open, and eval only reads. Every
-            # case would miss and the run would report a plausible MRR computed over nothing — the
-            # exact shape of the five retracted measurements (HANDOFF §8). Refuse.
-            raise RuntimeError(
-                "the index schema changed, so the index was dropped and rebuilt EMPTY on open; "
-                "eval only reads and cannot refill it. Re-run `substrate index` first — an eval "
-                "over an empty index would report a number computed from no retrievals."
-            )
+    # migrate=False. Eval only reads, and a migrating open dropped the index EMPTY before the
+    # first case ran — every case would miss and the run would report a plausible MRR computed
+    # over nothing, the exact shape of the five retracted measurements (HANDOFF §8). The old guard
+    # here read `store.rebuilt` and raised, which detected the destruction one step too late to
+    # stop it; `SchemaMismatch` refuses the open itself and propagates to `cmd_eval`.
+    with IndexStore(db, migrate=False) as store:
         docs = resolve_docs(store)
         for case in gold["cases"]:
             summary.cases.append(run_case(store, case, docs, k=k, route=route, embedder=embedder, expander=expander, multiquery=multiquery, reranker=reranker))

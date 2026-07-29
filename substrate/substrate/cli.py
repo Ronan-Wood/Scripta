@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -191,31 +192,76 @@ def _refuse_destructive_clean(index_root: Path, scope) -> str:
     return ""
 
 
-def refuse_if_rebuilt(store, *, repopulates: bool) -> bool:
-    """A schema bump drops-and-rebuilds the index on open. Announce it — and on a READ path, refuse.
+# Every table `schema.DDL` creates, plus the shadow tables FTS5 makes for `chunks_fts`. A file
+# holding ONLY these, all empty, is an index this engine built and never filled. A file holding
+# anything else is somebody else's, and bootstrapping into it would write our schema over their
+# data — so the set is an allow-list, not a deny-list: an unrecognised table refuses.
+_SUBSTRATE_TABLES = frozenset({
+    "documents", "chunks", "chunk_vectors", "stage_ledger",
+    "chunks_fts", "chunks_fts_data", "chunks_fts_idx",
+    "chunks_fts_docsize", "chunks_fts_config", "chunks_fts_content",
+})
+# The tables `schema.DROP` actually removes. Emptiness has to be judged across ALL of them: an
+# earlier version of this check looked only at `chunks`, so a real index carrying documents with
+# no chunks yet reported "nothing to destroy" and lost them.
+_DROPPED_TABLES = ("documents", "chunks", "chunk_vectors", "stage_ledger")
 
-    Dropping is safe by design (markdown is the source of truth), but only a command that
-    repopulates in the same run — `index`, `compose` — ends with an index again. A read path
-    (`query`, `embed`, `eval`) opens it, finds it empty, and has no way to refill it, so it would
-    answer `(no results)`. That reads as "nothing in your vault matches" when the truth is "your
-    index was just deleted": a plausible answer from a silently-emptied source set, which is this
-    project's signature failure and precisely what an empty result cannot distinguish itself from.
 
-    Returns True when the caller should abort. Write paths get the notice and carry on.
+def _nothing_to_destroy(path: str) -> bool:
+    """True when a drop-and-rebuild of this database would lose nothing.
+
+    Answered with a RAW connection. The whole question is whether it is safe to open the file
+    migrating, so asking it through `IndexStore` would perform the destruction it is meant to
+    authorise.
+
+    Three ways to be safe, and everything else refuses: the file does not exist; it has no tables
+    at all (the stub a refused open leaves behind); or every table in it is one of ours and every
+    table `DROP` touches is empty. Anything unreadable, and any file carrying a table this engine
+    did not create, is reported as NOT empty — the refusing direction.
     """
-    if not store.rebuilt:
+    import sqlite3
+
+    if not Path(path).exists():
+        return True
+    try:
+        con = sqlite3.connect(path)
+    except sqlite3.Error:
         return False
-    if repopulates:
+    try:
+        tables = {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+        if not tables:
+            return True
+        if tables - _SUBSTRATE_TABLES:
+            return False        # somebody else's database; never bootstrap into it
+        return all(con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] == 0
+                   for t in _DROPPED_TABLES if t in tables)
+    except sqlite3.Error:
+        return False
+    finally:
+        con.close()
+
+
+def announce_if_rebuilt(store, *, created: bool = False) -> None:
+    """Say so when the open dropped and rebuilt an EXISTING index. Write paths only.
+
+    This used to be `refuse_if_rebuilt(store, *, repopulates)`, and its read-path half REFUSED
+    after discovering `store.rebuilt` — which is after `schema.migrate` has already dropped
+    everything. It could report the destruction; it could never prevent it. Read paths now pass
+    `migrate=False` and refuse at the open itself, so `store.rebuilt` is False by construction
+    everywhere that half used to matter, and it is gone rather than left as a branch that cannot
+    fire. `cmd_embed` was the only caller of the refusing half; the same change deleted that call.
+
+    `created` exists because `schema.migrate` reports `rebuilt=True` for `user_version 0` too, so
+    creating an index announced "dropped and rebuilt from markdown" over a file that never held
+    anything. A notice that describes destruction where none happened trains its reader to skip it,
+    which is worse than not printing — this is the one line that has to be believed on the run where
+    something really was dropped.
+    """
+    if created:
+        return
+    if store.rebuilt:
         print("schema version changed -> index dropped and rebuilt from markdown")
-        return False
-    print(
-        "FATAL: the index schema changed, so the index was dropped and rebuilt EMPTY on open.\n"
-        "  This command only reads, so it cannot refill it — and zero results here would be\n"
-        "  indistinguishable from a genuine no-match. Re-run `substrate index` (or `compose` for a\n"
-        "  vault) to rebuild from markdown, then retry.",
-        file=sys.stderr,
-    )
-    return True
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -299,12 +345,77 @@ def cmd_rechunk(args: argparse.Namespace) -> int:
 
 
 def cmd_index(args: argparse.Namespace) -> int:
-    from substrate.store.index_store import ConfidenceError, DocTypeError, IndexStore
+    from substrate.store.index_store import (
+        ConfidenceError,
+        DocTypeError,
+        IndexStore,
+        SchemaMismatch,
+    )
     from substrate.store.reconcile import reconcile
 
     root = Path(args.out_root).expanduser()
-    with IndexStore(args.db) as store:
-        refuse_if_rebuilt(store, repopulates=True)
+    # Migration is drop-and-rebuild, so a bare `index` against an older DB silently destroyed it —
+    # including `out/substrate.db`, the eval fixture, which sat six versions behind and would have
+    # gone on the first invocation of `./run.sh`. Recoverable (markdown is the source of truth) but
+    # not undoable: the "untouched since" property is what the fixture IS.
+    #
+    # `compose` also crosses versions and has no flag, which is correct and not an oversight: it
+    # re-ingests every note BEFORE it opens the store, so its migration is repopulated in the same
+    # run, and its database is disposable by construction. `index` reconciles into a database that
+    # is a fixture. That difference, not a general rule about writes, is why only this one is gated.
+    #
+    # `--migrate` is NOT `--rebuild`, deliberately. `--rebuild` discards content the caller has
+    # already judged stale; `--migrate` discards it because the SCHEMA moved underneath. Folding
+    # the second into the first would mean a `--rebuild` habitually parked in a script quietly
+    # acquires migration authority at the next bump, which is the class of thing this guard exists
+    # to stop.
+    created = False
+    try:
+        store_cm = IndexStore(args.db, migrate=args.migrate)
+    except SchemaMismatch as e:
+        # BOOTSTRAP IS NOT MIGRATION. `user_version` 0 means no substrate schema was ever stamped,
+        # so this is a database `index` is being asked to CREATE. Refusing it left `index` unable
+        # to make an index — `out/` is gitignored, so `./run.sh` could not bootstrap on any fresh
+        # checkout — and it refused with a message claiming a drop would "DESTROY" a file holding
+        # nothing.
+        #
+        # Keyed on `found == 0`, NOT on the file's absence: `schema.connect` creates the file
+        # before the version is read, so a refused attempt leaves a schema-less stub behind and an
+        # `exists()` test would then refuse every retry, forever.
+        #
+        # Two distinct bootstrap facts, and they need different evidence. `found == -1` is "no file
+        # there at all", which cannot be hiding content. `found == 0` is "a file with a version
+        # stamp of zero", which is usually the stub a refused open leaves behind but COULD be a
+        # database carrying rows whose stamp never landed — so that one is CHECKED. The check is an
+        # allow-list over table names as well as a row count: `DROP` removes four tables, not just
+        # `chunks`, and a file holding tables this engine never created belongs to someone else.
+        if e.found == -1 or (e.found == 0 and _nothing_to_destroy(args.db)):
+            # The parent may not exist on a fresh checkout — `out/` is gitignored, which is the
+            # exact case this branch was written for, and `sqlite3.connect` raises rather than
+            # creating it. Failing here with `unable to open database file` would have made
+            # bootstrap work only where it was already going to.
+            try:
+                Path(args.db).expanduser().parent.mkdir(parents=True, exist_ok=True)
+                store_cm = IndexStore(args.db, migrate=True)
+            except (OSError, sqlite3.Error) as create_err:
+                # Raised INSIDE an exception handler, so without this it escapes as a chained
+                # "During handling of the above exception" traceback — out of the one code path
+                # whose entire job is to fail cleanly. A read-only directory or a full disk is an
+                # ordinary operator condition, not a bug worth a stack trace.
+                print(f"FATAL: cannot create an index at {args.db}: {create_err}",
+                      file=sys.stderr)
+                return 2
+            created = True
+        else:
+            print(f"FATAL (schema): {e}\n"
+                  "  `index` CAN rebuild this, but migration is drop-and-rebuild and must be\n"
+                  "  asked for: re-run with `--migrate`, then `substrate embed --db "
+                  f"{args.db}`\n"
+                  "  to restore the vectors the drop takes with it. `--rebuild` does NOT imply it.",
+                  file=sys.stderr)
+            return 2
+    with store_cm as store:
+        announce_if_rebuilt(store, created=created)
         if args.rebuild:
             store.clear()
             print("cleared index (markdown is the source of truth)")
@@ -448,7 +559,7 @@ def cmd_compose(args: argparse.Namespace) -> int:
         return 3
 
     with IndexStore(args.db) as store:
-        refuse_if_rebuilt(store, repopulates=True)
+        announce_if_rebuilt(store)
         rep = reconcile(store, index_root)
         s = store.stats()
         try:
@@ -631,7 +742,9 @@ def cmd_query(args: argparse.Namespace) -> int:
     try:
         store_cm = IndexStore(db_path, migrate=False)
     except SchemaMismatch as e:
-        print(f"FATAL (schema): {e}", file=sys.stderr)
+        print(f"FATAL (schema): {e}\n"
+              "  Rebuild it deliberately: `substrate compose <vault>` for a scope, or\n"
+              "  `substrate index --migrate` for an `out/` index.", file=sys.stderr)
         return 2
     with store_cm as store:
         cap = None
@@ -817,13 +930,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     # `vectors: null` on a box where the server reported three unreachable arms — the same
     # question, two answers, under a docstring claiming they could not differ.
     st = _stack.build(hyde_model=None, rerank_model=None, lexical_only=args.lexical_only)
-    # Deliberately NOT refuse_if_rebuilt: this command exists to say whether an index can be
+    # Deliberately NOT announce_if_rebuilt: this command exists to say whether an index can be
     # trusted, so refusing in the one state where it demonstrably cannot is the question, answered
     # with an error. It is reported as a field instead. `query` still refuses.
     try:
         store_cm = IndexStore(str(entry.db), migrate=False)
     except SchemaMismatch as e:
-        print(f"FATAL (schema): {e}", file=sys.stderr)
+        print(f"FATAL (schema): {e}\n"
+              f"  Rebuild the scope: `substrate compose` against its vault.",
+              file=sys.stderr)
         return 2
     with store_cm as store:
         payload = introspect.status_payload(store, entry, stack=st, registry=args.registry)
@@ -936,6 +1051,7 @@ def cmd_refresh_record(args: argparse.Namespace) -> int:
 
 def cmd_eval(args: argparse.Namespace) -> int:
     from substrate.eval.runner import GoldError, report, run
+    from substrate.store.index_store import SchemaMismatch
 
     gold_path = Path(args.gold).expanduser()
     baseline_path = Path(args.baseline).expanduser()
@@ -959,7 +1075,18 @@ def cmd_eval(args: argparse.Namespace) -> int:
         if embedder is not None:
             from substrate.store.index_store import IndexStore as _IS
 
-            with _IS(args.db) as _s:
+            # migrate=False: this guard COUNTS vectors, and a migrating open would have dropped
+            # them a line before counting — then truthfully reported 0/0 and told the operator to
+            # re-embed an index it had just deleted.
+            try:
+                _cm = _IS(args.db, migrate=False)
+            except SchemaMismatch as e:
+                print(f"FATAL (schema): {e}\n"
+                      f"  Rebuild it: `substrate index --migrate --db {args.db}`, then\n"
+                      f"  `substrate embed --db {args.db}` — the drop takes the vectors too, and\n"
+                      f"  this command refuses an incomplete vector space.", file=sys.stderr)
+                return 2
+            with _cm as _s:
                 _n = _s.db.execute(
                     "SELECT COUNT(*) FROM chunk_vectors WHERE embed_model=?", (embedder.key,)
                 ).fetchone()[0]
@@ -980,7 +1107,15 @@ def cmd_eval(args: argparse.Namespace) -> int:
         if embedder is not None:
             from substrate.store.index_store import IndexStore as _IS
 
-            with _IS(args.db) as _s:
+            try:
+                _cm = _IS(args.db, migrate=False)
+            except SchemaMismatch as e:
+                print(f"FATAL (schema): {e}\n"
+                      f"  Rebuild it: `substrate index --migrate --db {args.db}`, then\n"
+                      f"  `substrate embed --db {args.db}` — the drop takes the vectors too, and\n"
+                      f"  this command refuses an incomplete vector space.", file=sys.stderr)
+                return 2
+            with _cm as _s:
                 _n = _s.db.execute(
                     "SELECT COUNT(*) FROM chunk_vectors WHERE embed_model=?", (embedder.key,)
                 ).fetchone()[0]
@@ -1078,6 +1213,15 @@ def cmd_eval(args: argparse.Namespace) -> int:
     try:
         summary, gold = run(args.db, gold_path, k=args.k, route=not args.no_route,
                             embedder=embedder, expander=expander, multiquery=mq, reranker=rr)
+    except SchemaMismatch as e:
+        # The runner opens read-only, so a version-mismatched index refuses instead of being
+        # dropped and measured empty. Reported here rather than as a traceback, and NOT folded
+        # into the GoldError arm below: this is the index's version, not the gold file's shape.
+        print(f"FATAL (schema): {e}\n"
+              f"  Rebuild it: `substrate index --migrate --db {args.db}`, then\n"
+              f"  `substrate embed --db {args.db}` to restore the vectors the drop removes.",
+              file=sys.stderr)
+        return 2
     except GoldError as e:
         # A bad gold file — malformed/vacuous cases, bad JSON, or no 'cases' — fails clean here,
         # like every other validation in this CLI, not with a raw traceback. Caught by TYPE, not by
@@ -1135,23 +1279,54 @@ def cmd_eval(args: argparse.Namespace) -> int:
 
 def cmd_embed(args: argparse.Namespace) -> int:
     from substrate.embed.engine import EmbeddingError, OllamaEmbedder
-    from substrate.store.index_store import IndexStore
+    from substrate.store.index_store import IndexStore, SchemaMismatch
 
     from substrate.embed.engine import AppleEmbedder
 
     eng = (AppleEmbedder() if args.model.startswith("apple")
            else OllamaEmbedder(model=args.model, host=args.host, prefix_style=args.embed_style))
-    if not eng.available():
-        print(f"FATAL: {args.model!r} not available at {args.host}. "
-              "Start `ollama serve` (OLLAMA_MODELS must point at the drive).", file=sys.stderr)
-        return 2
 
     from substrate.embed.cache import VectorCache, content_sha
 
     t0 = time.monotonic()
-    with IndexStore(args.db) as store, VectorCache(args.cache) as cache:
-        if refuse_if_rebuilt(store, repopulates=False):
-            return 2
+    # `embed` WRITES vectors but cannot write chunks, so against a version-mismatched index it is
+    # a read path: the migrating open dropped every chunk, and what followed was not an error but
+    # a success — "index already fully embedded", because zero chunks are missing zero vectors.
+    #
+    # This supersedes the `refuse_if_rebuilt(repopulates=False)` that used to sit here (the
+    # function is now `announce_if_rebuilt`, write-paths only). That check
+    # fired AFTER the open, which is after the drop: it could report the destruction, never
+    # prevent it. With `migrate=False` the refusal happens before anything is written, so
+    # `store.rebuilt` is now False by construction on this path and the old call could not fire.
+    #
+    # BEFORE the availability probe, deliberately. The schema verdict is decidable from the
+    # arguments alone, and paying a live daemon probe to reach an answer that does not depend on it
+    # is the defect already corrected for `cmd_query`. It also decided which failure a caller sees:
+    # with the probe first, a version-mismatched index on a machine with no Ollama reported "model
+    # not available" — sending the operator to fix a daemon when the actual fault was the index.
+    try:
+        store_cm = IndexStore(args.db, migrate=False)
+    except SchemaMismatch as e:
+        print(f"FATAL (schema): {e}\n"
+              "  Rebuild it deliberately: `substrate compose <vault>` for a scope, or\n"
+              f"  `substrate index --migrate --db {args.db}` for an `out/` index — then re-run\n"
+              "  this command, since the drop takes the vectors with it.", file=sys.stderr)
+        return 2
+
+    # try/finally, not a bare close on the False branch: the store is open by now, and an
+    # `available()` that RAISES rather than returning False would leak the sqlite connection.
+    try:
+        reachable = eng.available()
+    except Exception:
+        store_cm.close()
+        raise
+    if not reachable:
+        print(f"FATAL: {args.model!r} not available at {args.host}. "
+              "Start `ollama serve` (OLLAMA_MODELS must point at the drive).", file=sys.stderr)
+        store_cm.close()
+        return 2
+
+    with store_cm as store, VectorCache(args.cache) as cache:
         dropped = store.drop_vectors(keeping_model=eng.key)
         if dropped:
             print(f"  dropped {dropped} vectors from other model spaces")
@@ -1230,6 +1405,9 @@ def main(argv: list[str] | None = None) -> int:
     idx.add_argument("--out-root", default="out")
     idx.add_argument("--db", default="out/substrate.db")
     idx.add_argument("--rebuild", action="store_true", help="drop the cache and rebuild")
+    idx.add_argument("--migrate", action="store_true",
+                     help="allow a schema-version migration, which DROPS the index and rebuilds "
+                          "it from markdown. Separate from --rebuild on purpose.")
     idx.set_defaults(func=cmd_index)
 
     comp = sub.add_parser("compose",

@@ -87,7 +87,9 @@ def _open(name: str, registry: str | None, *, refuse_empty: bool = True):
     try:
         store = IndexStore(str(entry.db), migrate=False)
     except SchemaMismatch as e:
-        raise ToolError(str(e)) from e
+        # The remedy is scope-specific and the exception deliberately does not name one, so this
+        # adapter supplies it: every scope on this server was built by `compose`.
+        raise ToolError(f"{e} Rebuild the scope with `substrate compose`.") from e
     if refuse_empty:
         # EMPTINESS, not the `rebuilt` flag. That flag is true only on the open that PERFORMED a
         # migration, so it is consumed by whoever opens first and cannot be relied on by anyone
