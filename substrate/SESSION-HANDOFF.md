@@ -13,9 +13,13 @@ real-content pilot and migration findings; `HANDOFF.md` has the engine's history
 scope registry, one payload-shaping function both adapters render from, drift detection, a
 two-phase write gate, and a freeze signal on every response. Schema **v8**. 412 assertions green.
 
-**It runs against the real vaults and the measured stack executes.** Seven scopes composed,
-embedded and vector-complete, refreshed by an unattended launchd agent; the MCP is registered in
-Claude Code, Claude Desktop and Zed. The 0.698 path is observed, not constructed — and the vaults'
+**It runs against the real vaults and the measured stack executes.** **Seven** scopes are
+registered and vector-complete; **six** of those are real and are what the launchd agent refreshes
+(`prism · scripta · cbre · research · school · clovis`). The seventh is `demo`, pointing at this
+repo's own `vaults/demo-vault` fixture — which is why "six" and "seven" both appear below and both
+are correct. Verified 2026-07-29: `~/.substrate/scopes.toml` holds 7 entries, `refresh.json` holds
+6, and the agent's last line reads `6 checked`. The MCP is registered in Claude Code, Claude
+Desktop and Zed. The 0.698 path is observed, not constructed — and the vaults'
 OWN retrieval is measured separately in `eval/gold-vault.json`, which is a different corpus and a
 different cohort from the 44-case reference tier. They are not subtractable.
 
@@ -224,6 +228,23 @@ A1/A1b (PDF path only) · A12 · A13 · A14 · A17 · A18 loss gate · A19 per-d
 partition · **A21** doc_type · **A22** per-note sweep at compose · **A23** confidence · A-compose.
 A22 splits fatal from reported, defaulting to FATAL.
 
+**Relied on by the next session without re-deriving, each with what established it (2026-07-29):**
+
+| claim | established by |
+|---|---|
+| 412 assertions green across 27 files | `for f in tests/test_*.py; do uv run python "$f"; done` |
+| eval fixture unmoved, 1811 chunks | `uv run python tools/fixture-signature.py out/substrate.db` → `4a560ce34aa6378a` |
+| the same value reads off the v2-frozen file | same command on `out/substrate.db.v2-frozen-4a4f765c9ad75dc9` |
+| 14 lint errors, all pre-existing | `./lint.sh` |
+| 7 scopes registered, 6 refreshed, none frozen | `~/.substrate/scopes.toml`, `refresh.json`, the agent log |
+| Ollama owned at login | `com.ronanwood.ollama.plist` carries `OLLAMA_MODELS` |
+| every guard in the signature tool is mutation-verified | remove a guard → exactly its test goes red (11 of 11) |
+
+**NOT re-verified this session**, carried forward and marked rather than silently trusted: the
+`eval/gold-vault.json` pass counts (lexical 20/21, paraphrase 9/13) — the cohort sizes 21 and 13
+were confirmed from the file, the pass counts were not re-run. `0.698` is `semantic_mrr` in
+`eval/.baseline.json`, which is gitignored and therefore absent on a fresh clone.
+
 New guards this session, all mutation-verified:
 
 - **vector coverage** — a wired embedder over an index with no (or partial, or zero-chunk) vectors
@@ -235,6 +256,11 @@ New guards this session, all mutation-verified:
 - **empty-index refusal** keyed on emptiness, not the one-shot `rebuilt` flag.
 
 ## Open, in the order I would take them
+
+**THE ONE LIVE, UNBLOCKED ITEM IS DOC 3a** — see item 2. Everything else below is closed,
+deferred with a reason, or blocked on something that does not exist yet. The numbered list is kept
+in its original order rather than resorted, because the closures are the evidence for the warning
+that follows.
 
 **Verified 2026-07-29, not taken on trust — three items below were already closed and had been
 sitting here as open work.** That is the same failure mode as a guard constant nobody recomputes:
@@ -433,13 +459,73 @@ work. Check before adding to this list, and date what you checked.
 - **Do not `git add -A` over the tree.** Stage explicit paths.
 - **`~/vaults/ClaudeVault/` is untouched and still live.**
 
-## What this session shipped
+## What this session shipped — 2026-07-29
 
-Fourteen commits on `substrate-engine`, nothing pushed: the vector-coverage guard; the scope
-registry; the render layer; `search` + `expand`; `list_scopes` + `status`; `ingest`; then seven
-commits of review findings — one crosscheck pass (3 reviewers, found the write gate was not a gate)
-and one adversary pass (2 reviewers, diff-only, 31 findings, all closed) — and this handoff.
+Six commits on `substrate-engine` (`515eea1..35872cd`) and two in core-vault. Nothing pushed; the
+branch is 51 ahead of `origin/substrate-engine`.
 
-Three of the adversary's shared claims were **verified false** rather than relayed: `embed` does
-cover outline chunks, `_read_manifest` already refuses a missing `name`, and `store_vectors`
-exists. Checking is cheap; passing on a wrong finding is not.
+| sha | what |
+|---|---|
+| `515eea1` | the fixture signature is recomputable — **and `run.sh` now recomputes it** |
+| `04187e2` | three open items here were already closed; five sections contradicted each other |
+| `041c1f0` | PRINCIPLES.md gains a **fourth law** |
+| `d8d6209` | Doc 2's §6 family closed — §6b `confidence`, §6c `document_class` |
+| `92d8f53` | per-editor config dirs ignored |
+| `35872cd` | two WAL tests rested on states SQLite never produces |
+
+core-vault: `209316d` (boundary-principle, the fourth law) and `9651406` (doc2 §6b/§6c). Both are
+two-place edits made vault-first, per the rule those files carry.
+
+**The work was one commit; the other five are what review found.** One crosscheck pass (3
+reviewers, 24 findings) and two adversary passes (2 reviewers on the tool, 1 on the WAL reader).
+The verified-false rate stayed high enough to matter: of the reviewers' top-ranked findings, three
+were wrong — a claimed `d2115b18…` impossibility, a "refuses in the ordinary case" that no writer
+could reach, and a symlink undercount that `resolve()` already prevents. **Checking is cheap;
+passing on a wrong finding is not**, and the symlink one was my fault for handing the reviewer an
+extract that began below the line that answered it.
+
+## Failure patterns this session earned
+
+All five went into `PRINCIPLES.md` as the fourth law — *a claim that reads as verification, with
+nothing behind it, is worse than silence*. Recorded here as the incidents, there as the shape.
+
+**The guard nobody runs.** `4a560ce34aa6378a` was recomputable from its first commit and
+recomputed by nothing: `out/` is gitignored, no test asserted the value, and the tool's only caller
+was its own test. Recomputable-in-principle is the same defect as unrecomputable and it hides
+better, because the mechanism looks finished.
+
+**A refusal whose remedy does not work.** "Refuse rather than mislead" becomes "refuse AND mislead"
+the moment the printed fix is a no-op — a `journal_mode=PERSIST` database that read perfectly was
+refused permanently and told to run a WAL checkpoint, which returns `(0,-1,-1)`.
+
+**`user_version` does not describe a file's column shape.** `out/substrate.db.v2-frozen-…` is
+stamped 2 and carries 26 columns including `confidence`.
+
+**A green suite proves nothing about tests you deleted by accident.** Twice in one edit: a text
+slice swallowed three unrelated tests (24 silently became 21) and the restore left a duplicate
+whose *unpatched* copy shadowed the fixed one. The suite was green at every step. **Count the
+tests, do not read the colour** — and prefer anchored edits over slices between two names.
+
+**A test that destroys its own premise.** The stale-WAL test checked the premise with a normal
+`sqlite3` open, which RESETS and deletes the log — so by the time the assertion ran there was no
+sidecar and the test passed regardless of the guard. Caught only by mutation, not by the suite.
+**If a test both sets up a state and inspects it, order the inspection so the read-only assertion
+comes first.**
+
+## Ready-to-paste next-session prompt
+
+> Working on `substrate` (branch `substrate-engine`, repo `~/CodeHome/CallTranscriber`, work in
+> `substrate/`). Read `substrate/PRINCIPLES.md` (four laws) then `substrate/SESSION-HANDOFF.md`.
+> Doc 2 lives in `~/OneDrive/vaults/core-vault/00-operator/specs/` — the repo has a pointer, not a
+> copy.
+>
+> First item: **Doc 3a is behind its own engine.** It documents a `doc_type` filter that in fact
+> refuses, and folds archived into `include_sources` where the engine keeps two separate exclusion
+> axes — now specified as Doc 2 §6c. Reconcile the doc to the implementation, or the implementation
+> to the doc, deliberately.
+>
+> Before changing anything: `cd substrate && ./lint.sh` (14 pre-existing errors, not yours) and
+> `uv run python tools/fixture-signature.py out/substrate.db` (must print `4a560ce34aa6378a`,
+> 1811 chunks). Run tests with `for f in tests/test_*.py; do uv run python "$f"; done` — there is
+> no pytest; expect 412 assertions across 27 files. Discipline is audit → review → implement →
+> verify, `/crosscheck` then `/adversary`.
