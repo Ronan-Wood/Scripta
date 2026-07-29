@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# Keep the six composed scopes current with their vaults.
+#
+# THE ORDER MATTERS. `compose --clean` drops the index and rebuilds it WITHOUT vectors; `embed`
+# puts them back. If Ollama is down between those two, the scope is left 0-vector and every query
+# against it degrades until the next successful run — a background job that made a working index
+# worse. So: Ollama is checked FIRST and the whole run is skipped if it is down, and drift is
+# checked per scope so an unchanged vault is never torn down at all.
+#
+# Composes are cheap when nothing changed (reconcile reports "unchanged") and embeds are
+# content-addressed, so a quiet run costs seconds. Serial by design — one model at a time.
+#
+# EVERY PATH THROUGH THIS SCRIPT RECORDS ITS OUTCOME (`substrate refresh-record`), and that is not
+# bookkeeping — it is the only thing standing between a failure here and a silently wrong answer.
+# `compose` returns before it opens the index database, so when it refuses, the OLD index stays and
+# every query keeps answering from it in an envelope byte-identical to a healthy run. This job made
+# that worse rather than better: it turned freshness a human used to check into freshness a human
+# ASSUMES. The record is what the search response reads to say `refresh.frozen`. A path that
+# returns without recording puts the assumption back.
+set -uo pipefail
+
+# Derived from this script's own location now that it lives IN the repo. It was an absolute path
+# while the script sat in ~/.local/bin, which is where the deployment path still points — see the
+# shim there, which holds the one machine-specific line and execs this.
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+SCOPES=(prism scripta cbre research school clovis)
+LOG="$HOME/Library/Logs/substrate-refresh.log"
+LOCK="$HOME/.substrate/refresh.lock"
+SUBSTRATE="$HOME/.local/bin/substrate"
+
+mkdir -p "$(dirname "$LOG")" "$(dirname "$LOCK")"
+exec >>"$LOG" 2>&1
+say() { echo "$(date '+%Y-%m-%d %H:%M:%S')  $*"; }
+
+# The recorder is the signal path, so its own failure must not be quiet — a silent failure here
+# leaves every scope reporting the LAST outcome forever, which is the healthy-looking state.
+record() {
+  # `${1:-}`, not `$1`: under `set -u` the bare form is expanded BEFORE the guard below and kills
+  # the whole script with "unbound variable" — inside the one function whose job is to raise a
+  # signal, and on the argument the guard exists to check for.
+  local outcome=${1:-} s
+  [ -n "$outcome" ] || { say "WARNING: record called with no outcome"; return 1; }
+  shift
+  # bash 3.2 (what macOS ships) treats "${empty[@]}" under `set -u` as an unbound variable, so a
+  # zero-scope call would fail inside the one function whose job is to raise a signal. Refused
+  # explicitly rather than left to that error, which reads as a recorder fault, not a caller bug.
+  [ $# -gt 0 ] || { say "WARNING: record '$outcome' called with no scopes"; return 1; }
+  local args=()
+  for s in "$@"; do args+=(--scope "$s"); done
+  "$SUBSTRATE" refresh-record "${args[@]}" --outcome "$outcome" --quiet \
+    || say "WARNING: could not record '$outcome' for $* — searches will report a stale outcome"
+}
+
+# REPO is DERIVED, so it has to be checked. `set -u` does not catch this: a failed `cd` leaves REPO
+# set to the empty string rather than unset, and with no `-e` the script sails on to compose into
+# "/out-vault/$s-index". Worse is the case that SUCCEEDS — `dirname "$0"` follows the invocation
+# path, not the real one, so replacing the exec-shim with the more obvious `ln -s` makes REPO
+# "$HOME/.local", a writable directory. The agent would then compose six scopes there, re-register
+# every one of them against the new location, and record `refreshed`/`frozen: false` — while every
+# query kept reading the old indexes. A false-healthy signal emitted by the writer of the signal,
+# which is the one failure this script exists to make impossible.
+#
+# Placed after `record()` so the failure can be RECORDED rather than only logged: a tick that
+# cannot find the repo has verified nothing, and `skipped` is the outcome that says so.
+# The CLI wrapper is the recorder AND the composer, so if it is missing every scope silently keeps
+# its last healthy verdict: compose fails, and the `record compose_failed` that would have said so
+# fails too, through the same absent binary. Checked FIRST and reported to the log, because at that
+# point there is no channel left to record through — this is the one failure the signal cannot
+# carry, so it exits non-zero to leave a trace in launchd's own accounting.
+[ -x "$SUBSTRATE" ] || {
+  say "FATAL: $SUBSTRATE is missing or not executable — cannot compose and cannot record."
+  exit 1
+}
+
+[ -n "$REPO" ] && [ -f "$REPO/substrate/cli.py" ] && [ -f "$REPO/pyproject.toml" ] || {
+  say "FATAL: \$0=$0 does not resolve to a substrate checkout (REPO='$REPO') — refusing to"
+  say "       compose into a guessed path. If the deployment is a symlink, make it an exec shim."
+  record skipped "${SCOPES[@]}"
+  exit 1
+}
+
+# launchd already refuses to run two instances of one label, so this guards the hand-run case:
+# two composes racing on the same --clean index root leave the loser's assert_composed failing on
+# content it did not ingest. `mkdir` because it is atomic and because macOS has no flock(1).
+# A crashed run would otherwise wedge the lock forever, so a lock whose PID is gone is taken over.
+if ! mkdir "$LOCK" 2>/dev/null; then
+  # Validated as a STRICTLY POSITIVE integer before use. `kill -0 -1` signals every process the
+  # user owns and `kill -0 0` signals the caller's own process group, so a pid file holding either
+  # reports "still running" on every tick forever — and that branch deliberately records nothing,
+  # so the agent would stop while all six scopes kept serving their last healthy outcome. `0` was
+  # accepted by the previous `*[!0-9]*` pattern, which rejected only `-1`.
+  owner=$(cat "$LOCK/pid" 2>/dev/null)
+  case "$owner" in ''|*[!0-9]*|0|0*[!0-9]*) owner= ;; esac
+  [ "${owner:-0}" -gt 0 ] 2>/dev/null || owner=
+  # A lock older than any real run is taken over even when its pid still answers. `kill -0` proves
+  # only that SOMETHING holds that number: after a crash the pid file outlives the process, and
+  # once the OS recycles that pid onto any long-lived process of the same user, the branch below
+  # becomes permanently true. The agent would then park on its one unrecorded path forever while
+  # every scope reported `frozen: false` with a quietly ageing timestamp — the precise
+  # false-healthy state this whole mechanism exists to remove. A tick is seconds; an hour is not a
+  # run in progress.
+  stale_by_age=""
+  [ -n "$(find "$LOCK" -maxdepth 0 -mmin +60 2>/dev/null)" ] && stale_by_age=1
+  if [ -n "$owner" ] && [ -z "$stale_by_age" ] && kill -0 "$owner" 2>/dev/null; then
+    # NOT recorded: another pass owns these scopes right now and is about to record its own
+    # outcome. Writing `skipped` here would overwrite a live pass's result with the news that a
+    # duplicate declined to run, which is true of this process and false of the scope.
+    say "skip: refresh $owner still running"; exit 0
+  fi
+  [ -n "$stale_by_age" ] && say "lock held by $owner for over an hour — taking it over"
+  say "clearing stale lock (owner gone)"
+  # Unlike the branch above, nothing else is going to record for us here: this is a REAL failure
+  # to acquire (permissions on ~/.substrate, a read-only home, a full disk), not a lost race. Left
+  # silent, every tick would exit and all six scopes would keep reporting a `frozen: false` whose
+  # timestamp quietly ages — the "returns without recording" case the header names. The record
+  # write does not need this lock; it takes its own flock on .refresh.json.lock.
+  rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null \
+    || { say "skip: cannot acquire lock"; record skipped "${SCOPES[@]}"; exit 0; }
+fi
+echo $$ >"$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
+
+if ! curl -sf -m 5 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+  # Recorded, not just logged. This exit leaves every scope unverified against its vault, and the
+  # difference between "checked and clean" and "not checked at all" is precisely what a reader
+  # cannot recover from an unchanged index. One call, since the outcome is the same for all six.
+  say "skip: Ollama unreachable — refusing to rebuild an index we could not re-embed"
+  record skipped "${SCOPES[@]}"
+  exit 0
+fi
+
+changed=0 failed=0 checked=0
+unchanged=()
+for s in "${SCOPES[@]}"; do
+  # --lexical-only: the drift question needs no embedder, and wiring one here would load a model
+  # on every tick just to read mtimes.
+  # `current` HAS TO MEAN "checked, and clean" — it is the only path that records `unchanged`,
+  # the strongest healthy claim the vocabulary has. Two drift shapes are NOT that and both used
+  # to reach it through `.get("stale")` returning None:
+  #
+  #   drift = {"error": ...}      the vault could not be resolved at all — moved, un-synced,
+  #                               malformed manifest. `status` still exits 0 with valid JSON, so
+  #                               the `unknown` arm below was written for this case and could
+  #                               never fire on it.
+  #   stale: false, checkable: false   some notes were unreadable. `freshness.drift`'s own
+  #                               docstring says this must not be read as an all-clear, and
+  #                               `cmd_status` gets it right; this probe was the only reader that
+  #                               did not.
+  #
+  # Either one stamped `frozen: false` with a fresh `succeeded` onto a scope nobody could check,
+  # silently — the `current` branch logs nothing and the summary line is suppressed when nothing
+  # changed. That is the exact false-healthy signal this whole mechanism exists to remove, emitted
+  # by its own writer. Decided in Python where the shape is, and defaulting to `unknown`.
+  drift=$("$SUBSTRATE" status --scope "$s" --lexical-only --json 2>/dev/null \
+          | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)["drift"]
+    if "error" in d or not d.get("checkable", True) or d.get("stale") is None:
+        print("unknown")
+    else:
+        print("stale" if d["stale"] else "current")
+except Exception: print("unknown")' 2>/dev/null)
+  checked=$((checked + 1))
+  case "$drift" in
+    # Batched rather than recorded here: on a quiet tick that is one process instead of six, and
+    # a crash mid-loop costs only an un-advanced timestamp on scopes nothing was wrong with —
+    # which reads as "not verified recently", the loud direction.
+    current) unchanged+=("$s"); continue ;;
+    unknown) say "$s: drift UNCHECKABLE — recomposing to be safe" ;;
+    stale)   say "$s: vault changed — recomposing" ;;
+    # An empty or unrecognised probe result — python3 missing, the CLI killed mid-pipe. It already
+    # fell through to the recompose, which is the safe direction, but silently: nothing said WHY a
+    # scope was being rebuilt, so a broken probe looked like a vault that changed every 15 minutes.
+    *)       say "$s: drift probe returned '$drift' — recomposing to be safe" ;;
+  esac
+
+  # The failure records go in IMMEDIATELY, before the loop can be interrupted. These are the
+  # states a reader must not miss, so they are never held in a variable waiting for a tidy exit.
+  if ! "$SUBSTRATE" compose "$HOME/OneDrive/vaults/$s-vault" --clean \
+        --index-root "$REPO/out-vault/$s-index" --db "$REPO/out-vault/$s.db" >/dev/null; then
+    say "$s: COMPOSE FAILED — index left as-is, will retry next tick"
+    record compose_failed "$s"
+    failed=$((failed + 1)); continue
+  fi
+  if ! "$SUBSTRATE" embed --db "$REPO/out-vault/$s.db" >/dev/null; then
+    say "$s: EMBED FAILED — scope is 0-vector and will degrade until the next run"
+    record embed_failed "$s"
+    failed=$((failed + 1)); continue
+  fi
+  record refreshed "$s"
+  changed=$((changed + 1))
+  say "$s: refreshed"
+done
+
+[ ${#unchanged[@]} -gt 0 ] && record unchanged "${unchanged[@]}"
+
+# Quiet when nothing happened: a log line every 15 minutes saying "nothing changed" buries the
+# one line that matters. Only a real refresh or a real failure gets written. The RECORD is written
+# either way — silence in the log means nothing needed saying, not that nothing ran, and that is
+# exactly the ambiguity the record removes for anything reading a search response.
+if [ "$changed" -gt 0 ] || [ "$failed" -gt 0 ]; then
+  say "done: $checked checked · $changed refreshed · $failed failed"
+fi
+exit 0
