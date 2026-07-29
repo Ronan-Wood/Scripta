@@ -1,7 +1,7 @@
 # Session handoff — the MCP server is built, deployed, and running against the real vaults
 
 Written 2026-07-27, corrected 2026-07-28 and 2026-07-29. Branch `substrate-engine`, work in
-`substrate/`. Read `PRINCIPLES.md` first (three laws, plus the failure patterns), then this.
+`substrate/`. Read `PRINCIPLES.md` first (four laws), then this.
 **Where a line here and a line below disagree, the later dated one wins** — several sections were
 written before the deployment they describe, and the contradictions are now marked rather than
 left for the reader to adjudicate. `PILOT-READOUT.md` has the
@@ -196,9 +196,12 @@ run, and v8 adds no column and no indexed text, so the signature is unmoved.
 
 ## Two failure patterns this session earned
 
-Both were found by review, not by testing. **Neither has been promoted into `PRINCIPLES.md` yet** —
-that file is byte-identical to the `boundary-principle` note in core-vault, so promoting them is a
-deliberate two-place edit (edit the vault copy, then copy it here). Recorded here until then.
+Both were found by review, not by testing. **PROMOTED 2026-07-29** — they are instances (1) and (2)
+of `PRINCIPLES.md`'s fourth law, *a claim that reads as verification, with nothing behind it, is
+worse than silence*, alongside three more the fixture-signature work earned. The two-place edit was
+made in the required order: the vault copy
+(`core-vault/00-operator/patterns/boundary-principle.md`) first, then copied here, byte-identical
+below the frontmatter and verified mechanically. Kept below because the specifics are the evidence.
 
 **A docstring asserting a property nobody implemented.** Four times: "a caller that never received
 a plan cannot produce a token" (the token was a derivable digest); "ONE definition both adapters
@@ -255,10 +258,11 @@ work. Check before adding to this list, and date what you checked.
    routes every scope through the skill and MCP, names `~/vaults/ClaudeVault/` the retired
    predecessor, and tells sessions not to read or write it. The migrated vaults are what a session
    actually reads.
-5. **PROMOTE THIS SESSION'S PATTERNS INTO `PRINCIPLES.md`** — still a deliberate two-place edit
-   (the authoritative copy is `core-vault/00-operator/patterns/boundary-principle.md`; edit there,
-   then copy here byte-identical below the frontmatter). Two were already pending; 2026-07-29 adds
-   three, all of the same family, all found by review rather than by testing:
+5. ~~**Promote this session's patterns into `PRINCIPLES.md`.**~~ **CLOSED 2026-07-29.** Done as
+   the required two-place edit — vault copy first, then copied here, byte-identical below the
+   frontmatter and verified mechanically rather than by eye. All five landed as the **fourth law**:
+   *a claim that reads as verification, with nothing behind it, is worse than silence.* They are
+   one shape, not five, which is why they went in as one law rather than five bullets:
 
    - **A guard nobody runs.** `4a560ce34aa6378a` was recomputable from its first commit and
      recomputed by nothing — `out/` is gitignored, no test asserted it, and the tool's only caller

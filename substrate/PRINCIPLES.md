@@ -236,3 +236,75 @@ this one survives inspection.
 
 This is a different subclass from the alias drift: not "declared, valid, silently defaulted" but
 "declared in the spec, never implemented at all." Both are invisible; they need different fixes.
+
+---
+
+## A fourth law: a claim that reads as verification, with nothing behind it, is worse than silence
+
+The Boundary Principle is about information that fails to cross. The second law is about un-gated
+assertions accumulating miscalibration. The third is about a declared value dropped upstream of
+every validator. This is the inverse of all three: the *claim* crosses perfectly, and there is
+nothing behind it.
+
+**Silence leaves the next reader to check. A claim stops them checking.** That is why this is worse
+than omission rather than merely equal to it — the artifact does not simply fail to inform, it
+spends the one budget that would have caught it.
+
+Five instances, one structure. All were found by review rather than by testing, which is itself the
+signature: nothing goes red for a claim that nothing executes.
+
+| # | the claim | what stood behind it |
+|---|---|---|
+| 1 | a docstring asserting a property | nothing — written last, never checked against the code |
+| 2 | a test named for a property | a comparison over a named SUBSET, green while the objects differed |
+| 3 | a guard constant quoted in three readouts | no derivation anyone could reproduce |
+| 4 | a refusal naming a remedy | a command verified to be a no-op on the state it was printed for |
+| 5 | `PRAGMA user_version` | migration history, not the column shape it was read as describing |
+
+**(1) The docstring.** Four in one session: *"a caller that never received a plan cannot produce a
+token"* (the token was a derivable digest); *"ONE definition both adapters call"* (only one called
+it); *"the same envelope the MCP server returns"* (each adapter bolted on its own field); *"same
+envelope … so a consumer never has to reconcile two passage shapes"* (two key sets). In every case
+the prose was written last and nothing checked it against the code.
+
+**(2) The test.** The §6 equivalence test asserted five keys and passed while both adapters emitted
+structurally different envelopes; it also ran both sides lexical-only, so it compared two
+identically-empty stacks and could not see the divergence it existed to catch. Proven, not assumed:
+reinstating the old hand-wired CLI branch left it green. **Assert the whole object, and assert
+AGREEMENT rather than a value** — the second is what makes a test independent of whether a daemon
+happens to be running.
+
+**(3) The guard nobody runs.** `4a4f765c9ad75dc9` guarded the eval fixture in three readouts for
+months; its derivation was recorded nowhere, and a later session tried seventeen constructions over
+`(chunk_id, text_with_path)` without reproducing it. Its replacement then reproduced the defect one
+level down: recomputable from its first commit and recomputed by nothing — the database is
+gitignored, no test asserted the value, and the tool's only caller in the repo was its own test.
+
+**Recomputable-in-principle is the same defect as unrecomputable, and it hides better**, because
+the mechanism looks finished. The cure is not a better number; it is a caller in a path someone
+already runs. `run.sh` now refuses to report an MRR when the fixture disagrees with
+`eval/fixture.sig`.
+
+**(4) The remedy.** This project's rule is *refuse rather than mislead*. A refusal message naming a
+fix is a claim like any other, and an untested one turns the rule into *refuse AND mislead*: a
+`journal_mode=PERSIST` database that the tool could read perfectly was refused permanently, and the
+remedy printed for it — a WAL checkpoint — is a verified no-op on a rollback journal, returning
+`(0,-1,-1)` and leaving the file byte-identical. The operator was left with a refusal and no way
+out of it.
+
+**A refusal is complete only when its remedy has been executed against the state that triggers it.**
+
+**(5) The stamp read as a description.** `out/substrate.db.v2-frozen-…` is stamped `user_version=2`
+and carries 26 columns including `confidence`. The stamp is a claim about migration history, not
+about what a `SELECT` will find. Trusting it put a wrong sentence in the session handoff and nearly
+produced a wrong reading of the mutation evidence that justified the replacement signature.
+
+### The test to apply
+
+Mirroring the first law's:
+
+1. Does this sentence assert a property?
+2. Is there something that FAILS when the property stops holding?
+3. If no to (2) — delete the sentence, or write the thing that fails.
+
+The third option, leaving it and intending to check later, is how all five of these were made.
