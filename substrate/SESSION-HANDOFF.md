@@ -291,8 +291,29 @@ work. Check before adding to this list, and date what you checked.
    mechanically. That check caught a wrong sentence: the first draft claimed agreement with
    `spine.CONFIDENCES`, which is the four-value set and excludes `unstated`.
 
-   **Still behind: Doc 3a.** It describes a `doc_type` filter that refuses, and folds archived into
-   `include_sources` where the engine deliberately keeps the two axes §6c now specifies.
+   **Doc 3a: RECOVERED 2026-07-29, and this entry had it backwards.** The doc did not exist on any
+   disk — not `~/OneDrive/vaults`, `~/vaults`, the iCloud Obsidian tree, this repo, Drive or
+   Dropbox — while nine engine files cited it 22 times, two of them quoting it verbatim in test
+   docstrings. It is now `03-references/doc3a-mcp-server.md` in the **scripta project vault**
+   (not core-vault: Docs 1 and 2 are shared contracts nobody owns, Doc 3a describes one product's
+   transport and changes with it). Composed, embedded, retrieving.
+
+   **All 22 citations were accurate** and both verbatim quotes match word-for-word. Four
+   divergences, marked inline in the note rather than silently reconciled — note the directions,
+   because this entry previously asserted only one of them and got it the wrong way round:
+
+   | § | divergence | who is wrong |
+   |---|---|---|
+   | §2 | `doc_type` filter specified, engine refuses it (`mcp/server.py:162`) | **engine behind spec** — not "a filter that refuses" |
+   | §2 | one `include_sources` flag folding class + status | **spec** — engine has two params, and Doc 2 §6c is why |
+   | §2 | `ingest` takes "markdown/PDF" | **spec** — PDFs deliberately refused (`mcp/server.py:475`) |
+   | §1 | field named `retrieval_mode` | **neither** — wire key IS `retrieval_mode`; `CLAUDE.md:33`'s glossary reserving `capability` is the outlier |
+
+   Its first Open item is closed by the implementation: `expand` shipped `mode="passage"|"note"`.
+
+   **Two decisions left, both yours:** implement the `doc_type` filter or narrow §2; and settle
+   `retrieval_mode` vs `capability` — renaming the wire field is a breaking envelope change that
+   ages out running MCP clients, dropping the glossary term is nearly free.
 3. **`reference_pins` is the last unimplemented §2 feature.** Prerequisite unchanged: only one
    versioned source exists, so there is nothing to pin against.
 4. ~~**The cutover.**~~ **CLOSED.** `~/.claude/CLAUDE.md` is now substrate-first throughout: it
@@ -519,10 +540,13 @@ comes first.**
 > Doc 2 lives in `~/OneDrive/vaults/core-vault/00-operator/specs/` — the repo has a pointer, not a
 > copy.
 >
-> First item: **Doc 3a is behind its own engine.** It documents a `doc_type` filter that in fact
-> refuses, and folds archived into `include_sources` where the engine keeps two separate exclusion
-> axes — now specified as Doc 2 §6c. Reconcile the doc to the implementation, or the implementation
-> to the doc, deliberately.
+> First item: **two decisions left on Doc 3a**, which was recovered into the scripta project vault
+> on 2026-07-29 (`03-references/doc3a-mcp-server.md` — read it with
+> `substrate query --scope scripta`, or open the file). Its four spec/implementation divergences
+> are marked inline. Two are settled in the note; two need you: (a) implement the `doc_type`
+> filter §2 promises, or narrow §2 — the engine refuses the argument today, honestly but
+> incompletely; (b) `retrieval_mode` vs `capability` — the wire field and the spec agree, the
+> repo glossary is the outlier, and renaming the field is a breaking envelope change.
 >
 > Before changing anything: `cd substrate && ./lint.sh` (14 pre-existing errors, not yours) and
 > `uv run python tools/fixture-signature.py out/substrate.db` (must print `4a560ce34aa6378a`,
