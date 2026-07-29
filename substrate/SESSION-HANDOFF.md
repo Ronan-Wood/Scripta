@@ -246,12 +246,27 @@ work. Check before adding to this list, and date what you checked.
    and correctly: `~/Library/LaunchAgents/com.ronanwood.ollama.plist` exists, is running, and
    carries the explicit `OLLAMA_MODELS=/Volumes/ExtremeSSD/ollama-models` block that the constraint
    below predicted it would need. It is still wrong whenever the SSD is unmounted.
-2. **Doc 2's text is behind its own implementation — PARTLY CLOSED 2026-07-27.** §6 documented
-   `status` and stopped. **§6a is now written** (doc_type, including the fifth value `digest`, its
-   placement rule and the boundary that governs adding a sixth) — see `MIGRATION-VOCABULARY.md`.
-   Still absent from the body: `confidence` (WRITING.md cites a §6b that does not exist) and the
-   conversation class. Doc 3a is also still behind: it describes a `doc_type` filter that refuses,
-   and folds archived into `include_sources` where the engine deliberately keeps two axes.
+2. **Doc 2's text is behind its own implementation — the §6 family is CLOSED 2026-07-29.** §6
+   documented `status` and stopped; §6a added `doc_type` (2026-07-27). Now written, in the vault
+   copy only — Doc 2 lives in `core-vault/00-operator/specs/` and `docs/README.md` is a pointer,
+   never a copy:
+   - **§6b `confidence`** — the vocabulary table, the independence from `status` that stops
+     confidence laundering, and the declarable/absence asymmetry (`unstated` is written,
+     `unjudged` is what an absent key becomes and can never be declared). It also states the rule
+     §6a already deferred to and which did not exist: an invented marker is worse than an absent
+     one. WRITING.md:64 had cited this section for months.
+   - **§6c `document_class` and the conversation exclusion** — the SECOND exclusion axis, and why
+     it must not be folded into `status`: superseded content is excluded because it was replaced,
+     a conversation because per-passage retrieval misrepresents a document still wanted whole.
+     They disagree about embedding, which is the proof they cannot be merged.
+
+   Both were verified against the code rather than written from memory — the §6b table is
+   `spine.DECLARABLE_CONFIDENCES` and the §6c table is `classes.POLICIES`, both checked
+   mechanically. That check caught a wrong sentence: the first draft claimed agreement with
+   `spine.CONFIDENCES`, which is the four-value set and excludes `unstated`.
+
+   **Still behind: Doc 3a.** It describes a `doc_type` filter that refuses, and folds archived into
+   `include_sources` where the engine deliberately keeps the two axes §6c now specifies.
 3. **`reference_pins` is the last unimplemented §2 feature.** Prerequisite unchanged: only one
    versioned source exists, so there is nothing to pin against.
 4. ~~**The cutover.**~~ **CLOSED.** `~/.claude/CLAUDE.md` is now substrate-first throughout: it
