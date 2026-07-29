@@ -11,6 +11,11 @@ This is the dominant failure shape of this project. Five distinct incidents, dif
 subsystems, different weeks of work, one structure. In every case the missing information was
 *already available*; the failure was attaching it to the thing that crossed the boundary.
 
+The table below holds the five that were **discovered**. A sixth is recorded under *Where it must
+be applied next* and is kept separate on purpose: it was **predicted in this document before the
+mechanism that caused it existed**, which makes it evidence about the pattern rather than another
+instance of being caught out by it.
+
 ---
 
 ## The five
@@ -79,6 +84,7 @@ The result envelope handed to any consumer (skill, CLI, MCP, GUI) carries:
 | `capabilities` | which of embedder / generator / rerank are live | **built** — `retrieve()` returns a `Capability` (embedder / hyde / reranker: ran / skipped / off / fell_back) |
 | `expected_quality` | measured MRR for THIS exact stack, not a flag | **built** — same-cohort 44-case tiers: 0.698 full-Ollama · 0.593 full-Apple · 0.343 Apple-embedder-alone; unmeasured stacks return `None`, not a guess |
 | `index_version` | what the index was built from | **surfaces staleness; does not solve it** |
+| `refresh` | what the unattended agent last managed on THIS scope | **built** — outcome plus tri-state `frozen`: `true` (a recompose refused, results are superseded), `false` (index and vault agreed), `null` (no basis). Read by `render` and `introspect`, never attached by an adapter |
 
 The `expected_quality` numbers here supersede an earlier sketch (`0.698 full · 0.375 no generator ·
 0.21 no embedder`) that was **mixed-cohort** — 0.375 is a 24-case figure and 0.21 a 7-case one, so
@@ -86,14 +92,28 @@ quoting them beside the 44-case 0.698 would be the cross-cohort subtraction HAND
 implemented tiers (`retrieve/retriever.py:_STACKS`) are all 44-case and model-specific; a config
 that was never measured at 44 cases returns `None` rather than importing a lower-cohort number.
 
-**Be precise about that last row.** `index_version` converts *silent omission* into *detectable
-omission*, which by this document's own argument is the whole game. But detection is not
-freshness: the Python side has no watcher, so the caller must check, and the discipline is
-pushed onto every consumer. Scripta gets automatic freshness from FSEvents; this side does not.
+**Be precise about those last two rows.** `index_version` converts *silent omission* into
+*detectable omission*, which by this document's own argument is the whole game. But detection is
+not freshness, and for a long time nothing closed that gap: no watcher, so the caller had to
+check, and the discipline was pushed onto every consumer.
 
-The honest statement is **"staleness detectable, freshness still manual"** — surfaced, not
-solved. Recording it that way is itself an instance of this principle: a version stamp that
-implied staleness was handled would be the sixth occurrence.
+**The sixth occurrence then arrived, and this paragraph predicted it.** It used to end: *a version
+stamp that implied staleness was handled would be the sixth occurrence.* What produced it was the
+fix for the manual half. An unattended agent (`tools/substrate-refresh`, every fifteen minutes)
+made freshness automatic — and `compose` returns before it opens the database, so a scope whose
+recompose REFUSED simply kept its old index and went on answering in an envelope byte-identical to
+a healthy run. The agent converted freshness a human checked into freshness a human assumes. The
+producer knew the rebuild had failed; none of that crossed. `index_version` could not show it,
+because the index really was built from what the stamp said.
+
+The cure was the cure: `refresh` is a field ON the envelope, tri-state so "no basis" stays
+distinguishable from "clean", and read by the shared render layer rather than attached by each
+adapter — an adapter that has to remember to attach it is one that eventually will not. So the
+honest statement is now **"staleness detectable, freshness automatic and self-reporting."**
+
+Note what did *not* happen: the argument was not corrected. It was written before the mechanism
+existed, named the failure that mechanism would introduce, and specified the shape of the fix. A
+pattern that holds when its domain expands is worth more than one that was merely right once.
 
 ---
 
