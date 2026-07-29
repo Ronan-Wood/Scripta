@@ -1,7 +1,10 @@
-# Session handoff — the MCP server is built; it has never run against real content
+# Session handoff — the MCP server is built, deployed, and running against the real vaults
 
-Written 2026-07-27. Branch `substrate-engine`, work in `substrate/`. Read `PRINCIPLES.md` first
-(three laws, plus two failure patterns this session added), then this. `PILOT-READOUT.md` has the
+Written 2026-07-27, corrected 2026-07-28 and 2026-07-29. Branch `substrate-engine`, work in
+`substrate/`. Read `PRINCIPLES.md` first (three laws, plus the failure patterns), then this.
+**Where a line here and a line below disagree, the later dated one wins** — several sections were
+written before the deployment they describe, and the contradictions are now marked rather than
+left for the reader to adjudicate. `PILOT-READOUT.md` has the
 real-content pilot and migration findings; `HANDOFF.md` has the engine's history.
 
 ## Bottom line
@@ -19,9 +22,11 @@ different cohort from the 44-case reference tier. They are not subtractable.
 **The eval fixture was rebuilt at v8 and its signature is now recomputable.** See *Constraints
 that bite* — both of those sentences were false a day ago.
 
-## Do this first
+## Recovery procedure — NOT a first step (superseded 2026-07-27, kept because it is how you rebuild)
 
-Per project scope (six of them: prism · scripta · cbre · research · school · clovis):
+All six scopes are already composed, embedded and registered; see *Deployed* below. Run this only
+to rebuild a scope from scratch. Per project scope (six: prism · scripta · cbre · research ·
+school · clovis):
 
 ```
 substrate compose ~/OneDrive/vaults/<x>-vault --clean \
@@ -29,9 +34,9 @@ substrate compose ~/OneDrive/vaults/<x>-vault --clean \
 substrate embed --db out-vault/<x>.db                        # serial, weights on ExtremeSSD
 ```
 
-Compose now writes `~/.substrate/scopes.toml`, which is how a scope name resolves to an index.
-Nothing is registered yet — the registry did not exist when those seven vaults were composed.
-Until `embed` runs, every search honestly reports `expected_mrr: null` and names the missing
+Compose writes `~/.substrate/scopes.toml`, which is how a scope name resolves to an index. (The
+line that used to sit here — "nothing is registered yet" — was true only on the day it was written;
+the registry now holds all six.) Until `embed` runs, every search honestly reports `expected_mrr: null` and names the missing
 vectors; core-vault notes repeat across scopes and the vector cache is content-addressed, so the
 unique embedding work is far less than 6 × the chunk count.
 
@@ -59,13 +64,14 @@ load-bearing: `compose --clean` drops an index and rebuilds it with no vectors, 
 them back, so a run that composed and then could not embed would leave a working scope 0-vector.
 It also checks drift per scope, so an unchanged vault is never torn down. A quiet tick is ~2.5s.
 
-**Ollama is the unowned dependency.** It is CLI-only here — no brew service, no LaunchAgent, no
-Ollama.app — so nothing restarts it at login. Without it the refresh job skips every tick and
-every query runs lexical-only, which the capability envelope reports honestly but which is the
-0.343 tier. `brew services start ollama` would fix it, but its launchd context will NOT inherit
-`OLLAMA_MODELS=/Volumes/ExtremeSSD/ollama-models`, and the weights are on that external volume —
-so it needs an explicit `EnvironmentVariables` block, and it is still wrong whenever the SSD is
-unmounted. Not done; decide deliberately.
+**Ollama was the unowned dependency — OWNED as of 2026-07-29, verified.**
+`~/Library/LaunchAgents/com.ronanwood.ollama.plist` exists with `RunAtLoad` and the explicit
+`EnvironmentVariables` block carrying `OLLAMA_MODELS=/Volumes/ExtremeSSD/ollama-models`, which is
+exactly what this paragraph predicted would be required: a launchd context does NOT inherit it, and
+the weights live on that external volume. The process is running. **It is still wrong whenever the
+SSD is unmounted** — that has not been solved, only located. Without Ollama the refresh job skips
+every tick and every query runs lexical-only, which the capability envelope reports honestly but
+which is the 0.343 tier.
 
 **The retrieval quality on this corpus is measured now**, and it is not 0.698 — see
 `eval/gold-vault.json`. Lexical 20/21 (MRR 0.63), paraphrase 9/13 (MRR 0.35). Different cohorts
@@ -84,7 +90,9 @@ config: one server serves every composed scope and the caller names the one it w
 | `status` | counts by vault/tier/status/doc_type/confidence, vector coverage, drift | — (this is the tool that reports rather than refuses) |
 | `ingest` | two-phase plan → confirm write of a new markdown note | PDFs · core-vault · overwrites · paths outside the project vault · unissued tokens |
 
-**Not wired into any client.** I did not touch `~/.claude.json` or Zed config. Launch is
+**Wired into all three clients as of 2026-07-27** — Claude Code (`~/.claude.json`, user scope),
+Claude Desktop and Zed; this paragraph previously said "not wired into any client", which was true
+when written and false by the end of that same day. Manual launch is still
 `python -m substrate.mcp.server` with `SUBSTRATE_REGISTRY` set, or `--registry`. Doc 3a §4's own
 judgement stands: for Claude Code specifically, skill+CLI is the better fit (~20 tokens until
 invoked); MCP earns its place on surfaces with no shell.
@@ -225,8 +233,16 @@ New guards this session, all mutation-verified:
 
 ## Open, in the order I would take them
 
-1. **Run it.** Compose + embed the six scopes, wire one client, use it for a week. Everything below
-   is speculation until the surface has met real content.
+**Verified 2026-07-29, not taken on trust — three items below were already closed and had been
+sitting here as open work.** That is the same failure mode as a guard constant nobody recomputes:
+this file is what the next session reads, so a stale line here spends a session redoing finished
+work. Check before adding to this list, and date what you checked.
+
+1. ~~**Run it.**~~ **CLOSED.** Six scopes registered, all reporting `unchanged`, none frozen; the
+   launchd refresh agent ran within the hour. ~~Ollama is the unowned dependency~~ — also CLOSED,
+   and correctly: `~/Library/LaunchAgents/com.ronanwood.ollama.plist` exists, is running, and
+   carries the explicit `OLLAMA_MODELS=/Volumes/ExtremeSSD/ollama-models` block that the constraint
+   below predicted it would need. It is still wrong whenever the SSD is unmounted.
 2. **Doc 2's text is behind its own implementation — PARTLY CLOSED 2026-07-27.** §6 documented
    `status` and stopped. **§6a is now written** (doc_type, including the fifth value `digest`, its
    placement rule and the boundary that governs adding a sixth) — see `MIGRATION-VOCABULARY.md`.
@@ -235,11 +251,33 @@ New guards this session, all mutation-verified:
    and folds archived into `include_sources` where the engine deliberately keeps two axes.
 3. **`reference_pins` is the last unimplemented §2 feature.** Prerequisite unchanged: only one
    versioned source exists, so there is nothing to pin against.
-4. **The cutover.** `~/.claude/CLAUDE.md` still points every session at ClaudeVault, so the migrated
-   vaults are read by nothing while ClaudeVault accrues. The MCP unblocks this; (1) is the gate.
-5. **Deferred, with reasons:** don't-embed-superseded (cost, not correctness); domain
+4. ~~**The cutover.**~~ **CLOSED.** `~/.claude/CLAUDE.md` is now substrate-first throughout: it
+   routes every scope through the skill and MCP, names `~/vaults/ClaudeVault/` the retired
+   predecessor, and tells sessions not to read or write it. The migrated vaults are what a session
+   actually reads.
+5. **PROMOTE THIS SESSION'S PATTERNS INTO `PRINCIPLES.md`** — still a deliberate two-place edit
+   (the authoritative copy is `core-vault/00-operator/patterns/boundary-principle.md`; edit there,
+   then copy here byte-identical below the frontmatter). Two were already pending; 2026-07-29 adds
+   three, all of the same family, all found by review rather than by testing:
+
+   - **A guard nobody runs.** `4a560ce34aa6378a` was recomputable from its first commit and
+     recomputed by nothing — `out/` is gitignored, no test asserted it, and the tool's only caller
+     in the repo was its own test. Recomputable-in-principle is the same defect as unrecomputable,
+     one level down, and it is invisible precisely because the mechanism looks finished. The cure
+     is a caller in the path someone already runs (`run.sh`), not a better number.
+   - **A conservative predicate whose remedy does not work.** Refusing safely is half an answer: the
+     first sidecar guard refused a `journal_mode=PERSIST` database it could read perfectly and told
+     the operator to run a WAL checkpoint, verified a no-op on a rollback journal. "Refuse rather
+     than mislead" becomes "refuse AND mislead" the moment the printed instruction cannot clear the
+     condition. A refusal is only complete when its remedy is tested too.
+   - **`user_version` does not describe a file's column shape.** `out/substrate.db.v2-frozen-…` is
+     stamped 2 and carries 26 columns including `confidence`. The stamp is a claim about migration
+     history, not about what a SELECT will find — trusting it produced a wrong sentence in this
+     file and nearly a wrong reading of the mutation evidence that justified the signature.
+
+6. **Deferred, with reasons:** don't-embed-superseded (cost, not correctness); domain
    soft-weighting (eval-gated, needs cross-domain gold cases); the index watcher; the weekly lint.
-6. **Housekeeping:** `cmd_eval` keeps two hand-rolled copies of the vector guard that
+7. **Housekeeping:** `cmd_eval` keeps two hand-rolled copies of the vector guard that
    `IndexStore.vector_coverage` now supersedes — deliberately untouched, it guards the number that
    must not move. The A21/A23 "duplication" is **closed as won't-fix, and the earlier reason for
    that was wrong**: it is not that the two are merely parallel, it is that the duplication is
@@ -249,6 +287,15 @@ New guards this session, all mutation-verified:
    …)` or leave them; a two-way merge is the one move that makes things worse. Evidence the
    duplication does cost something: the `NULL NOT IN (...)` subtlety was corrected in A21's
    docstring and independently re-derived in A23's.
+
+   Small and named so they are not rediscovered: **`run.sh:23`** repeats the `mode=ro` reason that
+   was corrected elsewhere on 2026-07-29 — the CLI failure is real (verified, error 14 on a fresh
+   copy) but "SQLite cannot create the `-shm` under a read-only open" is false as stated, since
+   Python's sqlite3 does create it; `MIGRATION-VOCABULARY.md:390` and `PILOT-READOUT.md:509` carry
+   related wording. **`python -O` strips every assertion in all 27 test files** and the hand-rolled
+   runners then print a full green while checking nothing — repo-wide, pre-existing, and worth one
+   shared fix rather than 27. **`.zed/settings.json` is untracked and unignored** — a decision about
+   what belongs in the repo, not a cleanup.
 
    Done: `introspect._group`, three `IndexStore` count methods and a fifth copy in
    `vault.assert_composed` now share `IndexStore.counts_by` — keys stay native, so `compose` and
