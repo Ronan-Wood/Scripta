@@ -19,4 +19,12 @@ out/vector-cache.db*
 # OUT of the eval's out/ so it can never disturb out/substrate.db. The vaults/ source is tracked.
 out-vault/
 
+# SQLite WAL sidecars — PROCESS STATE, not data, and they were tracked (all four: substrate.db
+# and vectors.db). A committed `-shm` is a snapshot of one process's shared-memory index, so it
+# is stale for every later reader; a committed `-wal` is worse, because a stale WAL over an
+# already-checkpointed database is a claim about uncommitted transactions that no longer exist.
+# The .db files beside them stay tracked — those are the data.
+*.db-shm
+*.db-wal
+
 bin/
