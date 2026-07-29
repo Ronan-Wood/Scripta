@@ -107,8 +107,16 @@ def _wal_reason(side: Path, size: int) -> str | None:
 
     `st_size > 0` was the previous predicate and it was wrong in the annoying direction: a WAL is
     routinely non-empty after a checkpoint, so the guard blocked databases it could read perfectly.
-    A frame counts only when its salts match the header's, which is exactly SQLite's own rule for
-    whether it would replay the frame — so a WAL that has been reset reads as the empty log it is.
+    A frame counts here when its salts match the header's, which makes a WAL from a previous
+    generation — the state a reset leaves, header salt bumped and older frames stranded — read as
+    the inert log it is.
+
+    THE SALT TEST IS DELIBERATELY BROADER THAN SQLITE'S REPLAY RULE, not identical to it. SQLite
+    additionally requires a valid checksum chain and a commit record, so frames this refuses are a
+    SUPERSET of the frames it would actually apply: a salt-matching frame with a zero commit field
+    is inert, and this still refuses it. That asymmetry is the safe direction and is the point —
+    reproducing SQLite's full rule would mean reimplementing its checksum algorithm here, and a
+    subtle bug in that reimplementation would fail by declaring a hot log empty.
     """
     if size == 0:
         return None

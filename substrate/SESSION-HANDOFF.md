@@ -384,7 +384,10 @@ work. Check before adding to this list, and date what you checked.
   the constant is unchanged — the precondition is now enforced instead of assumed.
 
   The sidecar rule is **prove safe, else refuse**, and it reads the sidecars rather than their
-  size. `st_size > 0` was the first predicate and it was wrong in both directions of usefulness: it
+  size. The salt test is deliberately BROADER than SQLite's replay rule — that also wants a valid
+  checksum chain and a commit record — so the frames refused are a superset of the frames SQLite
+  would apply. Narrowing to the exact rule means reimplementing its checksum algorithm, where a bug
+  fails by calling a hot log empty. `st_size > 0` was the first predicate and it was wrong in both directions of usefulness: it
   refused a header-only `-wal` (32 bytes, nothing replayable) and it refused a `journal_mode=PERSIST`
   `-journal`, whose header SQLite ZEROES on a clean commit to mean "nothing to roll back" — and for
   that second case the remedy printed was a WAL checkpoint, verified to be a no-op on a rollback
