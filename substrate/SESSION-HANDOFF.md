@@ -6,15 +6,18 @@ real-content pilot and migration findings; `HANDOFF.md` has the engine's history
 
 ## Bottom line
 
-**Doc 3a phase 1 is built and reviewed.** Five MCP tools over the engine, a scope registry, one
-payload-shaping function both adapters render from, drift detection, and a two-phase write gate.
-309 assertions green, schema still **v6**, eval signature `4a4f765c9ad75dc9` untouched — nothing
-in this work opens `out/substrate.db`.
+**Doc 3a phase 1 is built, reviewed, deployed and measured.** Five MCP tools over the engine, a
+scope registry, one payload-shaping function both adapters render from, drift detection, a
+two-phase write gate, and a freeze signal on every response. Schema **v8**. 412 assertions green.
 
-**It has never been pointed at the real vaults, and the measured stack has never executed.** Ollama
-was down for the whole session, so every capability envelope produced so far reads lexical-only.
-That is the contract working, not a fault — but the 0.698 path is covered by construction, not by
-observation. See *Do this first*.
+**It runs against the real vaults and the measured stack executes.** Seven scopes composed,
+embedded and vector-complete, refreshed by an unattended launchd agent; the MCP is registered in
+Claude Code, Claude Desktop and Zed. The 0.698 path is observed, not constructed — and the vaults'
+OWN retrieval is measured separately in `eval/gold-vault.json`, which is a different corpus and a
+different cohort from the 44-case reference tier. They are not subtractable.
+
+**The eval fixture was rebuilt at v8 and its signature is now recomputable.** See *Constraints
+that bite* — both of those sentences were false a day ago.
 
 ## Do this first
 
@@ -261,11 +264,88 @@ New guards this session, all mutation-verified:
 
 ## Constraints that bite
 
-- **EVAL MUST NOT MOVE** — `4a4f765c9ad75dc9`, 1811 chunks, complete vectors under
-  `qwen3-embedding:0.6b#raw`. Open `out/substrate.db` read-only with `sqlite3` and a `mode=ro` URI,
-  NEVER through engine code.
-- Schema is **v7**, drop-and-rebuild. Read paths refuse a version mismatch rather than rebuilding;
-  only `compose`/`index` migrate.
+- **EVAL MUST NOT MOVE** — content signature **`4a560ce34aa6378a`**, 1811 chunks, complete vectors
+  under `qwen3-embedding:0.6b#raw`, schema **v8**. Check it, do not take it on trust:
+
+      uv run python tools/fixture-signature.py out/substrate.db
+
+  **And `./run.sh` now checks it for you**, which is the half that was missing: the expected value
+  is tracked in `eval/fixture.sig` (the database is gitignored, so the constant has to live in a
+  file that is not), and the eval REFUSES to run when the two disagree rather than reporting an
+  MRR over one corpus against a baseline measured on another. Until that gate existed the tool had
+  exactly one caller in the repo — its own test — which is the same shape of defect as the number
+  it replaced: recomputable in principle, recomputed by nobody.
+
+  Read with an `immutable=1` URI, NEVER through engine code **at any setting** — `migrate=True` is
+  drop-and-rebuild on a mismatch and would destroy the artifact, and `migrate=False` REFUSES a
+  mismatch, so the engine cannot read the v2-frozen file at all. `mode=ro` is not the alternative
+  either, and the earlier claim here that it "now fails on a perfectly readable file" was **only
+  true of the `sqlite3` CLI** (which is what `run.sh` observes, and it does still fail). Measured
+  under Python: `mode=ro` opens the fixture fine and returns all 1811 rows — while CREATING the
+  `-shm`/`-wal` pair beside it, which is the process state commit `a3c63f0` untracked. That is the
+  real objection, and it is the stronger one. `immutable=1` does neither.
+
+  **This replaces `4a4f765c9ad75dc9`, which was never checkable.** That number guarded the fixture
+  in three readouts and in this line, and its derivation was recorded nowhere —
+  MIGRATION-VOCABULARY.md has a session trying seventeen constructions over `(chunk_id,
+  text_with_path)` and reproducing none. The replacement states its derivation in
+  `tools/fixture-signature.py` and pins the properties it is chosen for in
+  `tests/test_fixture_signature.py`: invariant under schema version, insertion order and vectors;
+  variant under an edited text, a changed structural path, or a chunk appearing or disappearing.
+
+  Schema invariance is really pinned **once**, and the first draft of this paragraph said twice.
+  Stamping the version backwards proves only that the STAMP is not hashed — `PRAGMA user_version`
+  is a header field no SELECT can reach, so that test cannot fail for the reason that matters. The
+  load-bearing one signs a hand-built table carrying ONLY the three hashed columns: widening the
+  SELECT to `confidence` makes the two fixture files disagree (`d2115b18…` vs `4a560ce3…`), and
+  before that test existed the entire suite stayed green through it.
+
+  **`out/substrate.db.v2-frozen-…` is not v2-SHAPED**, which matters for reading that comparison
+  honestly. Measured: it is stamped `user_version=2` but its `chunks` table carries 26 columns
+  including `confidence` (all NULL) and `section_kind`, while v8 carries 27 including `status` and
+  `doc_type`. So `user_version` does not describe that file's column shape, and the pair spans a
+  real but NARROWER schema difference than "a v2 file and a v8 rebuild" implies. The two do sign
+  identically, and the widened-SELECT mutation does split them — because `COALESCE(NULL,'')` and
+  `'unjudged'` differ, not because the column is absent.
+
+  It **refuses** rather than returning a number it cannot stand behind: a sidecar that may hold
+  unread rows, a path that does not exist (`immutable=1` does NOT imply "will not create" —
+  it materialises a zero-byte database, the same incident `IndexStore` already guards), an empty
+  chunks table (`sha256(b"")` is a well-formed signature for nothing), a non-text column, and any
+  field carrying a delimiter byte. That last one is what keeps the framing injective: with a NUL
+  in `text` or a newline in `chunk_id`, two different chunk sets serialise identically and a
+  re-chunk would leave the signature unmoved. Measured on the fixture: 0 of 1811 violate it, so
+  the constant is unchanged — the precondition is now enforced instead of assumed.
+
+  The sidecar rule is **prove safe, else refuse**, and it reads the sidecars rather than their
+  size. `st_size > 0` was the first predicate and it was wrong in both directions of usefulness: it
+  refused a header-only `-wal` (32 bytes, nothing replayable) and it refused a `journal_mode=PERSIST`
+  `-journal`, whose header SQLite ZEROES on a clean commit to mean "nothing to roll back" — and for
+  that second case the remedy printed was a WAL checkpoint, verified to be a no-op on a rollback
+  journal, so the operator was refused permanently with no working instruction. Both now read as
+  the empty logs they are.
+
+  What it still refuses, deliberately: a `-wal` whose frames carry the header's salts, **even after
+  a checkpoint has copied them into the main database**. Measured — after `wal_checkpoint(RESTART)`
+  the salts are unchanged (SQLite bumps them on the next WRITE) and whether a frame has been
+  checkpointed lives in the `-shm` wal-index, not the log. Anything the reader cannot parse is also
+  refused, so a bug in it fails toward refusal. A false
+  refusal costs a checkpoint; a false accept costs the invariant. The message names remedies for
+  both the live-writer and orphaned-sidecar shapes.
+
+- **The fixture was rebuilt at v8 on 2026-07-28**, deliberately, and the rebuild is lossless for
+  everything measured — note that the signature covers chunk text and attribution, NOT
+  `document_class` or `status`, the two columns `retrieve()` also filters on, so "lossless" here
+  rests on the eval result as much as on the hash: identical 1811 chunks, all 1811 vectors
+  restored FROM CACHE (0 re-embedded, so
+  bit-identical rather than merely equivalent), eval MRR 0.698 at delta −0.000, and every one of
+  the 38 passing semantic cases at its exact baseline rank — 25 at 1, 10 at 2, one at 3, two at 5,
+  zero moved. The same signature reads off the pre-rebuild file, which is kept at
+  `out/substrate.db.v2-frozen-4a4f765c9ad75dc9` (file sha `7311ffbf3180…`). The FILE hash changed
+  and is not the invariant; the content signature is.
+- Schema is **v8**, drop-and-rebuild. Read paths refuse a version mismatch rather than rebuilding.
+  `compose` migrates unflagged (it re-ingests before opening the store); `index` needs an explicit
+  `--migrate`, deliberately separate from `--rebuild`.
 - **A SCHEMA BUMP SILENTLY BREAKS EVERY ALREADY-RUNNING MCP CLIENT.** Python imports at process
   start and an MCP server lives as long as the client session that spawned it, so after a bump the
   running servers hold the old `SCHEMA_VERSION` while every index on disk is new. `IndexStore`
