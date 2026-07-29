@@ -2,6 +2,13 @@ build/
 dist/
 *.xcodeproj/
 .DS_Store
+
+# Per-editor config. Personal to whoever is working, not a property of the project — no other
+# editor dir is tracked, and the one that appeared enabled prettier on a repo whose stated policy
+# is that formatters belong in CI gates rather than on save.
+.zed/
+.vscode/
+.idea/
 Eval/*.db
 
 # Eval baseline — local-only, derived from private corpus (never commit)
