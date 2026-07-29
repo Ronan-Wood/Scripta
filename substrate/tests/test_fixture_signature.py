@@ -313,33 +313,53 @@ def test_open_writer_undercounts_and_is_refused() -> None:
         con.close()
 
 
-def test_frameless_wal_is_not_refused() -> None:
-    """A non-empty `-wal` carrying NO replayable frames must not block the read.
+def test_stale_generation_wal_is_not_refused() -> None:
+    """A non-empty `-wal` whose frames belong to a PREVIOUS generation must not block the read.
 
-    This is what the frame parser buys over `st_size > 0`: a header-only WAL — the state a reader
-    leaves behind on a WAL-mode database — is 32 bytes on disk and holds nothing SQLite would
-    replay, yet the size predicate refused it and sent the operator to a checkpoint that had
-    nothing to do.
+    Built from a real WAL rather than a hand-written header, because the hand-written version of
+    this test was wrong twice over: it claimed to reproduce "the state a reader leaves behind",
+    and a reader in fact leaves a ZERO-byte `-wal` (measured) which `size == 0` already
+    short-circuits — so it exercised a state SQLite never produces, using a header SQLite would
+    reject anyway for its zeroed checksums.
 
-    It does NOT extend to a checkpointed-but-not-reset WAL. Measured: after
-    `wal_checkpoint(RESTART)` the frames still carry the header's salts — SQLite bumps those on the
-    next WRITE — so they remain indistinguishable from replayable ones, and whether they have been
-    copied into the main database is recorded in the `-shm` wal-index rather than in the log. The
-    refusal there stands, deliberately: a false refusal costs a checkpoint, a false accept costs
-    the invariant.
+    The real state is a reset: SQLite bumps the header salts and starts writing at offset 32,
+    stranding the older frames. Verified here in both directions — SQLite itself reads straight
+    past these frames, and so does the guard.
     """
     p = _build()
     expected = signature(p)[0]
-    header = bytearray(32)
-    header[0:4] = (0x377F0682).to_bytes(4, "big")   # magic, big-endian checksums
-    header[4:8] = (3007000).to_bytes(4, "big")      # WAL format version
-    header[8:12] = (4096).to_bytes(4, "big")        # page size
-    header[16:24] = b"\x01\x02\x03\x04\x05\x06\x07\x08"  # salts; no frames follow
-    Path(p + "-wal").write_bytes(bytes(header))
+    con = sqlite3.connect(p)
+    assert con.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    con.execute("INSERT INTO chunks (chunk_id, doc_id, kind, text, text_with_path, path_str, "
+                "level, n_chars, document_class) VALUES ('z#c0','z','passage','zeta',"
+                "'Root > Z\nzeta','Root > Z',2,4,'reference-frozen')")
+    con.commit()
+    wal = Path(p + "-wal")
+    live = bytearray(wal.read_bytes())
+    assert len(live) > 32, "premise: a committed write must leave real frames in the log"
+    con.close()  # checkpoints the rows into the main database and removes the log
+
+    live[16:24] = bytes(b ^ 0xFF for b in live[16:24])  # bump the header salt: a stale generation
+    wal.write_bytes(bytes(live))
     try:
-        assert signature(p)[0] == expected, "a frameless WAL must not be refused"
+        # ORDER MATTERS. `signature` reads with immutable=1 and leaves the log alone, but a normal
+        # sqlite3 open RESETS a stale WAL and deletes it — so checking the premise first destroyed
+        # the very state under test and left this test passing no matter what the guard did.
+        # Measured: the sidecar was GONE after the premise open. Assert against the state first.
+        assert signature(p)[1] == len(_BASE) + 1, "a stale-generation WAL must not be refused"
+        assert signature(p)[0] != expected, "sanity: the checkpointed row is really in the database"
+        assert wal.exists() and wal.stat().st_size > 0, "signature() must not have touched the log"
+
+        raw = sqlite3.connect(p)  # destroys the planted state; must come last
+        try:
+            through_sqlite = raw.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        finally:
+            raw.close()
+        assert through_sqlite == len(_BASE) + 1, (
+            "premise: SQLite must itself ignore these frames, or the guard is right to refuse"
+        )
     finally:
-        Path(p + "-wal").unlink(missing_ok=True)
+        wal.unlink(missing_ok=True)
 
 
 def test_unparseable_wal_is_refused_not_ignored() -> None:
@@ -369,9 +389,19 @@ def test_unparseable_wal_is_refused_not_ignored() -> None:
         raise AssertionError(f"expected a refusal for a WAL with a {label}")
 
 
-def test_wal_with_replayable_frames_is_refused() -> None:
-    """The other side of the same rule: frames whose salts match the header are what SQLite would
-    replay, so the log may hold rows the `immutable=1` read cannot see."""
+def test_salt_matching_frame_is_refused_even_when_inert() -> None:
+    """Pins the DELIBERATE OVER-REFUSAL, which is what this test is actually able to demonstrate.
+
+    The frame below has a zero commit field and zero checksums, so SQLite does not replay it —
+    measured: a normal open over this exact blob still reads the pre-plant row count. An earlier
+    version of this test was named for "replayable frames" and asserted a refusal that is really a
+    FALSE refusal, which is the fourth law's shape inside the file that introduced it.
+
+    Refusing it is still correct: matching salts are a superset of SQLite's replay rule, and
+    narrowing to the exact rule would mean reimplementing its checksum chain, where a bug fails by
+    calling a hot log empty. Genuine hot-WAL coverage lives in
+    `test_open_writer_undercounts_and_is_refused`, which uses a real writer.
+    """
     p = _build()
     header = bytearray(32)
     header[0:4] = (0x377F0682).to_bytes(4, "big")
@@ -380,8 +410,8 @@ def test_wal_with_replayable_frames_is_refused() -> None:
     salt = b"\x01\x02\x03\x04\x05\x06\x07\x08"
     header[16:24] = salt
     frame = bytearray(24)
-    frame[0:4] = (1).to_bytes(4, "big")   # page number
-    frame[8:16] = salt                    # matches the header -> replayable
+    frame[0:4] = (1).to_bytes(4, "big")   # page number; commit field at 4:8 left zero
+    frame[8:16] = salt                    # matches the header -> refused by this guard
     Path(p + "-wal").write_bytes(bytes(header) + bytes(frame) + b"\x00" * 4096)
     try:
         signature(p)
@@ -389,83 +419,7 @@ def test_wal_with_replayable_frames_is_refused() -> None:
         return
     finally:
         Path(p + "-wal").unlink(missing_ok=True)
-    raise AssertionError("a WAL holding replayable frames must be refused")
-
-
-def test_declared_collation_does_not_move_the_signature() -> None:
-    """`ORDER BY chunk_id` alone inherits the COLUMN's declared collation, so a byte-identical
-    corpus in a `COLLATE NOCASE` table would sign differently — silently breaking the cross-version
-    property, since neither hand-built table in the other tests uses a non-default collation."""
-    rows = [("a#c0", "Root > A", "alpha"), ("B#c0", "Root > B", "beta")]  # BINARY: B before a
-
-    def sign_with(collation: str) -> str:
-        p = _db(f"coll-{collation}.db")
-        con = sqlite3.connect(p)
-        con.execute(f"CREATE TABLE chunks(chunk_id TEXT COLLATE {collation}, path_str TEXT, "
-                    "text TEXT)")
-        con.executemany("INSERT INTO chunks VALUES (?,?,?)", rows)
-        con.commit()
-        con.close()
-        return signature(p)[0]
-
-    assert sign_with("BINARY") == sign_with("NOCASE"), (
-        "the signature must not depend on the column's declared collation"
-    )
-
-
-def test_a_writer_committing_after_the_precheck_is_still_caught() -> None:
-    """The TOCTOU window: the sidecar is stat'd, then the connection opens and fetches. A writer
-    committing in between yields a perfectly well-formed undercount — the guard's own blind spot.
-    Made deterministic by committing at the moment the tool opens its connection."""
-    p = _build()
-    real_connect = sqlite3.connect
-    state: dict[str, object] = {}
-
-    def connect_and_race(*args, **kwargs):
-        if "writer" not in state:
-            w = real_connect(p)
-            w.execute("PRAGMA journal_mode=WAL")
-            w.execute("INSERT INTO chunks (chunk_id, doc_id, kind, text, text_with_path, "
-                      "path_str, level, n_chars, document_class) VALUES ('z#c0','z','passage',"
-                      "'zeta','Root > Z\nzeta','Root > Z',2,4,'reference-frozen')")
-            w.commit()
-            state["writer"] = w  # held open so the -wal survives the rest of the call
-        return real_connect(*args, **kwargs)
-
-    fixture_signature.sqlite3.connect = connect_and_race
-    try:
-        try:
-            signature(p)
-        except HotSidecar:
-            return
-        raise AssertionError("a commit inside the check-to-read window must not pass unnoticed")
-    finally:
-        fixture_signature.sqlite3.connect = real_connect
-        writer = state.get("writer")
-        if writer is not None:
-            writer.close()
-
-
-def test_persist_journal_is_not_refused() -> None:
-    """The same false refusal in rollback-journal form, which had NO working remedy at all.
-
-    A `journal_mode=PERSIST` database keeps its `-journal` after a clean commit with the header
-    ZEROED — SQLite's own marker for "nothing to roll back". The first version of this guard
-    refused it on size and told the operator to run a WAL checkpoint, which is a verified no-op on
-    a rollback journal: it returns (0,-1,-1) and leaves the file byte-identical.
-    """
-    p = _db("persist.db")
-    con = sqlite3.connect(p)
-    con.execute("PRAGMA journal_mode=PERSIST")
-    con.execute("CREATE TABLE chunks(chunk_id TEXT, path_str TEXT, text TEXT)")
-    con.executemany("INSERT INTO chunks VALUES (?,?,?)",
-                    [(f"a{i:03d}", "Root > A", f"body {i}") for i in range(200)])
-    con.commit()
-    con.close()
-    journal = Path(p + "-journal")
-    if not (journal.exists() and journal.stat().st_size > 0):
-        return  # nothing to prove if this platform removed it
-    assert signature(p)[1] == 200, "an invalidated rollback journal must not be refused"
+    raise AssertionError("a salt-matching frame must be refused")
 
 
 def test_missing_file_refuses_and_does_not_create_it() -> None:
@@ -538,6 +492,87 @@ def test_chunk_count_is_reported_not_document_count() -> None:
               ("a#c1", ["Root", "A", "Deeper"], "second chunk, same document"),
               ("b#c0", ["Root", "B"], "beta")]
     assert signature(_build(chunks))[1] == 3, "must count chunks (3), not documents (2)"
+
+
+def test_persist_journal_is_not_refused() -> None:
+    """The same false refusal in rollback-journal form, which had NO working remedy at all.
+
+    A `journal_mode=PERSIST` database keeps its `-journal` after a clean commit with the header
+    ZEROED — SQLite's own marker for "nothing to roll back". The first version of this guard
+    refused it on size and told the operator to run a WAL checkpoint, which is a verified no-op on
+    a rollback journal: it returns (0,-1,-1) and leaves the file byte-identical.
+    """
+    p = _db("persist.db")
+    con = sqlite3.connect(p)
+    con.execute("PRAGMA journal_mode=PERSIST")
+    con.execute("CREATE TABLE chunks(chunk_id TEXT, path_str TEXT, text TEXT)")
+    con.executemany("INSERT INTO chunks VALUES (?,?,?)",
+                    [(f"a{i:03d}", "Root > A", f"body {i}") for i in range(200)])
+    con.commit()
+    con.close()
+    journal = Path(p + "-journal")
+    assert journal.exists() and journal.stat().st_size > 0, (
+        "premise broken: no persistent -journal on this platform, so this test would assert "
+        "nothing — a skip reporting as a pass is the defect this file is about"
+    )
+    assert signature(p)[1] == 200, "an invalidated rollback journal must not be refused"
+
+
+def test_declared_collation_does_not_move_the_signature() -> None:
+    """`ORDER BY chunk_id` alone inherits the COLUMN's declared collation, so a byte-identical
+    corpus in a `COLLATE NOCASE` table would sign differently — silently breaking the cross-version
+    property, since neither hand-built table in the other tests uses a non-default collation."""
+    rows = [("a#c0", "Root > A", "alpha"), ("B#c0", "Root > B", "beta")]  # BINARY: B before a
+
+    def sign_with(collation: str) -> str:
+        p = _db(f"coll-{collation}.db")
+        con = sqlite3.connect(p)
+        con.execute(f"CREATE TABLE chunks(chunk_id TEXT COLLATE {collation}, path_str TEXT, "
+                    "text TEXT)")
+        con.executemany("INSERT INTO chunks VALUES (?,?,?)", rows)
+        con.commit()
+        con.close()
+        return signature(p)[0]
+
+    assert sign_with("BINARY") == sign_with("NOCASE"), (
+        "the signature must not depend on the column's declared collation"
+    )
+
+
+def test_a_writer_committing_after_the_precheck_is_still_caught() -> None:
+    """The TOCTOU window: the sidecar is stat'd, then the connection opens and fetches. A writer
+    committing in between yields a perfectly well-formed undercount — the guard's own blind spot.
+    Made deterministic by committing at the moment the tool opens its connection."""
+    p = _build()
+    real_connect = sqlite3.connect
+    state: dict[str, object] = {}
+
+    def connect_and_race(*args, **kwargs):
+        if "writer" not in state:
+            w = real_connect(p)
+            w.execute("PRAGMA journal_mode=WAL")
+            w.execute("INSERT INTO chunks (chunk_id, doc_id, kind, text, text_with_path, "
+                      "path_str, level, n_chars, document_class) VALUES ('z#c0','z','passage',"
+                      "'zeta','Root > Z\nzeta','Root > Z',2,4,'reference-frozen')")
+            w.commit()
+            state["writer"] = w  # held open so the -wal survives the rest of the call
+        return real_connect(*args, **kwargs)
+
+    # NOTE: `fixture_signature.sqlite3` IS the process-global module, so this patch is visible to
+    # everything while it is installed. Safe only because this suite runs serially; a parallel
+    # runner would need the tool to take an injectable opener instead.
+    fixture_signature.sqlite3.connect = connect_and_race
+    try:
+        try:
+            signature(p)
+        except HotSidecar:
+            return
+        raise AssertionError("a commit inside the check-to-read window must not pass unnoticed")
+    finally:
+        fixture_signature.sqlite3.connect = real_connect
+        writer = state.get("writer")
+        if writer is not None:
+            writer.close()
 
 
 if __name__ == "__main__":
