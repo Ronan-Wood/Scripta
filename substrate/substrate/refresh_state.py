@@ -78,9 +78,15 @@ OUTCOMES: dict[str, dict] = {
     },
     "compose_failed": {
         "success": False, "frozen": True,
-        "note": ("FROZEN — the vault changed and the last recompose REFUSED, so these results "
-                 "come from the index built before that change. Run `substrate compose` for this "
-                 "scope and read the refusal; the refresh agent's log has the failing run."),
+        "note": ("FROZEN — the vault changed and the last recompose REFUSED, so these results do "
+                 "not reflect it. USUALLY that means the index built before the change is intact "
+                 "and answering: compose validates before it writes, and the early refusals "
+                 "(ingest, the A22 per-note sweep) return before the store is opened at all. But "
+                 "the composition assertions run AFTER reconcile has committed, so a refusal there "
+                 "leaves a partly-rewritten index — and with `--clean` the ingest tree beside it "
+                 "has already been removed. Treat this as 'not the current vault, and possibly "
+                 "not a coherent snapshot of any vault'. Run `substrate compose` for this scope "
+                 "and read the refusal; the refresh agent's log has the failing run."),
     },
     "embed_failed": {
         "success": False, "frozen": False,
