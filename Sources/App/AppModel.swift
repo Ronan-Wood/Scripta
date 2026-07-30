@@ -148,17 +148,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Cross-view navigation the hub reads: jump to Calls with a preselected call or filter.
+    /// Cross-view navigation inbox: any surface posts a request here and the hub's `Navigator`
+    /// resolves it into a `Destination`, then clears this back to nil.
     @Published var route: Route?
-
-    enum Route: Equatable {
-        /// Jump to a call, optionally scrolling the reader to a passage timestamp (ms).
-        case call(URL, ms: Int?)
-        case tag(String)
-        case section(HubSection)
-
-        static func call(_ url: URL) -> Route { .call(url, ms: nil) }
-    }
 
     /// Set by MenuController; toggles start/stop through the real capture pipeline.
     var toggleRecording: (() -> Void)?
