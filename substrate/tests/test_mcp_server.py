@@ -14,9 +14,11 @@ Runnable with plain `python tests/test_mcp_server.py`; discovered by pytest if a
 
 from __future__ import annotations
 
+import atexit
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,6 +35,30 @@ from substrate.store.index_store import IndexStore  # noqa: E402
 
 _LONG = ("Composition resolves the manifest and indexes core plus project together. " * 12).strip()
 
+_TMPDIRS: list[str] = []
+
+
+def _tmpdir() -> Path:
+    """Every temporary tree in this file comes from here, so a run cleans up after itself.
+
+    Bare `mkdtemp` stranded one tree per test under a directory nothing reaps, each holding a
+    SQLite file with its -wal and -shm siblings beside it. One copy of the cleanup, registered
+    once — a second `mkdtemp` written elsewhere is how that drifts back.
+    """
+    d = tempfile.mkdtemp(prefix="substrate-mcp-test-")
+    _TMPDIRS.append(d)
+    return Path(d)
+
+
+def _cleanup_tmpdirs() -> None:
+    # atexit, not per-test: a test that fails mid-way still owns a tree, and the assertion is the
+    # thing worth reading — a cleanup error raised on top of it would bury the diagnosis.
+    for d in _TMPDIRS:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+atexit.register(_cleanup_tmpdirs)
+
 
 class _FakeEmbedder:
     """Wired but never used — these tests assert what STATUS reports about an index, which must
@@ -42,10 +68,16 @@ class _FakeEmbedder:
     model = "qwen3-embedding:0.6b"
 
 
-def _cfg(registry: Path) -> server.Config:
+def _cfg(registry: Path, *, read_only: bool = False) -> server.Config:
     """Lexical-only, always. A test that depended on a local daemon would pass or fail on whether
-    Ollama happened to be running, which is not a property of this code."""
-    return server.Config(str(registry), stack.build(lexical_only=True))
+    Ollama happened to be running, which is not a property of this code.
+
+    `read_only` is the ONE thing the two transports differ by (Doc 3 §3), and it travels on Config
+    rather than on a second dispatch — so a test of the HTTP write gate is this flag, not a
+    different server. `main()` is what decides its default per transport; that decision has its own
+    test, because nothing here would notice it flipping.
+    """
+    return server.Config(str(registry), stack.build(lexical_only=True), read_only=read_only)
 
 
 def _cfg_embedder(registry: Path) -> server.Config:
@@ -64,7 +96,7 @@ def _fixture(*, manifest: bool = False) -> tuple[Path, Path]:
     """
     import hashlib
 
-    root = Path(tempfile.mkdtemp())
+    root = _tmpdir()
     vault = root / "demo-vault"
     vault.mkdir()
     note = vault / "composition.md"
@@ -415,6 +447,57 @@ def test_serve_reads_and_writes_line_delimited_json() -> None:
     assert sum(1 for m in lines if m.get("error")) == 1
 
 
+def test_an_internal_error_carries_the_id_of_the_frame_that_failed() -> None:
+    """A client matches a response to a pending request BY ID, so an error carrying `id: null`
+    resolves nothing — the call hangs to the client's own timeout instead of failing, which is a
+    worse outcome than the error being reported at all.
+
+    Null stays correct for the shape that genuinely has no single id (a batch), and a NOTIFICATION
+    gets no reply whatsoever: nobody is waiting on an id that was never sent.
+    """
+    _, registry = _fixture()
+
+    def _boom(msg: object, cfg: server.Config) -> dict:
+        raise RuntimeError("handler exploded")
+
+    # The dispatcher is replaced rather than fed a frame that happens to break it, because the
+    # property under test belongs to the catch-all in `serve` and not to any one input — which
+    # input escapes `_dispatch` is an implementation detail that a guard could close tomorrow.
+    real = server._dispatch
+    server._dispatch = _boom
+    try:
+        out = io.StringIO()
+        server.serve(_cfg(registry), stdin=io.StringIO(
+            '{"jsonrpc":"2.0","id":42,"method":"tools/list"}\n'
+            '{"jsonrpc":"2.0","method":"tools/list"}\n'            # notification: no reply at all
+            '[{"jsonrpc":"2.0","id":43,"method":"tools/list"}]\n'  # batch: no single id to answer
+        ), stdout=out)
+    finally:
+        server._dispatch = real
+
+    lines = [json.loads(x) for x in out.getvalue().splitlines() if x.strip()]
+    assert [m["id"] for m in lines] == [42, None], out.getvalue()
+    assert all(m["error"]["code"] == -32603 for m in lines), lines
+    assert "RuntimeError" in lines[0]["error"]["message"], lines[0]
+
+    # And the property holds for a frame that reaches that catch-all FROM THE WIRE today: a tool
+    # name that is not a string is unhashable, so `HANDLERS.get(name)` throws straight past
+    # `_dispatch`. Asserted as "answered, carrying this frame's id, and the loop lived" rather than
+    # as a code — tightening that lookup into a -32602 would keep the property and change only the
+    # number.
+    out = io.StringIO()
+    server.serve(_cfg(registry), stdin=io.StringIO(
+        '{"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":["tools/list"]}}\n'
+        '{"jsonrpc":"2.0","id":45,"method":"initialize"}\n'
+    ), stdout=out)
+    lines = [json.loads(x) for x in out.getvalue().splitlines() if x.strip()]
+    assert [m["id"] for m in lines] == [44, 45], "a frame the dispatcher could not survive took " \
+                                                 f"the session with it: {out.getvalue()!r}"
+    # Reported as a failure of some kind — a JSON-RPC error or an isError result, either is
+    # actionable. What must never happen is a success.
+    assert "error" in lines[0] or lines[0]["result"].get("isError"), lines[0]
+
+
 def test_tool_fault_stays_inside_the_result() -> None:
     """A refusal must reach the model as content it can act on, not as a transport error."""
     _, registry = _fixture()
@@ -753,6 +836,630 @@ def test_ingest_refuses_a_stale_token() -> None:
 def test_render_defaults_are_shared_not_copied() -> None:
     """The MCP server must not carry its own outline count — that is how two adapters drift."""
     assert server.render.OUTLINE_RECORDS is render.OUTLINE_RECORDS
+
+
+def test_advertised_version_tracks_the_schema_not_a_literal() -> None:
+    """The one version a client displays sat at "0.1.0" through schema v1..v8 — the surface that
+    says how current the server is reported the same string however stale it was. Derived now, so
+    it cannot drift again."""
+    from substrate.store import schema
+
+    # NOT `SERVER_VERSION == f"0.{SCHEMA_VERSION}.0"` — restating the constant's own definition
+    # can only fail when someone edits the line it mirrors, and says nothing about the property
+    # this test is named for. What matters is that the number reaches a client: it is read off the
+    # wire, from the one field a client displays.
+    _, registry = _fixture()
+    init = server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"}, _cfg(registry))
+    assert init["result"]["serverInfo"]["version"] == server.SERVER_VERSION
+    assert str(schema.SCHEMA_VERSION) in init["result"]["serverInfo"]["version"]
+
+
+def test_the_vector_cache_survives_the_thread_the_stack_was_built_on() -> None:
+    """`serve_http` builds the stack once on the main thread and serves from per-connection handler
+    threads. sqlite3's default thread affinity made the first cache touch a ProgrammingError, which
+    the retriever CAUGHT and degraded — so HyDE and the reranker fell back to fused lexical order
+    on every HTTP query and said so only in `fallbacks`. Nothing caught it because every other test
+    here builds `lexical_only=True`, which never constructs a cache at all.
+    """
+    import threading
+
+    from substrate.embed.cache import VectorCache, content_sha
+
+    cache = VectorCache(_tmpdir() / "vectors.db")  # main thread, as main() does
+    try:
+        sha = content_sha("composition resolves the manifest")
+        cache.put_many([(sha, [0.5, 0.25])], "m")
+
+        box: dict = {}
+
+        def _read() -> None:
+            try:
+                box["got"] = cache.get_many([sha], "m")
+            except Exception as e:  # noqa: BLE001 — the failure under test is an exception
+                box["err"] = e
+
+        t = threading.Thread(target=_read)
+        t.start()
+        t.join(10)
+        # Checked before the box is read. A reader still blocked on the connection is a third
+        # outcome, and indexing `box["got"]` reported it as a bare KeyError naming neither the
+        # thread nor the timeout.
+        assert not t.is_alive(), "cache read never returned — a blocked reader is not a pass"
+        assert "err" not in box, f"cache unusable off its creating thread: {box.get('err')}"
+        assert "got" in box, "reader thread recorded neither a result nor an exception"
+        assert box["got"][sha] == [0.5, 0.25]
+    finally:
+        cache.close()
+
+
+def test_http_bind_refuses_anything_but_loopback() -> None:
+    """`ingest` writes vaults and reads caller-named files. Off-loopback that is a remote write
+    primitive, so the bind fails closed — including on the forms the old split-based host guard in
+    `net` got wrong."""
+    # The accepted forms come back as the exact pair `serve_http` binds. Asserting `"[" not in
+    # host` here asserted nothing: neither input can produce a bracket, so the check could not fail
+    # for either — and a host silently rewritten on the way to bind() is the failure that matters.
+    for spec, expected in (("127.0.0.1:8765", ("127.0.0.1", 8765)),
+                           ("localhost:8765", ("localhost", 8765))):
+        assert server.parse_bind(spec) == expected, spec
+
+    # IPv6 is REFUSED, not unwrapped: the listener is AF_INET, so `[::1]` parsed cleanly and then
+    # died at bind() with a gaierror — an address the validator blessed and the server cannot serve.
+    for spec in ("[::1]:8765", "::1:8765",
+                 "0.0.0.0:8765", "192.168.1.5:8765", "127.0.0.2:8765", "evil.example:8765",
+                 "127.0.0.1:notaport", "8765", "", "127.0.0.1:0x10",
+                 # THE INJECTIONS, and the reason this guard is not `net.is_loopback`: a URL parser
+                 # discards everything after the first `/`, `?` or `#` and treats what precedes an
+                 # `@` as userinfo, so each of these validated as "127.0.0.1" and then returned the
+                 # WHOLE string to bind. The host that was checked was not the host that would be
+                 # served — it failed closed only because getaddrinfo happened to reject the
+                 # result, which is an accident rather than a guard.
+                 "127.0.0.1#@evil.com:8765", "127.0.0.1?x=1:8765", "127.0.0.1/evil.com:8765",
+                 "evil.com@127.0.0.1:8765",
+                 # A PORT `int()` would have taken. From argv these arrive as real str — a shell
+                 # can hand over `٥`, and `int("٥")` is 5 — so `_is_digits`' isascii/isdigit pair
+                 # is what stands between a typo'd flag and a port nobody named. Whitespace is
+                 # refused HERE because nothing strips it first (`_framing` does, per RFC 7230).
+                 "127.0.0.1:+5", "127.0.0.1:1_0", "127.0.0.1: 8765", "127.0.0.1:٥"):
+        try:
+            server.parse_bind(spec)
+            raise AssertionError(f"expected refusal for {spec!r}")
+        except ValueError:
+            pass
+
+
+def _http_server(cfg: server.Config):
+    """Start `serve_http` on an ephemeral loopback port; returns (base_url, stop).
+
+    `stop` JOINS the serving thread. `httpd.shutdown()` only asks `serve_forever` to return —
+    `serve_http`'s `finally: httpd.server_close()` then runs on that thread, after `stop` has
+    already returned. Handing back the bare `shutdown` let a listening socket outlive the test that
+    owned it, so a leaked port and a genuine bind failure looked the same from here.
+    """
+    import threading as _t
+
+    box: dict = {}
+    started = _t.Event()
+
+    def _ready(httpd) -> None:
+        box["httpd"] = httpd
+        started.set()
+
+    th = _t.Thread(target=server.serve_http,
+                   kwargs={"cfg": cfg, "host": "127.0.0.1", "port": 0, "ready": _ready},
+                   daemon=True)
+    th.start()
+    assert started.wait(10), "http server never bound"
+    httpd = box["httpd"]
+    port = httpd.server_address[1]
+
+    def _stop() -> None:
+        httpd.shutdown()
+        th.join(10)
+        assert not th.is_alive(), "serve_http never returned — the port is still bound"
+
+    return f"http://127.0.0.1:{port}", _stop
+
+
+def _raw(base: str, payload: bytes, *, half_close: bool = False, timeout: float = 10.0):
+    """One raw-socket exchange with the server: send `payload`, read until it closes or stalls.
+    Returns (everything seen, whether the SERVER closed).
+
+    `urllib` always sends `Connection: close` and reads exactly one response, so nothing driven
+    through `_post` can observe a refusal that leaves the connection alive with unread bytes still
+    in it — which is the entire smuggling defect. This is the only socket driver in this file for
+    that reason: a second hand-rolled recv loop is how one of them drifts back into dying as a bare
+    TimeoutError that names neither the frame nor what the server answered.
+
+    `half_close` shuts the write half after sending, which ends `_linger`'s discard budget at once
+    instead of a second later. OFF by default: with it on, our own FIN is what ends the connection,
+    so `closed` stops being evidence that the SERVER closed it.
+    """
+    import socket
+
+    s = socket.create_connection(("127.0.0.1", _port(base)), timeout=timeout)
+    seen, closed = b"", False
+    try:
+        try:
+            s.sendall(payload)
+            if half_close:
+                s.shutdown(socket.SHUT_WR)
+            while True:
+                try:
+                    chunk = s.recv(65536)
+                except TimeoutError:
+                    # A refusal that keeps the connection alive is the exploit's precondition, and
+                    # it stalls this loop. Break and let the caller's assertions do the reporting.
+                    break
+                if not chunk:
+                    closed = True
+                    break
+                seen += chunk
+        except (ConnectionResetError, BrokenPipeError):
+            # A server that drops the connection with nothing written on it is a RESULT, not an
+            # error in the driver — it is precisely what the ceiling refusal and every 4xx branch
+            # must not do. Returned as an empty `seen` so the caller's own assertion names it,
+            # rather than raising an OSError that names only a socket.
+            closed = True
+    finally:
+        s.close()
+    return seen, closed
+
+
+def _port(base: str) -> int:
+    return int(base.rsplit(":", 1)[1])
+
+
+# A complete second request, used in two POSITIONS with opposite expectations: inside a refused
+# request's body it is the smuggling primitive (the refusal replies without reading the body, so
+# these bytes are what `handle_one_request` would parse next), and after a correctly framed body it
+# is ordinary keep-alive pipelining that MUST be answered. One copy, because the two cases are only
+# meaningful against identical bytes.
+_INNER_FRAME = b'{"jsonrpc": "2.0", "id": 99, "method": "tools/list"}'
+# MEASURED, never hardcoded. `Content-Length: 50` against a 52-byte body truncated the inner
+# frame to invalid JSON, so a VULNERABLE server answered it -32700 and then read the two orphaned
+# bytes as a third request line — the exploit could not be reproduced, and every assertion below
+# passed on a broken server.
+_SECOND_REQUEST = (b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                   b"Content-Length: " + str(len(_INNER_FRAME)).encode() + b"\r\n\r\n"
+                   + _INNER_FRAME)
+
+
+def _assert_refused_cleanly(seen: bytes, closed: bool, code: int, *, why: bytes) -> None:
+    """One refusal, delivered and legible, with NOTHING left in the socket for the next request
+    line. Every refusal branch replies without reading the body, so this property belongs to the
+    branch shape rather than to any one header — asserted in one place, because a second copy is
+    how one branch keeps keep-alive on while the test for it goes on passing.
+    """
+    assert str(code).encode() in seen.split(b"\r\n")[0], (why, seen[:200])
+    # The reason travels too: a bare status code sends a caller hunting through their own client.
+    assert why in seen, (why, seen[:400])
+    # ONE response. A second status line means the unread body reached `handle_one_request` at
+    # all — even a -32700 counts as served, because a body the connection re-parsed as a request IS
+    # the defect.
+    assert seen.count(b"HTTP/1.1 ") == 1, f"[{why!r}] a second, smuggled request was answered: " \
+                                          f"{seen!r}"
+    assert b'"id": 99' not in seen and b'"id":99' not in seen, \
+        f"[{why!r}] the smuggled tools/list was answered: {seen!r}"
+    assert b"inputSchema" not in seen, \
+        f"[{why!r}] a tool listing crossed a refused request: {seen!r}"
+    assert b"Connection: close" in seen, f"[{why!r}] the refusal left keep-alive on: {seen!r}"
+    assert closed, f"[{why!r}] the connection outlived the refusal: {seen!r}"
+
+
+def _post(url: str, payload, *, headers: dict | None = None):
+    """Returns (status, parsed-body-or-None)."""
+    import urllib.error
+    import urllib.request
+
+    data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+    hdrs = {"Content-Type": "application/json"}
+    hdrs.update(headers or {})
+    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            raw = r.read()
+            return r.status, (json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        return e.code, (json.loads(raw) if raw else None)
+
+
+def test_http_and_stdio_answer_the_same_frame() -> None:
+    """Doc 3a §6's equality, extended to transports: HTTP adds a socket, never a dispatch. If these
+    diverge, JSON-RPC logic was copied into the HTTP half.
+
+    Compared at the SAME read-only setting, deliberately. `serve_http` forces read-only on the
+    Config it serves, so comparing against a writable one measures the policy difference rather
+    than the transport — which is what this test is for. That the two policies differ is real and
+    intended (Doc 3 §3), and it is pinned separately below; here it would only mask a drift in
+    dispatch. This assertion used to pass for the wrong reason: `serve_http` mutated the caller's
+    Config, so the "stdio" half of the comparison was silently read-only too.
+    """
+    _, registry = _fixture()
+    cfg = _cfg(registry)
+    ro = server.Config(cfg.registry, cfg.stack, read_only=True)
+    base, stop = _http_server(cfg)
+    try:
+        for frame in ({"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+                      {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                      {"jsonrpc": "2.0", "id": 3, "method": "nonsense"},
+                      [{"jsonrpc": "2.0", "id": 4, "method": "initialize"},
+                       {"jsonrpc": "2.0", "id": 5, "method": "tools/list"}]):
+            status, over_http = _post(base, frame)
+            assert status == 200, frame
+            assert over_http == server.handle(frame, ro), frame
+    finally:
+        stop()
+
+
+def test_serve_http_does_not_make_the_callers_config_read_only() -> None:
+    """`serve_http` enforces read-only on what it serves, but it must not reach back through the
+    Config it was handed — anything else holding that object (the stdio loop, another test) would
+    silently change policy. The flag is taken on a copy; the stack and PlanBook stay shared."""
+    _, registry = _fixture()
+    cfg = _cfg(registry)
+    assert cfg.read_only is False
+    _, stop = _http_server(cfg)
+    stop()
+    assert cfg.read_only is False, "serve_http mutated the Config it was given"
+    listed = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, cfg)["result"]
+    assert "ingest" in {t["name"] for t in listed["tools"]}, "stdio lost `ingest` to the HTTP policy"
+
+
+def test_http_refuses_a_browser_reaching_the_daemon() -> None:
+    """A loopback bind keeps other machines out, not a page in the operator's own browser. Origin,
+    Host-after-DNS-rebinding and a non-JSON content type are each refused."""
+    _, registry = _fixture()
+    base, stop = _http_server(_cfg(registry))
+    frame = {"jsonrpc": "2.0", "id": 1, "method": "initialize"}
+    try:
+        assert _post(base, frame, headers={"Origin": "https://evil.example"})[0] == 403
+        assert _post(base, frame, headers={"Host": "evil.example"})[0] == 421
+        assert _post(base, frame, headers={"Content-Type": "text/plain"})[0] == 415
+        # A bad body is a -32700, not a refusal — and the message has to be worth its word: a 200
+        # carrying any other error satisfied the status check alone, so the code is read too.
+        status, parsed = _post(base, b'{"not', headers={})
+        assert status == 200, parsed
+        assert parsed["error"]["code"] == -32700, parsed
+        # An oversized body is refused BEFORE it is read.
+        big = b'{"jsonrpc":"2.0","id":1,"method":"initialize","pad":"' + b"x" * 16 + b'"}'
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(base, data=big, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "Content-Length": str(server.MAX_BODY_BYTES + 1)})
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            raise AssertionError("expected 413")
+        except urllib.error.HTTPError as e:
+            assert e.code == 413
+    finally:
+        stop()
+
+
+def test_a_refused_request_cannot_smuggle_the_next_one() -> None:
+    """The refusal paths reply WITHOUT reading the body. On a keep-alive connection those unread
+    bytes were parsed as the next request line — so one CORS-simple POST (text/plain, no preflight)
+    whose body is a complete second request with `Host: 127.0.0.1`, no Origin and a JSON content
+    type got the outer request refused and the SMUGGLED one served, bypassing all three guards.
+    `urllib` always sends `Connection: close`, which is why the first round of tests could not see
+    this; this one drives a raw socket.
+    """
+    _, registry = _fixture()
+    base, stop = _http_server(_cfg(registry))
+    try:
+        outer = (b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\n"
+                 b"Content-Type: text/plain\r\nContent-Length: "
+                 + str(len(_SECOND_REQUEST)).encode() + b"\r\n\r\n" + _SECOND_REQUEST)
+        # NOT half-closed, unlike its neighbours: here `closed` has to be the SERVER's doing,
+        # because a refusal that leaves the connection alive is the exploit's precondition.
+        seen, closed = _raw(base, outer)
+        _assert_refused_cleanly(seen, closed, 403, why=b"cross-origin")
+    finally:
+        stop()
+
+
+def test_every_refusal_leaves_nothing_for_the_next_request_line() -> None:
+    """The Origin case above is one branch of eight, and the property belongs to the SHAPE of a
+    refusal rather than to Origin: each of these replies without reading the body, so each can
+    leave a complete second request in the socket. The status codes themselves are pinned by
+    `test_http_refuses_a_browser_reaching_the_daemon` and the framing branches' own messages; what
+    this adds is that no branch hands the smuggled frame to `handle_one_request`.
+    """
+    _, registry = _fixture()
+    base, stop = _http_server(_cfg(registry))
+    n = str(len(_SECOND_REQUEST)).encode()
+    head = b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+    cases = (
+        # DNS rebinding: the page resolves an attacker-controlled name to 127.0.0.1, so the request
+        # is well formed in every other respect.
+        (421, b"refusing Host",
+         b"POST / HTTP/1.1\r\nHost: evil.example\r\nContent-Type: application/json\r\n"
+         b"Content-Length: " + n + b"\r\n\r\n" + _SECOND_REQUEST),
+        # text/plain is CORS-simple — a page sends it with no preflight for this server to refuse.
+        (415, b"application/json",
+         b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\n"
+         b"Content-Length: " + n + b"\r\n\r\n" + _SECOND_REQUEST),
+        (411, b"Content-Length required", head + b"\r\n" + _SECOND_REQUEST),
+        # RFC 7230 forbids reconciling the two. Framed on Content-Length: 0 this read a zero-byte
+        # body, answered keep-alive 200, and left the chunked payload to be read as a request line.
+        (400, b"refusing to guess",
+         head + b"Content-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+         + _SECOND_REQUEST),
+        # Chunked alone is refused rather than read: a body whose length is unknown until it ends
+        # cannot be bounded before it is read, which is the whole point of MAX_BODY_BYTES.
+        (411, b"chunked bodies are not read",
+         head + b"Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n" + _SECOND_REQUEST),
+        # `headers.get()` returns only the FIRST of a repeated header, so the disagreeing pair
+        # framed the body on one and left the remainder — the entire smuggling primitive.
+        (400, b"2 Content-Length headers",
+         head + b"Content-Length: 0\r\nContent-Length: " + n + b"\r\n\r\n" + _SECOND_REQUEST),
+        (400, b"malformed Content-Length", head + b"Content-Length: +" + n + b"\r\n\r\n"
+         + _SECOND_REQUEST),
+        (413, b"body over", head + b"Content-Length: "
+         + str(server.MAX_BODY_BYTES + 1).encode() + b"\r\n\r\n" + _SECOND_REQUEST),
+        # The same refusal, asked for permission first. The base class answers `Expect:
+        # 100-continue` from `parse_request`, BEFORE do_POST runs, so a client asking to send 9MB
+        # was told to go ahead and refused after — which inverts the bounded-BEFORE-the-read
+        # property the branch exists for. The one-response assertion covers the interim `100
+        # Continue` too: an invitation is a second status line.
+        (413, b"body over", head + b"Expect: 100-continue\r\nContent-Length: "
+         + str(server.MAX_BODY_BYTES + 1).encode() + b"\r\n\r\n" + _SECOND_REQUEST),
+    )
+    try:
+        for code, why, req in cases:
+            seen, closed = _raw(base, req, half_close=True)
+            _assert_refused_cleanly(seen, closed, code, why=why)
+    finally:
+        stop()
+
+
+def test_a_host_header_is_required_not_merely_checked() -> None:
+    """`if host and ...` let a caller skip the Host guard by omitting it. A guard that fails open
+    on absence is not a guard."""
+    _, registry = _fixture()
+    base, stop = _http_server(_cfg(registry))
+    try:
+        body = b'{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
+        seen, closed = _raw(base, b"POST / HTTP/1.1\r\nContent-Type: application/json\r\n"
+                                  b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n"
+                                  + body, half_close=True)
+        _assert_refused_cleanly(seen, closed, 421, why=b"refusing Host None")
+    finally:
+        stop()
+
+
+def test_host_validation_does_not_go_through_a_url_parser() -> None:
+    """A URL parser drops everything after the first `/`, `?` or `#`, so `localhost/evil.com` read
+    as "localhost". Nothing builds a URL from this header today; that stops being true the first
+    time a `Location:` is added."""
+    for good in ("127.0.0.1", "127.0.0.1:8765", "localhost", "LOCALHOST:80"):
+        assert server._host_is_loopback(good), good
+    for bad in ("localhost/evil.com", "localhost#@evil.com", "localhost?x=1", "user@localhost",
+                "127.0.0.1.evil.com", "localhost.", "0.0.0.0", "evil.example", "",
+                "localhost:notaport", "[::1", "localhost x",
+                # IPv6 belongs on the refused side even though ::1 IS loopback: this predicate is
+                # shared with `parse_bind`, ThreadingHTTPServer inherits address_family = AF_INET,
+                # and no bind this server can perform produces such an authority. Blessing one had
+                # the request-time guard accepting a Host the listener could never have been
+                # reached at — a claim about a server that does not exist.
+                "[::1]", "[::1]:8765", "::1"):
+        assert not server._host_is_loopback(bad), bad
+
+
+def test_a_malformed_content_length_is_not_reported_as_an_oversized_body() -> None:
+    """Telling a caller to shrink a body that was never too large is the wrong-signal failure the
+    other refusals go out of their way to avoid.
+
+    The forms are the ones a lenient parser takes: `int()` reads `+5` as 5 and `1_0` as ten, and
+    the rest are digits to something. Every one of them would mean one number here and another to
+    the peer, which IS the framing desync — so each is a MALFORMED HEADER, never a 413. (The
+    non-ASCII digits arrive latin-1-decoded, so `_is_digits`' isascii half is not what refuses them
+    HERE; `parse_bind` is where that str is real, and its own test covers it.)
+    """
+    _, registry = _fixture()
+    base, stop = _http_server(_cfg(registry))
+    head = b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+    try:
+        for value in (b"-5", b"+5", b"1_0", b"0x10", b"5 5", "٥".encode()):
+            seen, _ = _raw(base, head + b"Content-Length: " + value + b"\r\n\r\n",
+                           half_close=True)
+            assert b"400" in seen.split(b"\r\n")[0], (value, seen[:200])
+            assert b"malformed Content-Length" in seen, (value, seen[:400])
+            assert b"body over" not in seen, (value, seen[:400])
+
+        # …and the ONE padding that is stripped rather than refused, because RFC 7230 says a
+        # field's value excludes its surrounding whitespace: `5 ` means five bytes here and five
+        # bytes to every conformant peer, so refusing it would refuse a legal request without
+        # closing any desync. Asserted by FRAMING on it — the pipelined request lands exactly at
+        # byte five and is answered as a request, which a length read differently from the one the
+        # peer wrote would have swallowed or split.
+        seen, _ = _raw(base, head + b"Content-Length: 5 \r\n\r\n[1,2]" + _SECOND_REQUEST,
+                       half_close=True)
+        assert seen.count(b"HTTP/1.1 ") == 2, f"the padded length did not frame at 5: {seen!r}"
+        assert b'"id": 99' in seen, f"the pipelined request was lost: {seen!r}"
+    finally:
+        stop()
+
+
+def test_http_notification_is_accepted_with_no_body() -> None:
+    """A notification takes no reply on either transport. An empty 200 would not parse as a
+    JSON-RPC response, so it is a 202."""
+    _, registry = _fixture()
+    base, stop = _http_server(_cfg(registry))
+    try:
+        status, body = _post(base, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        assert status == 202 and body is None
+    finally:
+        stop()
+
+
+def test_http_answers_an_internal_error_with_the_requests_id_too() -> None:
+    """Same helper and same reason as the stdio loop: `do_POST` hands `_internal_error` the decoded
+    FRAME rather than None, so a client's pending call fails instead of hanging to its own timeout.
+    Two transports, one dispatch — an id that survives one socket and not the other would mean the
+    error path had been copied rather than shared."""
+    _, registry = _fixture()
+
+    def _boom(msg: object, cfg: server.Config) -> dict:
+        raise RuntimeError("handler exploded")
+
+    base, stop = _http_server(_cfg(registry))
+    real = server._dispatch
+    server._dispatch = _boom
+    try:
+        status, resp = _post(base, {"jsonrpc": "2.0", "id": 42, "method": "tools/list"})
+    finally:
+        server._dispatch = real
+        stop()
+    assert status == 200, resp
+    assert resp["id"] == 42, \
+        f"an error with a null id resolves nothing the client is waiting on: {resp}"
+    assert resp["error"]["code"] == -32603, resp
+
+
+def test_ingest_is_refused_over_http_and_the_refusal_is_legible() -> None:
+    """Doc 3 §3: the write primitive comes OFF the socket rather than being guarded on it. Any
+    local process can reach a loopback port, and `ingest` writes notes into real vaults that the
+    next refresh serves back as settled knowledge.
+
+    Not advertised AND not runnable — a tool hidden from `tools/list` but still served when called
+    is not read-only. And the refusal must not read as "no such tool": a model told the tool does
+    not exist goes hunting for another way to write, which is the misleading answer this codebase
+    refuses. The tool still exists over stdio, which the last assertion holds it to.
+    """
+    root, registry = _fixture(manifest=True)
+    (root / "demo-vault" / "04-synthesis").mkdir()
+    args = {"scope": "demo", "content": _NOTE, "filename": "d.md"}
+    base, stop = _http_server(_cfg(registry, read_only=True))
+    try:
+        status, listed = _post(base, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        assert status == 200, listed
+        assert "ingest" not in {t["name"] for t in listed["result"]["tools"]}, listed
+
+        status, resp = _post(base, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                    "params": {"name": "ingest", "arguments": args}})
+        assert status == 200, resp
+        # An isError RESULT, not a transport error: the caller can act on this one.
+        assert "error" not in resp, resp
+        assert resp["result"]["isError"] is True, resp
+        text = resp["result"]["content"][0]["text"]
+        assert "read-only" in text and "stdio" in text, text
+        assert "unknown tool" not in text, text
+    finally:
+        stop()
+    assert not (root / "demo-vault" / "04-synthesis" / "d.md").exists(), \
+        "a refusal wrote the vault"
+
+    # The SAME tool, same arguments, over the transport that keeps it: what differs is a parameter
+    # on Config, not a second dispatch.
+    assert _call("ingest", args, registry)["written"] is False
+
+
+def test_the_read_only_default_follows_the_transport() -> None:
+    """Doc 3 §3 is decided in `main()`, and nothing else in this file would notice it flipping:
+    every other test states `read_only` outright. Unstated, it is ON for `--http` and OFF for
+    stdio, because exposure is what differs — reaching stdio already means spawning this process.
+    An explicit flag overrides it on either transport.
+    """
+    _, registry = _fixture()
+    seen: dict = {}
+
+    def _capture(key: str):
+        def _f(cfg, *a, **kw):   # serve(cfg, stdin, stdout) and serve_http(cfg, host, port, ...)
+            seen[key] = cfg
+            return 0
+        return _f
+
+    real = server.serve_http, server.serve
+    server.serve_http, server.serve = _capture("http"), _capture("stdio")
+    try:
+        for argv, where, read_only in ((["--http"], "http", True),
+                                       (["--http", "--no-read-only"], "http", False),
+                                       ([], "stdio", False),
+                                       (["--read-only"], "stdio", True)):
+            seen.clear()
+            rc = server.main([*argv, "--lexical-only", "--registry", str(registry)])
+            assert rc == 0, (argv, rc)
+            assert where in seen, (argv, "went to the wrong transport", sorted(seen))
+            assert seen[where].read_only is read_only, argv
+    finally:
+        server.serve_http, server.serve = real
+
+
+def test_the_connection_ceiling_refuses_with_a_response_not_a_bare_close() -> None:
+    """A socket closed with nothing written on it is indistinguishable from the hung server this
+    cap exists to prevent — which was the stated reason for refusing rather than queueing, and then
+    the refusal said nothing at all. It is written from `process_request`, on the ACCEPT thread,
+    before any handler exists for the connection, so it is pre-rendered bytes rather than a normal
+    response path.
+
+    The ceiling is lowered instead of opening 65 sockets: what is under test is the refusal, and 64
+    parked connections would make it a load test that fails on whatever else the machine is doing.
+    """
+    import socket
+
+    _, registry = _fixture()
+    real_cap = server._BoundedThreadingHTTPServer.MAX_CONNECTIONS
+    server._BoundedThreadingHTTPServer.MAX_CONNECTIONS = 1  # read in __init__, so set before bind
+    try:
+        base, stop = _http_server(_cfg(registry))
+        try:
+            frame = b'{"jsonrpc": "2.0", "id": 1, "method": "initialize"}'
+            req = (b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                   b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame)
+            held = socket.create_connection(("127.0.0.1", _port(base)), timeout=10)
+            try:
+                held.sendall(req)
+                # An ANSWER is what proves the slot is taken: the handler thread is running, and
+                # keep-alive holds the connection after the response. Polling for that state
+                # instead would be a race.
+                assert b"200" in held.recv(65536).split(b"\r\n")[0]
+                seen, closed = _raw(base, req, half_close=True)
+            finally:
+                # FIN rather than RST. The handler is parked in `readline`, and closing on it
+                # outright makes socketserver print a ConnectionResetError traceback that looks
+                # like a failure in whatever test runs next.
+                try:
+                    held.shutdown(socket.SHUT_WR)
+                    held.recv(65536)
+                except OSError:
+                    pass
+                held.close()
+        finally:
+            stop()
+    finally:
+        server._BoundedThreadingHTTPServer.MAX_CONNECTIONS = real_cap
+
+    assert b"503" in seen.split(b"\r\n")[0], \
+        f"the ceiling gave the caller nothing to read: {seen[:200]!r}"
+    assert b"Retry-After: 1" in seen, seen[:200]
+    assert b"Connection: close" in seen, seen[:200]
+    assert closed, "a refused connection must not be left for the caller to time out on"
+    body = json.loads(seen.split(b"\r\n\r\n", 1)[1])
+    # A null id is honest HERE in a way it is not in `_internal_error`: the request was never read,
+    # so there is no id to answer with.
+    assert body["id"] is None and body["error"]["code"] == -32603, body
+    assert "connection ceiling" in body["error"]["message"], body
+
+
+def test_http_has_no_stream_and_says_so() -> None:
+    """No SSE channel is implemented, so a client probing for one gets a definite 405 rather than
+    a connection that never produces bytes."""
+    import urllib.error
+    import urllib.request
+
+    _, registry = _fixture()
+    base, stop = _http_server(_cfg(registry))
+    try:
+        try:
+            urllib.request.urlopen(urllib.request.Request(base, method="GET"), timeout=10)
+            raise AssertionError("expected 405")
+        except urllib.error.HTTPError as e:
+            assert e.code == 405
+    finally:
+        stop()
 
 
 if __name__ == "__main__":
