@@ -25,8 +25,9 @@ struct EntitySheetTarget: Identifiable {
 }
 
 /// A document's full parsed content (M24), fetched on tap — `DocMeta` carries no path of its own,
-/// so this pairs it with the `mdURL` it came from.
-private struct OpenDocTarget: Identifiable {
+/// so this pairs it with the `mdURL` it came from. Not `private`: the Documents shelf constructs
+/// it and `DocumentSheet` consumes it, and both live in their own files.
+struct OpenDocTarget: Identifiable {
     let meta: DocumentImporter.DocMeta
     let mdURL: URL
     var id: String { mdURL.path }
@@ -36,6 +37,10 @@ private struct OpenDocTarget: Identifiable {
 /// call's generated note (title, summary, topics, people), with the workspace's people and
 /// topics alongside — all served from the index, so it opens instantly and never re-reads
 /// transcript files. Comments (the "add on" layer) attach per call via NoteStore.
+///
+/// This type owns the hub's state and everything that loads or mutates it; each visible area is
+/// its own concrete `View` struct in a sibling file (overview, digest, rail, notes shelf,
+/// documents, sheets).
 struct KnowledgeView: View {
     @ObservedObject var model = AppModel.shared
     @State private var entitySheetTarget: EntitySheetTarget?
@@ -95,25 +100,52 @@ struct KnowledgeView: View {
             // call log — the primary content) alongside Needs-attention/Browse in the rail, then
             // Notes/Documents as their own area instead of sitting above the actual content.
             VStack(alignment: .leading, spacing: Space.x6) {
-                header
-                statRow
-                whatsImportantSection
-                // `rail` (needs-attention + browse) is now a permanent HStack member, not nested
-                // inside the `!rows.isEmpty` branch (M22 crosscheck) — commitments, identity
+                KnowledgeHeader(callCount: rows.count, workspaceName: workspaceName)
+                KnowledgeStatRow(commitmentCount: commitments.count, peopleCount: scopedPeople.count,
+                                 noteCount: notes.count, docCount: docs.count)
+                WhatsImportantCard(text: whatsImportant)
+                // `KnowledgeRail` (needs-attention + browse) is a permanent HStack member, not
+                // nested inside the `!rows.isEmpty` branch (M22 crosscheck) — commitments, identity
                 // collisions, and vocabulary are never derived from `rows` (calls-only; entities
                 // also come from notes/docs since M20), so they shouldn't disappear whenever the
                 // call digest happens to be empty. Restores the pre-M22 invariant that vocabulary/
                 // identity-check were "never gated on having calls."
                 HStack(alignment: .top, spacing: Space.x6) {
                     if rows.isEmpty && notes.isEmpty {
-                        emptyState
+                        KnowledgeEmptyState()
                     } else if !rows.isEmpty {
-                        digestColumn.frame(maxWidth: .infinity, alignment: .leading)
+                        KnowledgeDigestColumn(rows: rows, notes: notes) { note, call in
+                            addToNote(note, from: call)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    rail.frame(width: 300)
+                    KnowledgeRail(commitments: commitments,
+                                  collisions: collisions,
+                                  people: scopedPeople,
+                                  topics: scopedTopics,
+                                  vocabTerms: vocabTerms,
+                                  suggestions: suggestions,
+                                  entitySheetTarget: $entitySheetTarget,
+                                  addingTerm: $addingTerm,
+                                  termCanonical: $termCanonical,
+                                  termAliases: $termAliases,
+                                  termGloss: $termGloss,
+                                  onMarkCommitmentDone: markCommitmentDone,
+                                  onVerdict: { pair, same in verdict(pair, same: same) },
+                                  onAddTerm: addTerm)
+                        .frame(width: 300)
                 }
-                notesShelf
-                documentsSection      // jobs + imported files — visible with or without calls
+                KnowledgeNotesShelf(notes: notes,
+                                    openNote: $openNote,
+                                    deleteTarget: $deleteTarget,
+                                    onImport: importFromPanel,
+                                    onNewNote: { newNoteTitle = ""; creatingNote = true },
+                                    onRename: startRename)
+                // jobs + imported files — visible with or without calls
+                KnowledgeDocumentsSection(docs: docs,
+                                          openDoc: $openDoc,
+                                          deleteTarget: $deleteTarget,
+                                          onRename: startRename)
             }
             .padding(Space.x7)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -183,39 +215,12 @@ struct KnowledgeView: View {
         } message: {
             Text("A standing note you keep adding to — it lives in Notes/ inside your transcripts folder.")
         }
-        .sheet(item: $entitySheetTarget) { target in entitySheet(target) }
-        .sheet(item: $openDoc) { target in documentSheet(target) }
-    }
-
-    /// M24. Extracted for the same reason `entitySheet(_:)` is (see its own comment) — the modifier
-    /// chain on `body` is already long enough to have hit the type checker's timeout once this
-    /// session; isolating each `.sheet` construction keeps that from happening again.
-    @ViewBuilder
-    private func documentSheet(_ target: OpenDocTarget) -> some View {
-        DocumentDetailView(doc: target.meta, mdURL: target.mdURL) {
-            openDoc = nil
-        } onDelete: {
-            deleteTarget = .doc(mdURL: target.mdURL, title: target.meta.title)
-            openDoc = nil
+        .sheet(item: $entitySheetTarget) { target in
+            EntitySheet(target: target, entitySheetTarget: $entitySheetTarget,
+                        openNote: $openNote, onCommitmentsChanged: reload)
         }
-    }
-
-    // Pulled out of the `.sheet` closure inline (was inside a very long modifier chain on `body`):
-    // EntityDetailView's init got one field more complex for M21 (entityID/fallbackName became
-    // @State for in-place retargeting), which was enough to push the surrounding expression past
-    // the type checker's timeout. Isolating the construction here gives it its own inference scope.
-    @ViewBuilder
-    private func entitySheet(_ target: EntitySheetTarget) -> some View {
-        EntityDetailView(entityID: target.id, group: model.activeGroup, fallbackName: target.fallbackName) {
-            entitySheetTarget = nil
-        } onCommitmentsChanged: {
-            reload()
-        } onOpenNote: { path in
-            if let note = NoteStore.verified(atPath: path, group: model.activeGroup) { openNote = note }
-        } onOpenDoc: { path in
-            if let url = DocumentImporter.verifiedOriginalURL(atPath: path, group: model.activeGroup) {
-                NSWorkspace.shared.open(url)
-            }
+        .sheet(item: $openDoc) { target in
+            DocumentSheet(target: target, openDoc: $openDoc, deleteTarget: $deleteTarget)
         }
     }
 
@@ -416,6 +421,17 @@ struct KnowledgeView: View {
         }
     }
 
+    /// Confirms a mined or hand-typed vocabulary term. Stays with the hub, not the Vocabulary
+    /// section: it needs the index handle for the term sync and the reload that follows.
+    private func addTerm() {
+        let aliases = termAliases.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        EntityRegistry.shared.addTerm(canonical: termCanonical, aliases: aliases,
+                                      gloss: termGloss.isEmpty ? nil : termGloss,
+                                      group: model.activeGroup)
+        if let store = model.index { IndexBuilder.syncTerms(store: store) }
+        reload()
+    }
+
     /// Route an "add this call to a note" gesture: existing note → open it with the link
     /// pending; nil → create-note flow (the link is carried once the note exists).
     private func addToNote(_ note: KnowledgeNote?, from call: URL) {
@@ -427,138 +443,11 @@ struct KnowledgeView: View {
         }
     }
 
-    // MARK: - Notes shelf (the living documents you work out of)
-
-    private var notesShelf: some View {
-        VStack(alignment: .leading, spacing: Space.x3) {
-            HStack {
-                SectionHeader(title: "Your notes")
-                Spacer()
-                CarbonButton(title: "Import file", icon: "document", kind: .secondary,
-                             action: importFromPanel)
-                    .help("PDF, PowerPoint, Word, images — analyzed on-device, searchable everywhere. Or just drop files anywhere on this pane.")
-                CarbonButton(title: "New note", icon: "edit", kind: .secondary) {
-                    newNoteTitle = ""
-                    creatingNote = true
-                }
-            }
-            if notes.isEmpty {
-                Text("Standing notes you keep adding to — a deal, a project, a person. Create one, or add a call to a note from the digest below.")
-                    .font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                let columns = [GridItem(.adaptive(minimum: 240), spacing: Space.x4)]
-                LazyVGrid(columns: columns, alignment: .leading, spacing: Space.x4) {
-                    ForEach(notes) { note in
-                        NoteShelfCard(note: note, open: { openNote = note },
-                                      onRename: { startRename(.note(note)) },
-                                      onDelete: { deleteTarget = .note(note) })
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: Space.x2) {
-            Text("Knowledge center").font(CarbonFont.semibold(24)).foregroundStyle(Carbon.textPrimary)
-            Text("Compiled on-device from \(rows.count) call\(rows.count == 1 ? "" : "s") in \(workspaceName)")
-                .font(CarbonFont.label(13)).foregroundStyle(Carbon.textSecondary)
-        }
-    }
-
     private var workspaceName: String {
         model.activeGroup.isEmpty ? "your workspace" : "“\(model.activeGroup)”"
     }
 
-    /// At-a-glance counts (M22) — the shared `StatTile` `HomeView` already uses, with
-    /// Knowledge-specific numbers (not a duplicate of Home's calls/hours tiles), all from data
-    /// this view already loads in `reload()` — no new queries for the tiles themselves.
-    private var statRow: some View {
-        HStack(spacing: Space.x5) {
-            StatTile(label: "Open commitments", value: "\(commitments.count)")
-            StatTile(label: "People tracked", value: "\(scopedPeople.count)")
-            StatTile(label: "Notes", value: "\(notes.count)")
-            StatTile(label: "Documents", value: "\(docs.count)")
-        }
-    }
-
-    /// "What's important" (M23) — hidden entirely when nil, same "don't show an awkward empty
-    /// state for a quiet workspace" rule `needsAttentionGroup` already follows below. Card
-    /// treatment (not a bare `Text`) matches `StatTile`'s own layer+border language just above it.
-    @ViewBuilder private var whatsImportantSection: some View {
-        if let whatsImportant {
-            Text(whatsImportant)
-                .font(CarbonFont.body(13)).foregroundStyle(Carbon.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(Space.x5)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
-                .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
-        }
-    }
-
-    /// Visually distinct from `SectionHeader` (bigger, sentence case, full-strength color) —
-    /// used only for the two rail groups below, so "Needs attention"/"Browse" read as a tier
-    /// above the individual section titles inside them, not a peer of "Commitments"/"People".
-    private func groupHeader(_ title: String) -> some View {
-        Text(title).font(CarbonFont.medium(14)).foregroundStyle(Carbon.textPrimary)
-    }
-
-    private var emptyState: some View {
-        CarbonCard {
-            VStack(alignment: .leading, spacing: Space.x3) {
-                Text("Nothing here yet").font(CarbonFont.medium(15)).foregroundStyle(Carbon.textPrimary)
-                Text("As you record calls, their notes collect here — a running record of what happened, who said it, and what you added.")
-                    .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .frame(maxWidth: 520)
-    }
-
-    // MARK: - Digest (day-grouped call notes)
-
-    /// Rows bucketed by their frontmatter date, newest day first.
-    private var days: [(day: String, rows: [IndexStore.DigestRow])] {
-        var buckets: [String: [IndexStore.DigestRow]] = [:]
-        for row in rows { buckets[row.date, default: []].append(row) }
-        return buckets.keys.sorted(by: >).map { (dayLabel($0), buckets[$0]!) }
-    }
-
-    private var digestColumn: some View {
-        VStack(alignment: .leading, spacing: Space.x6) {
-            ForEach(days, id: \.day) { day in
-                VStack(alignment: .leading, spacing: Space.x3) {
-                    SectionHeader(title: day.day)
-                    VStack(spacing: Space.x3) {
-                        ForEach(day.rows, id: \.path) { row in
-                            DigestCard(row: row, notes: notes) { note in
-                                addToNote(note, from: URL(fileURLWithPath: row.path))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// "Today" / "Yesterday" / "Monday, July 14" from a yyyy-MM-dd frontmatter date.
-    private func dayLabel(_ date: String) -> String {
-        let parser = DateFormatter()
-        parser.locale = Locale(identifier: "en_US_POSIX")
-        parser.dateFormat = "yyyy-MM-dd"
-        guard let parsed = parser.date(from: date) else { return date }
-        if Calendar.current.isDateInToday(parsed) { return "Today" }
-        if Calendar.current.isDateInYesterday(parsed) { return "Yesterday" }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "EEEE, MMMM d"
-        return fmt.string(from: parsed)
-    }
-
-    // MARK: - Rail (people + topics, scoped to what's on screen — the wall holds)
+    // MARK: - Rail facets (people + topics, scoped to what's on screen — the wall holds)
 
     private var scopedPeople: [(name: String, count: Int)] {
         aggregate(rows.map(\.participants))
@@ -577,127 +466,6 @@ struct KnowledgeView: View {
         }
         return counts.values.map { (name: $0.display, count: $0.count) }
             .sorted { $0.count != $1.count ? $0.count > $1.count : $0.name < $1.name }
-    }
-
-    /// Two purpose-grouped zones (M22), not a flat stack of unrelated sections: things only you
-    /// can resolve, then facets you browse by. Order matters — actionable before reference.
-    private var rail: some View {
-        VStack(alignment: .leading, spacing: Space.x7) {
-            needsAttentionGroup
-            browseGroup
-        }
-    }
-
-    /// Commitments + identity collisions — both "only you can resolve this," previously
-    /// scattered (commitments mid-rail, collisions buried at the bottom under Vocabulary with
-    /// nothing suggesting they were related). Hidden entirely, not shown empty, when there's
-    /// genuinely nothing pending — an empty "Needs attention" header with nothing under it would
-    /// read as broken, not reassuring.
-    @ViewBuilder private var needsAttentionGroup: some View {
-        if !commitments.isEmpty || !collisions.isEmpty {
-            VStack(alignment: .leading, spacing: Space.x5) {
-                groupHeader("Needs attention")
-                commitmentsSection
-                identityCheck
-            }
-        }
-    }
-
-    /// People + Topics + Vocabulary — three "look something up by facet" surfaces that used to be
-    /// split across the rail (People, Topics) and a separate section below the fold (Vocabulary).
-    /// Always shown (unlike `needsAttentionGroup`): Vocabulary already renders a placeholder
-    /// prompt when empty rather than disappearing, so this group is never genuinely empty.
-    private var browseGroup: some View {
-        VStack(alignment: .leading, spacing: Space.x5) {
-            groupHeader("Browse")
-            peopleSection
-            topicsSection
-            vocabularySection
-        }
-    }
-
-    @ViewBuilder private var peopleSection: some View {
-        if !scopedPeople.isEmpty {
-            VStack(alignment: .leading, spacing: Space.x3) {
-                SectionHeader(title: "People")
-                VStack(spacing: 1) {
-                    ForEach(scopedPeople.prefix(8), id: \.name) { person in
-                        Button {
-                            let id = EntityRegistry.shared.resolveConfirmed(surface: person.name, kind: "person", group: model.activeGroup)
-                            entitySheetTarget = EntitySheetTarget(id: id ?? person.name, fallbackName: person.name)
-                        } label: {
-                            HStack(spacing: Space.x3) {
-                                InitialsBadge(name: person.name)
-                                Text(shortName(person.name)).font(CarbonFont.medium(13))
-                                    .foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                                Spacer()
-                                Text("\(person.count) call\(person.count == 1 ? "" : "s")")
-                                    .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
-                            }
-                            .padding(Space.x4)
-                            .background(Carbon.layer)
-                            .contentShape(Rectangle())
-                        }.buttonStyle(.plain)
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
-                .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
-            }
-        }
-    }
-
-    @ViewBuilder private var topicsSection: some View {
-        if !scopedTopics.isEmpty {
-            VStack(alignment: .leading, spacing: Space.x3) {
-                SectionHeader(title: "Topics")
-                FlexWrap(spacing: Space.x2) {
-                    ForEach(scopedTopics.prefix(14), id: \.name) { topic in
-                        CarbonChip(text: topic.name) { model.route = .tag(topic.name) }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Per-person commitment rollup (M17): what you owe, and what's owed to you, grouped by
-    /// person — workspace-wide (via IndexStore.commitments), not scoped to what's currently
-    /// rendered in `rows`, matching how the Vocabulary section is workspace-wide too.
-    @ViewBuilder private var commitmentsSection: some View {
-        let owedByYou = commitments.filter(\.isYou)
-        // Keyed by ownerID, not the display name — two different people can share a name, and
-        // grouping by string would silently merge their commitments (crosscheck finding).
-        let owedToYou = Dictionary(grouping: commitments.filter { !$0.isYou }, by: \.ownerID)
-        if !owedByYou.isEmpty || !owedToYou.isEmpty {
-            VStack(alignment: .leading, spacing: Space.x3) {
-                SectionHeader(title: "Commitments")
-                if !owedByYou.isEmpty {
-                    Text("You owe").font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
-                    ForEach(owedByYou) { commitmentRow($0) }
-                }
-                ForEach(owedToYou.keys.sorted(), id: \.self) { ownerID in
-                    let items = owedToYou[ownerID] ?? []
-                    if let name = items.first?.ownerName {
-                        Button { entitySheetTarget = EntitySheetTarget(id: ownerID, fallbackName: name) } label: {
-                            Text("\(name) owes you").font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
-                        }.buttonStyle(.plain)
-                        ForEach(items) { commitmentRow($0) }
-                    }
-                }
-            }
-        }
-    }
-
-    private func commitmentRow(_ item: CommitmentDisplay) -> some View {
-        HStack(alignment: .top, spacing: Space.x2) {
-            Button { markCommitmentDone(item) } label: {
-                CarbonIcon(name: "checkmark", size: 10, color: Carbon.textHelper)
-            }.buttonStyle(.plain).help("Mark done")
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.text).font(CarbonFont.body(12)).foregroundStyle(Carbon.textPrimary)
-                Text(item.callTitle).font(CarbonFont.label(10)).foregroundStyle(Carbon.textHelper)
-            }
-        }
-        .padding(.leading, Space.x1)
     }
 
     /// Marks a commitment resolved: rewrites the owning call's frontmatter (the source of truth —
@@ -719,206 +487,6 @@ struct KnowledgeView: View {
         }
     }
 
-    /// Imported files, newest first — click opens the original.
-    @ViewBuilder private var documentsSection: some View {
-        if !docs.isEmpty || !model.importJobs.isEmpty {
-            VStack(alignment: .leading, spacing: Space.x3) {
-                SectionHeader(title: "Documents")
-                // In-flight / just-finished imports — the "is it done?" signal.
-                ForEach(model.importJobs) { job in importJobRow(job) }
-                VStack(spacing: 1) {
-                    ForEach(docs.prefix(6), id: \.mdURL) { doc in
-                        HStack(spacing: Space.x3) {
-                            CarbonIcon(name: "document", size: 14, color: Carbon.iconSecondary)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(doc.title).font(CarbonFont.medium(13))
-                                    .foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                                Text(doc.created).font(CarbonFont.label(11))
-                                    .foregroundStyle(Carbon.textHelper)
-                            }
-                            Spacer()
-                            ItemMenu(
-                                open: {
-                                    // verifiedOriginalURL, not a raw folder.appendingPathComponent
-                                    // (crosscheck) — matches the other three resolution call sites
-                                    // in this file instead of hand-rolling a fourth, unverified one.
-                                    if let url = DocumentImporter.verifiedOriginalURL(atPath: doc.mdURL.path, group: model.activeGroup) {
-                                        NSWorkspace.shared.open(url)
-                                    }
-                                },
-                                openLabel: "Open original",
-                                onRename: { startRename(.doc(mdURL: doc.mdURL, title: doc.title)) },
-                                onDelete: { deleteTarget = .doc(mdURL: doc.mdURL, title: doc.title) })
-                        }
-                        .padding(Space.x4)
-                        .background(Carbon.layer)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            // M24: view in-app, matching notes/calls — was always-external-open.
-                            // "•••" → "Open original" (untouched, line ~686) still opens
-                            // externally for when the real file is actually what's wanted.
-                            // Re-verify the LIVE group before opening (crosscheck): `docs` can
-                            // still show the outgoing workspace's rows for the duration of
-                            // reload()'s async re-fetch after a group switch, and a bare parse()
-                            // here would let a stale row open another workspace's document inside
-                            // this one's UI (and its delete button then feeds that same mdURL to a
-                            // group-agnostic delete).
-                            if let meta = DocumentImporter.parse(doc.mdURL), meta.group == model.activeGroup {
-                                openDoc = OpenDocTarget(meta: meta, mdURL: doc.mdURL)
-                            }
-                        }
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
-                .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
-            }
-        }
-    }
-
-    /// One import's live state: spinner while extracting, ✓ when added, error text if it failed.
-    @ViewBuilder private func importJobRow(_ job: AppModel.ImportJob) -> some View {
-        HStack(spacing: Space.x3) {
-            switch job.state {
-            case .processing:
-                ProgressView().controlSize(.small)
-            case .done:
-                Image(systemName: "checkmark.circle.fill").font(.system(size: 14)).foregroundStyle(Carbon.success)
-            case .failed:
-                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 14)).foregroundStyle(Carbon.danger)
-            }
-            VStack(alignment: .leading, spacing: 1) {
-                Text(job.filename).font(CarbonFont.medium(13)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                Text(jobStatusText(job)).font(CarbonFont.label(11))
-                    .foregroundStyle(job.isFailed ? Carbon.danger : Carbon.textHelper)
-                    .lineLimit(2)
-            }
-            Spacer()
-            if case .failed = job.state {
-                Button { model.dismissImportJob(job.id) } label: {
-                    Image(systemName: "xmark").font(.system(size: 10, weight: .medium)).foregroundStyle(Carbon.iconSecondary)
-                        .frame(width: 20, height: 20).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(Space.x4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
-    }
-
-    private func jobStatusText(_ job: AppModel.ImportJob) -> String {
-        switch job.state {
-        case .processing: return "Analyzing on-device…"
-        case .done: return "Added — searchable everywhere"
-        case .failed(let message): return message
-        }
-    }
-
-    // MARK: - Vocabulary (the correction loop's front door)
-
-    private var vocabularySection: some View {
-        VStack(alignment: .leading, spacing: Space.x3) {
-            HStack {
-                SectionHeader(title: "Vocabulary")
-                Spacer()
-                Button {
-                    termCanonical = ""; termAliases = ""; termGloss = ""
-                    addingTerm = true
-                } label: {
-                    Text("Add term").font(CarbonFont.label(12)).foregroundStyle(Carbon.interactive)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            if vocabTerms.isEmpty {
-                Text("Teach Scripta your jargon once — it biases transcription, and searching a term finds its expansions too (\"TIM\" finds \"tenants in the market\").")
-                    .font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                FlexWrap(spacing: Space.x2) {
-                    ForEach(vocabTerms, id: \.id) { term in
-                        CarbonChip(text: term.name) { entitySheetTarget = EntitySheetTarget(id: term.id, fallbackName: term.name) }
-                            .help(term.gloss?.isEmpty == false ? term.gloss!
-                                  : term.aliases.joined(separator: ", "))
-                    }
-                }
-            }
-            if !suggestions.isEmpty {
-                Text("Suggested from your calls — tap to teach:")
-                    .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
-                FlexWrap(spacing: Space.x2) {
-                    ForEach(suggestions, id: \.self) { word in
-                        Button {
-                            termCanonical = word; termAliases = ""; termGloss = ""
-                            addingTerm = true
-                        } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: "plus").font(.system(size: 8, weight: .bold))
-                                Text(word).font(CarbonFont.label(12))
-                            }
-                            .foregroundStyle(Carbon.interactive)
-                            .padding(.horizontal, Space.x4).padding(.vertical, Space.x2)
-                            .background(Carbon.blueSoft, in: Capsule())
-                            .contentShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-        .alert("Add vocabulary term", isPresented: $addingTerm) {
-            TextField("Term (e.g. TIM)", text: $termCanonical)
-            TextField("Aliases, comma-separated (e.g. tenants in the market)", text: $termAliases)
-            TextField("Meaning (optional)", text: $termGloss)
-            Button("Add") {
-                let aliases = termAliases.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-                EntityRegistry.shared.addTerm(canonical: termCanonical, aliases: aliases,
-                                              gloss: termGloss.isEmpty ? nil : termGloss,
-                                              group: model.activeGroup)
-                if let store = model.index { IndexBuilder.syncTerms(store: store) }
-                reload()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Feeds transcription biasing and search — a search for the term also matches its aliases, everywhere.")
-        }
-    }
-
-    /// Deterministic identity clarifiers: pairs the registry itself flags as possibly the same
-    /// person/org. Your verdict persists as a rule, so each pair is asked exactly once.
-    @ViewBuilder private var identityCheck: some View {
-        if !collisions.isEmpty {
-            VStack(alignment: .leading, spacing: Space.x3) {
-                SectionHeader(title: "Identity check")
-                ForEach(Array(collisions.enumerated()), id: \.offset) { _, pair in
-                    VStack(alignment: .leading, spacing: Space.x2) {
-                        Text("Same \(pair.a.kind == "org" ? "company" : "person")?")
-                            .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
-                        Text("\(pair.a.name)  ·  \(pair.b.name)")
-                            .font(CarbonFont.medium(13)).foregroundStyle(Carbon.textPrimary)
-                            .lineLimit(2)
-                        HStack(spacing: Space.x3) {
-                            Button("Same") { verdict(pair, same: true) }
-                                .buttonStyle(.plain)
-                                .font(CarbonFont.medium(12)).foregroundStyle(Carbon.interactive)
-                            Button("Different") { verdict(pair, same: false) }
-                                .buttonStyle(.plain)
-                                .font(CarbonFont.medium(12)).foregroundStyle(Carbon.textSecondary)
-                        }
-                    }
-                    .padding(Space.x4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
-                            .strokeBorder(Carbon.borderSubtle, lineWidth: 1)
-                    }
-                }
-            }
-        }
-    }
-
     private func verdict(_ pair: (a: EntityRegistry.Entity, b: EntityRegistry.Entity), same: Bool) {
         // On merge, the more specific name (more tokens) becomes canonical.
         let aTokens = pair.a.name.split(separator: " ").count
@@ -927,397 +495,5 @@ struct KnowledgeView: View {
         EntityRegistry.shared.recordVerdict(keep.id, other.id, same: same)
         EntityRegistry.shared.save()
         collisions = EntityRegistry.shared.collisionCandidates(group: model.activeGroup)
-    }
-
-    /// "Wertz, Lalita @ Harrisburg" → "Wertz, Lalita" for the rail; full name in the tooltip.
-    private func shortName(_ name: String) -> String {
-        name.components(separatedBy: " @ ").first ?? name
-    }
-}
-
-/// One call's generated note in the digest, with the "add on" hook into your standing notes.
-private struct DigestCard: View {
-    let row: IndexStore.DigestRow
-    let notes: [KnowledgeNote]
-    let addToNote: (KnowledgeNote?) -> Void
-    @ObservedObject var model = AppModel.shared
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Space.x3) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title).font(CarbonFont.medium(15)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                Spacer()
-                Menu {
-                    ForEach(notes) { note in
-                        Button(note.title) { addToNote(note) }
-                    }
-                    if !notes.isEmpty { Divider() }
-                    Button("New note…") { addToNote(nil) }
-                } label: {
-                    HStack(spacing: Space.x2) {
-                        Image(systemName: "text.append").font(.system(size: 10, weight: .semibold))
-                        Text("Add to note").font(CarbonFont.label(12))
-                    }
-                    .foregroundStyle(Carbon.textSecondary)
-                    .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Append what this call taught you to a standing note")
-                Button {
-                    model.route = .call(URL(fileURLWithPath: row.path))
-                } label: {
-                    HStack(spacing: Space.x2) {
-                        Text("Open").font(CarbonFont.label(12))
-                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
-                    }
-                    .foregroundStyle(Carbon.interactive)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            Text(meta).font(CarbonFont.label(12)).foregroundStyle(Carbon.textHelper)
-            if !row.summary.isEmpty {
-                Text(row.summary).font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
-                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
-            }
-            if !row.tags.isEmpty {
-                FlexWrap(spacing: Space.x2) {
-                    ForEach(row.tags.prefix(6), id: \.self) { tag in
-                        // M21: matches the People rail's own tag chips, which already navigate —
-                        // this was the one tag surface in the hub that didn't.
-                        CarbonChip(text: tag) { model.route = .tag(tag) }
-                    }
-                }
-            }
-        }
-        .padding(Space.x5)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
-                .strokeBorder(Carbon.borderSubtle, lineWidth: 1)
-        }
-    }
-
-    private var title: String {
-        row.title.isEmpty ? "\(row.date) \(row.time)" : row.title
-    }
-    private var meta: String {
-        var parts: [String] = []
-        if !row.time.isEmpty { parts.append(row.time) }
-        if !row.duration.isEmpty { parts.append(row.duration) }
-        if !row.participants.isEmpty {
-            parts.append(row.participants.prefix(3).map { $0.components(separatedBy: " @ ").first ?? $0 }
-                .joined(separator: ", "))
-        }
-        return parts.joined(separator: " · ")
-    }
-}
-
-/// A standing note on the shelf: title, freshness, last entry.
-private struct NoteShelfCard: View {
-    let note: KnowledgeNote
-    let open: () -> Void
-    let onRename: () -> Void
-    let onDelete: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Space.x2) {
-            HStack(spacing: Space.x2) {
-                CarbonIcon(name: "book", size: 14, color: Carbon.interactive)
-                Text(note.title).font(CarbonFont.medium(14)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                Spacer()
-                ItemMenu(open: open, openLabel: "Open", onRename: onRename, onDelete: onDelete)
-            }
-            if let last = note.entries.last {
-                Text(last.text).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary).lineLimit(2)
-            }
-            Text("\(note.entries.count) entr\(note.entries.count == 1 ? "y" : "ies") · updated \(note.updated)")
-                .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
-        }
-        .padding(Space.x4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
-                .strokeBorder(Carbon.borderSubtle, lineWidth: 1)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture(perform: open)
-    }
-}
-
-/// The visible "•••" actions menu used on note cards and document rows (Open / Rename / Delete),
-/// so those actions don't require right-clicking.
-private struct ItemMenu: View {
-    let open: () -> Void
-    let openLabel: String
-    let onRename: () -> Void
-    let onDelete: () -> Void
-
-    var body: some View {
-        Menu {
-            Button(openLabel, action: open)
-            Button("Rename…", action: onRename)
-            Divider()
-            Button("Delete", role: .destructive, action: onDelete)
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Carbon.iconSecondary)
-                .frame(width: 26, height: 22)
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("More actions")
-    }
-}
-
-/// The note itself: the accumulated entries, and the composer that appends the next one.
-/// Presented as a sheet; `pendingLink` carries "this came from that call" when the flow
-/// started on a digest card.
-private struct NoteDetailView: View {
-    let note: KnowledgeNote
-    let pendingLink: URL?
-    let onChanged: (KnowledgeNote) -> Void
-    let onClose: () -> Void
-    let onDelete: () -> Void
-
-    @ObservedObject var model = AppModel.shared
-    @State private var draft = ""
-    @FocusState private var composerFocused: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: Space.x1) {
-                    Text(note.title).font(CarbonFont.semibold(18)).foregroundStyle(Carbon.textPrimary)
-                    Text("Started \(note.created) · Notes/\(note.url.lastPathComponent)")
-                        .font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
-                }
-                Spacer()
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 13)).foregroundStyle(Carbon.danger)
-                        .frame(width: 28, height: 28).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Delete this note")
-                CarbonButton(title: "Done", kind: .secondary, action: onClose)
-            }
-            .padding(Space.x6)
-
-            Divider().overlay(Carbon.borderSubtle)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: Space.x4) {
-                    if note.entries.isEmpty {
-                        Text("Nothing here yet — add the first entry below.")
-                            .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
-                    }
-                    ForEach(Array(note.entries.enumerated()), id: \.offset) { _, entry in
-                        VStack(alignment: .leading, spacing: Space.x1) {
-                            HStack(spacing: Space.x3) {
-                                Text(entry.stamp).font(CarbonFont.monospace(11)).foregroundStyle(Carbon.textHelper)
-                                if let call = entry.linkedCall, !call.contains("/") {
-                                    Button {
-                                        let url = AppSettings.outputFolder.appendingPathComponent("\(call).md")
-                                        // `call` comes from parsing freeform entry text (M14
-                                        // crosscheck, security lens): the "/" reject above blocks
-                                        // path components, this re-confirms the resolved file
-                                        // still resolves inside outputFolder before navigating.
-                                        let base = AppSettings.outputFolder.standardizedFileURL.path
-                                        guard url.standardizedFileURL.path.hasPrefix(base + "/") else { return }
-                                        onClose()
-                                        model.route = .call(url)
-                                    } label: {
-                                        HStack(spacing: 2) {
-                                            CarbonIcon(name: "document", size: 10, color: Carbon.interactive)
-                                            Text(call).font(CarbonFont.label(11)).foregroundStyle(Carbon.interactive).lineLimit(1)
-                                        }
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            Text(entry.text).font(CarbonFont.body(14)).foregroundStyle(Carbon.textPrimary)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(Space.x6)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-            Divider().overlay(Carbon.borderSubtle)
-
-            VStack(alignment: .leading, spacing: Space.x2) {
-                if let pendingLink {
-                    HStack(spacing: Space.x2) {
-                        CarbonIcon(name: "document", size: 11, color: Carbon.interactive)
-                        Text("Will link to \(pendingLink.deletingPathExtension().lastPathComponent)")
-                            .font(CarbonFont.label(11)).foregroundStyle(Carbon.textSecondary).lineLimit(1)
-                    }
-                }
-                HStack(spacing: Space.x3) {
-                    TextField("Add to this note…", text: $draft, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .font(CarbonFont.body(14))
-                        .foregroundStyle(Carbon.textPrimary)
-                        .lineLimit(1...4)
-                        .focused($composerFocused)
-                        .onSubmit(submit)
-                    CarbonButton(title: "Add", kind: .primary, action: submit)
-                }
-            }
-            .padding(Space.x5)
-            .background(Carbon.layer)
-        }
-        .frame(width: 560, height: 520)
-        .background(Carbon.background)
-        .onAppear { composerFocused = true }
-    }
-
-    private func submit() {
-        guard let refreshed = NoteStore.append(draft, linkedCall: pendingLink, to: note) else { return }
-        draft = ""
-        onChanged(refreshed)
-    }
-}
-
-/// One block of a document's extracted text (M24) — `#`/`##`/`###` header lines detected and
-/// stripped, everything else a paragraph. Trivial to detect (`hasPrefix("#")`), not a real parser:
-/// proportionate to what `DocumentImporter`'s own extraction actually emits (its PDF/PPTX paths
-/// mark page/slide breaks with literal `"## Page N"`/`"## Slide N"` headers) — not a general
-/// CommonMark engine for content this app doesn't produce.
-private struct MarkdownBlock: Identifiable {
-    let id = UUID()
-    let level: Int   // 0 = paragraph, 1...3 = heading level (capped at 3)
-    let text: String
-}
-
-private func markdownBlocks(_ body: String) -> [MarkdownBlock] {
-    body.components(separatedBy: "\n\n").compactMap { raw in
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let hashes = trimmed.prefix(while: { $0 == "#" })
-        guard !hashes.isEmpty, trimmed.count > hashes.count,
-              trimmed[trimmed.index(trimmed.startIndex, offsetBy: hashes.count)] == " " else {
-            return MarkdownBlock(level: 0, text: trimmed)
-        }
-        let text = trimmed.dropFirst(hashes.count).trimmingCharacters(in: .whitespaces)
-        return MarkdownBlock(level: min(hashes.count, 3), text: text)
-    }
-}
-
-/// A document's extracted text, read-only (M24) — the reader modeled on `NoteDetailView` (a
-/// sheet, your own artifact, not a call recording) rather than `TranscriptDetail` (tied to Calls'
-/// own master/detail pane). Renders Markdown, not plain text — see `markdownBlocks` above for why
-/// (Ronan: "make sure it can render the markdown too").
-private struct DocumentDetailView: View {
-    @ObservedObject var model = AppModel.shared
-    let doc: DocumentImporter.DocMeta
-    let mdURL: URL
-    let onClose: () -> Void
-    let onDelete: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: Space.x1) {
-                    Text(doc.title).font(CarbonFont.semibold(18)).foregroundStyle(Carbon.textPrimary)
-                    Text("Imported \(doc.created)").font(CarbonFont.label(11)).foregroundStyle(Carbon.textHelper)
-                }
-                Spacer()
-                Button {
-                    // Same resolution EntityDetailView's onOpenDoc uses (verifiedOriginalURL),
-                    // checked against the LIVE `model.activeGroup` rather than `doc.group` (the
-                    // value captured at sheet-open time) — crosscheck flagged the latter as a
-                    // tautological check that can't catch a workspace switch while this sheet is
-                    // still open, unlike the sibling call sites that all key off a live model.
-                    if let url = DocumentImporter.verifiedOriginalURL(atPath: mdURL.path, group: model.activeGroup) {
-                        NSWorkspace.shared.open(url)
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        CarbonIcon(name: "document", size: 12, color: Carbon.interactive)
-                        Text("Open original").font(CarbonFont.label(12)).foregroundStyle(Carbon.interactive)
-                    }
-                    .contentShape(Rectangle())
-                }.buttonStyle(.plain)
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 13)).foregroundStyle(Carbon.danger)
-                        .frame(width: 28, height: 28).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Delete this document")
-                CarbonButton(title: "Done", kind: .secondary, action: onClose)
-            }
-            .padding(Space.x6)
-
-            Divider().overlay(Carbon.borderSubtle)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: Space.x4) {
-                    ForEach(markdownBlocks(doc.body)) { block in
-                        blockView(block)
-                    }
-                }
-                .padding(Space.x6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .frame(width: 560, height: 520)
-        .background(Carbon.background)
-    }
-
-    private func blockView(_ block: MarkdownBlock) -> some View {
-        // Inline-only markdown (bold/italic/code/links) within each block — block-level structure
-        // (headings) was already split out by markdownBlocks above, so re-interpreting it here
-        // would double-parse. Preserves whitespace: a paragraph's own internal line breaks (e.g.
-        // from the source PDF's line wrapping) stay visible rather than collapsing to one run-on
-        // line. Falls back to the raw text, unstyled, on a parse failure rather than showing
-        // nothing.
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        let attributed = (try? AttributedString(markdown: block.text, options: options)) ?? AttributedString(block.text)
-        return Text(attributed)
-            .font(font(for: block.level))
-            .foregroundStyle(Carbon.textPrimary)
-            .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
-    }
-
-    private func font(for level: Int) -> Font {
-        switch level {
-        case 1: return CarbonFont.semibold(20)
-        case 2: return CarbonFont.semibold(16)
-        case 3: return CarbonFont.medium(14)
-        default: return CarbonFont.body(14)
-        }
-    }
-}
-
-/// Colored initials disc, Carbon-blue family.
-struct InitialsBadge: View {
-    let name: String
-    var body: some View {
-        Text(initials)
-            .font(CarbonFont.medium(10))
-            .foregroundStyle(Carbon.interactive)
-            .frame(width: 24, height: 24)
-            .background(Carbon.interactive.opacity(0.14), in: Circle())
-    }
-    private var initials: String {
-        let words = name.components(separatedBy: " @ ").first?
-            .components(separatedBy: CharacterSet(charactersIn: " ,")).filter { !$0.isEmpty } ?? []
-        let letters = words.prefix(2).compactMap(\.first)
-        return String(letters).uppercased()
     }
 }

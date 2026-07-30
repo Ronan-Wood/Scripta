@@ -4,11 +4,8 @@ import SwiftUI
 /// purpose-built Carbon-accented content on the right. Apple chrome, Carbon soul.
 struct HubView: View {
     @ObservedObject private var model = AppModel.shared
-    @State private var section: HubSection = .home
+    @StateObject private var navigator = Navigator()
     @State private var expanded: Bool = AppSettings.sidebarExpanded
-    @State private var focusCall: URL?
-    @State private var focusMs: Int?
-    @State private var focusTag: String?
     @State private var confirmingWorkspaceDelete = false
     @State private var deleteCandidateCount = 0
     @State private var creatingWorkspace = false
@@ -23,7 +20,8 @@ struct HubView: View {
                 HStack(spacing: 0) {
                     sidebar
                     Rectangle().fill(Carbon.borderSubtle).frame(width: 1)
-                    content
+                    HubContent(destination: navigator.destination,
+                               searchScopeGeneration: navigator.searchScopeGeneration)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(Carbon.background)
                 }
@@ -41,7 +39,11 @@ struct HubView: View {
         }
         .ignoresSafeArea(.container, edges: .top)   // extend under the transparent system titlebar
         .frame(minWidth: 940, minHeight: 640)
-        .onChange(of: model.route) { _, route in handle(route) }
+        .onChange(of: model.route) { _, route in
+            guard let route else { return }
+            navigator.follow(route)
+            model.route = nil   // one-shot: the inbox is emptied as it is consumed
+        }
         .confirmationDialog("Delete the “\(model.activeGroup)” workspace?",
                             isPresented: $confirmingWorkspaceDelete, titleVisibility: .visible) {
             Button("Delete \(deleteCandidateCount) call\(deleteCandidateCount == 1 ? "" : "s")", role: .destructive) {
@@ -139,9 +141,13 @@ struct HubView: View {
             Rectangle().fill(Carbon.borderSubtle).frame(height: 1)
                 .padding(.horizontal, 2).padding(.vertical, 6)
 
-            ForEach(HubSection.primary, id: \.self) { navItem($0) }
+            ForEach(HubSection.primary, id: \.self) {
+                SidebarNavItem(section: $0, navigator: navigator, expanded: expanded)
+            }
             Spacer()
-            ForEach(HubSection.secondary, id: \.self) { navItem($0) }
+            ForEach(HubSection.secondary, id: \.self) {
+                SidebarNavItem(section: $0, navigator: navigator, expanded: expanded)
+            }
             collapseRow
         }
         .padding(.top, 10)
@@ -274,23 +280,28 @@ struct HubView: View {
         .help("Active workspace — search and Ask are scoped to it")
     }
 
-    private func navItem(_ item: HubSection) -> some View {
-        let selected = section == item
-        return Button {
-            // Route-driven focus (open call / tag filter) is one-shot: manual navigation
-            // must not resurrect a stale selection on the next visit to Calls.
-            focusCall = nil
-            focusMs = nil
-            focusTag = nil
-            section = item
+}
+
+/// One sidebar row. Concrete struct rather than a `some View` helper: the sidebar stack is long
+/// enough that inlining seven of these puts the whole thing in one expression for the solver.
+private struct SidebarNavItem: View {
+    let section: HubSection
+    @ObservedObject var navigator: Navigator
+    let expanded: Bool
+
+    private var selected: Bool { navigator.destination.section == section }
+
+    var body: some View {
+        Button {
+            navigator.select(section)
         } label: {
             HStack(spacing: 11) {
-                Image(systemName: item.sfIcon)
+                Image(systemName: section.sfIcon)
                     .font(.system(size: 15))
                     .foregroundStyle(selected ? Carbon.interactive : Carbon.iconSecondary)
                     .frame(width: 18)
                 if expanded {
-                    Text(item.title)
+                    Text(section.title)
                         .font(selected ? CarbonFont.semibold(13.5) : CarbonFont.body(13.5))
                         .foregroundStyle(selected ? Carbon.textPrimary : Carbon.textSecondary)
                         .lineLimit(1)
@@ -305,68 +316,7 @@ struct HubView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(item.title)
-    }
-
-    @ViewBuilder private var content: some View {
-        switch section {
-        case .home:
-            HomeView()
-        case .calls:
-            CallsView(focusCall: focusCall, focusMs: focusMs, focusTag: focusTag)
-                .id("\(focusCall?.path ?? "")|\(focusMs.map(String.init) ?? "")|\(focusTag ?? "")")
-        case .meetings:
-            MeetingsView()
-        case .ask:
-            AskView()
-        case .knowledge:
-            KnowledgeView()
-        case .settings:
-            SettingsView()
-        case .docs:
-            HelpView()
-        }
-    }
-
-    private func handle(_ route: AppModel.Route?) {
-        switch route {
-        case .call(let url, let ms): focusCall = url; focusMs = ms; focusTag = nil; section = .calls
-        case .tag(let tag): focusTag = tag; focusCall = nil; focusMs = nil; section = .calls
-        case .section(let s): section = s
-        case nil: return
-        }
-        model.route = nil
-    }
-}
-
-enum HubSection: String, CaseIterable {
-    case home, calls, meetings, ask, knowledge, settings, docs
-
-    static let primary: [HubSection] = [.home, .calls, .meetings, .ask, .knowledge]
-    static let secondary: [HubSection] = [.settings, .docs]
-
-    var title: String {
-        switch self {
-        case .home: return "Home"
-        case .calls: return "Calls"
-        case .meetings: return "Meetings"
-        case .ask: return "Ask"
-        case .knowledge: return "Knowledge"
-        case .settings: return "Settings"
-        case .docs: return "Docs"
-        }
-    }
-
-    var sfIcon: String {
-        switch self {
-        case .home: return "house"
-        case .calls: return "doc.text"
-        case .meetings: return "calendar"
-        case .ask: return "bubble.left.and.bubble.right"
-        case .knowledge: return "list.bullet.rectangle"
-        case .settings: return "gearshape"
-        case .docs: return "book"
-        }
+        .help(section.title)
     }
 }
 
