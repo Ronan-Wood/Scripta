@@ -51,7 +51,29 @@ class VectorCache:
     def __init__(self, path: str | Path):
         self.path = str(path)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path, isolation_level=None)
+        # check_same_thread=False because the MCP server's HTTP transport builds the stack once on
+        # the main thread and then serves from per-connection handler threads, and sqlite3's
+        # default thread affinity made that a ProgrammingError on the FIRST cache touch. The
+        # retriever catches arm exceptions and degrades (retriever.py:338, :416), so the visible
+        # result was not a crash: HyDE and the reranker silently fell back to fused lexical order
+        # on every query — the 0.635 -> 0.351 paraphrase regression the cross arm exists to
+        # prevent, reported only as a `fallbacks` string nobody reads.
+        #
+        # Safe because access is SERIALIZED — two threads are never inside this connection at
+        # once — but the lock is not by itself what guarantees that. `serve_http` mints its lock
+        # per CALL, on the handler class it builds, while this connection is per `stack.build()`.
+        # So the lock covers one server's handler threads, not this object; the two coincide only
+        # because `main()` builds one stack and starts one server per process, and every cache
+        # touch is reached through `handle()` from `do_POST`. What breaks the argument is therefore
+        # not the lock being removed: a second `serve_http` over one Config gives two locks and one
+        # connection, and any `handle()` that skips `do_POST` — the stdio loop, or a test driving
+        # both transports over one Config — never takes a lock at all. sqlite3 catches neither; it
+        # has only stopped checking.
+        #
+        # Named by symbol, not by line: this comment carried three line numbers into `server.py`
+        # and every one of them was wrong within a day, which pointed the reader who came to
+        # re-check the argument at unrelated code.
+        self.db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
