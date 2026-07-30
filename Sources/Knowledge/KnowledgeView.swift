@@ -95,6 +95,81 @@ struct KnowledgeView: View {
     }
 
     var body: some View {
+        knowledgeContent
+        .confirmationDialog(
+            deleteTarget.map { "Delete the “\($0.name)” \($0.kindWord)?" } ?? "",
+            isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
+            presenting: deleteTarget
+        ) { target in
+            Button("Delete", role: .destructive) { performDelete(target) }
+            Button("Cancel", role: .cancel) {}
+        } message: { target in
+            switch target {
+            case .note: Text("This permanently deletes the note file. This can't be undone.")
+            case .doc: Text("This deletes the copied file and its extracted text from your vault. Your original file is not affected.")
+            }
+        }
+        .alert("Rename \(renameTarget?.kindWord ?? "item")",
+               isPresented: Binding(get: { renameTarget != nil }, set: { if !$0 { renameTarget = nil } })) {
+            TextField("Name", text: $renameText)
+            Button("Rename") { performRename() }
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+        }
+        .sheet(item: $openNote) { note in
+            NoteDetailView(note: note, pendingLink: pendingLink) { refreshed in
+                openNote = refreshed
+                pendingLink = nil
+                notes = NoteStore.list(group: model.activeGroup)
+                reindex(refreshed)
+            } onClose: {
+                openNote = nil
+                pendingLink = nil
+                notes = NoteStore.list(group: model.activeGroup)
+            } onDelete: {
+                let target = openNote
+                openNote = nil
+                if let target { deleteTarget = .note(target) }
+            }
+        }
+        .alert("New note", isPresented: $creatingNote) {
+            TextField("Title (e.g. 425 Park)", text: $newNoteTitle)
+            Button("Create") {
+                if let note = NoteStore.create(title: newNoteTitle, group: model.activeGroup) {
+                    notes = NoteStore.list(group: model.activeGroup)
+                    openNote = note
+                    reindex(note)
+                }
+                newNoteTitle = ""
+            }
+            Button("Cancel", role: .cancel) { newNoteTitle = "" }
+        } message: {
+            Text("A standing note you keep adding to — it lives in Notes/ inside your transcripts folder.")
+        }
+        .sheet(item: $entitySheetTarget) { target in
+            EntitySheet(target: target, entitySheetTarget: $entitySheetTarget,
+                        openNote: $openNote, onCommitmentsChanged: reload)
+        }
+        .sheet(item: $openDoc) { target in
+            DocumentSheet(target: target, openDoc: $openDoc, deleteTarget: $deleteTarget)
+        }
+    }
+
+    /// Split out of `body` so neither half carries the whole modifier chain. Cost here is a
+    /// THRESHOLD, not a ramp, and that is the whole reason this seam exists: bisected, the first
+    /// ~7 modifier wraps are free and each one after that costs the solver real time. Not modifier
+    /// identity — `.confirmationDialog` is free at position 7, and these same six presentations
+    /// cost ~600ms at depth 8-12 but ~36ms re-based on a shallow opaque type. Depth position is
+    /// what the solver charges for.
+    ///
+    /// Measured across two independent runs: the single-expression form type-checked at 866 and
+    /// 880ms mean; this pair costs ~36ms each. The per-modifier figure is NOT quoted because it did
+    /// not reproduce — one run put it near 80ms and another near 130ms — so budget against the
+    /// threshold, not a rate.
+    ///
+    /// The seam is load-bearing and nothing enforces it. Moving one presentation down here took a
+    /// probe from 72ms back to 197ms; a lifecycle modifier up into `body` does the same in reverse.
+    /// Anything in the 4...6 range works, which is the slack you have.
+    private var knowledgeContent: some View {
         ScrollView {
             // Regrouped by purpose, not build order (M22): at-a-glance counts, then Recent (the
             // call log — the primary content) alongside Needs-attention/Browse in the rail, then
@@ -166,62 +241,6 @@ struct KnowledgeView: View {
             return true
         }
         .onChange(of: model.importJobs) { _, _ in reload() }
-        .confirmationDialog(
-            deleteTarget.map { "Delete the “\($0.name)” \($0.kindWord)?" } ?? "",
-            isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
-            presenting: deleteTarget
-        ) { target in
-            Button("Delete", role: .destructive) { performDelete(target) }
-            Button("Cancel", role: .cancel) {}
-        } message: { target in
-            switch target {
-            case .note: Text("This permanently deletes the note file. This can't be undone.")
-            case .doc: Text("This deletes the copied file and its extracted text from your vault. Your original file is not affected.")
-            }
-        }
-        .alert("Rename \(renameTarget?.kindWord ?? "item")",
-               isPresented: Binding(get: { renameTarget != nil }, set: { if !$0 { renameTarget = nil } })) {
-            TextField("Name", text: $renameText)
-            Button("Rename") { performRename() }
-            Button("Cancel", role: .cancel) { renameTarget = nil }
-        }
-        .sheet(item: $openNote) { note in
-            NoteDetailView(note: note, pendingLink: pendingLink) { refreshed in
-                openNote = refreshed
-                pendingLink = nil
-                notes = NoteStore.list(group: model.activeGroup)
-                reindex(refreshed)
-            } onClose: {
-                openNote = nil
-                pendingLink = nil
-                notes = NoteStore.list(group: model.activeGroup)
-            } onDelete: {
-                let target = openNote
-                openNote = nil
-                if let target { deleteTarget = .note(target) }
-            }
-        }
-        .alert("New note", isPresented: $creatingNote) {
-            TextField("Title (e.g. 425 Park)", text: $newNoteTitle)
-            Button("Create") {
-                if let note = NoteStore.create(title: newNoteTitle, group: model.activeGroup) {
-                    notes = NoteStore.list(group: model.activeGroup)
-                    openNote = note
-                    reindex(note)
-                }
-                newNoteTitle = ""
-            }
-            Button("Cancel", role: .cancel) { newNoteTitle = "" }
-        } message: {
-            Text("A standing note you keep adding to — it lives in Notes/ inside your transcripts folder.")
-        }
-        .sheet(item: $entitySheetTarget) { target in
-            EntitySheet(target: target, entitySheetTarget: $entitySheetTarget,
-                        openNote: $openNote, onCommitmentsChanged: reload)
-        }
-        .sheet(item: $openDoc) { target in
-            DocumentSheet(target: target, openDoc: $openDoc, deleteTarget: $deleteTarget)
-        }
     }
 
     /// Notes are retrievable (Clovis, search fusion, MCP) — index immediately on every change
