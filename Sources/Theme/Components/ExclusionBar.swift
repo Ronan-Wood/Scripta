@@ -1,0 +1,215 @@
+import Foundation
+import SwiftUI
+
+// MARK: - Record & Register: what this result set left out
+//
+// Default retrieval withholds conversation-class sources, archived notes and superseded notes. All
+// three are correct defaults and none of them may be silent, because the failure they cause is not
+// a bad result — it is a CONFIDENT WRONG CONCLUSION. A reader who does not know a class was held
+// back reads its absence as proof it does not exist, and then stops looking.
+//
+// This is the UI face of the CLI's `status filter: active,complete · sources excluded`, and it
+// makes one addition the CLI cannot: the control that includes them. A disclosure the reader cannot
+// act on just relocates the dead end.
+//
+// Rule 3 lands on the unusual side here. The DEFAULT (withholding) is monochrome, because
+// withholding is the default and colour marks deviation. The DEVIATION is including — a result set
+// carrying superseded or archived notes contains content the vault has moved past, and that is
+// exactly what `Ink.stale` marks. So the bar gets quieter as it withholds more, and speaks up when
+// the reader has opened it out.
+
+/// The applied filter, over `RetrievalClass` — the same list `Passage.withheldAs` answers for.
+///
+/// Typed rather than stringly BECAUSE of what a string set cost: this bar modelled conversation
+/// sources as a first-class axis while the passage had no such field, and nothing could notice,
+/// because "sources" was a string here and nothing at all there. One enum makes the two halves of
+/// the disclosure the same list, and the chips still show the engine's tokens verbatim — the prose
+/// line beneath translates them, so the token never has to be softened.
+struct ExclusionFilter {
+    /// What default retrieval searches.
+    static let defaultClasses: Set<RetrievalClass> = Set(RetrievalClass.allCases.filter(\.isDefault))
+
+    /// The classes this result set actually searched.
+    var searched: Set<RetrievalClass>
+    /// Anything else that narrowed this result set — a clamped `k`, today. Mirrors the envelope's
+    /// `notes`, which is always present and empty when there is nothing to say.
+    var notes: [String] = []
+
+    static let standard = ExclusionFilter(searched: defaultClasses)
+
+    /// Canonical order, so a chip does not move when an unrelated one is toggled.
+    var withheld: [RetrievalClass] { RetrievalClass.allCases.filter { !searched.contains($0) } }
+
+    /// What the reader asked for beyond the default. This is the deviation set, and the only part
+    /// of this component that is allowed to carry colour.
+    var included: [RetrievalClass] {
+        RetrievalClass.allCases.filter { searched.contains($0) && !$0.isDefault }
+    }
+
+    mutating func toggle(_ klass: RetrievalClass) {
+        if searched.contains(klass) { searched.remove(klass) } else { searched.insert(klass) }
+    }
+
+    /// The sentence that prevents the wrong conclusion. Names the classes in human terms and then
+    /// says what their absence does NOT mean, which is the half a filter readout usually omits.
+    var withheldSentence: String {
+        let named = withheld.map(\.gloss)
+        guard !named.isEmpty else {
+            return "Nothing was withheld. These results are the whole corpus — archived notes, "
+                + "superseded notes and call transcripts included."
+        }
+        let one = named.count == 1
+        return "\(Self.sentenceCase(Self.list(named))) \(one ? "was" : "were") not searched. "
+            + "\(one ? "Its" : "Their") absence from these results is not evidence "
+            + "\(one ? "it does not" : "they do not") exist."
+    }
+
+    /// What the reader opened up, said back to them. `nil` at the default, which is what keeps the
+    /// quiet case quiet.
+    var inclusionSentence: String? {
+        guard !included.isEmpty else { return nil }
+        return "Asked for: \(Self.list(included.map(\.gloss))) can appear in these results."
+    }
+
+    private static func list(_ items: [String]) -> String {
+        guard let last = items.last else { return "" }
+        if items.count == 1 { return last }
+        return items.dropLast().joined(separator: ", ") + " and " + last
+    }
+
+    private static func sentenceCase(_ text: String) -> String {
+        guard let first = text.first else { return text }
+        return first.uppercased() + text.dropFirst()
+    }
+}
+
+struct ExclusionBar: View {
+    let filter: ExclusionFilter
+    var toggle: (RetrievalClass) -> Void = { _ in }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Gap.s8) {
+            ExclusionChipRows(filter: filter, toggle: toggle)
+            ExclusionExplanation(filter: filter)
+            if !filter.notes.isEmpty { ExclusionNotes(notes: filter.notes) }
+        }
+        .padding(Metrics.cardPaddingCompact)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .surface(Ink.layer)
+    }
+}
+
+/// Two groups, stacked rather than side by side: at four classes plus two labels a single row runs
+/// past a sidebar-width panel, and a filter readout that truncates is a filter readout that hides
+/// exactly the class the reader needed to know about.
+private struct ExclusionChipRows: View {
+    let filter: ExclusionFilter
+    let toggle: (RetrievalClass) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Gap.s6) {
+            if !filter.withheld.isEmpty {
+                ExclusionGroup(label: "withheld", classes: filter.withheld,
+                               included: false, toggle: toggle)
+            }
+            if !filter.included.isEmpty {
+                ExclusionGroup(label: "including", classes: filter.included,
+                               included: true, toggle: toggle)
+            }
+        }
+    }
+}
+
+private struct ExclusionGroup: View {
+    let label: String
+    let classes: [RetrievalClass]
+    let included: Bool
+    let toggle: (RetrievalClass) -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Gap.s8) {
+            EnvelopeMarkerLabel(name: label, tone: included ? Ink.stale : Ink.textHelper)
+            ForEach(classes) { klass in
+                ExclusionChip(klass: klass, included: included, toggle: toggle)
+            }
+            Spacer(minLength: Gap.s4)
+        }
+    }
+}
+
+/// The control the CLI cannot offer. Tapping a chip moves it between the two groups, which is why
+/// the two groups are the same shape: the reader is watching a class move, not reading two lists.
+private struct ExclusionChip: View {
+    let klass: RetrievalClass
+    let included: Bool
+    let toggle: (RetrievalClass) -> Void
+
+    var body: some View {
+        Button { toggle(klass) } label: {
+            ExclusionChipLabel(klass: klass, included: included)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ExclusionChipLabel: View {
+    let klass: RetrievalClass
+    let included: Bool
+
+    /// The withheld chip carries no fill of its own and is delimited by its BORDER. `layerAlt` over
+    /// the bar's `layer` bought nothing and cost twice: in dark both resolve to gray80, so
+    /// `borderSubtle` on it was 1.00:1 — not a faint edge, the same colour — and helper text on
+    /// layerAlt is a recorded 3.48:1 failure there. On `layer` the text clears 4.5 and
+    /// `borderStrong` clears 3:1 in both appearances (3.02 light / 3.01 dark).
+    ///
+    /// `borderStrong` and not `borderSubtle` because a chip is a CONTROL: the gate's own words for
+    /// borderSubtle are "decorative separator between adjacent surfaces, not a control boundary".
+    ///
+    /// The face comes from `RetrievalClass.register`, not from a choice made here: rule 1's
+    /// name/value split says a status token is a VALUE and therefore mono, and putting that on the
+    /// type is what stops a second renderer of the same vocabulary from deciding otherwise.
+    /// The included chip draws its LABEL in `textPrimary`, not in `stale`. `stale` on `staleSoft`
+    /// measured 3.94:1 in light against the 4.5 a 12pt label needs — and the ledger already carried
+    /// that row rather than treating it as a defect. The fix is not a new token: it is following the
+    /// rule this system already has. `SpineBadge.Prominence.deviation` marks a deviation with a wash
+    /// FILL and a mark EDGE and draws its text in `textPrimary`, precisely so the signal never has
+    /// to be carried by ink that must also stay legible. The chip was tinting its label instead, and
+    /// so had to choose between reading as deviation and being readable. It no longer does: fill and
+    /// edge carry "included", the label carries the word.
+    var body: some View {
+        Text(klass.label)
+            .typeface(RetrievalClass.register, included ? Ink.textPrimary : Ink.textHelper)
+            .controlBox(Density.pill, horizontal: Gap.s8, vertical: Gap.s2)
+            .background(included ? Ink.staleSoft : Ink.layer, in: Corner.controlShape)
+            .hairline(included ? Ink.stale : Ink.borderStrong, radius: Corner.control)
+    }
+}
+
+private struct ExclusionExplanation: View {
+    let filter: ExclusionFilter
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Gap.s2) {
+            Text(filter.withheldSentence).proseText(Register.proseSm, Ink.textSecondary)
+            if let inclusion = filter.inclusionSentence {
+                Text(inclusion).proseText(Register.proseSm, Ink.stale)
+            }
+        }
+        .padding(.leading, EnvelopeMarker.indent)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ExclusionNotes: View {
+    let notes: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Gap.s2) {
+            ForEach(notes, id: \.self) {
+                Text($0).typeface(Register.monoMicro, Ink.textHelper)
+            }
+        }
+        .padding(.leading, EnvelopeMarker.indent)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}

@@ -9,6 +9,10 @@ dist/
 .zed/
 .vscode/
 .idea/
+# Xcode's own per-user state, same policy: scheme ordering and breakpoints are whose machine this
+# is, not what the project is. `.swiftpm/` is where SwiftPM puts it for a package directory.
+.swiftpm/
+xcuserdata/
 Eval/*.db
 
 # Eval baseline — local-only, derived from private corpus (never commit)

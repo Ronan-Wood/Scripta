@@ -21,7 +21,23 @@ targetTemplates:
     type: application
     platform: macOS
     sources:
-      - Sources
+      # Sources/Gallery is the design system's review surface and belongs to the `Gallery` target
+      # alone. Without this exclude a bare `- Sources` sweeps it into the app: two @main entry
+      # points, and a gallery that ships inside the product it was built to keep at arm's length.
+      #
+      # Sources/Theme/Components is excluded for a different reason, and only until the view
+      # migration: no app view uses one of them yet, so all 15 files were compiling into both
+      # flavors as dead code. Out is the right answer while that is true — it makes the migration
+      # ADD each component to the product deliberately, in a reviewed pass, instead of the product
+      # already carrying a second, unreviewed UI vocabulary alongside CarbonKit that any view can
+      # reach for early. The token layer (Ink / Register / Metrics / Surface) deliberately stays
+      # IN: it declares values rather than views, and it is what a migrated view imports first.
+      - path: Sources
+        excludes:
+          - Gallery
+          - Gallery/**
+          - Theme/Components
+          - Theme/Components/**
       - path: Skill/scripta/SKILL.md
         buildPhase: resources
       - path: Resources/Fonts
@@ -112,4 +128,53 @@ targets:
         # the shared App Group so it reads the index + state file without container prompts.
         CODE_SIGN_ENTITLEMENTS: SourcesMCP/scripta-mcp.entitlements
 
+  # The "Record & Register" review surface. A separate runnable app whose whole purpose is that
+  # the design system can be accepted or rejected BEFORE it touches an app view.
+  #
+  # It links the four token files by name, not `Sources/Theme` wholesale: the Carbon files in that
+  # directory are the layer this system replaces, and a gallery that could reach them would end up
+  # reviewing a blend of the two. It links no app view at all, which is what keeps "the system is
+  # reviewable in isolation" a structural fact rather than a habit.
+  Gallery:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/Gallery
+      # Components built ON the token layer, and the only target that compiles them: the app
+      # excludes this directory until the view migration. Listed as a whole directory on purpose —
+      # a component that is not in the gallery is a component nobody reviewed. The Carbon files
+      # are kept out by the four by-name entries below, not by any exclude: there is no wildcard
+      # here that could pick them up.
+      - Sources/Theme/Components
+      - Sources/Theme/Ink.swift
+      - Sources/Theme/Register.swift
+      - Sources/Theme/Metrics.swift
+      - Sources/Theme/Surface.swift
+      - path: Resources/Fonts
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ronanwood.Scripta.Gallery
+        PRODUCT_NAME: Gallery
+        SWIFT_VERSION: "5.0"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_KEY_CFBundleDisplayName: "Record & Register"
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        # Ad-hoc, unsandboxed, no entitlements: this never leaves the machine that built it, and
+        # automatic signing would try to register a second bundle ID with the developer portal
+        # before it would run.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_ENTITLEMENTS: ""
+        DEVELOPMENT_TEAM: ""
+        ENABLE_HARDENED_RUNTIME: NO
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+
   # Unit tests live in the Core package (Core/Tests/ScriptaCoreTests): `swift test --package-path Core`.
+  # The contrast gate and the speaker-ramp colour-vision check live there too — see
+  # Core/Tests/ScriptaCoreTests/ContrastGateTests.swift for why, and what it costs.
