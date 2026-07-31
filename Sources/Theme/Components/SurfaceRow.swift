@@ -116,7 +116,17 @@ private struct RowText: View {
             // Weight, not colour, marks the selected row's title. The wash behind it already
             // carries the blue; a second signal in the ink would spend rule 3's budget twice.
             Text(title).typeface(selected ? Register.uiEmphasis : Register.ui)
-            if let subtitle { Text(subtitle).typeface(Register.caption, Ink.textHelper) }
+            // The subtitle steps up to `textSecondary` on a SELECTED row. `textHelper` over the
+            // `interactiveSoft` wash measures 3.77:1 light / 3.46:1 dark — under the 4.5 a 12pt
+            // label needs, and under it in the most ordinary use this component has. It survived
+            // because the matrix pairs washes with `textPrimary`/`interactive`/`danger`/`success`/
+            // `stale`/`speaker.me`/`textSecondary` and never with `textHelper`, so the gate scored
+            // no such pairing and the gallery drew no selected row WITH a subtitle. `textSecondary`
+            // measures 5.86:1 / 6.72:1 there. On an unselected row `textHelper` is correct and
+            // stays — the hierarchy it expresses is real, it just cannot survive a tinted ground.
+            if let subtitle {
+                Text(subtitle).typeface(Register.caption, selected ? Ink.textSecondary : Ink.textHelper)
+            }
         }
     }
 }

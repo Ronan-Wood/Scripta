@@ -5,7 +5,14 @@ import Foundation
 //
 // `Sources/Gallery/ColorScience.swift` implements the same formulas over `NSColor`. Two copies of
 // a published spec is a smaller cost than one copy that only one side of the module boundary can
-// reach — but it IS a cost, and the two must be changed together.
+// reach — but it IS a cost, and "the two must be changed together" was the whole of the mechanism
+// until `ColorScienceParityTests` arrived.
+//
+// THE ARITHMETIC BELOW IS NOW CHARACTER-FOR-CHARACTER THE GALLERY'S, and that is load-bearing
+// rather than tidy: the parity test slices both files and compares the shared regions as text, so
+// every place the two could disagree is a place one of them fails to match. Where the files must
+// differ they differ at the EDGES only — `TokenRGB` here, `NSColor` there — and the regions are cut
+// to exclude exactly those lines. If you reformat a formula here, reformat it there.
 
 enum Srgb {
     static func linear(_ channel: Double) -> Double {
@@ -69,7 +76,7 @@ enum VisionSim {
     ]
 
     private static func apply(_ m: [[Double]], _ v: [Double]) -> [Double] {
-        (0..<3).map { m[$0][0] * v[0] + m[$0][1] * v[1] + m[$0][2] * v[2] }
+        (0..<3).map { i in m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2] }
     }
 
     private static func clamp(_ x: Double) -> Double { min(1, max(0, x)) }
@@ -90,51 +97,49 @@ enum VisionSim {
 /// neighbour", which is the only question a categorical ramp asks.
 enum Perceptual {
     static func lab(_ color: TokenRGB) -> (l: Double, a: Double, b: Double) {
-        let (r, g, b) = (Srgb.linear(color.red), Srgb.linear(color.green), Srgb.linear(color.blue))
-        let x = 0.4124564 * r + 0.3575761 * g + 0.1804375 * b
-        let y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b
-        let z = 0.0193339 * r + 0.1191920 * g + 0.9503041 * b
+        let (r, g, bl) = (Srgb.linear(color.red), Srgb.linear(color.green), Srgb.linear(color.blue))
+        let x = 0.4124564 * r + 0.3575761 * g + 0.1804375 * bl
+        let y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * bl
+        let z = 0.0193339 * r + 0.1191920 * g + 0.9503041 * bl
         let f = { (t: Double) -> Double in
             t > 216.0 / 24389.0 ? pow(t, 1.0 / 3.0) : (841.0 / 108.0) * t + 4.0 / 29.0
         }
-        let (fx, fy, fz) = (f(x / 0.95047), f(y), f(z / 1.08883))
+        let (fx, fy, fz) = (f(x / 0.95047), f(y / 1.0), f(z / 1.08883))
         return (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
     }
 
     static func deltaE2000(_ c1: TokenRGB, _ c2: TokenRGB) -> Double {
         let p = lab(c1), q = lab(c2)
-        let cBar = (hypot(p.a, p.b) + hypot(q.a, q.b)) / 2
+        let c1ab = hypot(p.a, p.b), c2ab = hypot(q.a, q.b)
+        let cBar = (c1ab + c2ab) / 2
         let g = 0.5 * (1 - sqrt(pow(cBar, 7) / (pow(cBar, 7) + pow(25, 7))))
-        let a1 = (1 + g) * p.a, a2 = (1 + g) * q.a
-        let c1p = hypot(a1, p.b), c2p = hypot(a2, q.b)
-        let h1 = hue(a1, p.b), h2 = hue(a2, q.b)
+        let a1p = (1 + g) * p.a, a2p = (1 + g) * q.a
+        let c1p = hypot(a1p, p.b), c2p = hypot(a2p, q.b)
+        let h1p = angle(a1p, p.b), h2p = angle(a2p, q.b)
 
-        let dL = q.l - p.l
-        let dC = c2p - c1p
-        let dh = hueDelta(h1, h2, c1p * c2p)
-        let dH = 2 * sqrt(c1p * c2p) * sin(radians(dh) / 2)
+        let dLp = q.l - p.l
+        let dCp = c2p - c1p
+        let dhp = hueDelta(h1p, h2p, c1p * c2p)
+        let dHp = 2 * sqrt(c1p * c2p) * sin(dhp.radians / 2)
 
-        let lBar = (p.l + q.l) / 2
-        let cBarP = (c1p + c2p) / 2
-        let hBar = hueMean(h1, h2, c1p * c2p)
-        let t = 1 - 0.17 * cos(radians(hBar - 30)) + 0.24 * cos(radians(2 * hBar))
-            + 0.32 * cos(radians(3 * hBar + 6)) - 0.20 * cos(radians(4 * hBar - 63))
+        let lBar = (p.l + q.l) / 2, cBarP = (c1p + c2p) / 2
+        let hBar = hueMean(h1p, h2p, c1p * c2p)
+        let t = 1 - 0.17 * cos((hBar - 30).radians) + 0.24 * cos((2 * hBar).radians)
+            + 0.32 * cos((3 * hBar + 6).radians) - 0.20 * cos((4 * hBar - 63).radians)
         let sL = 1 + (0.015 * pow(lBar - 50, 2)) / sqrt(20 + pow(lBar - 50, 2))
         let sC = 1 + 0.045 * cBarP
         let sH = 1 + 0.015 * cBarP * t
         let rC = cBarP > 0 ? 2 * sqrt(pow(cBarP, 7) / (pow(cBarP, 7) + pow(25, 7))) : 0
-        let rT = -rC * sin(radians(2 * 30 * exp(-pow((hBar - 275) / 25, 2))))
+        let rT = -rC * sin((2 * 30 * exp(-pow((hBar - 275) / 25, 2))).radians)
 
-        let (kL, kC, kH) = (dL / sL, dC / sC, dH / sH)
+        let kL = dLp / sL, kC = dCp / sC, kH = dHp / sH
         return sqrt(kL * kL + kC * kC + kH * kH + rT * kC * kH)
     }
 
-    private static func radians(_ degrees: Double) -> Double { degrees * .pi / 180 }
-
-    private static func hue(_ a: Double, _ b: Double) -> Double {
+    private static func angle(_ a: Double, _ b: Double) -> Double {
         guard a != 0 || b != 0 else { return 0 }
-        let degrees = atan2(b, a) * 180 / .pi
-        return degrees < 0 ? degrees + 360 : degrees
+        let deg = atan2(b, a) * 180 / .pi
+        return deg < 0 ? deg + 360 : deg
     }
 
     private static func hueDelta(_ h1: Double, _ h2: Double, _ chromaProduct: Double) -> Double {
@@ -151,4 +156,8 @@ enum Perceptual {
         guard abs(h1 - h2) > 180 else { return sum / 2 }
         return sum < 360 ? (sum + 360) / 2 : (sum - 360) / 2
     }
+}
+
+private extension Double {
+    var radians: Double { self * .pi / 180 }
 }

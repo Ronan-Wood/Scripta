@@ -30,8 +30,22 @@ targetTemplates:
       # flavors as dead code. Out is the right answer while that is true — it makes the migration
       # ADD each component to the product deliberately, in a reviewed pass, instead of the product
       # already carrying a second, unreviewed UI vocabulary alongside CarbonKit that any view can
-      # reach for early. The token layer (Ink / Register / Metrics / Surface) deliberately stays
-      # IN: it declares values rather than views, and it is what a migrated view imports first.
+      # reach for early.
+      #
+      # Sources/Theme/Tokens deliberately stays IN, and the line is NOT "values in, views out" —
+      # that reading is simply false: Register, Metrics and Surface each ship View extensions
+      # (`typeface`, `proseText`, `controlBox`, `surface`, `hairline`, `staleUnderline`) into both
+      # flavors. The real boundary is what a migrating view needs ON DAY ONE versus what it must
+      # not reach for before its own pass. A view being ported has to name a colour, a type role, a
+      # gap and a corner, and it has to be able to APPLY them — a token layer whose modifiers were
+      # out would be ported around, not ported to. What it must not have early is the second UI
+      # vocabulary: a `Card`, a `Pill`, a `ListRow` adopted ad hoc is a component nobody reviewed
+      # sitting in the product beside CarbonKit.
+      #
+      # The cost, stated rather than discovered: an app view can call `.surface()` or `.controlBox()`
+      # today, outside any reviewed pass, and nothing here stops it. That is accepted because those
+      # modifiers are one wrap over a token each — the wrong ARGUMENT is a contrast finding the gate
+      # already scores, where a wrong component is a whole unreviewed control.
       - path: Sources
         excludes:
           - Gallery
@@ -131,25 +145,28 @@ targets:
   # The "Record & Register" review surface. A separate runnable app whose whole purpose is that
   # the design system can be accepted or rejected BEFORE it touches an app view.
   #
-  # It links the four token files by name, not `Sources/Theme` wholesale: the Carbon files in that
-  # directory are the layer this system replaces, and a gallery that could reach them would end up
-  # reviewing a blend of the two. It links no app view at all, which is what keeps "the system is
-  # reviewable in isolation" a structural fact rather than a habit.
+  # It links two directories under `Sources/Theme`, not `Sources/Theme` wholesale: the Carbon files
+  # sitting beside them are the layer this system replaces, and a gallery that could reach them
+  # would end up reviewing a blend of the two. It links no app view at all, which is what keeps
+  # "the system is reviewable in isolation" a structural fact rather than a habit.
   Gallery:
     type: application
     platform: macOS
     sources:
       - Sources/Gallery
-      # Components built ON the token layer, and the only target that compiles them: the app
-      # excludes this directory until the view migration. Listed as a whole directory on purpose —
-      # a component that is not in the gallery is a component nobody reviewed. The Carbon files
-      # are kept out by the four by-name entries below, not by any exclude: there is no wildcard
-      # here that could pick them up.
+      # BOTH entries are whole DIRECTORIES, and that is the point. "The token layer is Ink,
+      # Register, Metrics and Surface" used to be spelled out three times — four by-name paths
+      # here, the same four in `DesignSystemSource.tokenLayer()`, and again in prose in
+      # GalleryApp — so a fifth token file would have compiled nowhere and gated nowhere,
+      # silently. Components has always been a directory precisely so "a component nobody
+      # reviewed" cannot happen; the token layer now gets the same guarantee.
+      # `Carbon*` stays directly in `Sources/Theme`, which no entry here reaches.
+      #
+      # `ThemeTokenSource` still names `Tokens/Ink.swift` by path and always will: it parses the
+      # palette specifically, not "whatever is in the layer", so that one is a reference to a file
+      # rather than a fourth definition of the set.
+      - Sources/Theme/Tokens
       - Sources/Theme/Components
-      - Sources/Theme/Ink.swift
-      - Sources/Theme/Register.swift
-      - Sources/Theme/Metrics.swift
-      - Sources/Theme/Surface.swift
       - path: Resources/Fonts
         buildPhase: resources
     settings:

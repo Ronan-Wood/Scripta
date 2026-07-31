@@ -139,23 +139,31 @@ private struct ExclusionGroup: View {
 
 /// The control the CLI cannot offer. Tapping a chip moves it between the two groups, which is why
 /// the two groups are the same shape: the reader is watching a class move, not reading two lists.
-private struct ExclusionChip: View {
+///
+/// A `Pill`, and internal rather than private, because both of those were the defect. It was a bare
+/// `Button { … }.buttonStyle(.plain)` around `.controlBox` + `.background` + `.hairline` — which is
+/// `ControlSkin`'s body with the PHASE removed. The most-clicked control in the answer surface
+/// therefore had no hover fill, no `ControlAlpha.pressed`, no `FocusRing`, and — because
+/// `focusEffectDisabled()` lives inside `Pressable` — AppKit's own ring at AppKit's radius over a
+/// 7pt pill, the exact "two focus indicators that disagree about the corner radius" `ControlState`
+/// forbids. Private is what kept it out of `ControlsPane`, and out of the gallery is what kept all
+/// of that unreviewable.
+struct ExclusionChip: View {
     let klass: RetrievalClass
     let included: Bool
     let toggle: (RetrievalClass) -> Void
 
     var body: some View {
-        Button { toggle(klass) } label: {
-            ExclusionChipLabel(klass: klass, included: included)
-        }
-        .buttonStyle(.plain)
+        Pill(text: klass.label,
+             style: included ? .included : .withheld,
+             action: { toggle(klass) })
     }
 }
 
-private struct ExclusionChipLabel: View {
-    let klass: RetrievalClass
-    let included: Bool
-
+/// The two chip faces. `RetrievalClass.register` decides the face and this is not re-decided here:
+/// rule 1's name/value split says a status token is a VALUE and therefore mono, and putting that on
+/// the type is what stops a second renderer of the same vocabulary from deciding otherwise.
+private extension PillStyle {
     /// The withheld chip carries no fill of its own and is delimited by its BORDER. `layerAlt` over
     /// the bar's `layer` bought nothing and cost twice: in dark both resolve to gray80, so
     /// `borderSubtle` on it was 1.00:1 — not a faint edge, the same colour — and helper text on
@@ -164,10 +172,14 @@ private struct ExclusionChipLabel: View {
     ///
     /// `borderStrong` and not `borderSubtle` because a chip is a CONTROL: the gate's own words for
     /// borderSubtle are "decorative separator between adjacent surfaces, not a control boundary".
-    ///
-    /// The face comes from `RetrievalClass.register`, not from a choice made here: rule 1's
-    /// name/value split says a status token is a VALUE and therefore mono, and putting that on the
-    /// type is what stops a second renderer of the same vocabulary from deciding otherwise.
+    static let withheld = PillStyle(label: Ink.textHelper,
+                                    fill: Ink.layer,
+                                    hover: Ink.layerHover,
+                                    border: Ink.borderStrong,
+                                    face: RetrievalClass.register,
+                                    horizontal: Gap.s8,
+                                    vertical: Gap.s2)
+
     /// The included chip draws its LABEL in `textPrimary`, not in `stale`. `stale` on `staleSoft`
     /// measured 3.94:1 in light against the 4.5 a 12pt label needs — and the ledger already carried
     /// that row rather than treating it as a defect. The fix is not a new token: it is following the
@@ -176,13 +188,16 @@ private struct ExclusionChipLabel: View {
     /// to be carried by ink that must also stay legible. The chip was tinting its label instead, and
     /// so had to choose between reading as deviation and being readable. It no longer does: fill and
     /// edge carry "included", the label carries the word.
-    var body: some View {
-        Text(klass.label)
-            .typeface(RetrievalClass.register, included ? Ink.textPrimary : Ink.textHelper)
-            .controlBox(Density.pill, horizontal: Gap.s8, vertical: Gap.s2)
-            .background(included ? Ink.staleSoft : Ink.layer, in: Corner.controlShape)
-            .hairline(included ? Ink.stale : Ink.borderStrong, radius: Corner.control)
-    }
+    ///
+    /// Hover is the same wash at a higher alpha rather than a `staleSoftHover` invented here: one
+    /// ramp step deeper is what every other hover in the system is, and `Ink` has no such token.
+    static let included = PillStyle(label: Ink.textPrimary,
+                                    fill: Ink.staleSoft,
+                                    hover: Ink.stale.opacity(0.20),
+                                    border: Ink.stale,
+                                    face: RetrievalClass.register,
+                                    horizontal: Gap.s8,
+                                    vertical: Gap.s2)
 }
 
 private struct ExclusionExplanation: View {

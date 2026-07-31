@@ -35,15 +35,19 @@ enum DesignSystemSource {
         try components() + tokenLayer() + gallery()
     }
 
+    /// Everything the rules apply to that also DRAWS: the component layer and the review surface.
+    /// The token layer is excluded on purpose — it declares the tokens, so "names `Ink.interactive`"
+    /// is what it is for, and a permission row there would say nothing.
+    static func drawing() throws -> [URL] { try components() + gallery() }
+
     static func components() throws -> [URL] { try swiftFiles(in: "Sources/Theme/Components") }
 
     static func gallery() throws -> [URL] { try swiftFiles(in: "Sources/Gallery") }
 
-    static func tokenLayer() -> [URL] {
-        ["Ink", "Register", "Metrics", "Surface"].map {
-            root.appendingPathComponent("Sources/Theme/\($0).swift")
-        }
-    }
+    /// A DIRECTORY, like the other two. It was `["Ink", "Register", "Metrics", "Surface"]` — one of
+    /// four places that spelled out "the token layer is these four files", none of which could tell
+    /// you a fifth had arrived: it would have compiled nowhere and gated nowhere, silently.
+    static func tokenLayer() throws -> [URL] { try swiftFiles(in: "Sources/Theme/Tokens") }
 
     static var root: URL {
         URL(fileURLWithPath: #filePath)
@@ -96,6 +100,16 @@ enum RestrictedInk {
                 "SurfaceRow.swift": "rowSelected — selection is interaction state",
                 "EngineBar.swift": "the scope segment: rule 3's one permanent exemption, and it is "
                     + "permanent because the segment is genuinely a button",
+                // The review surface. Its job is to DISPLAY the token, which is the one use no
+                // amount of rule 2 can forbid — but it is also where blue kept being spent as
+                // decoration, because until this scan reached the gallery nothing here was read.
+                "InkCatalog.swift": "the token table itself — every blue in the system is a row "
+                    + "here, in the contrast matrix, in a wash pairing or in a fill pairing",
+                "RulesPane.swift": "the rule-2 card, which shows a permitted use (a selected row "
+                    + "in interactiveSoft) beside a forbidden one (a speaker name in interactive), "
+                    + "and the appearance-plumbing probe that draws `interactive` twice",
+                "SurfacePane.swift": "the focus specimen — borderFocus at 1pt, drawn as the "
+                    + "subject of the row",
             ]),
         InkUseRule(
             name: "textPlaceholder is not an ink for words that matter",
@@ -109,6 +123,26 @@ enum RestrictedInk {
                 "ControlField.swift": "the field prompt, declared decorative — a field's meaning "
                     + "lives in a label outside it",
                 "SurfaceEmpty.swift": "the empty-state glyph: an icon, not a word",
+                "InkCatalog.swift": "a row in the token table and a gated row in the contrast "
+                    + "matrix — the measurement that says it is unusable",
+                "PassageGallery.swift": "the REJECTED pairing, shown with its ratio: the absent "
+                    + "badge was drawn in it and is not any more",
+            ]),
+        InkUseRule(
+            name: "rule 3 — success is a deviation token, not a verdict tick",
+            tokens: ["success", "successSoft"],
+            rule: "`Ink.success` is declared inside the \"State — deviation only (rule 3)\" block. "
+                + "Colour marks a DEPARTURE from the default, so the passing case is the silent "
+                + "one — a green tick on every row that behaved is rule 3 run backwards, and it "
+                + "ran backwards hardest in the surface that exhibits the rule: four panes drew "
+                + "PASS / YES / DISTINCT / allowed in it. A verdict that passes takes a neutral; "
+                + "only the failure departs, which also makes the failures the only colour on the "
+                + "page. `danger` is deliberately NOT restricted here — a failure IS a deviation.",
+            permitted: [
+                "ControlPill.swift": "PillStyle.success — the wash under a state pill, spent by a "
+                    + "screen that has a genuine deviation to report. The ink stays textPrimary",
+                "InkCatalog.swift": "the token table, the contrast matrix, the wash pairing and "
+                    + "the fill pairing — this is where the token is measured",
             ]),
     ]
 }
@@ -131,7 +165,7 @@ enum RuleThree {
     /// Reachable when nothing has departed from the default. Every one must be R == G == B in both
     /// appearances — that is the whole of rule 3, mechanised.
     static let monochrome: Set<String> = [
-        "layer", "layerAlt", "borderSubtle", "borderStrong",
+        "layer", "layerHover", "layerAlt", "borderSubtle", "borderStrong",
         "textPrimary", "textSecondary", "textHelper",
     ]
 
@@ -164,11 +198,18 @@ final class SystemRuleTests: XCTestCase {
         tokens = try ThemeTokens.loadFromRepository()
     }
 
-    /// Rule 2, and the placeholder ink. Both directions are checked: a file naming a restricted
-    /// token without a row fails, and a row whose file no longer names the token fails too — a
-    /// stale permission is a permission nobody re-read.
+    /// Rule 2, the placeholder ink, and `success`. Both directions are checked: a file naming a
+    /// restricted token without a row fails, and a row whose file no longer names the token fails
+    /// too — a stale permission is a permission nobody re-read.
+    ///
+    /// IT SCANS THE GALLERY. It read `components()` alone while `testFixedHeightsAreNamedAndJustified`
+    /// two tests down read `files()`, so the review surface — the one place with no component author
+    /// to answer for a token, and the place a rule is most expensive to break, because it is where
+    /// the rule is TAUGHT — was structurally invisible to the gate written to catch exactly this.
+    /// Blue was a spacing ruler, a measure cap, a motion mark and a hand-built primary button;
+    /// `success` was a green tick on four panes. None of it was hidden. Nothing was looking.
     func testRestrictedTokensAreOnlyNamedWhereTheRuleAllows() throws {
-        let files = try DesignSystemSource.components()
+        let files = try DesignSystemSource.drawing()
         var violations: [String] = []
         var stale: [String] = []
         var scanned = 0
@@ -203,8 +244,8 @@ final class SystemRuleTests: XCTestCase {
             \(stale.count) stale permission(s) in RestrictedInk — delete the row:
             \(stale.sorted().joined(separator: "\n"))
             """)
-        XCTAssertGreaterThanOrEqual(files.count, 15, "component files read")
-        XCTAssertGreaterThanOrEqual(scanned, 7, "files matching a restricted token")
+        XCTAssertGreaterThanOrEqual(files.count, 30, "component + gallery files read")
+        XCTAssertGreaterThanOrEqual(scanned, 12, "files matching a restricted token")
     }
 
     /// Rule 3, mechanised as far as a parser honestly can.
@@ -215,7 +256,8 @@ final class SystemRuleTests: XCTestCase {
     /// is `textSecondary`. The snippet is `textPrimary`, provenance is `textSecondary` and
     /// `textHelper`, the card is `layer`, and its edge is `borderSubtle` because `withheldAs` is
     /// empty. Six tokens. The exclusion bar at its default adds `borderStrong` on the withheld
-    /// chips. Seven tokens, fourteen values.
+    /// chips, and `layerHover` under the pointer once those chips became real controls rather than
+    /// a plain `Button` with no phase at all. Eight tokens, sixteen values.
     ///
     /// THE MECHANICAL HALF, which is what survives the next edit: every token these files name is
     /// classified, and every token classified as default-path is achromatic in both appearances.

@@ -7,8 +7,6 @@ import SwiftUI
 /// for surfaces that genuinely float free of the layout — drawers, popovers, sheets.
 enum Elevation {
     static let hairline: CGFloat = 1
-    /// Title-bar controls, where a full point reads as a heavy outline against vibrancy.
-    static let hairlineThin: CGFloat = 0.5
 
     static let overlayRadius: CGFloat = 24
     static let overlayY: CGFloat = 8

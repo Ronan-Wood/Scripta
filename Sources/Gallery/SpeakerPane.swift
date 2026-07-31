@@ -40,8 +40,8 @@ enum SpeakerCatalog {
 
 private struct SpeakerPairingCard: View {
     var body: some View {
-        GalleryCard(title: "The pairing rule",
-                    note: "`me` is neutral ink carrying identity in weight. Colour is spent on the other party, so a two-person transcript spends exactly one.") {
+        Card(title: "The pairing rule",
+             note: "`me` is neutral ink carrying identity in weight. Colour is spent on the other party, so a two-person transcript spends exactly one.") {
             VStack(alignment: .leading, spacing: Gap.s8) {
                 HStack(spacing: Gap.s12) {
                     Text("Ronan").typeface(Register.uiEmphasis, Ink.speaker.me)
@@ -70,8 +70,8 @@ private struct AltPartyRow: View {
 /// Rule 3 at the row level: a default transcript is monochrome except for the one coloured party.
 private struct SpeakerTranscriptCard: View {
     var body: some View {
-        GalleryCard(title: "Two parties, one colour",
-                    note: "The common case. Everything that is not the other speaker's name is ink.") {
+        Card(title: "Two parties, one colour",
+             note: "The common case. Everything that is not the other speaker's name is ink.") {
             VStack(alignment: .leading, spacing: Gap.s10) {
                 TranscriptLine(speaker: "Ronan", tone: Ink.speaker.me, emphasised: true,
                                stamp: "00:14:07",
@@ -106,8 +106,8 @@ private struct DichromacyCard: View {
     let appearance: GalleryAppearance
 
     var body: some View {
-        GalleryCard(title: "Simulated dichromacy",
-                    note: "Viénot–Brettel–Mollon on this appearance's four speaker inks. Read the amber/violet columns first — they are the pair the direction claims.") {
+        Card(title: "Simulated dichromacy",
+             note: "Viénot–Brettel–Mollon on this appearance's four speaker inks. Read the amber/violet columns first — they are the pair the direction claims.") {
             VStack(alignment: .leading, spacing: Gap.s10) {
                 SimulationStrip(kind: nil, appearance: appearance)
                 ForEach(Dichromacy.allCases) { kind in
@@ -161,8 +161,8 @@ private struct SeparationCard: View {
     let appearance: GalleryAppearance
 
     var body: some View {
-        GalleryCard(title: "Mutual separation (ΔE2000)",
-                    note: "Floor of 15, fixed before measuring. Below it, two parties stop reading as different colours at a glance.") {
+        Card(title: "Mutual separation (ΔE2000)",
+             note: "Floor of 15, fixed before measuring. Below it, two parties stop reading as different colours at a glance.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 ForEach(Dichromacy.allCases) { kind in
                     SeparationBlock(kind: kind, appearance: appearance)
@@ -211,7 +211,7 @@ private struct SeparationRow: View {
             Spacer(minLength: Gap.s8)
             Text(String(format: "ΔE %.1f", delta)).typeface(Register.monoMicro, Ink.textSecondary)
             Text(passes ? "DISTINCT" : "COLLAPSED")
-                .typeface(Register.monoMicro, passes ? Ink.success : Ink.danger)
+                .typeface(Register.monoMicro, passes ? Ink.textSecondary : Ink.danger)
         }
         .frame(minHeight: Density.pill)
     }

@@ -21,8 +21,8 @@ struct ContrastPane: View {
 
 private struct ContrastLegend: View {
     var body: some View {
-        GalleryCard(title: "Contrast gate",
-                    note: "4.5:1 body copy (1.4.3), 3:1 icons, control boundaries and focus rings (1.4.11). Failures are findings, not thresholds to move.") {
+        Card(title: "Contrast gate",
+             note: "4.5:1 body copy (1.4.3), 3:1 icons, control boundaries and focus rings (1.4.11). Failures are findings, not thresholds to move.") {
             Text("Washes are composited over their base in gamma-encoded sRGB before measuring — the ratio of a translucent token against nothing is a number no screen ever shows.")
                 .proseText(Register.proseSm, Ink.textSecondary)
         }
@@ -34,7 +34,7 @@ private struct SurfaceContrastCard: View {
     let appearance: GalleryAppearance
 
     var body: some View {
-        GalleryCard(title: "on \(surface.name)") {
+        Card(title: "on \(surface.name)") {
             VStack(alignment: .leading, spacing: Gap.s2) {
                 ForEach(InkCatalog.foregrounds, id: \.token.id) { entry in
                     ContrastRow(label: entry.token.name,
@@ -62,8 +62,8 @@ private struct WashContrastCard: View {
     ]
 
     var body: some View {
-        GalleryCard(title: "Ink over its own soft wash",
-                    note: "The wash lifts the background toward the ink. This is where same-hue pairings lose the contrast they look like they have.") {
+        Card(title: "Ink over its own soft wash",
+             note: "The wash lifts the background toward the ink. This is where same-hue pairings lose the contrast they look like they have.") {
             VStack(alignment: .leading, spacing: Gap.s2) {
                 ForEach(rows, id: \.0) { row in
                     ContrastRow(label: row.0, pair: row.1, required: Wcag.bodyText, appearance: appearance)
@@ -86,8 +86,8 @@ private struct FillContrastCard: View {
     let appearance: GalleryAppearance
 
     var body: some View {
-        GalleryCard(title: "Foreground on a saturated fill",
-                    note: "Only the fills the token set names a foreground for. There is no dark-on-colour token, so every fill here has to work under white.") {
+        Card(title: "Foreground on a saturated fill",
+             note: "Only the fills the token set names a foreground for. There is no dark-on-colour token, so every fill here has to work under white.") {
             VStack(alignment: .leading, spacing: Gap.s2) {
                 ForEach(InkCatalog.fills, id: \.fill.id) { entry in
                     ContrastRow(label: "\(entry.ink.name) on \(entry.fill.name)",

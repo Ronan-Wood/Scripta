@@ -71,6 +71,14 @@ struct ControlPalette {
     let activeLabel: Tone?
     let disabledLabel: Tone
     let border: Tone?
+    /// The edge while the pointer is over it or down on it. `nil` keeps `border`.
+    ///
+    /// The hover lever for a control whose FILL cannot move. `interactive` on `interactiveSubtle`
+    /// measures 4.59:1 in light against the 4.5 an 11pt label needs, so every blue wash darker than
+    /// that resting one puts the Engine Bar's scope segment under the gate — a hover that costs the
+    /// anchor its legibility. Moving the hover onto the edge leaves the scored pairing exactly where
+    /// the matrix scored it.
+    let hoverBorder: Tone?
     let disabledBorder: Tone?
 
     init(idle: Tone,
@@ -81,6 +89,7 @@ struct ControlPalette {
          activeLabel: Tone? = nil,
          disabledLabel: Tone = Ink.textDisabled,
          border: Tone? = nil,
+         hoverBorder: Tone? = nil,
          disabledBorder: Tone? = nil) {
         self.idle = idle
         self.hover = hover
@@ -90,6 +99,7 @@ struct ControlPalette {
         self.activeLabel = activeLabel
         self.disabledLabel = disabledLabel
         self.border = border
+        self.hoverBorder = hoverBorder
         self.disabledBorder = disabledBorder
     }
 
@@ -116,7 +126,8 @@ struct ControlPalette {
         switch phase {
         case .focused: return Ink.borderFocus
         case .disabled: return disabledBorder
-        default: return border
+        case .hover, .pressed: return hoverBorder ?? border
+        case .normal: return border
         }
     }
 }

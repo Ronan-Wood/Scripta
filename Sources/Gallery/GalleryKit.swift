@@ -4,8 +4,16 @@ import SwiftUI
 // MARK: - Gallery chrome
 //
 // The gallery is built out of the system it reviews — if a card, a label or a row cannot be made
-// from `Ink` / `Register` / `Metrics` / `Surface` alone, that is a gap in the system, not a licence
-// to reach for a literal. The one deliberate exception is `Specimen`, below.
+// from `Sources/Theme` alone, that is a gap in the system, not a licence to reach for a literal.
+// `Specimen`, below, is the one deliberate exception, and it states its own terms.
+//
+// That principle reaches the COMPONENT layer too, and for a while it did not. `GalleryCard` and
+// `CardHeader` lived here as a second `Card` + `CardHeading` — same fill, same padding, same
+// hairline, same heading pair — inside the one target that compiles both, differing only by 2pt of
+// heading spacing and a missing `.frame(maxWidth: .infinity)`. A review surface that quietly
+// reimplements the component it is reviewing is exhibiting a drawing of the system rather than the
+// system. Every card on every page is now `Card`, so the chrome fails when the component fails,
+// which is the only arrangement in which "built out of the system it reviews" means anything.
 
 /// The gallery's one sanctioned exemption from `Density`'s "never `.frame(height:)`", named once
 /// instead of spelled as a literal at eight call sites.
@@ -36,34 +44,6 @@ enum Specimen {
     static let curveColumn: CGFloat = 54
     /// Swatch corner. Smaller than `Corner.control`, because at 22pt tall a 7pt radius is a pill.
     static let corner: CGFloat = 4
-}
-
-struct GalleryCard<Content: View>: View {
-    let title: String
-    var note: String?
-    @ViewBuilder var content: () -> Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Gap.s12) {
-            CardHeader(title: title, note: note)
-            content()
-        }
-        .padding(Metrics.cardPadding)
-        .surface(Ink.layer)
-    }
-}
-
-private struct CardHeader: View {
-    let title: String
-    let note: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Gap.s4) {
-            Text(title).typeface(Register.title3, Ink.textPrimary)
-            if let note { Text(note).proseText(Register.proseSm, Ink.textSecondary) }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
 }
 
 struct GroupLabel: View {
@@ -132,12 +112,19 @@ private struct TokenRowText: View {
 
 /// PASS / FAIL against a stated WCAG level. The ratio is always shown, passing or not — a gate
 /// that only prints its failures cannot be audited for the pairs it decided not to test.
+///
+/// PASS IS MONOCHROME. It was `Ink.success`, which is declared inside Ink's "State — deviation
+/// only" block: a green tick on every row that behaved is rule 3 run backwards, and this pane has
+/// more rows than any other. Under the rule the surface is reviewing, the passing case is the
+/// silent one and only the failure departs — which also makes the failures findable by scanning
+/// for the only colour on the page. `n/a` keeps `stale`, because "no basis for a verdict" is what
+/// `stale` means.
 struct RatioBadge: View {
     let ratio: Double
     let required: Double?
 
     private var passes: Bool { required.map { ratio >= $0 } ?? true }
-    private var tone: Tone { required == nil ? Ink.stale : (passes ? Ink.success : Ink.danger) }
+    private var tone: Tone { required == nil ? Ink.stale : (passes ? Ink.textSecondary : Ink.danger) }
 
     var body: some View {
         HStack(spacing: Gap.s6) {

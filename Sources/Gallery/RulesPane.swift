@@ -22,8 +22,8 @@ struct RulesPane: View {
 /// source, and live in the Core gate.
 private struct CoverageCard: View {
     var body: some View {
-        GalleryCard(title: "Coverage",
-                    note: "Not self-verifying — a running binary cannot enumerate its own tokens. Four Core gates parse the source instead: testEveryTokenParticipatesInTheGate (no token escapes the contrast matrix), testEveryInkTheComponentLayerNamesIsClassified (text or not-text, with a reason), testRestrictedTokensAreOnlyNamedWhereTheRuleAllows (rule 2's blue, and the placeholder ink), and testRuleThreeSurfacesAreClassifiedAndTheDefaultPathIsAchromatic.") {
+        Card(title: "Coverage",
+             note: "Not self-verifying — a running binary cannot enumerate its own tokens. Four Core gates parse the source instead: testEveryTokenParticipatesInTheGate (no token escapes the contrast matrix), testEveryInkTheComponentLayerNamesIsClassified (text or not-text, with a reason), testRestrictedTokensAreOnlyNamedWhereTheRuleAllows (rule 2's blue, the placeholder ink and `success` — over this surface too, not just the component layer), and testRuleThreeSurfacesAreClassifiedAndTheDefaultPathIsAchromatic.") {
             VStack(alignment: .leading, spacing: Gap.s2) {
                 CoverageRow(label: "Ink tokens rendered", value: "\(InkCatalog.allTokens.count)")
                 CoverageRow(label: "counted in Ink.swift at landing", value: "\(InkCatalog.countAtLanding)")
@@ -63,8 +63,8 @@ private struct PlumbingCard: View {
     ]
 
     var body: some View {
-        GalleryCard(title: "Appearance plumbing — \(appearance.title)",
-                    note: "Left half: .fill(token). Right half: token.resolved(for: this appearance). A visible seam invalidates this column.") {
+        Card(title: "Appearance plumbing — \(appearance.title)",
+             note: "Left half: .fill(token). Right half: token.resolved(for: this appearance). A visible seam invalidates this column.") {
             VStack(alignment: .leading, spacing: Gap.s2) {
                 ForEach(Self.probes, id: \.0) { probe in
                     TokenRow(name: probe.0, tone: probe.1, appearance: appearance)
@@ -76,8 +76,8 @@ private struct PlumbingCard: View {
 
 private struct BlueOnlyCard: View {
     var body: some View {
-        GalleryCard(title: "Rule 2 — blue is interaction only",
-                    note: "Blue never carries content meaning. The failure this prevents: an accent declared as \"Them\" that a second author then draws in a different orange.") {
+        Card(title: "Rule 2 — blue is interaction only",
+             note: "Blue never carries content meaning. The failure this prevents: an accent declared as \"Them\" that a second author then draws in a different orange.") {
             VStack(alignment: .leading, spacing: Gap.s10) {
                 RuleExample(verdict: .allowed, caption: "selected row, link, focus ring") {
                     SelectedRowSample()
@@ -96,7 +96,7 @@ private struct SelectedRowSample: View {
             .typeface(Register.ui, Ink.textPrimary)
             .controlBox(Density.row)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Ink.interactiveSoft, in: Corner.controlShape)
+            .background(Ink.interactiveSoft, in: Corner.shape(Corner.control))
     }
 }
 
@@ -112,8 +112,8 @@ private struct SelectedRowSample: View {
 /// is a DRAWING of the rule and drifts the first time the rule moves.
 private struct DeviationCard: View {
     var body: some View {
-        GalleryCard(title: "Rule 3 — colour marks deviation",
-                    note: "A default-corpus, active, verified result is entirely monochrome. Every coloured mark below is a departure — drawn by the passage spine itself, counted from the same prominence.") {
+        Card(title: "Rule 3 — colour marks deviation",
+             note: "A default-corpus, active, verified result is entirely monochrome. Every coloured mark below is a departure — drawn by the passage spine itself, counted from the same prominence.") {
             VStack(alignment: .leading, spacing: Gap.s6) {
                 ForEach(DeviationSpecimen.all) { DeviationRow(specimen: $0) }
             }
@@ -190,7 +190,9 @@ private enum RuleVerdict {
     case allowed, forbidden
 
     var label: String { self == .allowed ? "allowed" : "forbidden" }
-    var tone: Tone { self == .allowed ? Ink.success : Ink.danger }
+    /// Neutral for `allowed`. Green here would be `Ink.success` — a "State — deviation only"
+    /// token — spent to mark the case that did NOT deviate, on the page that states the rule.
+    var tone: Tone { self == .allowed ? Ink.textSecondary : Ink.danger }
 }
 
 private struct RuleExample<Content: View>: View {

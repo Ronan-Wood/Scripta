@@ -77,15 +77,18 @@ enum Corner {
     static let field: CGFloat = 8
     static let card: CGFloat = 10
 
+    /// The ONE spelling. `controlShape` / `fieldShape` / `cardShape` were here beside it: the last
+    /// two had no call sites at all, and the first gave the control radius two spellings while
+    /// covering neither of the others — so `ControlSkin` and `FocusRing`, which take a radius as a
+    /// parameter and therefore cannot use a fixed shape, said `Corner.shape(...)` while two gallery
+    /// call sites said `Corner.controlShape`. An unused VALUE is fine ahead of a migration; an
+    /// unused HELPER gets adopted from whichever spelling a migrating author happens to find first.
+    ///
     /// `.continuous` everywhere: mixing it with `.circular` inside one screen is visible at these
     /// radii, and `RoundedRectangle`'s default is circular.
     static func shape(_ radius: CGFloat) -> RoundedRectangle {
         RoundedRectangle(cornerRadius: radius, style: .continuous)
     }
-
-    static var controlShape: RoundedRectangle { shape(control) }
-    static var fieldShape: RoundedRectangle { shape(field) }
-    static var cardShape: RoundedRectangle { shape(card) }
 }
 
 extension View {
@@ -96,12 +99,5 @@ extension View {
         padding(.horizontal, horizontal)
             .padding(.vertical, vertical)
             .frame(minHeight: minHeight)
-    }
-
-    /// Caps measure and centers it. Takes the cap rather than defaulting, because choosing
-    /// between the prose and list measure is a content decision the token layer cannot make.
-    func measure(_ maxWidth: CGFloat) -> some View {
-        frame(maxWidth: maxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
     }
 }

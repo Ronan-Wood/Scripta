@@ -119,8 +119,8 @@ private enum Sample {
 /// The requirement, stated as a comparison because it can only be judged as one.
 private struct TierCard: View {
     var body: some View {
-        GalleryCard(title: "Which tier answered",
-                    note: "0.593 and 0.698 differ four ways: meter length, the number, the model names on the arms, and whether a price is quoted at all. None of them is a colour.") {
+        Card(title: "Which tier answered",
+             note: "0.593 and 0.698 differ four ways: meter length, the number, the model names on the arms, and whether a price is quoted at all. None of them is a colour.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 SpecimenRow(name: "floor", detail: "apple · zero install · healthy") {
                     EngineBar(envelope: Sample.floor)
@@ -142,8 +142,8 @@ private struct AbsenceCard: View {
     let appearance: GalleryAppearance
 
     var body: some View {
-        GalleryCard(title: "Absence, not zero",
-                    note: "Dotted means no basis for a verdict. A solid empty track would be a zero-length fill, and a zero-length fill is a number the engine never produced.") {
+        Card(title: "Absence, not zero",
+             note: "Dotted means no basis for a verdict. A solid empty track would be a zero-length fill, and a zero-length fill is a number the engine never produced.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 SpecimenRow(name: "expected_mrr == nil", detail: "the slot is kept and drawn empty") {
                     EngineBar(envelope: Sample.unmeasured)
@@ -176,8 +176,8 @@ private struct TextureReadout: View {
 
 private struct DegradationCard: View {
     var body: some View {
-        GalleryCard(title: "Degradation",
-                    note: "An arm that fell back is yellow; an arm that never started is red, because only the second means the stack that ran is not the stack that was asked for.") {
+        Card(title: "Degradation",
+             note: "An arm that fell back is yellow; an arm that never started is red, because only the second means the stack that ran is not the stack that was asked for.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 SpecimenRow(name: "fell back", detail: "hyde dropped mid-run, reasons reported") {
                     EngineBar(envelope: Sample.degraded)
@@ -195,8 +195,8 @@ private struct DegradationCard: View {
 
 private struct EngineStateCard: View {
     var body: some View {
-        GalleryCard(title: "Engine states",
-                    note: "not-installed is the default configuration and stays monochrome. Down and schema-mismatch are faults someone can act on, and they are the only red in this component.") {
+        Card(title: "Engine states",
+             note: "not-installed is the default configuration and stays monochrome. Down and schema-mismatch are faults someone can act on, and they are the only red in this component.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 SpecimenRow(name: "down", detail: "installed and unreachable — a fault, unlike not-installed") {
                     EngineBar(envelope: Sample.down)
@@ -217,8 +217,8 @@ private struct EngineStateCard: View {
 
 private struct ExclusionCard: View {
     var body: some View {
-        GalleryCard(title: "What was withheld",
-                    note: "The default is monochrome because withholding IS the default. Including is the deviation, and a result set carrying superseded notes is exactly what Ink.stale marks.") {
+        Card(title: "What was withheld",
+             note: "The default is monochrome because withholding IS the default. Including is the deviation, and a result set carrying superseded notes is exactly what Ink.stale marks.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 SpecimenRow(name: "default", detail: "live — tap a chip to move it between the groups") {
                     ExclusionPlayground()

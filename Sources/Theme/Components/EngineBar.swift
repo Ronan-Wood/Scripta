@@ -61,13 +61,57 @@ struct EngineScopeSegment: View {
     var select: () -> Void = {}
 
     var body: some View {
-        Button(action: select) { EngineScopeLabel(scope: scope) }
-            .buttonStyle(.plain)
+        Pressable(action: select) { EngineScopeLabel(scope: scope) }
     }
 }
 
 private struct EngineScopeLabel: View {
     let scope: EngineScope
+
+    /// THE FILL DOES NOT MOVE ON HOVER, and that is measured rather than preferred. `interactive`
+    /// on `interactiveSubtle` is 4.59:1 in light — the label clears the 4.5 an 11pt word needs by
+    /// nine hundredths — so every blue wash a step deeper than the resting one buys a hover by
+    /// spending the anchor's legibility. The edge is where the budget is, so the edge is what moves:
+    /// the resting 40% hairline goes to full `interactive` under the pointer. `ControlSkin` supplies
+    /// the pressed alpha and the focus ring on top of it.
+    ///
+    /// Disabled drops to `layer` and `borderSubtle` — the one phase where the exemption is not spent,
+    /// because a segment that cannot be selected is not an affordance to advertise.
+    private static let palette = ControlPalette(idle: Ink.interactiveSubtle,
+                                                hover: Ink.interactiveSubtle,
+                                                pressed: Ink.interactiveSubtle,
+                                                disabledFill: Ink.layer,
+                                                label: Ink.interactive,
+                                                border: Ink.interactive.opacity(0.4),
+                                                hoverBorder: Ink.interactive,
+                                                disabledBorder: Ink.borderSubtle)
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.forcedControlPhase) private var forced
+    @Environment(\.controlPressed) private var pressed
+    @Environment(\.controlFocused) private var focused
+    @State private var hovering = false
+
+    private var phase: ControlPhase {
+        ControlPhase.resolve(forced: forced, enabled: isEnabled,
+                             pressed: pressed, hovering: hovering, focused: focused)
+    }
+
+    var body: some View {
+        EngineScopePair(name: scope.name, tone: Self.palette.foreground(phase))
+            .modifier(ControlSkin(palette: Self.palette, phase: phase,
+                                  minHeight: Density.pill,
+                                  horizontal: Gap.s10, vertical: Gap.s2))
+            .onHover { hovering = $0 }
+            .animation(Motion.hover, value: phase)
+    }
+}
+
+private struct EngineScopePair: View {
+    let name: String
+    /// From `ControlPalette.foreground(_:)`, not spelled here. Both halves take the same tone, so a
+    /// disabled segment goes quiet as one thing rather than half-blue.
+    let tone: Tone
 
     /// No empty-string guard here, and that is the point: `EngineScope` cannot hold one, so this
     /// view has nothing left to check. A guard here would have been a second place to forget.
@@ -75,12 +119,9 @@ private struct EngineScopeLabel: View {
         HStack(spacing: Gap.s6) {
             // Rule 1's name/value split: "scope" is the field, UI. The token beside it is what the
             // engine returned and what you would type to ask for it again, so it is mono.
-            Text("scope").microLabel(Ink.interactive)
-            Text(scope.name).typeface(Register.mono, Ink.interactive)
+            Text("scope").microLabel(tone)
+            Text(name).typeface(Register.mono, tone)
         }
-        .controlBox(Density.pill, horizontal: Gap.s10, vertical: Gap.s2)
-        .background(Ink.interactiveSubtle, in: Corner.controlShape)
-        .hairline(Ink.interactive.opacity(0.4), radius: Corner.control)
     }
 }
 

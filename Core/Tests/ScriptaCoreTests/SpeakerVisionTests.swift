@@ -138,10 +138,16 @@ final class SpeakerVisionTests: XCTestCase {
     /// `me` against each coloured party. The design does not claim hue separation here — weight is
     /// the signal — so a failure is a constraint on renderers, not a broken palette. Measured all
     /// the same, because "the pairing rule covers it" is only true while the rule is followed.
+    ///
+    /// ALL THREE KINDS. This filtered `kind != .tritanopia` with no reason given, in a file whose
+    /// whole subject is that an exclusion must be stated — skipping 8 of the 24 separations its
+    /// name claims to measure, in the axis this file elsewhere calls the palette's weakest. The
+    /// eight all clear the floor comfortably (27.66 is the tightest), so nothing was being hidden;
+    /// what was being hidden is that nobody could tell.
     func testNeutralSelfPartySeparationIsMeasured() throws {
         var unrecorded: [String] = []
         for appearance in Appearance.allCases {
-            for kind in Dichromacy.allCases where kind != .tritanopia {
+            for kind in Dichromacy.allCases {
                 let me = VisionSim.simulate(try tokens.color("speaker.me", appearance), kind)
                 for party in SpeakerRamp.parties {
                     let delta = Perceptual.deltaE2000(me, try simulated(party, appearance, kind))
@@ -180,7 +186,7 @@ final class SpeakerVisionTests: XCTestCase {
 }
 
 enum Collapses {
-    /// Measured 2026-07-30 against Sources/Theme/Ink.swift as first landed.
+    /// Measured 2026-07-30 against Sources/Theme/Tokens/Ink.swift as first landed.
     static let recorded: [Collapse] = [
         Collapse("teal", "rose", .dark, .deuteranopia, measured: 11.97, cause: .thirdAndFourthPartyConverge),
         Collapse("me", "teal", .dark, .protanopia, measured: 8.78, cause: .neutralPartyRestsOnWeightNotHue),

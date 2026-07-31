@@ -55,8 +55,8 @@ enum RegisterCatalog {
 
 private struct RegistersInOneLine: View {
     var body: some View {
-        GalleryCard(title: "Rule 1 — one line, three registers",
-                    note: "Speech is prose, chrome is UI, anything the machine measured is mono. The register is the tell.") {
+        Card(title: "Rule 1 — one line, three registers",
+             note: "Speech is prose, chrome is UI, anything the machine measured is mono. The register is the tell.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 MixedSentence()
                 RowRule()
@@ -69,7 +69,10 @@ private struct RegistersInOneLine: View {
 private struct MixedSentence: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s4) {
-            Text("correct").microLabel(Ink.success)
+            // Monochrome, not green. `Ink.success` sits in Ink's "State — deviation only"
+            // block: under rule 3 the case that behaved is the silent one, and the label
+            // beside it says "wrong" in `danger` because that IS the departure.
+            Text("correct").microLabel(Ink.textSecondary)
             HStack(alignment: .firstTextBaseline, spacing: Gap.s6) {
                 Text("Ronan").typeface(Register.uiEmphasis, Ink.speaker.me)
                 Text("at").typeface(Register.caption, Ink.textHelper)
@@ -90,15 +93,20 @@ private struct WrongMixedSentence: View {
     }
 }
 
-/// The gallery is a second bundle, so it registers the Plex TTFs itself. If that ever fails, every
-/// specimen below silently becomes San Francisco and the type review reviews the wrong typeface —
-/// which is worth one row to rule out.
+/// The gallery is a second bundle, so `Register.registerFonts()` runs at launch here too. If that
+/// ever fails, every specimen below silently becomes San Francisco and the type review reviews the
+/// wrong typeface — which is worth one row to rule out.
+///
+/// It iterates `Register.Face.all`, which is the list the roles are built from. A local copy is
+/// what this check cannot have: a face added to `Register.Face` and missing from the copy is
+/// precisely the unresolvable name the card exists to catch, and it would have been the one row
+/// that never appeared.
 private struct FontResolutionCard: View {
     var body: some View {
-        GalleryCard(title: "Face resolution",
-                    note: "PostScript names resolved against the bundled TTFs. Any NO here invalidates the specimens below.") {
+        Card(title: "Face resolution",
+             note: "PostScript names resolved against the bundled TTFs. Any NO here invalidates the specimens below.") {
             VStack(alignment: .leading, spacing: Gap.s2) {
-                ForEach(GalleryFonts.faces, id: \.self) { face in
+                ForEach(Register.Face.all, id: \.self) { face in
                     FaceRow(face: face)
                 }
             }
@@ -115,7 +123,8 @@ private struct FaceRow: View {
         HStack(spacing: Gap.s8) {
             Text(face).typeface(Register.mono, Ink.textPrimary)
             Spacer(minLength: Gap.s8)
-            Text(resolved ? "YES" : "NO").typeface(Register.monoMicro, resolved ? Ink.success : Ink.danger)
+            Text(resolved ? "YES" : "NO")
+                .typeface(Register.monoMicro, resolved ? Ink.textSecondary : Ink.danger)
         }
         .frame(minHeight: Density.pill)
     }
@@ -126,7 +135,7 @@ private struct RoleSpecimens: View {
     let roles: [RegisterCatalog.Role]
 
     var body: some View {
-        GalleryCard(title: title) {
+        Card(title: title) {
             VStack(alignment: .leading, spacing: Gap.s8) {
                 ForEach(roles) { role in
                     RoleSpecimen(role: role)
@@ -155,8 +164,8 @@ private struct RoleSpecimen: View {
 /// without measuring pixels.
 private struct LeadingCard: View {
     var body: some View {
-        GalleryCard(title: "Derived leading",
-                    note: "lineSpacing = size × multiple − natural line box. Prose 1.55, UI 1.35.") {
+        Card(title: "Derived leading",
+             note: "lineSpacing = size × multiple − natural line box. Prose 1.55, UI 1.35.") {
             VStack(alignment: .leading, spacing: Gap.s2) {
                 ForEach(RegisterCatalog.all) { role in
                     LeadingRow(role: role)

@@ -11,7 +11,7 @@ import Foundation
 // The obvious fallback is to copy the hexes into this package. That is a second source of truth
 // for the one thing the gate exists to measure, and it goes stale silently — a gate scoring last
 // month's palette passes cheerfully and means nothing. So this reads the values out of
-// `Sources/Theme/Ink.swift` instead. There is exactly one set of numbers in the repo.
+// `Sources/Theme/Tokens/Ink.swift` instead. There is exactly one set of numbers in the repo.
 //
 // The cost, stated plainly: this couples to the *shape* of the declarations, not just their
 // values. Reformat `Ink.swift` and the parser stops recognising lines — which is why
@@ -84,7 +84,7 @@ struct ThemeTokens {
             .deletingLastPathComponent()              // Tests
             .deletingLastPathComponent()              // Core
             .deletingLastPathComponent()              // repository root
-        let url = root.appendingPathComponent("Sources/Theme/Ink.swift")
+        let url = root.appendingPathComponent("Sources/Theme/Tokens/Ink.swift")
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw ThemeSourceError.fileMissing(url.path)
         }
@@ -123,12 +123,47 @@ struct ThemeTokens {
                 speakerIndent = nil
             }
             let inSpeaker = speakerIndent != nil
-            guard line.hasPrefix("static let "), let equals = line.range(of: " = ") else { continue }
+            guard line.hasPrefix("static let ") else { continue }
+
+            // EVERY `static let` from here on must produce something. The parser used to `continue`
+            // past any shape it did not recognise, which made the file's own contract — "a parse
+            // failure is loud" — true for a MALFORMED declaration and false for an unanticipated
+            // one. Three real shapes fell through silently: `static let x: Tone = Tone(...)` (the
+            // `:` guard below, written for `alt: [Tone]`), a declaration whose initialiser is on
+            // the next line (no " = " on this one), and a qualified alias like `Ink.interactive`
+            // (not a bare identifier). A token in any of those shapes entered no map, so it was
+            // never contrast-scored, never required to participate in the matrix, and never rule-3
+            // checked. No token in `Ink.swift` is in one of those shapes TODAY — this closes the
+            // hole before something falls in it, rather than after. The floors could not have
+            // caught it either: `>= 47` would still pass at 47-of-48, because a floor catches a
+            // removal and not an addition the parser never saw.
+            //
+            // So the recognisers stay narrow and the FALL-THROUGH is the error. A new declaration
+            // shape fails this suite until someone teaches the parser about it, which is the whole
+            // reason reading the source beat keeping a copy.
+            guard let equals = line.range(of: " = ") else {
+                throw ThemeSourceError.unparsable(line: offset + 1, text: line)
+            }
 
             let name = String(line[line.index(line.startIndex, offsetBy: 11)..<equals.lowerBound])
                 .trimmingCharacters(in: .whitespaces)
-            // `static let alt: [Tone] = [...]` — a collection of tokens already parsed individually.
-            if name.contains(":") { continue }
+            // `static let alt: [Tone] = [...]` — a collection of tokens already parsed individually,
+            // and the ONE legitimate skip. Narrowed to the COLLECTION types it was written for: an
+            // explicitly-typed scalar (`static let x: Tone = ...`) is REFUSED here rather than
+            // waved through by a guard that was never about it. Refused and not parsed, because
+            // `name` still carries the `": Tone"` at this point and the recognisers below would
+            // file it under a key nobody can look up — a silently wrong entry being the one outcome
+            // worse than a loud refusal. Teach the parser the shape, or declare it without the
+            // annotation.
+            if name.contains(":") {
+                let declaredType = name.split(separator: ":").last.map {
+                    $0.trimmingCharacters(in: .whitespaces)
+                } ?? ""
+                guard declaredType.hasPrefix("[") else {
+                    throw ThemeSourceError.unparsable(line: offset + 1, text: line)
+                }
+                continue
+            }
 
             var rhs = String(line[equals.upperBound...])
             if let comment = rhs.range(of: "//") { rhs = String(rhs[..<comment.lowerBound]) }
@@ -141,6 +176,8 @@ struct ThemeTokens {
                 tones[key] = try parseTone(rhs, at: offset + 1)
             } else if isIdentifier(rhs) {
                 aliases[key] = inSpeaker ? "speaker.\(rhs)" : rhs
+            } else {
+                throw ThemeSourceError.unparsable(line: offset + 1, text: line)
             }
         }
 

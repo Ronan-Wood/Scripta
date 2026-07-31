@@ -15,6 +15,7 @@ struct ControlsPane: View {
             PhaseMatrixCard()
             IconButtonCard()
             PillCard()
+            AnswerControlCard()
             RowCard()
             FieldCard()
             ProgressCard()
@@ -28,8 +29,8 @@ struct ControlsPane: View {
 
 private struct PhaseMatrixCard: View {
     var body: some View {
-        GalleryCard(title: "Buttons — every rank in every phase",
-                    note: "Forced through ControlPhase, not produced with a cursor. Priority is disabled > pressed > focused > hover: a pointer resting on a focused control must not take the ring away, because it is a keyboard user's only position signal.") {
+        Card(title: "Buttons — every rank in every phase",
+             note: "Forced through ControlPhase, not produced with a cursor. Priority is disabled > pressed > focused > hover: a pointer resting on a focused control must not take the ring away, because it is a keyboard user's only position signal.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 ForEach(ButtonRank.allCases) { PhaseRow(rank: $0) }
             }
@@ -69,8 +70,8 @@ private struct PhaseSample: View {
 
 private struct IconButtonCard: View {
     var body: some View {
-        GalleryCard(title: "Icon buttons",
-                    note: "Density.pill square, and `label` is required — an icon button without one is a control VoiceOver announces as \"button\".") {
+        Card(title: "Icon buttons",
+             note: "Density.pill square, and `label` is required — an icon button without one is a control VoiceOver announces as \"button\".") {
             HStack(spacing: Gap.s8) {
                 ForEach(ControlPhase.allCases) { IconButtonSample(phase: $0) }
                 Spacer(minLength: Gap.s8)
@@ -104,8 +105,8 @@ private struct PillCard: View {
     ]
 
     var body: some View {
-        GalleryCard(title: "Pills",
-                    note: "Rule 2 permits exactly one blue pill: `selected`, because a selected filter IS interaction state. Every other hue here is a wash under textPrimary.") {
+        Card(title: "Pills",
+             note: "Rule 2 permits exactly one blue pill: `selected`, because a selected filter IS interaction state. Every other hue here is a wash under textPrimary.") {
             VStack(alignment: .leading, spacing: Gap.s8) {
                 PillRow(pills: Self.presets)
                 SpeakerPillRow()
@@ -147,12 +148,95 @@ private struct RemovablePillRow: View {
     }
 }
 
+// MARK: - Answer-surface controls
+
+/// The two most-clicked controls in the answer surface, in states a pointer cannot produce.
+///
+/// Both were a bare `Button { … }.buttonStyle(.plain)` around `.controlBox` + `.background` +
+/// `.hairline` — `ControlSkin`'s body with the phase removed — so neither had a hover fill, a
+/// pressed alpha or a `FocusRing`, and neither could be reached by `forcedControlPhase` at all.
+/// They are here rather than only inside a composed `ExclusionBar` and `EngineBar` on the Envelope
+/// page because a control seen only at rest is a control reviewed in one state out of five.
+private struct AnswerControlCard: View {
+    var body: some View {
+        Card(title: "Answer-surface controls",
+             note: "The scope segment signals hover on its EDGE, not its fill: `interactive` on `interactiveSubtle` measures 4.59:1 in light, so a wash one step deeper would buy the hover by putting the label under the 4.5 an 11pt word needs. The chips move hover into the fill, where a neutral and a slate wash both have the headroom.") {
+            VStack(alignment: .leading, spacing: Gap.s12) {
+                PhaseStrip(name: "scope segment") { EngineScopeSegment(scope: "prism") {} }
+                PhaseStrip(name: "withheld chip") {
+                    ExclusionChip(klass: .archived, included: false, toggle: { _ in })
+                }
+                PhaseStrip(name: "including chip") {
+                    ExclusionChip(klass: .sources, included: true, toggle: { _ in })
+                }
+            }
+        }
+    }
+}
+
+/// `ViewThatFits` rather than one row, because the scope segment is ~100pt wide and five of them
+/// against the side-by-side column's 524pt of card content clears by two. It did not clear: the
+/// focused sample, one point wider for the outer focus hairline, rendered "SCOPE pri…". A specimen
+/// that misreports the control it exhibits is worse than no specimen, which is the whole reason
+/// this page exists — so the row splits instead of squeezing, and the samples are fixed at their
+/// intrinsic width so neither candidate can compress one.
+private struct PhaseStrip<Content: View>: View {
+    let name: String
+    @ViewBuilder var content: () -> Content
+
+    private static var split: Int { 3 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Gap.s4) {
+            Text(name).microLabel(Ink.textHelper)
+            ViewThatFits(in: .horizontal) {
+                PhaseStripRow(phases: ControlPhase.allCases, content: content)
+                VStack(alignment: .leading, spacing: Gap.s6) {
+                    PhaseStripRow(phases: Array(ControlPhase.allCases.prefix(Self.split)),
+                                  content: content)
+                    PhaseStripRow(phases: Array(ControlPhase.allCases.dropFirst(Self.split)),
+                                  content: content)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// No `Spacer` in here, deliberately: a flexible child makes every candidate report that it fits,
+/// and `ViewThatFits` would always pick the first one.
+private struct PhaseStripRow<Content: View>: View {
+    let phases: [ControlPhase]
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Gap.s6) {
+            ForEach(phases) { PhaseStripSample(phase: $0, content: content) }
+        }
+    }
+}
+
+private struct PhaseStripSample<Content: View>: View {
+    let phase: ControlPhase
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(spacing: Gap.s4) {
+            content()
+                .fixedSize(horizontal: true, vertical: false)
+                .forcedControlPhase(phase)
+                .disabled(phase == .disabled)
+            Text(phase.rawValue).typeface(Register.monoMicro, Ink.textHelper)
+        }
+    }
+}
+
 // MARK: - Rows
 
 private struct RowCard: View {
     var body: some View {
-        GalleryCard(title: "List rows",
-                    note: "Density.row as a MINIMUM. The long title is the specimen that matters: a fixed height is invisible until something needs to grow.") {
+        Card(title: "List rows",
+             note: "Density.row as a MINIMUM. The long title is the specimen that matters: a fixed height is invisible until something needs to grow.") {
             VStack(alignment: .leading, spacing: Gap.s2) {
                 ListRow(title: "Weekly review", subtitle: "prism · 14 passages", glyph: .document)
                 ListRow(title: "Vendor call — pricing", glyph: .chat, selected: true)
@@ -170,8 +254,8 @@ private struct FieldCard: View {
     @State private var filled = "scope=prism status=active"
 
     var body: some View {
-        GalleryCard(title: "Text fields",
-                    note: "The prompt is DECORATIVE — textPlaceholder measures 2.16:1 on `field` in light, a recorded finding, so a field's meaning lives in a label outside it.") {
+        Card(title: "Text fields",
+             note: "The prompt is DECORATIVE — textPlaceholder measures 2.16:1 on `field` in light, a recorded finding, so a field's meaning lives in a label outside it.") {
             VStack(alignment: .leading, spacing: Gap.s8) {
                 InputField(prompt: "Search this scope", text: $query, glyph: .search)
                 InputField(prompt: "Search this scope", text: $filled, glyph: .search)
@@ -185,8 +269,8 @@ private struct FieldCard: View {
 
 private struct ProgressCard: View {
     var body: some View {
-        GalleryCard(title: "Progress",
-                    note: "Monochrome, and not configurably so. A determinate bar reports machine-measured work state — content meaning, and you cannot click a progress bar. It reads the same tokens EngineTierMeter draws its measured fraction with.") {
+        Card(title: "Progress",
+             note: "Monochrome, and not configurably so. A determinate bar reports machine-measured work state — content meaning, and you cannot click a progress bar. It reads the same tokens EngineTierMeter draws its measured fraction with.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 ProgressTrack(value: 0.64, label: "Ingesting", detail: "412 / 640 pages")
                 ProgressTrack(value: nil, label: "Composing", detail: "extent unknown")
@@ -211,8 +295,8 @@ private struct SpinnerRow: View {
 
 private struct EmptyStateCard: View {
     var body: some View {
-        GalleryCard(title: "Cards and the empty state",
-                    note: "The empty state's title is UI and its message is PROSE — a heading labels a region, the sentence beneath it is something a person wrote. In chrome type it reads as an error dialog.") {
+        Card(title: "Cards and the empty state",
+             note: "The empty state's title is UI and its message is PROSE — a heading labels a region, the sentence beneath it is something a person wrote. In chrome type it reads as an error dialog.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 StatCard(label: "Passages indexed", value: "1 284", unit: "in 6 scopes")
                 Card(title: "A card", note: "Layer fill, hairline border, Corner.card.") {
@@ -243,8 +327,8 @@ private struct GlyphCard: View {
         .map { Array(Glyph.allCases[$0..<min($0 + columns, Glyph.allCases.count)]) }
 
     var body: some View {
-        GalleryCard(title: "Glyphs — \(Glyph.allCases.count) cases, \(Glyph.unresolved.count) unresolved",
-                    note: "Named for the JOB, not the picture — `stale`, not `clockArrow` — so swapping the symbol later is one line and not a rename across the app. Anything unresolvable draws as a danger-tinted box, never as nothing.") {
+        Card(title: "Glyphs — \(Glyph.allCases.count) cases, \(Glyph.unresolved.count) unresolved",
+             note: "Named for the JOB, not the picture — `stale`, not `clockArrow` — so swapping the symbol later is one line and not a rename across the app. Anything unresolvable draws as a danger-tinted box, never as nothing.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 ForEach(Self.rows, id: \.first) { GlyphRow(glyphs: $0, columns: Self.columns) }
             }

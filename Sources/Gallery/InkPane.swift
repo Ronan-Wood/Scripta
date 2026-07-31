@@ -18,7 +18,7 @@ private struct InkGroupCard: View {
     let appearance: GalleryAppearance
 
     var body: some View {
-        GalleryCard(title: group.title, note: group.rule) {
+        Card(title: group.title, note: group.rule) {
             VStack(alignment: .leading, spacing: Gap.s2) {
                 ForEach(group.tokens) { token in
                     TokenRow(name: token.name, tone: token.tone,
