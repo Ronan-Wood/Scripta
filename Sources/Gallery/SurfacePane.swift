@@ -17,8 +17,8 @@ struct SurfacePane: View {
 
 private struct SurfaceRecipesCard: View {
     var body: some View {
-        GalleryCard(title: "Surfaces",
-                    note: "Hairline over shadow is the house style; the shadow is reserved for things that genuinely float.") {
+        Card(title: "Surfaces",
+             note: "Hairline over shadow is the house style; the shadow is reserved for things that genuinely float.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 SurfaceSample(label: "surface() — layer + borderSubtle") {
                     SampleBlock().surface()
@@ -78,8 +78,8 @@ private struct BorderVisibilityCard: View {
     ]
 
     var body: some View {
-        GalleryCard(title: "Is the border there at all?",
-                    note: "1.00:1 means the two tokens resolve to the same colour. That is a drawing bug before it is a WCAG one.") {
+        Card(title: "Is the border there at all?",
+             note: "1.00:1 means the two tokens resolve to the same colour. That is a drawing bug before it is a WCAG one.") {
             VStack(alignment: .leading, spacing: Gap.s2) {
                 ForEach(Self.combinations, id: \.0) { entry in
                     BorderRow(label: entry.0, border: entry.1, surface: entry.2, appearance: appearance)
@@ -124,8 +124,8 @@ private struct BorderSwatch: View {
 
 private struct StaleTextureCard: View {
     var body: some View {
-        GalleryCard(title: "Stale — texture, not alarm",
-                    note: "A value computed against an index that has since moved. Normal for a minute after every ingest, so it must not read as a warning.") {
+        Card(title: "Stale — texture, not alarm",
+             note: "A value computed against an index that has since moved. Normal for a minute after every ingest, so it must not read as a warning.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 StaleSample(label: "fresh", stale: false)
                 StaleSample(label: "stale", stale: true)
@@ -164,8 +164,8 @@ private struct MotionCard: View {
     @State private var moved = false
 
     var body: some View {
-        GalleryCard(title: "Motion",
-                    note: "Named by intent, not duration. Tap to run all four against each other.") {
+        Card(title: "Motion",
+             note: "Named by intent, not duration. Tap to run all four against each other.") {
             VStack(alignment: .leading, spacing: Gap.s8) {
                 MotionTrack(name: "hover", animation: Motion.hover, moved: moved)
                 MotionTrack(name: "state", animation: Motion.state, moved: moved)
@@ -177,6 +177,10 @@ private struct MotionCard: View {
     }
 }
 
+/// The travelling mark is `textPrimary`, not blue. It is a MEASURING INSTRUMENT — the thing whose
+/// arrival time you are comparing across four curves — and rule 2 says blue marks a thing you can
+/// click. Nothing on this track is clickable, and a ruler drawn in the interaction colour teaches
+/// the reader that blue is decoration in exactly the surface that exists to teach the opposite.
 private struct MotionTrack: View {
     let name: String
     let animation: Animation
@@ -186,7 +190,7 @@ private struct MotionTrack: View {
         HStack(spacing: Gap.s8) {
             Text(name).typeface(Register.monoMicro, Ink.textHelper)
                 .frame(width: Specimen.curveColumn, alignment: .leading)
-            Corner.shape(Specimen.corner).fill(Ink.interactive)
+            Corner.shape(Specimen.corner).fill(Ink.textPrimary)
                 .frame(width: Specimen.markWidth, height: Specimen.markHeight)
                 .frame(maxWidth: .infinity, alignment: moved ? .trailing : .leading)
                 .animation(animation, value: moved)
@@ -195,14 +199,14 @@ private struct MotionTrack: View {
     }
 }
 
+/// `ActionButton`, not a hand-built primary. This spelled `.buttonStyle(.plain)` + `.controlBox` +
+/// `.background(Ink.interactive)` — a fourth copy of the construction `ControlSkin` exists to own,
+/// with no hover, no pressed alpha and no focus ring — inside the target whose whole claim is that
+/// the system is what gets reviewed.
 private struct MotionTrigger: View {
     @Binding var moved: Bool
 
     var body: some View {
-        Button("Run") { moved.toggle() }
-            .buttonStyle(.plain)
-            .typeface(Register.uiEmphasis, Ink.onInteractive)
-            .controlBox(Density.action)
-            .background(Ink.interactive, in: Corner.controlShape)
+        ActionButton(title: "Run", rank: .primary) { moved.toggle() }
     }
 }

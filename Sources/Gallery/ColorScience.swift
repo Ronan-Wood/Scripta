@@ -7,8 +7,17 @@ import AppKit
 // the gallery against the SAME `Tone` values the app draws with, so a number on screen cannot
 // agree with the design doc while disagreeing with the build.
 //
-// The Core-side contrast gate re-implements luminance/compositing because it cannot see `Tone`
-// across the module boundary. That duplication is real and is called out in the handoff.
+// `Core/Tests/ScriptaCoreTests/ColorMetrics.swift` implements the same formulas over `TokenRGB`,
+// because that target cannot see `Tone` across the module boundary. The duplication is real, it
+// was "called out in the handoff" and nothing enforced it — a transposed sign in one `deltaE2000`
+// would have left the verdicts on this screen and the Core gate's assertions describing different
+// systems, silently.
+//
+// THE ARITHMETIC BELOW IS CHARACTER-FOR-CHARACTER THE CORE FILE'S, and `ColorScienceParityTests`
+// slices both and compares them: every formula, both 3x3 matrices, every CIEDE2000 constant. Only
+// the EDGES differ — `NSColor` here, `TokenRGB` there — and the regions are cut to exclude exactly
+// those lines. So: if you reformat a formula here, reformat it there. The real fix is one shared
+// target, at which point that test and one of these files delete together.
 
 enum Wcag {
     /// WCAG 1.4.3 — body copy.

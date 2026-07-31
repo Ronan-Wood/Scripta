@@ -23,19 +23,29 @@ struct PillStyle {
     let hover: Tone
     let border: Tone?
     let face: Typeface
+    /// The box, in the style rather than at the call site. `ControlSkin` has taken both since it
+    /// existed and `Pill` was the link that did not pass them through — which is the whole reason
+    /// the exclusion chips were hand-built instead: they sit at 8/2, and two rows of them stack
+    /// inside a sidebar-width panel where four extra points per chip is a row that no longer fits.
+    let horizontal: CGFloat
+    let vertical: CGFloat
 
     init(label: Tone,
          mark: Tone? = nil,
          fill: Tone,
          hover: Tone? = nil,
          border: Tone? = nil,
-         face: Typeface = Register.caption) {
+         face: Typeface = Register.caption,
+         horizontal: CGFloat = Gap.s10,
+         vertical: CGFloat = Gap.s4) {
         self.label = label
         self.mark = mark ?? label
         self.fill = fill
         self.hover = hover ?? fill
         self.border = border
         self.face = face
+        self.horizontal = horizontal
+        self.vertical = vertical
     }
 
     var palette: ControlPalette {
@@ -132,7 +142,8 @@ private struct PillSkin: View {
     var body: some View {
         PillContent(text: text, glyph: glyph, style: style, onRemove: onRemove)
             .modifier(ControlSkin(palette: style.palette, phase: phase,
-                                  minHeight: Density.pill, horizontal: Gap.s10))
+                                  minHeight: Density.pill,
+                                  horizontal: style.horizontal, vertical: style.vertical))
             .onHover { hovering = $0 }
             .animation(Motion.hover, value: phase)
     }

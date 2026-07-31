@@ -22,8 +22,8 @@ private struct GapScaleCard: View {
     ]
 
     var body: some View {
-        GalleryCard(title: "Gap",
-                    note: "The name is the value, so adding a step later cannot renumber the existing ones.") {
+        Card(title: "Gap",
+             note: "The name is the value, so adding a step later cannot renumber the existing ones.") {
             VStack(alignment: .leading, spacing: Gap.s2) {
                 ForEach(Self.steps, id: \.0) { step in
                     GapRow(name: step.0, value: step.1)
@@ -33,6 +33,11 @@ private struct GapScaleCard: View {
     }
 }
 
+/// The ruler is `textPrimary` and the caps below are `layerSelected`. Both were blue, and blue is
+/// rule 2's: it marks a thing you can click. A spacing bar encodes a NUMBER the reviewer is here to
+/// read — content meaning parked on a chrome token, which is the exact failure rule 2 was written
+/// after. It also survived every gate, because the rule-2 check read the component layer only and
+/// the review surface is where these live.
 private struct GapRow: View {
     let name: String
     let value: CGFloat
@@ -41,7 +46,7 @@ private struct GapRow: View {
         HStack(spacing: Gap.s8) {
             Text(name).typeface(Register.mono, Ink.textPrimary)
                 .frame(width: Specimen.nameColumn, alignment: .leading)
-            Rectangle().fill(Ink.interactive).frame(width: value, height: Specimen.rulerHeight)
+            Rectangle().fill(Ink.textPrimary).frame(width: value, height: Specimen.rulerHeight)
             Spacer(minLength: Gap.s8)
             Text("\(Int(value))").typeface(Register.monoMicro, Ink.textHelper)
         }
@@ -53,8 +58,8 @@ private struct GapRow: View {
 /// that wraps, because a fixed height is invisible until something needs to grow.
 private struct DensityCard: View {
     var body: some View {
-        GalleryCard(title: "Density",
-                    note: "Minimums. Sized with padding plus .frame(minHeight:), so a wrapped label grows the control instead of clipping it.") {
+        Card(title: "Density",
+             note: "Minimums. Sized with padding plus .frame(minHeight:), so a wrapped label grows the control instead of clipping it.") {
             VStack(alignment: .leading, spacing: Gap.s8) {
                 DensitySample(name: "pill", height: Density.pill, label: "Draft")
                 DensitySample(name: "row", height: Density.row, label: "Weekly review with the platform team")
@@ -88,8 +93,8 @@ private struct CornerCard: View {
     ]
 
     var body: some View {
-        GalleryCard(title: "Corner",
-                    note: "Always .continuous — mixing it with .circular inside one screen is visible at these radii.") {
+        Card(title: "Corner",
+             note: "Always .continuous — mixing it with .circular inside one screen is visible at these radii.") {
             HStack(spacing: Gap.s12) {
                 ForEach(Self.radii, id: \.0) { entry in
                     CornerSample(name: entry.0, radius: entry.1)
@@ -116,8 +121,8 @@ private struct CornerSample: View {
 
 private struct MeasureCard: View {
     var body: some View {
-        GalleryCard(title: "Measure",
-                    note: "Prose is capped short because a transcript read at full window width loses the line the eye was on.") {
+        Card(title: "Measure",
+             note: "Prose is capped short because a transcript read at full window width loses the line the eye was on.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
                 MeasureSample(name: "proseMaxWidth · 720", width: Metrics.proseMaxWidth)
                 MeasureSample(name: "listMaxWidth · 900", width: Metrics.listMaxWidth)
@@ -134,7 +139,7 @@ private struct MeasureSample: View {
         VStack(alignment: .leading, spacing: Gap.s4) {
             Text(name).typeface(Register.monoMicro, Ink.textHelper)
             Rectangle()
-                .fill(Ink.interactiveSoft)
+                .fill(Ink.layerSelected)
                 .frame(maxWidth: width, minHeight: Gap.s10)
                 .hairline(Ink.borderSubtle, radius: Specimen.corner)
         }

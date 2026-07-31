@@ -239,8 +239,14 @@ struct EngineEnvelope {
         // fallen-back arm is a real state the bar must be able to say out loud. An explicit `false`
         // is honoured too — a caller that has looked and concluded otherwise outranks the
         // inference, which is why this is `??` and not an `||` over the derived value.
-        let armDegraded = arms.contains { $0.state == .fellBack || $0.state == .unavailable }
-        self.degraded = degraded ?? (!fallbacks.isEmpty || armDegraded)
+        // `.fellBack` ONLY, deliberately. Including `.unavailable` here made the bar invent an
+        // event: `degradedNote`'s text is written for the fell-back case, so a run whose only
+        // deviation was an arm that never started printed "An arm fell back mid-run" — an event
+        // the engine did not report, from the component whose entire job is not doing that.
+        // `.unavailable` is not unreported either way; it has its own higher-severity note derived
+        // from `unavailableArms`, so counting it here also double-reported one condition.
+        let armFellBack = arms.contains { $0.state == .fellBack }
+        self.degraded = degraded ?? (!fallbacks.isEmpty || armFellBack)
         self.health = health
         self.frozen = frozen
     }

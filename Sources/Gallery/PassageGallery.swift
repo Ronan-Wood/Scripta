@@ -27,7 +27,7 @@ struct PassagePane: View {
 
 // MARK: - Sections
 
-/// Passages are shown on `Ink.background`, not inside a `GalleryCard`: a card is `Ink.layer` and so
+/// Passages are shown on `Ink.background`, not inside a `Card`: a card is `Ink.layer` and so
 /// is a passage, so nesting them would hide the exact edge this component uses to mark exclusion.
 private struct PassageSection<Content: View>: View {
     let title: String
@@ -102,8 +102,8 @@ private struct AbsentSignal: View {
 /// filled chip → filled chip with a coloured edge) is readable without reading the words.
 private struct ConfidenceTiers: View {
     var body: some View {
-        GalleryCard(title: "The six confidence values",
-                    note: "Two absent, two judged-and-settled, two judged-and-unsettled. Tier is carried by chrome and text weight as well as by hue, so the ordering survives greyscale.") {
+        Card(title: "The six confidence values",
+             note: "Two absent, two judged-and-settled, two judged-and-unsettled. Tier is carried by chrome and text weight as well as by hue, so the ordering survives greyscale.") {
             HStack(spacing: Gap.s6) {
                 ForEach(Self.ordered) { value in
                     SpineBadge(label: value.label, prominence: value.prominence)
@@ -158,8 +158,8 @@ private struct SupersedesList: View {
 
 private struct SpineMatrix: View {
     var body: some View {
-        GalleryCard(title: "Every status x confidence combination",
-                    note: "Drawn, not asserted. Both badges come from the same `prominence` the passage draws with, and the census below counts the coloured ones from the same source. document_class is held at its default here — a conversation-class passage adds exactly one mark to every row below, which is the section further down.") {
+        Card(title: "Every status x confidence combination",
+             note: "Drawn, not asserted. Both badges come from the same `prominence` the passage draws with, and the census below counts the coloured ones from the same source. document_class is held at its default here — a conversation-class passage adds exactly one mark to every row below, which is the section further down.") {
             VStack(alignment: .leading, spacing: Gap.s6) {
                 Census()
                 RowRule()
@@ -262,8 +262,8 @@ private struct PassageContrast: View {
     let appearance: GalleryAppearance
 
     var body: some View {
-        GalleryCard(title: "Pairings the passage introduces",
-                    note: "3:1 for an edge (1.4.11), 4.5:1 for 11pt mono and prose (1.4.3). Washes are composited over the card fill before measuring.") {
+        Card(title: "Pairings the passage introduces",
+             note: "3:1 for an edge (1.4.11), 4.5:1 for 11pt mono and prose (1.4.3). Washes are composited over the card fill before measuring.") {
             VStack(alignment: .leading, spacing: Gap.s2) {
                 ForEach(Self.rows, id: \.label) { row in
                     ContrastRow(label: row.label,

@@ -132,6 +132,14 @@ enum Matrix {
             pairings.append(Pairing("textPrimary", on: Layer(base, wash: "interactiveSubtle"), Wcag.bodyText))
             pairings.append(Pairing("interactive", on: Layer(base, wash: "interactiveSoft"), Wcag.bodyText))
             pairings.append(Pairing("interactive", on: Layer(base, wash: "interactiveSubtle"), Wcag.bodyText))
+            // The selected row's subtitle. Unscored until now: the washes were paired with
+            // textPrimary and interactive but never with a secondary ink, so `ListRow`'s subtitle
+            // over `rowSelected` — the most ordinary use the workhorse component has — sat outside
+            // the matrix entirely. `textHelper` is deliberately still absent here: it measures
+            // 3.77:1 / 3.46:1 over these washes and no component may draw it on one, so it is
+            // forbidden rather than gated. Making the gate say that out loud is a separate change.
+            pairings.append(Pairing("textSecondary", on: Layer(base, wash: "interactiveSoft"), Wcag.bodyText))
+            pairings.append(Pairing("textSecondary", on: Layer(base, wash: "interactiveSubtle"), Wcag.bodyText))
             pairings.append(Pairing("danger", on: Layer(base, wash: "dangerSoft"), Wcag.bodyText))
             pairings.append(Pairing("success", on: Layer(base, wash: "successSoft"), Wcag.bodyText))
             pairings.append(Pairing("textPrimary", on: Layer(base, wash: "warningSoft"), Wcag.bodyText))
@@ -194,11 +202,15 @@ enum TextInk {
     /// through a `Tone`-valued property and are declared, with where they come from.
     static let tones: Set<String> = [
         // Derived — literal at a `.typeface` / `.microLabel` / `.proseText` call site.
-        "textPrimary", "textSecondary", "textHelper", "textPlaceholder", "interactive", "stale",
+        "textPrimary", "textSecondary", "textHelper", "textPlaceholder", "stale",
         // Declared — `EngineArmState.tone` and `EngineNote.tone`, the envelope's marker words.
         "danger", "warning",
-        // Declared — `ControlPalette.foreground(_:)`: every button, pill and field label.
-        "onInteractive", "textOnColor", "textDisabled",
+        // Declared — `ControlPalette.foreground(_:)`: every button, pill and field label, and the
+        // Engine Bar's scope segment. `interactive` was the sixth DERIVED tone until the segment
+        // stopped spelling its own tone: a literal inside `.microLabel(_:)` is by construction the
+        // one thing that cannot answer for five phases, so routing the segment through the palette
+        // is what moved it here. The tone is unchanged and still gated at `Wcag.bodyText`.
+        "interactive", "onInteractive", "textOnColor", "textDisabled",
         // Declared — `PillStyle.me` / `PillStyle.speaker(_:)` labels.
         "speaker.me", "speaker.amber", "speaker.violet", "speaker.teal", "speaker.rose",
     ]
@@ -421,7 +433,7 @@ struct Finding {
 
 enum Ledger {
     /// Every pairing the token layer permits and does not survive, at the ratio it measures.
-    /// Measured 2026-07-30 against Sources/Theme/Ink.swift as first landed.
+    /// Measured 2026-07-30 against Sources/Theme/Tokens/Ink.swift as first landed.
     ///
     /// `warningLacksLightInk` was here and is gone: `warning` gained a light-appearance ink
     /// (yellow60), so the three foreground rows now measure 4.99 / 4.53 / 4.99 and the light
@@ -671,7 +683,10 @@ final class ContrastGateTests: XCTestCase {
         // load-bearing part: files read, tokens recognised, and type call sites recognised.
         XCTAssertGreaterThanOrEqual(files.count, 15, "component files read")
         XCTAssertGreaterThanOrEqual(named.count, 35, "distinct Ink tokens found: \(named.sorted())")
-        XCTAssertGreaterThanOrEqual(drawn.count, 6, "distinct text tones found: \(drawn.sorted())")
+        // Five, not six: every control routed through `ControlPalette` takes its label tone from a
+        // property, so the derived set SHRINKS as the component layer gets more correct — the
+        // opposite of what a floor usually guards. It still proves the parser reads real call sites.
+        XCTAssertGreaterThanOrEqual(drawn.count, 5, "distinct text tones found: \(drawn.sorted())")
 
         let classified = TextInk.tones.union(TextInk.notText.keys)
         let stale = classified.filter { tokens.tones[$0] == nil }.sorted()

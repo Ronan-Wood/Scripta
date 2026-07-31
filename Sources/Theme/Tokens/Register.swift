@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import SwiftUI
 
 // MARK: - Record & Register: the type layer
@@ -82,12 +83,6 @@ struct Typeface {
         return max(0, (size * lineHeightMultiple) - natural)
     }
 
-    /// Escape hatch for the rare optical adjustment (an icon-adjacent glyph, a truncating badge).
-    /// Staying inside the register is the point; changing the size is cheaper than changing face.
-    func at(_ newSize: CGFloat) -> Typeface {
-        Typeface(face: face, size: newSize, kind: kind, textStyle: textStyle)
-    }
-
     private var fallbackWeight: NSFont.Weight {
         switch face {
         case Register.Face.sansSemiBold: return .semibold
@@ -108,6 +103,32 @@ enum Register {
         static let sansSemiBold = "IBMPlexSans-SemiBold"
         static let mono = "IBMPlexMono"
         static let monoMedium = "IBMPlexMono-Medium"
+
+        /// Every face this system can hand to `Font.custom`, declared beside the names themselves.
+        /// The gallery's resolution check reads THIS — it used to keep its own copy, so a seventh
+        /// face added here would have slipped past the one check whose entire job is catching a
+        /// name that does not resolve.
+        static let all: [String] = [sans, sansText, sansMedium, sansSemiBold, mono, monoMedium]
+    }
+
+    /// Registers the bundled Plex TTFs with CoreText for the calling process.
+    ///
+    /// Per BUNDLE, not per app: the gallery is its own bundle, so a registration that ran only in
+    /// the app would leave every `Font.custom` there falling back to San Francisco *silently* —
+    /// which is a type review of a typeface the product does not ship. `.process` scope because
+    /// these are private to whoever is running, never installed for the user.
+    ///
+    /// Registering a face twice is a no-op that returns an error, so the result is deliberately
+    /// unchecked: `Register.Face.all` resolving is the fact worth knowing, and the gallery asserts
+    /// exactly that rather than trusting this call.
+    static func registerFonts(in bundle: Bundle = .main) {
+        guard let directory = bundle.resourceURL,
+              let urls = try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil)
+        else { return }
+        for url in urls where url.pathExtension == "ttf" {
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        }
     }
 
     // MARK: UI register — chrome
