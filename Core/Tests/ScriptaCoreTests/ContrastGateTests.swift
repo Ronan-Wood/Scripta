@@ -485,7 +485,6 @@ enum Ledger {
         // --- noDarkOnColorToken (8) ---
         Finding("textOnColor", on: "warning", .dark, measured: 1.68, required: 4.5, cause: .noDarkOnColorToken),
         Finding("textOnColor", on: "speaker.amber", .dark, measured: 2.32, required: 4.5, cause: .noDarkOnColorToken),
-        Finding("textOnColor", on: "speaker.amber", .light, measured: 3.56, required: 4.5, cause: .noDarkOnColorToken),
         Finding("textOnColor", on: "speaker.rose", .dark, measured: 2.36, required: 4.5, cause: .noDarkOnColorToken),
         Finding("textOnColor", on: "speaker.teal", .dark, measured: 1.70, required: 4.5, cause: .noDarkOnColorToken),
         Finding("textOnColor", on: "speaker.violet", .dark, measured: 3.35, required: 4.5, cause: .noDarkOnColorToken),
@@ -512,8 +511,8 @@ enum Ledger {
         // New rows, and they are not new BREAKAGE: the pairing shipped in the reader the day the
         // flash-on-search landed. It is new MEASUREMENT — the row moved into the component layer,
         // so the gate can finally see the ground its speaker name is drawn on.
-        Finding("speaker.amber", on: "interactiveSoft over background", .light, measured: 2.91, required: 4.5, cause: .selectionWashErodesSpeakerInk),
-        Finding("speaker.amber", on: "interactiveSoft over layer", .light, measured: 2.67, required: 4.5, cause: .selectionWashErodesSpeakerInk),
+        Finding("speaker.amber", on: "interactiveSoft over background", .light, measured: 4.11, required: 4.5, cause: .selectionWashErodesSpeakerInk),
+        Finding("speaker.amber", on: "interactiveSoft over layer", .light, measured: 3.77, required: 4.5, cause: .selectionWashErodesSpeakerInk),
         Finding("speaker.rose", on: "interactiveSoft over background", .light, measured: 4.10, required: 4.5, cause: .selectionWashErodesSpeakerInk),
         Finding("speaker.rose", on: "interactiveSoft over layer", .light, measured: 3.75, required: 4.5, cause: .selectionWashErodesSpeakerInk),
         Finding("speaker.teal", on: "interactiveSoft over background", .light, measured: 4.08, required: 4.5, cause: .selectionWashErodesSpeakerInk),
@@ -523,9 +522,6 @@ enum Ledger {
         Finding("speaker.violet", on: "interactiveSoft over layer", .light, measured: 4.27, required: 4.5, cause: .selectionWashErodesSpeakerInk),
 
         // --- sixtyLevelInkNotBodyCapable (6) ---
-        Finding("speaker.amber", on: "background", .light, measured: 3.56, required: 4.5, cause: .sixtyLevelInkNotBodyCapable),
-        Finding("speaker.amber", on: "layer", .light, measured: 3.24, required: 4.5, cause: .sixtyLevelInkNotBodyCapable),
-        Finding("speaker.amber", on: "layerAlt", .light, measured: 3.56, required: 4.5, cause: .sixtyLevelInkNotBodyCapable),
         Finding("success", on: "background", .light, measured: 3.35, required: 4.5, cause: .sixtyLevelInkNotBodyCapable),
         Finding("success", on: "layer", .light, measured: 3.05, required: 4.5, cause: .sixtyLevelInkNotBodyCapable),
         Finding("success", on: "layerAlt", .light, measured: 3.35, required: 4.5, cause: .sixtyLevelInkNotBodyCapable),
@@ -540,8 +536,8 @@ enum Ledger {
         Finding("interactive", on: "interactiveSoft over layer", .dark, measured: 3.43, required: 4.5, cause: .softWashErodesSameHueInk),
         Finding("interactive", on: "interactiveSoft over layer", .light, measured: 3.75, required: 4.5, cause: .softWashErodesSameHueInk),
         Finding("interactive", on: "interactiveSubtle over layer", .dark, measured: 3.81, required: 4.5, cause: .softWashErodesSameHueInk),
-        Finding("speaker.amber", on: "speaker.amberSoft over background", .light, measured: 3.00, required: 4.5, cause: .softWashErodesSameHueInk),
-        Finding("speaker.amber", on: "speaker.amberSoft over layer", .light, measured: 2.75, required: 4.5, cause: .softWashErodesSameHueInk),
+        Finding("speaker.amber", on: "speaker.amberSoft over background", .light, measured: 4.13, required: 4.5, cause: .softWashErodesSameHueInk),
+        Finding("speaker.amber", on: "speaker.amberSoft over layer", .light, measured: 3.78, required: 4.5, cause: .softWashErodesSameHueInk),
         Finding("speaker.rose", on: "speaker.roseSoft over background", .light, measured: 4.04, required: 4.5, cause: .softWashErodesSameHueInk),
         Finding("speaker.rose", on: "speaker.roseSoft over layer", .light, measured: 3.70, required: 4.5, cause: .softWashErodesSameHueInk),
         Finding("speaker.teal", on: "speaker.tealSoft over background", .light, measured: 4.12, required: 4.5, cause: .softWashErodesSameHueInk),
