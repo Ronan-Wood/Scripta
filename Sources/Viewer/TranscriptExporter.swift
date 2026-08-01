@@ -106,8 +106,11 @@ enum TranscriptExporter {
         let line = NSMutableAttributedString()
         line.append(run("\(stamp) ", PrintFace.stamp, Ink.textHelper))
         if let speaker {
-            let face = cast.isSelf(speaker) ? PrintFace.speakerSelf : PrintFace.speaker
-            line.append(run("\(speaker): ", face, cast.tone(for: speaker)))
+            // Same mark the reader draws, sized for print: the two media pick different faces and
+            // must not disagree about who is neutral.
+            let mark = cast.mark(for: speaker)
+            let face = mark == .me ? PrintFace.speakerSelf : PrintFace.speaker
+            line.append(run("\(speaker): ", face, mark.tone))
         }
         line.append(run(text + "\n", PrintFace.body, Ink.textPrimary))
         // One paragraph, so the turn takes the PROSE leading even though its first two runs are

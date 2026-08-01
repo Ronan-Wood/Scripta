@@ -29,7 +29,7 @@ targetTemplates:
       # the components it needs to the product deliberately, in a reviewed pass, instead of the
       # product carrying a second, unreviewed UI vocabulary alongside CarbonKit that any view can
       # reach for early. The directory-level exclude therefore STAYS now that the first view has
-      # migrated — the five files the Viewer needs are named individually below, and the remaining
+      # migrated — the six files the Viewer needs are named individually below, and the remaining
       # ten are still dead code in this target.
       #
       # Sources/Theme/Tokens deliberately stays IN, and the line is NOT "values in, views out" —
@@ -52,7 +52,7 @@ targetTemplates:
           - Gallery/**
           - Theme/Components
           - Theme/Components/**
-      # The Viewer migration's ADD. Five of the fifteen components, named one by one rather than by
+      # The Viewer migration's ADD. Six of the sixteen components, named one by one rather than by
       # lifting the exclude: the directory stays out so the next four migrations each have to make
       # this same deliberate choice, and so "what is in the product" is readable here rather than
       # inferred from whoever imported what.
@@ -67,6 +67,13 @@ targetTemplates:
       #   ControlPill    — `Pill`: the tag chips and the Conference mark in the header
       #   ControlField   — `InputField`: the three fields in `TranscriptDetailsEditor`
       #
+      # `SpokenLine` is the sixth and arrives by a different route from the five above: it was not
+      # adopted from the system, it was PROMOTED into it. The reader's most-repeated row was built
+      # locally in `TranscriptDetail` because the system had no component for a stamped, attributed
+      # line of speech — while the gallery carried a private one in a different layout. Naming it
+      # here is what puts the row inside the contrast gate's scan, which never reaches app views:
+      # `SpeakerMark` also ships with it, and `TranscriptExporter` reads the same mark for print.
+      #
       # NOT added, and each for a reason worth keeping: `SurfaceCard`/`SurfaceRow`/`SurfaceEmpty`
       # (the reader has no card, list row or empty state), `Passage*` and `Engine*`/`Exclusion*`
       # (they render substrate retrieval, which this view never shows), `ControlProgress` (nothing
@@ -76,6 +83,7 @@ targetTemplates:
       - path: Sources/Theme/Components/ControlButton.swift
       - path: Sources/Theme/Components/ControlPill.swift
       - path: Sources/Theme/Components/ControlField.swift
+      - path: Sources/Theme/Components/SpokenLine.swift
       - path: Skill/scripta/SKILL.md
         buildPhase: resources
       - path: Resources/Fonts

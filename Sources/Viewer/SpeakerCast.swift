@@ -41,15 +41,13 @@ struct SpeakerCast {
         self.slots = slots
     }
 
-    /// True for the party whose identity is carried by WEIGHT rather than hue. Callers pick their
-    /// own emphasis face from this — `Register.uiEmphasis` on screen, Plex Sans Medium in print —
-    /// because the two media size type differently but must not disagree about who is neutral.
-    func isSelf(_ speaker: String) -> Bool { slots[speaker] == nil }
-
-    /// `Ink.speaker.alt(_:)`, the wrapping accessor: a fifth non-self party is a rendering problem,
-    /// not a crash.
-    func tone(for speaker: String) -> Tone {
-        guard let slot = slots[speaker] else { return Ink.speaker.me }
-        return Ink.speaker.alt(slot)
+    /// Slot assignment is all this owns. Which ink and which weight that slot draws in is
+    /// `SpeakerMark`'s — the system states the pairing rule once, and both the reader and the PDF
+    /// exporter read it from there rather than each spelling out "neutral means weight".
+    ///
+    /// Optional in, because a continuation turn has a stamp and no label: no name, no mark.
+    func mark(for speaker: String?) -> SpeakerMark {
+        guard let speaker, let slot = slots[speaker] else { return .me }
+        return .party(slot)
     }
 }

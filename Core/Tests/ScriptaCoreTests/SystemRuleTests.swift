@@ -98,6 +98,9 @@ enum RestrictedInk {
                 "ControlPill.swift": "PillStyle.selected — a selected filter IS interaction state",
                 "ControlState.swift": "the focus ring every primitive draws, and borderFocus",
                 "SurfaceRow.swift": "rowSelected — selection is interaction state",
+                "SpokenLine.swift": "the wash under the line a search hit or an Ask citation "
+                    + "scrolled to. Being the line you looked for is selection state; nothing "
+                    + "about what was said changed",
                 "EngineBar.swift": "the scope segment: rule 3's one permanent exemption, and it is "
                     + "permanent because the segment is genuinely a button",
                 // The review surface. Its job is to DISPLAY the token, which is the one use no
@@ -143,6 +146,64 @@ enum RestrictedInk {
                     + "screen that has a genuine deviation to report. The ink stays textPrimary",
                 "InkCatalog.swift": "the token table, the contrast matrix, the wash pairing and "
                     + "the fill pairing — this is where the token is measured",
+            ]),
+    ]
+}
+
+// MARK: Forbidden pairings
+
+/// A foreground that may not be drawn on a given wash AT ALL, and the files allowed to name both
+/// halves anyway.
+///
+/// `Matrix` scores what the system PERMITS: a pairing in it either clears WCAG or is a ledger row
+/// with its measured ratio. This is the other list, and the distinction is not bookkeeping — a
+/// ledger row says "the system permits this and it fails", which for `textHelper` on a selection
+/// wash is the wrong claim. Nothing should draw it. So the pairing stays OUT of the matrix and the
+/// prohibition is enforced here instead, over the source.
+///
+/// WHAT THE CHECK CAN AND CANNOT PROVE. It cannot know which surface a `Text` sits on — this target
+/// reads the design system as text (see `ThemeTokenSource` for the same trade). What it can prove is
+/// narrower and still catches the real shape: a file that PAINTS the wash and also hands the
+/// forbidden ink to a type modifier has to say which of its rows is which. That is over-broad by
+/// construction — `SurfaceRow` and `RulesPane` both do it legitimately — which is why this is an
+/// allow list with a reason per row, the same shape as `RestrictedInk` and `TextInk.notText`, and
+/// why a stale row fails too. A component routing the ink through a `Tone`-valued property still
+/// escapes, exactly as `TextInk`'s declared half does.
+struct ForbiddenPairing {
+    let foreground: String
+    let wash: String
+    /// Opaque surface → appearance → what the pairing measures there. "Forbidden" is a number, not
+    /// a taste, and pinning it means a palette change that fixes the pairing deletes the row rather
+    /// than leaving a prohibition nobody re-measured.
+    let measured: [String: [Appearance: Double]]
+    let instead: String
+    let rule: String
+    /// file name → why it names both halves without drawing one on the other.
+    let permitted: [String: String]
+}
+
+enum ForbiddenInk {
+    static let rules: [ForbiddenPairing] = [
+        ForbiddenPairing(
+            foreground: "textHelper",
+            wash: "interactiveSoft",
+            measured: [
+                "background": [.light: 4.11, .dark: 4.16],
+                "layer": [.light: 3.77, .dark: 3.46],
+            ],
+            instead: "textSecondary, which measures 6.40 / 5.86 light and 8.09 / 6.72 dark on the "
+                + "same ground and is already in the matrix",
+            rule: "A 12pt label needs 4.5:1 and textHelper does not reach it on the selection wash "
+                + "in either appearance. It is the ordinary shape twice over: ListRow's subtitle "
+                + "under a selected row, and SpokenLine's timestamp on the line a search just "
+                + "scrolled to — the one row in the reader whose stamp most needs reading. Both "
+                + "survived because the matrix never paired the two, and the second survived for "
+                + "the extra reason that it lived in Sources/Viewer, which no gate reads.",
+            permitted: [
+                "SurfaceRow.swift": "the UNSELECTED row's subtitle. The selected branch steps up "
+                    + "to textSecondary on the same line — the ternary IS the fix",
+                "RulesPane.swift": "the rule-2 card draws a selected row in the wash; the "
+                    + "textHelper captions sit under the specimens, on the card",
             ]),
     ]
 }
@@ -246,6 +307,80 @@ final class SystemRuleTests: XCTestCase {
             """)
         XCTAssertGreaterThanOrEqual(files.count, 30, "component + gallery files read")
         XCTAssertGreaterThanOrEqual(scanned, 12, "files matching a restricted token")
+    }
+
+    /// The use half of the prohibition. A file that paints the wash and draws the forbidden ink as
+    /// type has to hold a permission saying which of its rows is which.
+    ///
+    /// This is what "the gate holds it" means for `SpokenLine`: the row now lives in the component
+    /// layer, so putting `Ink.textHelper` back on its timestamp fails here with the rule printed,
+    /// instead of being held by a comment in an app view no gate reads.
+    func testNoFileDrawsAForbiddenInkOnAWashItPaints() throws {
+        let files = try DesignSystemSource.drawing()
+        var violations: [String] = []
+        var stale: [String] = []
+        var scanned = 0
+
+        for rule in ForbiddenInk.rules {
+            var seen = Set<String>()
+            for file in files {
+                let code = try DesignSystemSource.code(file)
+                let named = Set(ComponentInk.tokens(in: code).flatMap(TextInk.expand))
+                let drawn = Set(ComponentInk.drawnAsText(in: code).flatMap(TextInk.expand))
+                guard named.contains(rule.wash), drawn.contains(rule.foreground) else { continue }
+                scanned += 1
+                let name = file.lastPathComponent
+                seen.insert(name)
+                if rule.permitted[name] == nil {
+                    violations.append("\(name) paints \(rule.wash) and draws Ink.\(rule.foreground)"
+                        + " as text — \(rule.rule) Use \(rule.instead).")
+                }
+            }
+            for (name, why) in rule.permitted where !seen.contains(name) {
+                stale.append("\(name) is permitted for \"\(why)\" and no longer both paints "
+                    + "\(rule.wash) and draws Ink.\(rule.foreground)")
+            }
+        }
+
+        XCTAssertTrue(violations.isEmpty, """
+            \(violations.count) forbidden pairing(s) with no permission:
+            \(violations.sorted().joined(separator: "\n"))
+            Draw the safe ink, or add the file to ForbiddenInk with why the two never meet there.
+            """)
+        XCTAssertTrue(stale.isEmpty, """
+            \(stale.count) stale permission(s) in ForbiddenInk — delete the row:
+            \(stale.sorted().joined(separator: "\n"))
+            """)
+        XCTAssertGreaterThanOrEqual(scanned, 2, "files naming a forbidden wash and drawing its ink")
+    }
+
+    /// The number half. A prohibition is a measurement, so it drifts like a ledger row does — and a
+    /// palette change that lifts the pairing over 4.5 makes the whole rule stale, permissions
+    /// included.
+    func testForbiddenPairingsStillMeasureBelowTheTextThreshold() throws {
+        var drifted: [String] = []
+        var checked = 0
+        for rule in ForbiddenInk.rules {
+            for (base, byAppearance) in rule.measured {
+                for (appearance, recorded) in byAppearance {
+                    checked += 1
+                    let ground = Srgb.composite(try tokens.color(rule.wash, appearance),
+                                                over: try tokens.color(base, appearance))
+                    let measured = Srgb.contrast(try tokens.color(rule.foreground, appearance), ground)
+                    let label = "\(rule.foreground) on \(rule.wash) over \(base) [\(appearance.rawValue)]"
+                    if measured >= Wcag.bodyText {
+                        drifted.append(String(format: "%@ — now %.2f:1, clears %.1f:1. The "
+                                              + "prohibition is stale; delete it and its permissions.",
+                                              label, measured, Wcag.bodyText))
+                    } else if abs(measured - recorded) > 0.005 {
+                        drifted.append(String(format: "%@ — recorded %.2f:1, now measures %.2f:1.",
+                                              label, recorded, measured))
+                    }
+                }
+            }
+        }
+        XCTAssertTrue(drifted.isEmpty, "forbidden pairings out of date:\n\(drifted.joined(separator: "\n"))")
+        XCTAssertGreaterThanOrEqual(checked, 4, "forbidden measurements taken")
     }
 
     /// Rule 3, mechanised as far as a parser honestly can.
