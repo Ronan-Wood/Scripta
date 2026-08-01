@@ -171,18 +171,17 @@ enum Matrix {
             pairings.append(Pairing("speaker.me", on: Layer(surface), Wcag.bodyText))
         }
 
-        // A speaker name on the SELECTION wash — the ground `SpokenLine` paints across the whole row
-        // when the reader is scrolled to a search hit or an Ask citation. Every ramp slot can be the
-        // highlighted line, so all five are drawn on this blue in the product's most-repeated row.
+        // A speaker name on the SELECTION wash was ten pairings here and is none, and the deletion
+        // IS the fix: `SpokenLine`'s wash ran the full width of the row, so every ramp slot could be
+        // drawn on blue and nine of those crossings were ledger rows. The wash is now sized to the
+        // prose column and bled four points past it, stopping in the gap before the name — so the
+        // name and the stamp sit on a bare surface in every state, which the loops above already
+        // score.
         //
-        // Unscored until that row became a component. The washes above pair each speaker ink with
-        // its OWN soft wash and the neutral inks with the blue ones; nobody had crossed the two,
-        // because the only row that crosses them lived in an app view the gate never reads.
-        for ink in ["speaker.me"] + coloredParties.map({ "speaker.\($0)" }) {
-            for base in washBases {
-                pairings.append(Pairing(ink, on: Layer(base, wash: "interactiveSoft"), Wcag.bodyText))
-            }
-        }
+        // WHAT THIS COSTS, stated rather than left implied: nothing here can see that geometry. The
+        // matrix scores pairings, not layouts, so a wash widened back past `ReaderGutter.speaker`
+        // would be measured nowhere and reported as nothing. Put the loop back the moment any
+        // component draws a speaker name on this ground again.
 
         return pairings
     }
@@ -399,7 +398,6 @@ enum FindingCause: String {
     case noDarkOnColorToken
     case darkFillsAreTextTints
     case softWashErodesSameHueInk
-    case selectionWashErodesSpeakerInk
     case sixtyLevelInkNotBodyCapable
     case layerAltDarkTooClose
     case borderSubtleVanishesOnLayerAlt
@@ -418,8 +416,6 @@ enum FindingCause: String {
             return "in dark appearance interactive/danger drop to the 50/40 levels — tints chosen to be readable ON dark, not to be drawn on. White on them lands between 2.3 and 3.4."
         case .softWashErodesSameHueInk:
             return "a 14-16% wash of the same hue lifts the background toward the ink, costing roughly 0.5-1.5:1 versus the same ink on the bare surface. Same-hue badge patterns (wash + coloured ink) are the system's most common shape and its weakest."
-        case .selectionWashErodesSpeakerInk:
-            return "the highlight wash is not the speaker's own hue, so this is not the same failure as softWashErodesSameHueInk: a 14%/20% blue moves the ground toward mid-tone in BOTH appearances, and the speaker ramp is chromatic 60/40-level steps with the least headroom in the table. amber is worst (2.67:1) because it is already the ledger's weakest ink on a bare surface. What closes it is a text-capable step per party, or a highlight that does not run under the name — narrowing the wash to the prose column is the cheaper of the two. Until then the row stays readable on its neutral halves: the stamp (textSecondary) and the words (textPrimary) clear 4.5 on the same ground."
         case .sixtyLevelInkNotBodyCapable:
             return "amber60 and green50 are Carbon's fill-level steps, not its text-level steps. Carbon's own text-capable equivalents are orange-60 #BA4E00 and green-60 #198038."
         case .layerAltDarkTooClose:
@@ -459,6 +455,11 @@ enum Ledger {
     /// (yellow60), so the three foreground rows now measure 4.99 / 4.53 / 4.99 and the light
     /// `textOnColor` row clears 4.5 as well. The one survivor — white on yellow30 in dark — is a
     /// missing dark-on-colour token, which is what it always was.
+    ///
+    /// `selectionWashErodesSpeakerInk` was nine rows and is gone, and it is the one cause closed
+    /// without touching a colour: `SpokenLine` narrowed its search-hit wash to the prose column, so
+    /// no speaker name is drawn on the selection blue anywhere and the pairing left `Matrix`. See
+    /// the note where the loop used to be for what that costs.
     static let findings: [Finding] = [
         // --- darkFillsAreTextTints (4) ---
         Finding("onInteractive", on: "interactive", .dark, measured: 3.35, required: 4.5, cause: .darkFillsAreTextTints),
@@ -506,20 +507,6 @@ enum Ledger {
         Finding("textPlaceholder", on: "layerHover", .light, measured: 1.94, required: 4.5, cause: .placeholderInk),
         Finding("textPlaceholder", on: "layerSelected", .dark, measured: 2.30, required: 4.5, cause: .placeholderInk),
         Finding("textPlaceholder", on: "layerSelected", .light, measured: 1.80, required: 4.5, cause: .placeholderInk),
-
-        // --- selectionWashErodesSpeakerInk (9) ---
-        // New rows, and they are not new BREAKAGE: the pairing shipped in the reader the day the
-        // flash-on-search landed. It is new MEASUREMENT — the row moved into the component layer,
-        // so the gate can finally see the ground its speaker name is drawn on.
-        Finding("speaker.amber", on: "interactiveSoft over background", .light, measured: 4.11, required: 4.5, cause: .selectionWashErodesSpeakerInk),
-        Finding("speaker.amber", on: "interactiveSoft over layer", .light, measured: 3.77, required: 4.5, cause: .selectionWashErodesSpeakerInk),
-        Finding("speaker.rose", on: "interactiveSoft over background", .light, measured: 4.10, required: 4.5, cause: .selectionWashErodesSpeakerInk),
-        Finding("speaker.rose", on: "interactiveSoft over layer", .light, measured: 3.75, required: 4.5, cause: .selectionWashErodesSpeakerInk),
-        Finding("speaker.teal", on: "interactiveSoft over background", .light, measured: 4.08, required: 4.5, cause: .selectionWashErodesSpeakerInk),
-        Finding("speaker.teal", on: "interactiveSoft over layer", .light, measured: 3.74, required: 4.5, cause: .selectionWashErodesSpeakerInk),
-        Finding("speaker.violet", on: "interactiveSoft over background", .dark, measured: 4.13, required: 4.5, cause: .selectionWashErodesSpeakerInk),
-        Finding("speaker.violet", on: "interactiveSoft over layer", .dark, measured: 3.43, required: 4.5, cause: .selectionWashErodesSpeakerInk),
-        Finding("speaker.violet", on: "interactiveSoft over layer", .light, measured: 4.27, required: 4.5, cause: .selectionWashErodesSpeakerInk),
 
         // --- sixtyLevelInkNotBodyCapable (6) ---
         Finding("success", on: "background", .light, measured: 3.35, required: 4.5, cause: .sixtyLevelInkNotBodyCapable),

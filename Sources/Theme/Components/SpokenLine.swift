@@ -64,6 +64,12 @@ enum SpeakerMark: Equatable {
 /// The highlight wash is `interactiveSoft` — rule 2's sanctioned blue, because "the line you
 /// searched for" is selection state and not a property of what was said. It is painted without
 /// changing the row's padding, so a flash does not nudge every line beneath it sideways mid-scroll.
+///
+/// IT RUNS UNDER THE WORDS ONLY. Full-row was the shipped shape, and it put every coloured speaker
+/// name on blue — nine ledger rows, amber worst at 4.11 / 3.77 light against the 4.5 a name needs.
+/// The flash marks WHICH WORDS were found, so the gutters were never carrying that; narrowing it to
+/// the prose column takes the whole ramp off the wash and costs no token, where the only other fix
+/// on the table was a text-capable step for all four parties.
 struct SpokenLine: View {
     let stamp: String
     /// Absent on a continuation turn, where the writer emits a stamp and no label.
@@ -75,12 +81,11 @@ struct SpokenLine: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Gap.s8) {
-            // `textSecondary`, NOT `textHelper`. When this row is the search hit it sits on the
-            // `interactiveSoft` wash, where `textHelper` measures 4.11:1 / 3.77:1 light and
-            // 4.16:1 / 3.46:1 dark against the 4.5 a 12pt label needs — so the timestamp on the one
-            // line the reader just searched for would be the least legible thing on screen. That
-            // pairing is now forbidden in `ForbiddenInk` rather than argued for here, which is the
-            // whole reason this row is a component and not a private struct in an app view.
+            // `textSecondary`, NOT `textHelper`. The wash no longer reaches the stamp, so the
+            // 4.11:1 / 3.77:1 light and 4.16:1 / 3.46:1 dark that first argued this is no longer a
+            // fact about this row — but the prohibition was never geometric. `ForbiddenInk` fails
+            // any file that PAINTS `interactiveSoft` and hands `textHelper` to a type modifier, and
+            // this one still paints it. The gate holds the line the geometry used to.
             Text(stamp)
                 .typeface(Register.mono, Ink.textSecondary)
                 .frame(width: ReaderGutter.stamp, alignment: .trailing)
@@ -92,9 +97,24 @@ struct SpokenLine: View {
             Text(text)
                 .proseText(Register.prose, Ink.textPrimary)
                 .frame(maxWidth: Metrics.proseMaxWidth, alignment: .leading)
+                .background { flash }
         }
         .padding(.vertical, Gap.s4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .surface(highlighted ? Ink.interactiveSoft : .clear, radius: Corner.control, border: nil)
+    }
+
+    /// Behind the prose column, bled `Gap.s4` past it on all four sides.
+    ///
+    /// A background under one column rather than a `.surface` on the row, and the bleed is what
+    /// keeps everything else identical: vertically it re-draws exactly the height the full-row wash
+    /// had, which is the row's own `Gap.s4` padding; horizontally it stops halfway across the eight
+    /// points between the name and the words, so it clears the name and still leaves the first
+    /// glyph off the edge. Hugging the text bounds instead would read as a rectangle clipped to the
+    /// glyphs. `Corner.control` is the radius the full-row wash already had — the flash's corner did
+    /// not change, only where it stops.
+    private var flash: some View {
+        Corner.shape(Corner.control)
+            .fill(highlighted ? Ink.interactiveSoft : .clear)
+            .padding(-Gap.s4)
     }
 }
