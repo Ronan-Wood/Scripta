@@ -10,6 +10,7 @@ struct SpeakerPane: View {
         VStack(alignment: .leading, spacing: Gap.s16) {
             SpeakerPairingCard()
             SpeakerTranscriptCard()
+            SpokenLineStatesCard()
             DichromacyCard(appearance: appearance)
             SeparationCard(appearance: appearance)
         }
@@ -68,36 +69,47 @@ private struct AltPartyRow: View {
 }
 
 /// Rule 3 at the row level: a default transcript is monochrome except for the one coloured party.
+///
+/// This card used to draw a private `TranscriptLine` that stacked the name and stamp above the
+/// prose in `Register.monoMicro` — a row the product has never shipped, in the one surface whose
+/// job is proving the ramp works. It draws the real `SpokenLine` now, so what is reviewed here is
+/// what the reader renders, down to the gutter widths.
 private struct SpeakerTranscriptCard: View {
     var body: some View {
         Card(title: "Two parties, one colour",
              note: "The common case. Everything that is not the other speaker's name is ink.") {
-            VStack(alignment: .leading, spacing: Gap.s10) {
-                TranscriptLine(speaker: "Ronan", tone: Ink.speaker.me, emphasised: true,
-                               stamp: "00:14:07",
-                               line: "We should ship the contrast gate before any component.")
-                TranscriptLine(speaker: "Priya", tone: Ink.speaker.amber, emphasised: false,
-                               stamp: "00:14:19",
-                               line: "Agreed — a component built on a token that fails is work done twice.")
+            VStack(alignment: .leading, spacing: Gap.s2) {
+                SpokenLine(stamp: "[00:14:07]", speaker: "You", mark: .me,
+                           text: "We should ship the contrast gate before any component.")
+                SpokenLine(stamp: "[00:14:19]", speaker: "Priya", mark: .party(0),
+                           text: "Agreed — a component built on a token that fails is work done twice.")
             }
         }
     }
 }
 
-private struct TranscriptLine: View {
-    let speaker: String
-    let tone: Tone
-    let emphasised: Bool
-    let stamp: String
-    let line: String
-
+/// Every state the row has, because the one that was never reviewable is the one that broke: a
+/// highlighted line put the stamp on a blue wash, and `SpokenLine` lived in an app view where no
+/// gate and no specimen could see it. It is the last row here, at the size and gutter the reader
+/// draws it.
+private struct SpokenLineStatesCard: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: Gap.s2) {
-            HStack(spacing: Gap.s8) {
-                Text(speaker).typeface(emphasised ? Register.uiEmphasis : Register.ui, tone)
-                Text(stamp).typeface(Register.monoMicro, Ink.textHelper)
+        Card(title: "Every state of the row",
+             note: "Self, the four ramp slots, a continuation turn with no label, and the search hit.") {
+            VStack(alignment: .leading, spacing: Gap.s2) {
+                SpokenLine(stamp: "[00:02:11]", speaker: "You", mark: .me,
+                           text: "Neutral ink; the weight is the whole signal.")
+                ForEach(Array(SpeakerCatalog.alt.enumerated()), id: \.element.id) { slot, party in
+                    SpokenLine(stamp: "[00:02:2\(slot)]", speaker: "Sp\(slot + 2)",
+                               mark: .party(slot),
+                               text: "Slot \(slot) — Ink.speaker.\(party.name), at Register.ui.")
+                }
+                SpokenLine(stamp: "[00:02:31]",
+                           text: "A continuation turn: a stamp, no label, and the prose column starts where every other row's does.")
+                SpokenLine(stamp: "[00:02:44]", speaker: "Priya", mark: .party(1),
+                           text: "The search hit. The stamp is textSecondary — textHelper on this wash is forbidden, not merely unmeasured.",
+                           highlighted: true)
             }
-            Text(line).proseText(Register.prose, Ink.textPrimary)
         }
     }
 }

@@ -8,7 +8,8 @@ import AppKit
 /// The first view on "Record & Register", and the one where the three registers land on a single
 /// line: a MONO timestamp (machine-measured), a UI speaker name (chrome), and the words themselves
 /// in PROSE (IBM Plex Sans Text, capped at `Metrics.proseMaxWidth`). That is rule 1 stated as a
-/// layout rather than as a doc.
+/// layout rather than as a doc — and the row itself is `SpokenLine`, a system component now, so
+/// this view supplies the blocks and the cast and no longer owns the layout or its gutters.
 struct TranscriptDetail: View {
     let meta: TranscriptMeta
     /// When set, the reader scrolls to (and briefly flashes) the spoken line at/under this time —
@@ -363,20 +364,6 @@ private struct Hairline: View {
     }
 }
 
-/// The reader's two fixed columns. WIDTHS, not heights: `Density`'s minimum rule is about content
-/// that can grow, and these exist precisely so it cannot — every line of speech has to start on the
-/// same left edge or the prose column reads as ragged.
-///
-/// `Metrics` has no column token, so both are measured rather than guessed. Plex Mono's advance is
-/// 0.6em, so the widest stamp `TranscriptWriter` emits — "[1:02:33]", nine characters of
-/// `Register.mono` at 12 — is 64.8pt.
-private enum ReaderGutter {
-    static let stamp: CGFloat = 66
-    /// "Them" / "Note" at `Register.uiEmphasis`, with room for a longer label than the writer
-    /// emits today.
-    static let speaker: CGFloat = 44
-}
-
 private struct BlockView: View {
     let block: TranscriptBlock
     let cast: SpeakerCast
@@ -388,7 +375,8 @@ private struct BlockView: View {
             // A section heading is chrome naming a region, not something anyone said.
             Text(title).typeface(Register.title3, Ink.textPrimary).padding(.top, Gap.s8)
         case .audioLine(let stamp, let speaker, let text):
-            SpokenLine(stamp: stamp, speaker: speaker, text: text, cast: cast, highlighted: highlighted)
+            SpokenLine(stamp: stamp, speaker: speaker, mark: cast.mark(for: speaker),
+                       text: text, highlighted: highlighted)
         case .screenMarker(let stamp):
             Text(stamp).typeface(Register.monoMicro, Ink.textHelper).padding(.top, Gap.s4)
         case .table(let rows):
@@ -405,45 +393,5 @@ private struct BlockView: View {
         case .divider:
             Hairline()
         }
-    }
-}
-
-/// One spoken turn, and the only place in the app where all three registers sit on one line.
-///
-/// The wash is `interactiveSoft` — rule 2's sanctioned blue, because "the line you searched for" is
-/// selection state and not a property of what was said. It is painted without changing the row's
-/// padding, so a flash no longer nudges every line beneath it sideways mid-scroll.
-private struct SpokenLine: View {
-    let stamp: String
-    let speaker: String?
-    let text: String
-    let cast: SpeakerCast
-    let highlighted: Bool
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Gap.s8) {
-            // `textSecondary`, NOT `textHelper`. When this row is the search hit it sits on an
-            // `interactiveSoft` wash, where `textHelper` measures 3.78:1 light / 3.46:1 dark
-            // against the 4.5 a 12pt label needs — a pairing the contrast gate names as forbidden
-            // outright rather than merely ungated. So the timestamp on the one line the reader just
-            // searched for was the least legible thing on screen. `textSecondary` is scored on that
-            // wash and passes; the hierarchy it gives up is worth less than the row being readable.
-            Text(stamp)
-                .typeface(Register.mono, Ink.textSecondary)
-                .frame(width: ReaderGutter.stamp, alignment: .trailing)
-            if let speaker {
-                // Weight for the self party, hue for everyone else — never both on one name.
-                Text(speaker)
-                    .typeface(cast.isSelf(speaker) ? Register.uiEmphasis : Register.ui,
-                              cast.tone(for: speaker))
-                    .frame(width: ReaderGutter.speaker, alignment: .leading)
-            }
-            Text(text)
-                .proseText(Register.prose, Ink.textPrimary)
-                .frame(maxWidth: Metrics.proseMaxWidth, alignment: .leading)
-        }
-        .padding(.vertical, Gap.s4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .surface(highlighted ? Ink.interactiveSoft : .clear, radius: Corner.control, border: nil)
     }
 }
