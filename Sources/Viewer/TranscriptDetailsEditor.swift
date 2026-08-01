@@ -29,35 +29,29 @@ struct TranscriptDetailsEditor: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Call Details").font(.headline)
+        VStack(alignment: .leading, spacing: Gap.s16) {
+            Text("Call Details").typeface(Register.title3, Ink.textPrimary)
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Title").font(.caption).foregroundStyle(.secondary)
-                TextField("Untitled call", text: $title)
-                    .textFieldStyle(.roundedBorder)
-            }
+            EditorField(label: "Title", prompt: "Untitled call", text: $title, onSubmit: save)
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Participants").font(.caption).foregroundStyle(.secondary)
-                TextField("e.g. Chris Dempsey, Jane Doe", text: $participants)
-                    .textFieldStyle(.roundedBorder)
-                Text("Separate names with commas — or semicolons if a name contains a comma. Used for “calls with …” search.")
-                    .font(.caption2).foregroundStyle(.tertiary)
-            }
+            EditorField(label: "Participants", prompt: "e.g. Chris Dempsey, Jane Doe",
+                        text: $participants, onSubmit: save,
+                        help: "Separate names with commas — or semicolons if a name contains a comma. Used for “calls with …” search.")
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Tags").font(.caption).foregroundStyle(.secondary)
-                TextField("e.g. pricing, lease, hiring", text: $tags)
-                    .textFieldStyle(.roundedBorder)
-                Text("Topics for search and the tag index (auto-suggested from the call; edit freely).")
-                    .font(.caption2).foregroundStyle(.tertiary)
-            }
+            EditorField(label: "Tags", prompt: "e.g. pricing, lease, hiring",
+                        text: $tags, onSubmit: save,
+                        help: "Topics for search and the tag index (auto-suggested from the call; edit freely).")
 
             if let errorMessage {
-                Text(errorMessage).font(.caption).foregroundStyle(.red)
+                Text(errorMessage).typeface(Register.caption, Ink.danger)
             }
 
+            // Native `Button`s, deliberately. `.cancelAction` / `.defaultAction` are what give a
+            // modal form Escape, Return, the pulsing default and VoiceOver's "default button" —
+            // and nothing has established that `.keyboardShortcut` survives `Pressable`'s
+            // `Button` → `.pressReporter` → `.focusEffectDisabled()` chain. Trading a working
+            // Return-to-save for a typeface is the wrong side of that bet; see the migration's
+            // gap list.
             HStack {
                 Spacer()
                 Button("Cancel") { onDone(false) }
@@ -67,7 +61,9 @@ struct TranscriptDetailsEditor: View {
                     .buttonStyle(.borderedProminent)
             }
         }
-        .padding(20)
+        // `Gap.s20` and not `Metrics.pageGutter`: a 400pt modal is not a content pane, and `Metrics`
+        // has no dialog measurement at all — neither its inset nor its width.
+        .padding(Gap.s20)
         .frame(width: 400)
     }
 
@@ -82,6 +78,31 @@ struct TranscriptDetailsEditor: View {
             onDone(true)
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+}
+
+/// A labelled field with optional help text.
+///
+/// The label is outside the field because `InputField` requires it to be: its prompt is decorative
+/// and may not be the only place a field's meaning appears (the gate scores `textPlaceholder` on
+/// `field` at 2.16:1). The help line is PROSE — a sentence someone wrote about how the field
+/// behaves — which is the same call `Card`'s `note` makes, and the register is what tells a reader
+/// it is explanation rather than another control.
+private struct EditorField: View {
+    let label: String
+    let prompt: String
+    @Binding var text: String
+    var onSubmit: () -> Void = {}
+    var help: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Gap.s4) {
+            Text(label).microLabel()
+            InputField(prompt: prompt, text: $text, onSubmit: onSubmit)
+            if let help {
+                Text(help).proseText(Register.proseSm, Ink.textHelper)
+            }
         }
     }
 }

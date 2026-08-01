@@ -77,15 +77,24 @@ struct ActionButton: View {
 
 /// Icon-only, `Density.pill` (28) square. `label` is required and is not decoration: an icon
 /// button without one is a control VoiceOver announces as "button".
+///
+/// `help` is SEPARATE from `label` because one string could not do both jobs. A tooltip earns its
+/// space by explaining what the control is FOR — "teach a term once; transcription and search learn
+/// it everywhere" — while an accessibility label has to be the short name of the thing, because
+/// VoiceOver reads it on every focus. Collapsing them cost the reader's vocabulary button its
+/// explanation on first migration: the long form was deleted rather than inflicted on a screen
+/// reader. Defaults to `label`, so the common case where the name IS the explanation stays one
+/// argument.
 struct IconButton: View {
     let glyph: Glyph
     let label: String
+    var help: String? = nil
     var rank: ButtonRank = .tertiary
     let action: () -> Void
 
     var body: some View {
         Pressable(action: action) {
-            IconButtonSkin(glyph: glyph, label: label, rank: rank)
+            IconButtonSkin(glyph: glyph, label: label, help: help ?? label, rank: rank)
         }
         .accessibilityLabel(label)
     }
@@ -140,6 +149,7 @@ private struct ActionButtonContent: View {
 private struct IconButtonSkin: View {
     let glyph: Glyph
     let label: String
+    let help: String
     let rank: ButtonRank
 
     @Environment(\.isEnabled) private var isEnabled
@@ -160,7 +170,7 @@ private struct IconButtonSkin: View {
             .frame(minWidth: Gap.s16, minHeight: Gap.s16)
             .modifier(ControlSkin(palette: rank.palette, phase: phase,
                                   minHeight: Density.pill, horizontal: Gap.s6))
-            .help(label)
+            .help(help)
             .onHover { hovering = $0 }
             .animation(Motion.hover, value: phase)
     }
