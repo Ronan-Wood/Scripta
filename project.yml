@@ -25,12 +25,12 @@ targetTemplates:
       # alone. Without this exclude a bare `- Sources` sweeps it into the app: two @main entry
       # points, and a gallery that ships inside the product it was built to keep at arm's length.
       #
-      # Sources/Theme/Components is excluded for a different reason, and only until the view
-      # migration: no app view uses one of them yet, so all 15 files were compiling into both
-      # flavors as dead code. Out is the right answer while that is true — it makes the migration
-      # ADD each component to the product deliberately, in a reviewed pass, instead of the product
-      # already carrying a second, unreviewed UI vocabulary alongside CarbonKit that any view can
-      # reach for early.
+      # Sources/Theme/Components is excluded for a different reason: it makes each migration ADD
+      # the components it needs to the product deliberately, in a reviewed pass, instead of the
+      # product carrying a second, unreviewed UI vocabulary alongside CarbonKit that any view can
+      # reach for early. The directory-level exclude therefore STAYS now that the first view has
+      # migrated — the five files the Viewer needs are named individually below, and the remaining
+      # ten are still dead code in this target.
       #
       # Sources/Theme/Tokens deliberately stays IN, and the line is NOT "values in, views out" —
       # that reading is simply false: Register, Metrics and Surface each ship View extensions
@@ -52,6 +52,30 @@ targetTemplates:
           - Gallery/**
           - Theme/Components
           - Theme/Components/**
+      # The Viewer migration's ADD. Five of the fifteen components, named one by one rather than by
+      # lifting the exclude: the directory stays out so the next four migrations each have to make
+      # this same deliberate choice, and so "what is in the product" is readable here rather than
+      # inferred from whoever imported what.
+      #
+      # `ControlState` is not optional and not a component — it is the plumbing (`ControlPhase`,
+      # `ControlPalette`, `ControlSkin`, `Pressable`, `Tone.clear`) that the other four are written
+      # against; none of them compiles without it.
+      #
+      #   ControlState   — required by all four below
+      #   ControlIcon    — `Glyph`/`Icon`: the reader's six action-row icons and two header glyphs
+      #   ControlButton  — `IconButton`: those six action-row buttons
+      #   ControlPill    — `Pill`: the tag chips and the Conference mark in the header
+      #   ControlField   — `InputField`: the three fields in `TranscriptDetailsEditor`
+      #
+      # NOT added, and each for a reason worth keeping: `SurfaceCard`/`SurfaceRow`/`SurfaceEmpty`
+      # (the reader has no card, list row or empty state), `Passage*` and `Engine*`/`Exclusion*`
+      # (they render substrate retrieval, which this view never shows), `ControlProgress` (nothing
+      # here reports progress).
+      - path: Sources/Theme/Components/ControlState.swift
+      - path: Sources/Theme/Components/ControlIcon.swift
+      - path: Sources/Theme/Components/ControlButton.swift
+      - path: Sources/Theme/Components/ControlPill.swift
+      - path: Sources/Theme/Components/ControlField.swift
       - path: Skill/scripta/SKILL.md
         buildPhase: resources
       - path: Resources/Fonts

@@ -4,6 +4,11 @@ import AppKit
 
 /// Reader for one transcript, used inside the hub's Calls pane. (The old standalone viewer window
 /// was retired when the hub took over browsing.)
+///
+/// The first view on "Record & Register", and the one where the three registers land on a single
+/// line: a MONO timestamp (machine-measured), a UI speaker name (chrome), and the words themselves
+/// in PROSE (IBM Plex Sans Text, capped at `Metrics.proseMaxWidth`). That is rule 1 stated as a
+/// layout rather than as a doc.
 struct TranscriptDetail: View {
     let meta: TranscriptMeta
     /// When set, the reader scrolls to (and briefly flashes) the spoken line at/under this time —
@@ -22,39 +27,19 @@ struct TranscriptDetail: View {
     // Parsed once per transcript (off the main thread) and cached — re-reading + re-parsing the
     // whole file inside `body` on every invalidation was a large part of the long-transcript lag.
     @State private var blocks: [TranscriptBlock] = []
+    /// Resolved with `blocks`, never derived inside `body`: assigning ramp slots is a pass over
+    /// every block, and doing it per invalidation would put an O(n) walk on the render path.
+    @State private var cast = SpeakerCast([])
     /// A clicked participant's entity page (M21).
     @State private var entitySheetTarget: EntitySheetTarget?
 
     var body: some View {
         // In-pane action row (not a native `.toolbar`): the hub draws its own in-window title bar
         // and suppresses the system titlebar, so a native toolbar here would hoist these buttons
-        // into that suppressed bar and break the top-bar layout only on this pane. Carbon-styled
-        // row keeps Calls consistent with every other section.
+        // into that suppressed bar and break the top-bar layout only on this pane.
         VStack(spacing: 0) {
             actionBar
-            ScrollViewReader { proxy in
-                ScrollView {
-                    // Lazy: only on-screen blocks are realized/laid out. A non-lazy VStack built every
-                    // block of an hour-long call up front (and re-laid them on each scroll tick).
-                    LazyVStack(alignment: .leading, spacing: 14) {
-                        header
-                        Divider()
-                        ForEach(Array(blocks.enumerated()), id: \.offset) { offset, block in
-                            BlockView(block: block, highlighted: offset == flashIndex).id(offset)
-                        }
-                        // Title + topics as the query: cheap, always-available, and exactly the
-                        // holistic-concept surface the index's own topic-fusion search already
-                        // leans on (M18) — no need to re-read/parse the body for a summary.
-                        RelatedItemsPanel(query: (meta.title + " " + meta.tags.joined(separator: " ")),
-                                         excludePath: meta.url.path, group: meta.group)
-                    }
-                    .padding(20)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                }
-                .task(id: meta.url) { await loadBlocks(); scrollToTarget(proxy) }
-                .onChange(of: scrollToMs) { _, _ in scrollToTarget(proxy) }
-            }
+            reader
         }
         .alert("Add vocabulary term", isPresented: $addingTerm) {
             TextField("Term (e.g. TIM)", text: $termCanonical)
@@ -97,6 +82,51 @@ struct TranscriptDetail: View {
         .sheet(item: $entitySheetTarget) { target in entitySheet(target) }
     }
 
+    /// Split out of `body` for the reason `KnowledgeView.knowledgeContent` documents: the solver's
+    /// cost is a THRESHOLD in modifier DEPTH, not a per-modifier rate, so re-basing on a shallow
+    /// opaque type buys back the whole chain above it. Five presentations sit on `body` and nothing
+    /// else does.
+    ///
+    /// TWO seams, not one, and the second was measured rather than assumed: with the scroll stack
+    /// inline here this getter alone cost 102-114ms across four clean builds — under the limit
+    /// twice and over it twice, which is a threshold you are sitting on rather than one you have
+    /// cleared. Re-basing the `LazyVStack` as `transcriptStack` dropped this one under 15ms and
+    /// left 28 there, which is the whole chain accounted for and nothing near the limit.
+    private var reader: some View {
+        ScrollViewReader { proxy in
+            ScrollView { transcriptStack }
+                .task(id: meta.url) { await loadBlocks(); scrollToTarget(proxy) }
+                .onChange(of: scrollToMs) { _, _ in scrollToTarget(proxy) }
+        }
+    }
+
+    private var transcriptStack: some View {
+        // Lazy: only on-screen blocks are realized/laid out. A non-lazy VStack built every block of
+        // an hour-long call up front (and re-laid them on each scroll tick).
+        LazyVStack(alignment: .leading, spacing: Gap.s8) {
+            header
+            Hairline()
+            ForEach(Array(blocks.enumerated()), id: \.offset) { offset, block in
+                BlockView(block: block, cast: cast, highlighted: offset == flashIndex).id(offset)
+            }
+            RelatedItemsPanel(query: relatedQuery, excludePath: meta.url.path, group: meta.group)
+        }
+        .padding(Metrics.pageGutter)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
+    }
+
+    /// Title + topics as the query: cheap, always-available, and exactly the holistic-concept
+    /// surface the index's own topic-fusion search already leans on (M18) — no need to re-read/
+    /// parse the body for a summary.
+    ///
+    /// Hoisted out of the view builder as well as named: `+` on `String` is one of the most
+    /// heavily overloaded operators in the language, and the solver was paying for it inside a
+    /// result builder.
+    private var relatedQuery: String {
+        meta.title + " " + meta.tags.joined(separator: " ")
+    }
+
     // Extracted (not inline in the modifier chain above): a very similar addition to KnowledgeView
     // pushed its own already-long `body` past the type checker's timeout — isolating the
     // construction here keeps this chain from risking the same thing.
@@ -123,9 +153,11 @@ struct TranscriptDetail: View {
     /// on first appearance and whenever the selected call changes (`.task(id:)`).
     private func loadBlocks() async {
         let url = meta.url
-        blocks = await Task.detached(priority: .userInitiated) {
+        let parsed = await Task.detached(priority: .userInitiated) {
             TranscriptParser.parse(TranscriptStore.body(of: url))
         }.value
+        cast = SpeakerCast(parsed)
+        blocks = parsed
     }
 
     /// Scrolls to the last spoken line at/under `scrollToMs` and flashes it briefly.
@@ -163,41 +195,41 @@ struct TranscriptDetail: View {
         onDeleted()
     }
 
+    // MARK: - Header
+
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(meta.displayTitle).font(.title2).bold()
-                if meta.isConference {
-                    Text("Conference")
-                        .font(.caption2).bold()
-                        .padding(.horizontal, 7).padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.18), in: Capsule())
-                        .foregroundStyle(.orange)
-                }
-            }
-            HStack(spacing: 10) {
-                if !meta.duration.isEmpty { label("clock", meta.duration) }
-                if !meta.participants.isEmpty { participantsRow }
-            }
-            if !meta.tags.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(meta.tags, id: \.self) { tag in
-                        // M21: matches the People rail's tag chips, which already navigate — this
-                        // was the one tag surface left that didn't.
-                        Button { AppModel.shared.route = .tag(tag) } label: {
-                            Text(tag)
-                                .font(.caption2)
-                                .padding(.horizontal, 7).padding(.vertical, 2)
-                                .background(.quaternary, in: Capsule())
-                        }.buttonStyle(.plain)
-                    }
-                }
-            }
+        VStack(alignment: .leading, spacing: Gap.s8) {
+            titleRow
+            metaRow
+            if !meta.tags.isEmpty { tagRow }
         }
     }
 
-    private func label(_ symbol: String, _ text: String) -> some View {
-        Label(text, systemImage: symbol).font(.caption).foregroundStyle(.secondary)
+    private var titleRow: some View {
+        HStack(spacing: Gap.s8) {
+            Text(meta.displayTitle).typeface(Register.title2, Ink.textPrimary)
+            // Neutral, not the orange it used to wear. "Conference" is a CLASSIFICATION of the
+            // call, and rule 3 spends colour on deviation, not on categories — and the orange in
+            // question is now the first speaker slot, which is exactly the overload this system
+            // exists to prevent. The word carries the fact; nothing else has to.
+            if meta.isConference { Pill(text: "Conference", style: .neutral) }
+        }
+    }
+
+    private var metaRow: some View {
+        HStack(spacing: Gap.s12) {
+            if !meta.duration.isEmpty { durationLabel }
+            if !meta.participants.isEmpty { participantsRow }
+        }
+    }
+
+    /// MONO: a duration is a number the machine measured. Rule 1's name/value split has no visible
+    /// name here — the clock glyph is the name half — so the whole label is the value.
+    private var durationLabel: some View {
+        HStack(spacing: Gap.s4) {
+            Icon(.time, Register.mono, Ink.iconSecondary)
+            Text(meta.duration).typeface(Register.mono, Ink.textSecondary)
+        }
     }
 
     /// Participants, individually clickable to their entity page (M21) — the gap M19 itself
@@ -205,13 +237,28 @@ struct TranscriptDetail: View {
     /// single joined Label had, just per-name now, so each is its own tap target instead of one
     /// opaque string.
     private var participantsRow: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "person.2").font(.caption).foregroundStyle(.secondary)
+        HStack(spacing: Gap.s4) {
+            Icon(.people, Register.caption, Ink.iconSecondary)
             ForEach(Array(meta.participants.enumerated()), id: \.offset) { index, name in
-                Button { openParticipant(name) } label: {
+                // `Pressable` rather than a bare `Button(.plain)`: it is the system's hit target
+                // and publishes pressed/focused state, so this stays one control vocabulary even
+                // where the control draws nothing of its own.
+                Pressable(action: { openParticipant(name) }) {
                     Text(index == meta.participants.count - 1 ? name : "\(name),")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.buttonStyle(.plain)
+                        .typeface(Register.caption, Ink.textSecondary)
+                }
+            }
+        }
+    }
+
+    private var tagRow: some View {
+        HStack(spacing: Gap.s6) {
+            ForEach(meta.tags, id: \.self) { tag in
+                // M21: matches the People rail's tag chips, which already navigate — this was the
+                // one tag surface left that didn't. Named `action:` deliberately: `Pill`'s trailing
+                // closure position is `onRemove`, so a trailing closure here would silently build
+                // an inert pill with a remove affordance.
+                Pill(text: tag, style: .neutral, action: { AppModel.shared.route = .tag(tag) })
             }
         }
     }
@@ -227,34 +274,39 @@ struct TranscriptDetail: View {
         entitySheetTarget = EntitySheetTarget(id: id, fallbackName: name)
     }
 
-    // MARK: - Action row (matches the hub's 40pt in-window bar treatment)
+    // MARK: - Action row
 
+    /// Sized by its content, not declared: six `Density.pill` (28) controls plus `Gap.s6` above and
+    /// below land the bar on the 40 the hub's other in-window bars use, while staying a MINIMUM —
+    /// the same 40 spelled as `.frame(height:)` clips the moment anything in it grows.
     private var actionBar: some View {
-        HStack(spacing: Space.x1) {
+        HStack(spacing: Gap.s2) {
             Spacer()
-            ReaderBarButton(systemImage: "pencil", help: "Edit details") { showingEditor = true }
-            ReaderBarButton(systemImage: "square.and.pencil", help: "Open in external editor") {
+            IconButton(glyph: .edit, label: "Edit details") { showingEditor = true }
+            IconButton(glyph: .document, label: "Open in external editor") {
                 NSWorkspace.shared.open(meta.url)
             }
-            ReaderBarButton(systemImage: "folder", help: "Reveal in Finder") {
+            IconButton(glyph: .folder, label: "Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([meta.url])
             }
             shareMenu
-            ReaderBarButton(systemImage: "character.book.closed",
-                            help: "Add to vocabulary — teach a term once; transcription and search learn it everywhere") {
+            IconButton(glyph: .book, label: "Add to vocabulary",
+                       help: "Add to vocabulary — teach a term once; transcription and search "
+                           + "learn it everywhere") {
                 termCanonical = ""; termAliases = ""; termGloss = ""
                 addingTerm = true
             }
-            ReaderBarButton(systemImage: "trash", help: "Delete transcript", tint: Carbon.danger) {
-                confirmingDelete = true
-            }
+            IconButton(glyph: .trash, label: "Delete transcript") { confirmingDelete = true }
         }
-        .padding(.horizontal, Space.x4)
-        .frame(height: 40)
-        .background(Carbon.background)
-        .overlay(alignment: .bottom) { Rectangle().fill(Carbon.borderSubtle).frame(height: 1) }
+        .controlBox(Density.action, horizontal: Gap.s16, vertical: Gap.s6)
+        .background(Ink.background)
+        .overlay(alignment: .bottom) { Hairline() }
     }
 
+    /// Hand-built rather than an `IconButton`: a `Menu` owns its own label view, and nesting a
+    /// button inside it gives the row two overlapping hit targets. The geometry is copied from
+    /// `IconButtonSkin` so it lines up with the five real buttons beside it; the hover feedback
+    /// `ControlSkin` would have given it is what this costs.
     private var shareMenu: some View {
         Menu {
             Button("Copy summary") { copy(TranscriptExporter.summary(of: meta.url)) }
@@ -285,11 +337,15 @@ struct TranscriptDetail: View {
                 }
             }
         } label: {
-            Image(systemName: "square.and.arrow.up")
-                .font(.system(size: 14))
-                .foregroundStyle(Carbon.iconSecondary)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
+            // `textPrimary` to match its five neighbours. `IconButtonSkin` draws
+            // `rank.palette.foreground(phase)`, which at the default `.tertiary` rank is
+            // `textPrimary` — so this hand-built menu label, which copied that skin's GEOMETRY and
+            // not its TONE, was the only icon in the row a different colour. Before the migration
+            // all six matched; this mismatch was introduced by copying half a component.
+            Icon(.share, Register.bodyUI, Ink.textPrimary)
+                .frame(minWidth: Gap.s16, minHeight: Gap.s16)
+                .controlBox(Density.pill, horizontal: Gap.s6)
+                .contentShape(Corner.shape(Corner.control))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -298,67 +354,96 @@ struct TranscriptDetail: View {
     }
 }
 
-/// An icon button for the reader's action row — matches the hub's plain, hover-tinted controls.
-private struct ReaderBarButton: View {
-    let systemImage: String
-    let help: String
-    var tint: Color = Carbon.iconSecondary
-    let action: () -> Void
-    @State private var hovering = false
-
+/// The system's separator: a solid hairline in `Ink.borderSubtle`. `Surface.swift` states that rule
+/// and ships only `DottedRule`, whose texture is reserved for "no verdict was possible" — so the
+/// ordinary case has no view and gets spelled out here.
+private struct Hairline: View {
     var body: some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 14))
-                .foregroundStyle(tint)
-                .frame(width: 28, height: 28)
-                .background(hovering ? Carbon.layerHover : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help(help)
+        Rectangle().fill(Ink.borderSubtle).frame(height: Elevation.hairline)
     }
+}
+
+/// The reader's two fixed columns. WIDTHS, not heights: `Density`'s minimum rule is about content
+/// that can grow, and these exist precisely so it cannot — every line of speech has to start on the
+/// same left edge or the prose column reads as ragged.
+///
+/// `Metrics` has no column token, so both are measured rather than guessed. Plex Mono's advance is
+/// 0.6em, so the widest stamp `TranscriptWriter` emits — "[1:02:33]", nine characters of
+/// `Register.mono` at 12 — is 64.8pt.
+private enum ReaderGutter {
+    static let stamp: CGFloat = 66
+    /// "Them" / "Note" at `Register.uiEmphasis`, with room for a longer label than the writer
+    /// emits today.
+    static let speaker: CGFloat = 44
 }
 
 private struct BlockView: View {
     let block: TranscriptBlock
+    let cast: SpeakerCast
     var highlighted: Bool = false
 
     var body: some View {
         switch block {
         case .section(let title):
-            Text(title).font(.headline).padding(.top, 8)
+            // A section heading is chrome naming a region, not something anyone said.
+            Text(title).typeface(Register.title3, Ink.textPrimary).padding(.top, Gap.s8)
         case .audioLine(let stamp, let speaker, let text):
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(stamp).font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary).frame(width: 52, alignment: .trailing)
-                if let speaker {
-                    Text(speaker)
-                        .font(.caption).bold()
-                        .foregroundStyle(speaker == "You" ? Color.accentColor : Color.orange)
-                        .frame(width: 40, alignment: .leading)
-                }
-                Text(text)
-            }
-            .padding(.vertical, highlighted ? 4 : 0)
-            .padding(.horizontal, highlighted ? 8 : 0)
-            .background(highlighted ? Color.accentColor.opacity(0.15) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 6))
+            SpokenLine(stamp: stamp, speaker: speaker, text: text, cast: cast, highlighted: highlighted)
         case .screenMarker(let stamp):
-            Text(stamp).font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.tertiary).padding(.top, 4)
+            Text(stamp).typeface(Register.monoMicro, Ink.textHelper).padding(.top, Gap.s4)
         case .table(let rows):
+            // Mono for the column alignment the pre-formatted rows were written against.
             Text(rows.joined(separator: "\n"))
-                .font(.system(.caption, design: .monospaced))
-                .padding(10)
+                .typeface(Register.mono, Ink.textSecondary)
+                .padding(Gap.s10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+                .surface(Ink.layer, radius: Corner.card)
         case .paragraph(let text):
-            Text(text).foregroundStyle(.secondary)
+            Text(text)
+                .proseText(Register.prose, Ink.textSecondary)
+                .frame(maxWidth: Metrics.proseMaxWidth, alignment: .leading)
         case .divider:
-            Divider()
+            Hairline()
         }
+    }
+}
+
+/// One spoken turn, and the only place in the app where all three registers sit on one line.
+///
+/// The wash is `interactiveSoft` — rule 2's sanctioned blue, because "the line you searched for" is
+/// selection state and not a property of what was said. It is painted without changing the row's
+/// padding, so a flash no longer nudges every line beneath it sideways mid-scroll.
+private struct SpokenLine: View {
+    let stamp: String
+    let speaker: String?
+    let text: String
+    let cast: SpeakerCast
+    let highlighted: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Gap.s8) {
+            // `textSecondary`, NOT `textHelper`. When this row is the search hit it sits on an
+            // `interactiveSoft` wash, where `textHelper` measures 3.78:1 light / 3.46:1 dark
+            // against the 4.5 a 12pt label needs — a pairing the contrast gate names as forbidden
+            // outright rather than merely ungated. So the timestamp on the one line the reader just
+            // searched for was the least legible thing on screen. `textSecondary` is scored on that
+            // wash and passes; the hierarchy it gives up is worth less than the row being readable.
+            Text(stamp)
+                .typeface(Register.mono, Ink.textSecondary)
+                .frame(width: ReaderGutter.stamp, alignment: .trailing)
+            if let speaker {
+                // Weight for the self party, hue for everyone else — never both on one name.
+                Text(speaker)
+                    .typeface(cast.isSelf(speaker) ? Register.uiEmphasis : Register.ui,
+                              cast.tone(for: speaker))
+                    .frame(width: ReaderGutter.speaker, alignment: .leading)
+            }
+            Text(text)
+                .proseText(Register.prose, Ink.textPrimary)
+                .frame(maxWidth: Metrics.proseMaxWidth, alignment: .leading)
+        }
+        .padding(.vertical, Gap.s4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .surface(highlighted ? Ink.interactiveSoft : .clear, radius: Corner.control, border: nil)
     }
 }
