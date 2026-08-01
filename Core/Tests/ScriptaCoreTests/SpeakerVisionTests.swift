@@ -190,7 +190,17 @@ enum Collapses {
     static let recorded: [Collapse] = [
         Collapse("teal", "rose", .dark, .deuteranopia, measured: 11.97, cause: .thirdAndFourthPartyConverge),
         Collapse("me", "teal", .dark, .protanopia, measured: 8.78, cause: .neutralPartyRestsOnWeightNotHue),
-        Collapse("amber", "rose", .light, .tritanopia, measured: 8.00, cause: .blueYellowAxisIsNotRetainedByTritanopes),
+        // 8.00 -> 3.07, and this one was PAID rather than discovered. Darkening amber60 to Carbon
+        // orange-60 lifted it from 3.56:1 to 5.03:1 — the ramp's only ink that could not carry body
+        // text, and the ink on every speaker name in every light-mode call, because `Speaker` is
+        // `{You, Them}` and slot 0 is the only reachable party. The cost is that a darker orange
+        // sits closer to rose once the blue-yellow axis is gone.
+        //
+        // Taken deliberately: the contrast failure reached every light-mode reader of every call,
+        // while amber/rose adjacency needs a FOUR-party transcript, which the current `Speaker`
+        // vocabulary cannot produce. If parties three and four ever become reachable, this row is
+        // the thing to re-open — not the contrast fix.
+        Collapse("amber", "rose", .light, .tritanopia, measured: 3.07, cause: .blueYellowAxisIsNotRetainedByTritanopes),
         Collapse("violet", "teal", .light, .tritanopia, measured: 10.78, cause: .blueYellowAxisIsNotRetainedByTritanopes),
         Collapse("amber", "rose", .dark, .tritanopia, measured: 0.94, cause: .blueYellowAxisIsNotRetainedByTritanopes),
     ]

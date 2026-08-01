@@ -111,7 +111,15 @@ enum Ramp {
     // Speaker accents. amber/violet are the hexes the now-reassigned `orange`/`purple` tokens
     // were already carrying; teal/rose come from Carbon Teal and Carbon Magenta, the same palette
     // danger/success/warning were drawn from.
-    static let amber60 = rgb(0xEA580C)
+    // Carbon orange-60, not the 0xEA580C it was. Measured 3.56:1 on white and 3.24 on gray10 —
+    // the only ink in the speaker ramp that could not carry body text, where violet/teal/rose sit
+    // at 5.70 / 4.99 / 5.01. That was accepted as one weak member of four. It stopped being one of
+    // four the moment a real transcript used the ramp: `Speaker` is `{You, Them}`, so slot 0 is the
+    // ONLY reachable party colour and this was the ink on every speaker name in every light-mode
+    // call. #BA4E00 measures 5.03 / 4.57 — clears 4.5 on both grounds, keeps the orange hue the
+    // amber/violet pair needs to survive dichromacy, and is a Carbon ramp value rather than a
+    // number picked to pass.
+    static let amber60 = rgb(0xBA4E00)
     static let amber40 = rgb(0xFF8B4D)
     static let violet60 = rgb(0x7C3AED)
     static let violet40 = rgb(0xA56EFF)
