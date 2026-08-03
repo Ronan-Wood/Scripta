@@ -19,11 +19,15 @@ final class MappingTests: XCTestCase {
         XCTAssertEqual(passage.status, .active)
         XCTAssertEqual(passage.docType, .reference)
         XCTAssertEqual(passage.confidence, .stated)
-        XCTAssertEqual(passage.documentClass, .referenceFrozen,
-                       "the class comes off the wire now; nobody supplies it")
+        XCTAssertEqual(passage.documentClass, .unclassified,
+                       "the class comes off the wire now; nobody supplies it — and this note "
+                       + "declares none, which the engine says as `unclassified` rather than "
+                       + "defaulting to reference-frozen the way it used to")
         XCTAssertEqual(passage.vault, "scripta-vault")
         XCTAssertEqual(passage.supersedes, [])
-        XCTAssertEqual(passage.withheldAs, [], "an active reference is default-corpus content")
+        XCTAssertEqual(passage.withheldAs, [],
+                       "an undeclared class is default-corpus content: absence of a label is not "
+                       + "evidence about the note, so nothing here is withheld")
     }
 
     func testEveryLivePassageAndOutlineMaps() throws {

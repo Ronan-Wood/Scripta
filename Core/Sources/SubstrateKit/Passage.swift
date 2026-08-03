@@ -112,22 +112,40 @@ public enum PassageStatus: String, CaseIterable, Identifiable {
 /// `allCases.map(\.rawValue)` would then claim the engine has a fourth class. The wire token and the
 /// displayed word are separate properties for the same reason `EngineArmState` splits them.
 public enum PassageDocumentClass: CaseIterable, Identifiable, Hashable, Sendable {
-    /// A published edition that will not change, and the engine's default when a source says
-    /// nothing. Six migrated conversations were relabelled this by a silent default once already.
+    /// A published edition that will not change. NO LONGER the engine's default when a source says
+    /// nothing — see `unclassified`, which is what an undeclared note now sends. A passage carrying
+    /// this token declared it.
     case referenceFrozen
     /// A living spec whose passages are only true for a stated version.
     case referenceVersioned
     /// A captured conversation: raw material for notes, never a note itself.
     case conversation
 
+    /// The note DECLARED NO CLASS — `classes.UNCLASSIFIED_CLASS`, and most of what the engine sends.
+    ///
+    /// A real wire token, unlike `unreported`, because the engine now has a value for this and did
+    /// not before: the three classes describe INGESTED SOURCES (an edition, a spec, a transcript)
+    /// and a hand-written note is none of them, so the markdown reader used to default an absent
+    /// `class:` to `reference-frozen`. Measured over the operator's vaults, 83 of 684 notes declare
+    /// a class — so ~88% of results arrived claiming to be a published edition that will not
+    /// change, on an axis this client draws as a spine badge a reader believes.
+    ///
+    /// IT IS NOT A WEAKER CLASS. It is absent signal about the LABEL, not a judgement about the
+    /// note, exactly as `unjudged` confidence is — which is why it takes the same `absent`
+    /// prominence (chrome removed, not ink faded) and why `withheldAs` is nil: an undeclared note
+    /// is ordinary default corpus and always was.
+    case unclassified
+
     /// `document_class: null` — this index row carries no class at all.
     ///
-    /// THE HONEST ABSENCE, and the narrow thing it claims. It does NOT mean "the note declared
-    /// nothing": the markdown reader defaults an undeclared `class:` to `reference-frozen` at
-    /// ingest, so that distinction is already gone by the time a passage exists. It means the row
-    /// itself was written without a class, which `render.passage` reaches only for a document built
-    /// outside the reader. Defaulting THAT to `reference-frozen` would be a second copy of the bug
-    /// that relabelled the six, one layer further from the evidence.
+    /// NARROWER THAN `unclassified`, and the two must not be merged. `unclassified` is a note that
+    /// went through the class gate and declared nothing; this is a row that never went through the
+    /// gate — reachable only for a document built outside the reader — so it has not been judged
+    /// undeclared, it has not been judged. Defaulting it to `reference-frozen` would be a copy of
+    /// the bug that relabelled the six; defaulting it to `unclassified` would be a subtler one,
+    /// claiming an engine verdict that no engine ever reached.
+    ///
+    /// It has no wire token, so it stays unreachable from a wire string.
     case unreported
 
     /// The key this class has in `classes.POLICIES`, or `nil` for the case that is not a class.
@@ -137,6 +155,7 @@ public enum PassageDocumentClass: CaseIterable, Identifiable, Hashable, Sendable
         case .referenceFrozen: return "reference-frozen"
         case .referenceVersioned: return "reference-versioned"
         case .conversation: return "conversation"
+        case .unclassified: return "unclassified"
         case .unreported: return nil
         }
     }
@@ -162,7 +181,10 @@ public enum PassageDocumentClass: CaseIterable, Identifiable, Hashable, Sendable
     public var withheldAs: RetrievalClass? {
         switch self {
         case .conversation: return .sources
-        case .referenceFrozen, .referenceVersioned, .unreported: return nil
+        // `unclassified` is nil for a DIFFERENT reason from `unreported`'s: this one is a real
+        // answer — the engine keeps undeclared notes in the default set, because absence of a label
+        // is not evidence about the note. `unreported` is an under-report, as the doc comment says.
+        case .referenceFrozen, .referenceVersioned, .unclassified, .unreported: return nil
         }
     }
 }

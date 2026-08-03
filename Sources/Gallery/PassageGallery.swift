@@ -323,6 +323,16 @@ private struct PassageContrast: View {
 
 // MARK: - Specimens
 
+// Every hand-written note here carries `.unclassified`, and it is a correction rather than a
+// choice. These specimens are vault notes — `02-areas/`, `03-references/`, `04-synthesis/` — and a
+// vault note declares no class, so `.referenceFrozen` was this file reproducing the exact mislabel
+// the engine stopped producing: 83 of the operator's 684 notes declare a class. A proof surface
+// showing a shape the engine rarely sends proves the wrong thing. The two `_sources/` specimens
+// keep `.conversation`, which those notes really do declare.
+//
+// It moves no census. `.absent` and `.record` both return false from `carriesColour`, so the
+// monochrome baseline and every mark count below are unchanged; what changes is that the badge now
+// draws with its chrome removed, which is what absence is supposed to look like.
 private enum Sample {
     static let canonical = Passage(
         id: "adr-031",
@@ -332,7 +342,7 @@ private enum Sample {
         status: .active,
         docType: .decision,
         confidence: .verified,
-        documentClass: .referenceFrozen,
+        documentClass: .unclassified,
         domains: ["design-system", "color"])
 
     static let proposed = Passage(
@@ -343,7 +353,7 @@ private enum Sample {
         status: .active,
         docType: .decision,
         confidence: .proposed,
-        documentClass: .referenceFrozen,
+        documentClass: .unclassified,
         domains: ["retrieval", "indexing"])
 
     static let inferred = Passage(
@@ -354,7 +364,7 @@ private enum Sample {
         status: .active,
         docType: .explanation,
         confidence: .inferred,
-        documentClass: .referenceFrozen,
+        documentClass: .unclassified,
         domains: ["retrieval"])
 
     static let unjudged = Passage(
@@ -365,7 +375,7 @@ private enum Sample {
         status: .active,
         docType: .reference,
         confidence: .unjudged,
-        documentClass: .referenceFrozen,
+        documentClass: .unclassified,
         domains: ["shell", "migration"])
 
     static let archived = Passage(
@@ -376,7 +386,7 @@ private enum Sample {
         status: .archived,
         docType: .decision,
         confidence: .verified,
-        documentClass: .referenceFrozen,
+        documentClass: .unclassified,
         domains: ["design-system", "transcript"])
 
     static let superseded = Passage(
@@ -387,7 +397,7 @@ private enum Sample {
         status: .superseded,
         docType: .decision,
         confidence: .stated,
-        documentClass: .referenceFrozen,
+        documentClass: .unclassified,
         domains: ["schema"])
 
     static let conversation = Passage(
@@ -422,7 +432,7 @@ private enum Sample {
         status: .active,
         docType: .decision,
         confidence: .verified,
-        documentClass: .referenceFrozen,
+        documentClass: .unclassified,
         domains: ["schema", "retrieval"],
         supersedes: ["adr-014", "adr-021", "note-0774"])
 }

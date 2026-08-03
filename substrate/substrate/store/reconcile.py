@@ -21,6 +21,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from substrate.classes import UNCLASSIFIED_CLASS
 from substrate.markdown import reader
 from substrate.models import Chunk, Document
 from substrate.store.index_store import IndexStore
@@ -67,7 +68,12 @@ def _load_dir(d: Path) -> tuple[Document, list[Chunk], dict, bytes, str] | None:
         source_path=run["source"],
         source_sha256=run["source_sha256"],
         source_pages=run["pages"],
-        document_class=cls.get("document_class", "reference-frozen"),
+        # `or`, not a dict default, so a missing key and an empty string land in the same place —
+        # and that place is the ABSENCE marker, never `reference-frozen`. `classes.apply` writes
+        # this key into every run.json it produces, so the fallback fires only for an artifact that
+        # somehow carries no class; defaulting THAT to a real class would be a second copy of the
+        # reader bug, one layer further from the evidence.
+        document_class=cls.get("document_class") or UNCLASSIFIED_CLASS,
         title=cls.get("title"),
         version=cls.get("version"),
         version_date=cls.get("version_date"),

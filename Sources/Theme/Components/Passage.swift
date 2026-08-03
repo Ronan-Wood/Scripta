@@ -63,15 +63,18 @@ extension PassageDocumentClass: PassageAxis {
     /// Marked with `stale` and not `danger`, matching the status axis and `ExclusionBar`: "outside
     /// the default corpus" is one reason and gets one tone, whichever axis carried it there.
     ///
-    /// `unreported` takes the ABSENT tier, the same one `unstated` confidence takes, and for the
-    /// same reason: the field was never filled in. It is emphatically not `.record` — a settled
-    /// badge on an axis the engine could not answer is the lie this whole spine exists to prevent,
-    /// and it is what a defaulted `reference-frozen` drew here before the class reached the wire.
-    /// Written as a switch and not off `withheldAs` because those are different questions: the
-    /// class is unknown, which is not the same as known-and-not-withheld.
+    /// `unclassified` and `unreported` take the ABSENT tier, the same one `unjudged` confidence
+    /// takes, and for the same reason: nothing filled the field in. They are emphatically not
+    /// `.record` — a settled badge on an axis nobody answered is the lie this whole spine exists to
+    /// prevent, and drawing `unclassified` as a record would reproduce the defect the engine just
+    /// removed, since it is the value ~88% of the corpus now carries.
+    ///
+    /// Written as a switch and not off `withheldAs` because those are different questions: an
+    /// undeclared class is unknown, which is not the same as known-and-not-withheld — both return
+    /// nil there and they must not draw the same.
     var prominence: SpineBadge.Prominence {
         switch self {
-        case .unreported: return .absent
+        case .unclassified, .unreported: return .absent
         case .conversation: return .excluded
         case .referenceFrozen, .referenceVersioned: return .record
         }

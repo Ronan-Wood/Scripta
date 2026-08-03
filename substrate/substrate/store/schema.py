@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # v1 (2026-07-21) initial: documents, chunks, chunks_fts (external-content), chunk_vectors.
 # v2 (2026-07-21) chunks.section_kind — references sections were acting as retrieval
@@ -79,6 +79,27 @@ SCHEMA_VERSION = 8
 #
 #     `superseded_by` deliberately stays scalar — a dead note has exactly one live replacement.
 #     Adds no column and no indexed text: the (chunk_id, text_with_path) eval signature is unmoved.
+# v9 (2026-07-30) `document_class` gains an ABSENCE value — `unclassified`. The markdown reader
+#     defaulted an undeclared `class:` to `reference-frozen`; it no longer defaults at all, and
+#     `classes.apply` resolves the absence. Same TEXT NOT NULL column, new vocabulary.
+#
+#     BUMPS FOR EXACTLY v7's REASON, and the parallel is close enough to state: `user_version`
+#     guards the CONTRACT of the stored data, not the shape of the table. A v8 row holds
+#     'reference-frozen' where the note declared NOTHING, while every v9 consumer reads that token
+#     as a note that declared a published edition — and commit a711267 put the token on the wire,
+#     so the client now draws it as a settled spine axis. Measured over the operator's vaults:
+#     83 of 684 notes declare a class, so a v8 index answering a v9 query mislabels ~88% of them as
+#     classified. Nothing else detects it. `freshness` compares VAULT checksums, so a code-only
+#     vocabulary change reports `current` forever; the A-series stays green because
+#     'reference-frozen' is still a legal value; and the fixture signature deliberately hashes only
+#     (chunk_id, path_str, text), so it is unmoved by design. With the bump, a read refuses
+#     (SchemaMismatch) until `compose` rebuilds from the markdown that is the source of truth.
+#
+#     THE REBUILD IS A PURE RELABEL. `unclassified` carries reference-frozen's chunk geometry
+#     verbatim (classes.py says why), so chunk_ids, chunk text and `expand_ref`s are unchanged and
+#     the (chunk_id, text_with_path) eval signature is unmoved. The drop-and-rebuild still empties
+#     `chunk_vectors`, exactly as v7 and v8 did — embeddings are a pure function of text and are
+#     re-derived, not lost.
 
 DDL = """
 CREATE TABLE IF NOT EXISTS documents(

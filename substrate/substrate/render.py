@@ -101,15 +101,22 @@ def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
     class is withheld at all is that confidence varies WITHIN a transcript and a mid-conversation
     passage may be reasoning the same session abandoned four turns later.
 
-    ABSENCE CROSSES AS NULL, never as a class name, and the distinction it does NOT recover is
-    worth stating precisely. `chunks.document_class` is NOT NULL and the markdown reader defaults
-    an undeclared `class:` to `reference-frozen` at INGEST — the defaulting that once relabelled
-    six migrated conversations under a fully green compose. So by the time a Hit reaches here, "the
-    note declared reference-frozen" and "the note declared nothing" are already one value, and no
-    honest field on this side can separate them; a reader who needs that must look at the note.
-    What null means here is narrower and true: this index row carries no class at all, which is
-    reachable only for a document built outside the reader. Defaulting THAT to `reference-frozen`
-    would be a second copy of the same bug, one layer further from the evidence.
+    AN UNDECLARED CLASS CROSSES AS `unclassified`, its own token, and this is the half that was
+    missing. The markdown reader used to default an absent `class:` to `reference-frozen` at
+    INGEST — the defaulting that once relabelled six migrated conversations under a fully green
+    compose — so "the note declared reference-frozen" and "the note declared nothing" arrived here
+    as ONE VALUE and no honest field on this side could separate them. It no longer defaults:
+    `classes.apply` resolves absence to `classes.UNCLASSIFIED_CLASS`, which is a legal stored value
+    (the column is NOT NULL) and never NULL, so the distinction survives to the consumer. It is
+    retrieved by default like any note — an absent label is evidence about the label, not about the
+    note — and the client draws it with the ABSENT prominence it draws `unjudged` confidence with,
+    rather than as a settled axis.
+
+    NULL still means something, and something NARROWER: this index row carries no class at all,
+    which is reachable only for a document built outside the reader and the class gate. Defaulting
+    THAT to `reference-frozen` would be a second copy of the same bug, one layer further from the
+    evidence — and defaulting it to `unclassified` would be a third, because a row that never
+    passed the gate has not been judged undeclared, it has not been judged.
 
     `full=True` is the `expand` path — same envelope, whole text, so a consumer never has to
     reconcile two different passage shapes. ONE key set either way: `text` is null on a search
@@ -129,9 +136,9 @@ def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
         "page": h.page_label_start,
         "n_chars": h.n_chars or len(h.text),
         # What KIND of artifact this came out of — the axis `applied_filters` reports the FILTER
-        # for and the passage itself did not state. `or None` so an index row with no class says
-        # so, rather than borrowing the class of the two-thirds of the corpus that are frozen
-        # references (see the docstring: this is not the same as recovering an undeclared class).
+        # for and the passage itself did not state. An undeclared class arrives here as
+        # `unclassified` and is emitted as that word; `or None` covers only the narrower case of an
+        # index row with no class at all, which says so rather than borrowing a real one.
         "document_class": h.document_class or None,
         # The spine — the reason this payload exists at all.
         "status": h.status,

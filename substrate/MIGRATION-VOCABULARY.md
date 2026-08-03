@@ -355,6 +355,12 @@ Two things to carry into that pass:
   third-law incident — six conversations silently defaulting to `reference-frozen` — cannot recur.
   Verify it anyway on the first batch: that law's whole point is that the failure is invisible from
   inside the system.
+
+  **Corrected 2026-07-30.** That bullet fixed the ALIAS and left the DEFAULT, so it closed the
+  conversation case and none of the general one: every note declaring no class still became
+  `reference-frozen`, which measured 83 of 684 declaring across the seven vaults. The reader no
+  longer defaults at all — `classes.apply` resolves absence to `unclassified` (schema v9) — so
+  "cannot recur" is now true of the defect rather than of one instance of it.
 - **`_sources/` is not in Doc 2 §4's skeleton** even though three vaults use it. §4 permits added
   folders, so this is legal, but the skeleton should probably name it. Left as a spec observation,
   not changed here.

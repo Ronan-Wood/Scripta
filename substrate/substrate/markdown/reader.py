@@ -393,10 +393,15 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
         # Doc 2 §3 writes the document class as `class:` in a source's `_meta.md`, and vault.py
         # already maps that spelling. A note's OWN frontmatter must accept the same word, or the
         # vault format has two names for one field depending on which file it appears in — and the
-        # unread spelling then falls through to the default silently. That is how six migrated
-        # conversations were relabelled `reference-frozen` under a fully green compose.
-        document_class=(doc_class or front.get("document_class") or front.get("class")
-                        or "reference-frozen"),
+        # unread spelling then falls through silently. That is how six migrated conversations were
+        # relabelled `reference-frozen` under a fully green compose.
+        #
+        # THERE IS NO DEFAULT HERE ANY MORE, and removing it is the whole fix. The comment above
+        # recorded that incident while the line beneath it kept the cause: an undeclared class
+        # became `reference-frozen`, so 91% of the corpus claimed to be a published edition that
+        # will not change. Absence now stays empty and `classes.apply` resolves it to
+        # `unclassified` — the reader invents nothing, exactly as it invents no confidence.
+        document_class=(doc_class or front.get("document_class") or front.get("class") or ""),
         blocks=blocks,
         title=front.get("title"),
         version=front.get("version"),

@@ -78,16 +78,18 @@ final class WireDecodingTests: XCTestCase {
             .decode(WireSearchResult.self, from: try GoldenFixture.payload(GoldenFixture.search))
 
         XCTAssertEqual(result.scope, "scripta")
-        XCTAssertEqual(result.indexVersion, "v8:84fda18a439c")
+        XCTAssertEqual(result.indexVersion, "v9:2bc0b76971ad")
         XCTAssertFalse(result.passages.isEmpty)
 
         let first = try XCTUnwrap(result.passages.first)
         XCTAssertEqual(first.expandRef, "scripta/scripta-doc3a-mcp-server#c00002")
         XCTAssertEqual(first.status, "active")
         XCTAssertEqual(first.confidence, "stated")
-        XCTAssertEqual(first.documentClass, "reference-frozen",
+        XCTAssertEqual(first.documentClass, "unclassified",
                        "the class is on the wire now — a missing key would read as `null` and map "
-                       + "to `.unreported` without anything else failing")
+                       + "to `.unreported` without anything else failing. `unclassified` is what "
+                       + "an undeclared note sends; it read `reference-frozen` here until the "
+                       + "engine stopped inventing that for the ~88% that declare nothing")
         XCTAssertEqual(first.supersedes, [], "supersedes is a LIST since v8, empty not null")
         XCTAssertNil(first.text, "`text` is null on a search result, never absent")
         XCTAssertTrue(first.truncated)
@@ -126,7 +128,7 @@ final class WireDecodingTests: XCTestCase {
         XCTAssertFalse(result.filters.sourcesExcluded)
 
         let classes = Set((result.passages + result.outlineRecords).map(\.documentClass))
-        XCTAssertEqual(classes, ["conversation", "reference-frozen"])
+        XCTAssertEqual(classes, ["conversation", "unclassified"])
 
         let transcript = try XCTUnwrap(
             result.passages.first { $0.documentClass == "conversation" }
@@ -144,7 +146,7 @@ final class WireDecodingTests: XCTestCase {
 
         XCTAssertEqual(result.scope, "scripta")
         XCTAssertEqual(result.documents, 57)
-        XCTAssertEqual(result.schemaVersion, 8)
+        XCTAssertEqual(result.schemaVersion, 9)
         XCTAssertEqual(result.byStatus["active"], 48)
         XCTAssertEqual(result.byConfidence["unjudged"], 1)
         XCTAssertEqual(result.byConfidence["unstated"], 3,

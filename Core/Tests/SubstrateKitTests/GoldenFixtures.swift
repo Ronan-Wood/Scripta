@@ -5,9 +5,19 @@ import XCTest
 //
 // PROVENANCE. Every file in `Fixtures/` is the byte-for-byte HTTP response body of a live
 // `substrate-mcp --http 127.0.0.1:8765`, RE-CAPTURED 2026-08-03 against the operator's real composed
-// scopes (`scripta`: 57 documents, 527 passages, index_version v8:84fda18a439c) after the engine
-// grew `passage.document_class` and `retrieval_mode`'s `embedder_state` / `unmeasured_reason` /
-// `health`. Nothing was hand-written, reformatted or trimmed. The calls, in order:
+// scopes (`scripta`: 57 documents, 527 passages, index_version v9:2bc0b76971ad) after
+// `document_class` gained its absence value. Nothing was hand-written, reformatted or trimmed.
+//
+// WHAT MOVED IN THIS CAPTURE, and it is the whole reason for it: the passages that used to say
+// `document_class: "reference-frozen"` now say `"unclassified"`. They never declared a class — the
+// markdown reader was defaulting one, so 51 of `scripta`'s 57 documents claimed to be published
+// editions that will not change. Schema v9 and the index_version moved with the vocabulary; the
+// chunk text and attribution did not (`tools/fixture-signature.py` reports the same 8b3cf4f7bc3c1d60
+// before and after), so this is a relabel and not a re-chunk.
+//
+// `refresh.outcome` reads `embed_failed` rather than the previous `unchanged` — the machine's
+// Ollama is down, which is also why every arm reports unavailable. That is the state of the host,
+// not of this change. The calls, in order:
 //
 //   search.frame.json       tools/call search      {"scope":"scripta","query":"what did we decide
 //                                                   about the retrieval envelope"}
@@ -23,10 +33,11 @@ import XCTest
 //   rpc-error.frame.json    method "nope/nope"                                → error -32601
 //
 // THE SECOND SEARCH EARNS ITS PLACE. Default retrieval withholds the conversation class, so every
-// passage in the first one carries `document_class: "reference-frozen"` and a decoder that ignored
-// the field entirely would round-trip it. `search-sources` asks for the class back and really does
-// return transcript passages, which is the only fixture here where the axis takes a value that
-// changes what the spine draws.
+// passage in the first one carries the same `document_class` and a decoder that ignored the field
+// entirely would round-trip it. `search-sources` asks for the class back and really does return
+// transcript passages, which is the only fixture here where the axis takes more than one value —
+// and now the only one where it takes a value that puts colour on the spine, since `unclassified`
+// draws with its chrome removed.
 //
 // A HAND-BUILT FIXTURE WOULD PROVE NOTHING. The whole failure this decoder exists to avoid is
 // believing a shape the engine does not actually send, and a fixture written from the same reading
