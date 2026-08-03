@@ -55,7 +55,10 @@ _PROBE_KEYS = ("error", "checkable", "stale")
 # The five outcomes the agent passes to `refresh-record`. `record` REFUSES an outcome outside
 # OUTCOMES, so an outcome the agent emits that the engine dropped is a hard failure at 15-minute
 # intervals, logged to a file nobody reads.
-_AGENT_OUTCOMES = ("unchanged", "refreshed", "compose_failed", "embed_failed", "skipped")
+_AGENT_OUTCOMES = ("unchanged", "refreshed", "compose_failed", "embed_failed", "skipped",
+                   # Added when the agent stopped recomposing across a schema bump. It is the
+                   # one outcome that reports a refusal to ACT rather than a failure to.
+                   "schema_mismatch")
 
 
 def _seeded_store(db: str) -> IndexStore:

@@ -161,6 +161,37 @@ try:
         print("stale" if d["stale"] else "current")
 except Exception: print("unknown")' 2>/dev/null)
   checked=$((checked + 1))
+
+  # A SCHEMA MISMATCH IS NOT A DRIFT PROBE FAILURE, and conflating the two let this script perform
+  # a migration nobody asked for. `index_store` refuses an index whose `user_version` is not this
+  # engine's, so the moment SCHEMA_VERSION moves, `status` stops answering and the probe above
+  # falls to `unknown` — whose arm recomposes "to be safe". Safe is the right default when a probe
+  # breaks for an unknown reason. It is the wrong one here, because the thing that changed is the
+  # CODE, not the vault, and `compose --clean` against a bumped schema is a migration.
+  #
+  # That is not hypothetical: on 2026-08-03 an UNCOMMITTED v8->v9 bump in the working tree reached
+  # all six live scopes inside one 900s tick, because this script execs `$REPO` directly. It was a
+  # pure relabel and nothing was lost, but the decision belonged to the operator and a scheduler
+  # took it. A bump with different chunk geometry would have re-chunked 684 notes and killed every
+  # stored `expand_ref`.
+  #
+  # `122a45d` already settled the rule this broke — "migration is opt-in — every read path refuses,
+  # `--migrate` is not `--rebuild`". This is the write path honouring it: refuse, record, and say
+  # what to run. A human recomposing after a schema change is a decision; this script doing it at
+  # 900-second intervals is an accident waiting for a worse bump.
+  if [ "$drift" = "unknown" ]; then
+    mismatch=$("$SUBSTRATE" status --scope "$s" --lexical-only --json 2>&1 >/dev/null \
+               | grep -ci "schema" || true)
+    if [ "${mismatch:-0}" -gt 0 ]; then
+      say "$s: SCHEMA MISMATCH — index predates this engine. REFUSING to recompose:"
+      say "    that is a migration, and it is the operator's call, not this job's."
+      say "    Run: substrate compose \"\$HOME/OneDrive/vaults/$s-vault\" --clean \\"
+      say "         --index-root \"$REPO/out-vault/$s-index\" --db \"$REPO/out-vault/$s.db\""
+      record schema_mismatch "$s"
+      failed=$((failed + 1)); continue
+    fi
+  fi
+
   case "$drift" in
     # Batched rather than recorded here: on a quiet tick that is one process instead of six, and
     # a crash mid-loop costs only an un-advanced timestamp on scopes nothing was wrong with —
