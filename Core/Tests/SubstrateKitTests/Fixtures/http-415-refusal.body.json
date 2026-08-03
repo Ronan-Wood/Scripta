@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "expected Content-Type: application/json, got 'text/plain'"}}

@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 7, "result": {"content": [{"type": "text", "text": "ToolError: unknown scope 'no-such-scope'. Registered: cbre, clovis, demo, prism, research, school, scripta."}], "isError": true}}

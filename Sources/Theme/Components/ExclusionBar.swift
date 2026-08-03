@@ -18,70 +18,11 @@ import SwiftUI
 // exactly what `Ink.stale` marks. So the bar gets quieter as it withholds more, and speaks up when
 // the reader has opened it out.
 
-/// The applied filter, over `RetrievalClass` — the same list `Passage.withheldAs` answers for.
-///
-/// Typed rather than stringly BECAUSE of what a string set cost: this bar modelled conversation
-/// sources as a first-class axis while the passage had no such field, and nothing could notice,
-/// because "sources" was a string here and nothing at all there. One enum makes the two halves of
-/// the disclosure the same list, and the chips still show the engine's tokens verbatim — the prose
-/// line beneath translates them, so the token never has to be softened.
-struct ExclusionFilter {
-    /// What default retrieval searches.
-    static let defaultClasses: Set<RetrievalClass> = Set(RetrievalClass.allCases.filter(\.isDefault))
-
-    /// The classes this result set actually searched.
-    var searched: Set<RetrievalClass>
-    /// Anything else that narrowed this result set — a clamped `k`, today. Mirrors the envelope's
-    /// `notes`, which is always present and empty when there is nothing to say.
-    var notes: [String] = []
-
-    static let standard = ExclusionFilter(searched: defaultClasses)
-
-    /// Canonical order, so a chip does not move when an unrelated one is toggled.
-    var withheld: [RetrievalClass] { RetrievalClass.allCases.filter { !searched.contains($0) } }
-
-    /// What the reader asked for beyond the default. This is the deviation set, and the only part
-    /// of this component that is allowed to carry colour.
-    var included: [RetrievalClass] {
-        RetrievalClass.allCases.filter { searched.contains($0) && !$0.isDefault }
-    }
-
-    mutating func toggle(_ klass: RetrievalClass) {
-        if searched.contains(klass) { searched.remove(klass) } else { searched.insert(klass) }
-    }
-
-    /// The sentence that prevents the wrong conclusion. Names the classes in human terms and then
-    /// says what their absence does NOT mean, which is the half a filter readout usually omits.
-    var withheldSentence: String {
-        let named = withheld.map(\.gloss)
-        guard !named.isEmpty else {
-            return "Nothing was withheld. These results are the whole corpus — archived notes, "
-                + "superseded notes and call transcripts included."
-        }
-        let one = named.count == 1
-        return "\(Self.sentenceCase(Self.list(named))) \(one ? "was" : "were") not searched. "
-            + "\(one ? "Its" : "Their") absence from these results is not evidence "
-            + "\(one ? "it does not" : "they do not") exist."
-    }
-
-    /// What the reader opened up, said back to them. `nil` at the default, which is what keeps the
-    /// quiet case quiet.
-    var inclusionSentence: String? {
-        guard !included.isEmpty else { return nil }
-        return "Asked for: \(Self.list(included.map(\.gloss))) can appear in these results."
-    }
-
-    private static func list(_ items: [String]) -> String {
-        guard let last = items.last else { return "" }
-        if items.count == 1 { return last }
-        return items.dropLast().joined(separator: ", ") + " and " + last
-    }
-
-    private static func sentenceCase(_ text: String) -> String {
-        guard let first = text.first else { return text }
-        return first.uppercased() + text.dropFirst()
-    }
-}
+// `ExclusionFilter` — the set this bar reads, the chips it draws and the two sentences beneath them
+// — is in `SubstrateKit` (Core/Sources/SubstrateKit/ExclusionFilter.swift). It is `RetrievalClass`
+// arithmetic over what the engine's `filters` block reported and holds nothing this layer decides,
+// so a second renderer of the same disclosure cannot compute a different one. The chips show the
+// engine's tokens verbatim; the prose line beneath translates them, so the token is never softened.
 
 struct ExclusionBar: View {
     let filter: ExclusionFilter

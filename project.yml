@@ -201,6 +201,14 @@ targets:
       - Sources/Theme/Components
       - path: Resources/Fonts
         buildPhase: resources
+    # The engine's wire vocabulary, which the answer surfaces render and no longer define. Only the
+    # Gallery links it: the app target names six components by path and none of them is an answer
+    # surface, so `Passage.swift`'s `@_exported import` — the one place the re-export happens, so
+    # every pane keeps naming `Passage` without knowing which module holds it — never reaches the
+    # product. The day a migration adds `PassageCard` to the app, this line has to be added there too.
+    dependencies:
+      - package: ScriptaCore
+        product: SubstrateKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ronanwood.Scripta.Gallery
