@@ -33,7 +33,7 @@ from substrate.store.index_store import Hit  # noqa: E402
 
 # The contract, written out. A passage MUST carry every one of these — not most of them.
 PASSAGE_KEYS = {
-    "expand_ref", "citation", "path", "page", "n_chars",
+    "expand_ref", "citation", "path", "page", "n_chars", "document_class",
     "status", "doc_type", "confidence", "domains", "vault", "supersedes",
     "snippet", "text", "truncated",
 }
@@ -45,8 +45,11 @@ ENVELOPE_KEYS = {
 # index was BUILT from and stops there, so a scope whose recompose refused kept answering from
 # the superseded index in an envelope byte-identical to a healthy run.
 REFRESH_KEYS = {"known", "outcome", "attempted", "succeeded", "frozen", "frozen_since", "note"}
-MODE_KEYS = {"embedder", "hyde", "reranker", "expected_mrr", "cohort", "degraded", "fallbacks",
-             "unavailable"}
+MODE_KEYS = {"embedder", "embedder_state", "hyde", "reranker", "expected_mrr", "unmeasured_reason",
+             "cohort", "degraded", "fallbacks", "unavailable", "health"}
+# Whether the arms could START — a different axis from what they did, and the one the prose in
+# `unavailable` was the only carrier of.
+HEALTH_KEYS = {"known", "state", "arms", "note"}
 FILTER_KEYS = {"statuses_included", "statuses_excluded", "sources_excluded", "doc_type",
                "document_class", "notes"}
 
@@ -68,11 +71,20 @@ def _hit(**over) -> Hit:
     return Hit(**base)
 
 
+def _cap(**over) -> Capability:
+    """A lexical-only capability — the emptiest one, so the tests exercise the values a renderer
+    is most tempted to drop. `unmeasured_reason` is stated because `Capability` refuses a null
+    number with no reason: the two halves of the tier verdict are one decision."""
+    kw = dict(embedder="", embedder_state="off", hyde="off", reranker="off", expected_mrr=None,
+              unmeasured_reason="no_vector_arm", cohort="44-case semantic", fallbacks=())
+    kw.update(over)
+    return Capability(**kw)
+
+
 def _result(hits=None, *, cap=None, outlines=None) -> RetrievalResult:
     return RetrievalResult(
         passages=list(hits if hits is not None else [_hit()]),
-        capability=cap or Capability(embedder="", hyde="off", reranker="off", expected_mrr=None,
-                                     cohort="44-case semantic", fallbacks=()),
+        capability=cap or _cap(),
         index_version="v6:deadbeef",
         trace=Trace(),
         outlines=list(outlines or []),
@@ -113,6 +125,29 @@ def test_proposed_confidence_crosses() -> None:
     assert p["passages"][0]["status"] == "active"
 
 
+def test_a_conversation_passage_says_it_is_one() -> None:
+    """The BLOCKING one. `conversation` is the class default retrieval withholds, and a passage
+    that arrived without its class was indistinguishable from default corpus — so a transcript
+    fragment rendered as settled knowledge, which is precisely what withholding the class exists
+    to prevent: confidence varies WITHIN a transcript, and a mid-conversation passage may be
+    reasoning the same session abandoned four turns later."""
+    p = _payload(_result([_hit(document_class="conversation")]))["passages"][0]
+    assert p["document_class"] == "conversation"
+    assert _payload()["passages"][0]["document_class"] == "reference-frozen"
+
+
+def test_an_unclassed_row_is_not_relabelled_reference_frozen() -> None:
+    """Absence and a default are different facts. A silent `reference-frozen` here would be right
+    about two-thirds of the corpus by luck and would repeat, one layer further from the evidence,
+    the ingest-time defaulting that relabelled six migrated conversations under a green compose.
+
+    What null does NOT claim is that the note declared nothing: the markdown reader already
+    defaults an undeclared `class:` before the store sees it, so that distinction is gone long
+    before this layer and no field here can honestly re-create it."""
+    p = _payload(_result([_hit(document_class="")]))["passages"][0]
+    assert p["document_class"] is None
+
+
 def test_supersession_link_crosses() -> None:
     """A superseded note is never retrieved directly; the ONLY way its identity reaches a caller
     is this field on the live note that replaced it (Doc 2 §6)."""
@@ -124,6 +159,7 @@ def test_envelope_shape() -> None:
     env = _payload()
     assert set(env) == ENVELOPE_KEYS, set(env) ^ ENVELOPE_KEYS
     assert set(env["retrieval_mode"]) == MODE_KEYS
+    assert set(env["retrieval_mode"]["health"]) == HEALTH_KEYS
     assert set(env["filters"]) == FILTER_KEYS
     assert set(env["refresh"]) == REFRESH_KEYS
     assert env["index_version"] == "v6:deadbeef"
@@ -285,11 +321,12 @@ def test_unmeasured_stack_reports_null_not_a_guess() -> None:
 
 
 def test_measured_stack_reports_its_number_and_cohort() -> None:
-    cap = Capability(embedder="qwen3-embedding:0.6b#raw", hyde="ran", reranker="ran",
-                     expected_mrr=0.698, cohort="44-case semantic", fallbacks=())
+    cap = _cap(embedder="qwen3-embedding:0.6b#raw", embedder_state="ran", hyde="ran",
+               reranker="ran", expected_mrr=0.698, unmeasured_reason=None)
     m = _payload(_result(cap=cap))["retrieval_mode"]
     assert m["expected_mrr"] == 0.698
     assert m["cohort"] == "44-case semantic", "a number without its cohort is uncomparable"
+    assert m["unmeasured_reason"] is None, "a measured number must not also carry an excuse"
 
 
 def test_requested_but_unreachable_arms_are_named() -> None:
@@ -303,14 +340,110 @@ def test_requested_but_unreachable_arms_are_named() -> None:
     assert _payload()["retrieval_mode"]["unavailable"] == [], "nothing requested, nothing missing"
 
 
+# ---------------------------------------------------------------- can the arms even start
+
+def test_health_states_are_the_ones_the_engine_can_observe() -> None:
+    """Three states, each one a thing this process actually saw. `lexical_only` and `unreachable`
+    are the pair the prose was the only carrier of — and they are NOT severities: one is a
+    configuration, the other is a fault."""
+    from substrate.stack import Stack
+
+    ready = _payload(wiring=Stack(embedder=object()).wiring)["retrieval_mode"]["health"]
+    assert (ready["state"], ready["arms"]["embedder"]) == ("ready", "wired")
+    assert ready["note"] is None, "a healthy stack does not need a sentence"
+
+    lexical = _payload(wiring=Stack().wiring)["retrieval_mode"]["health"]
+    assert lexical["state"] == "lexical_only"
+    assert set(lexical["arms"].values()) == {"off"}
+
+    down = _payload(wiring=Stack(unavailable=("hyde 'q' unreachable at h",)).wiring,
+                    unavailable=("hyde 'q' unreachable at h",))["retrieval_mode"]["health"]
+    assert down["state"] == "unreachable"
+    assert down["arms"] == {"embedder": "off", "hyde": "unavailable", "reranker": "off"}
+
+
+def test_health_refuses_to_guess_why_an_arm_did_not_start() -> None:
+    """The distinction a UI most wants is the one this engine cannot make: `available()` collapses
+    a refused connection, a timeout and a missing model into one False, and nothing looks for an
+    installation at all. So "not installed" (the zero-install default, not a fault) and "installed
+    and down" (a fault) share one observation — said out loud in `note` rather than guessed at in
+    a field, because a field that reports a guess is worse than no field."""
+    from substrate.stack import Stack
+
+    h = _payload(wiring=Stack(unavailable=("embedder 'q' unreachable at h",)).wiring,
+                 unavailable=("embedder 'q' unreachable at h",))["retrieval_mode"]["health"]
+    assert set(h) == HEALTH_KEYS, "a key claiming installation state appeared"
+    assert "installed" in (h["note"] or ""), "the unknowable is not stated anywhere"
+
+
+def test_health_makes_the_unavailable_prose_redundant_without_contradicting_it() -> None:
+    """Two carriers, one source. The prose keeps what only it has — the model and the host it was
+    looked for at — and the structured map keeps what only it has: an arm name a consumer does not
+    have to recover by parsing our sentences."""
+    from substrate.stack import Stack
+
+    st = Stack(embedder=object(), unavailable=("reranker 'qwen2.5:7b' unreachable at local",))
+    m = _payload(wiring=st.wiring, unavailable=st.unavailable)["retrieval_mode"]
+    named = {a for a, s in m["health"]["arms"].items() if s == "unavailable"}
+    assert named == {"reranker"}
+    assert m["unavailable"] == ["reranker 'qwen2.5:7b' unreachable at local"]
+    assert "local" in m["unavailable"][0], "the where is the prose's whole remaining job"
+
+
+def test_prose_that_names_no_known_arm_still_forbids_a_healthy_reading() -> None:
+    """The two carriers must not be able to contradict each other. The arm map recovers its names
+    from the leading token of each `unavailable` entry, so an entry that led with something else
+    would vanish from the map while staying in the prose — and health would then report `ready`
+    over a stack with a dead arm, which is the false-healthy shape all of this exists to remove.
+    An unattributable entry costs the WHICH, never the WHETHER."""
+    from substrate.stack import Stack
+
+    odd = ("the local daemon did not answer",)
+    h = _payload(wiring=Stack().wiring, unavailable=odd)["retrieval_mode"]["health"]
+    assert h["state"] == "unreachable", "an entry nothing could attribute read as healthy"
+    assert set(h["arms"].values()) == {"off"}, "no arm may be blamed on an unattributable entry"
+    assert "cannot say WHICH" in h["note"]
+
+
+def test_a_caller_that_reported_no_wiring_is_not_reported_healthy() -> None:
+    """`known: false`, not `ready`. A healthy-looking state that requires nothing to have happened
+    is the shape this module exists to remove — the same reason `refresh.frozen` is null with no
+    record rather than false."""
+    h = _payload()["retrieval_mode"]["health"]
+    assert h["known"] is False
+    assert h["state"] is None and h["arms"] is None
+    assert h["note"], "the absence crossed as a bare null with nothing explaining it"
+
+
 def test_degradation_crosses_with_its_reason() -> None:
     """A degraded run that reads as full quality is the whole failure family."""
-    cap = Capability(embedder="", hyde="off", reranker="off", expected_mrr=None,
-                     cohort="44-case semantic", fallbacks=("no vectors: 0/595 under 'qwen3'",))
+    cap = _cap(embedder_state="fell_back", fallbacks=("no vectors: 0/595 under 'qwen3'",))
     m = _payload(_result(cap=cap))["retrieval_mode"]
     assert m["degraded"] is True
     assert m["fallbacks"] == ["no vectors: 0/595 under 'qwen3'"]
     assert m["expected_mrr"] is None
+
+
+def test_the_embedder_arm_reports_a_state_beside_its_key() -> None:
+    """`hyde` and `reranker` sent a state word and the embedder sent a model KEY, which empties on
+    a fallback — so the arm the vector-coverage guard degrades most often was the only one that
+    could not say it had degraded. Both cases still send `embedder: null`, so this asserts the
+    two envelopes DIFFER rather than pinning a value that would pass on either."""
+    fell = _payload(_result(cap=_cap(embedder_state="fell_back",
+                                     fallbacks=("no vectors: 0/595",))))["retrieval_mode"]
+    never = _payload()["retrieval_mode"]
+    assert fell["embedder"] is never["embedder"] is None
+    assert (fell["embedder_state"], never["embedder_state"]) == ("fell_back", "off")
+
+
+def test_an_absent_number_always_says_why() -> None:
+    """"Unmeasured" with no reason is indistinguishable from a bug, and the engine knew which of
+    the five applied at the moment it declined to publish one."""
+    from substrate.retrieve.retriever import UNMEASURED_REASONS
+
+    m = _payload()["retrieval_mode"]
+    assert m["expected_mrr"] is None
+    assert m["unmeasured_reason"] in UNMEASURED_REASONS
 
 
 # ---------------------------------------------------------------- serializable

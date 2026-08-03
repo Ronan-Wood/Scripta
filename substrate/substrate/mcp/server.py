@@ -170,10 +170,15 @@ TOOLS = [
             "Treating a `proposed` note as a settled decision is the specific failure this "
             "contract exists to prevent. `supersedes` is a LIST of the dead notes this live one "
             "replaced — `[]` when it replaced nothing, and more than one entry when a single note "
-            "consolidated several.\n\n"
+            "consolidated several. `document_class` is a DIFFERENT axis from doc_type: it is what "
+            "kind of artifact the passage came out of, and `conversation` means raw transcript — "
+            "confidence varies WITHIN one, so treat such a hit as material, never as a "
+            "conclusion.\n\n"
             "Check `filters` for what was withheld and `retrieval_mode` for which arms actually "
             "ran: `expected_mrr` is null when the running stack has no measured number, which "
-            "means the ranking is weaker than a measured one, not that it is unmeasurable.\n\n"
+            "means the ranking is weaker than a measured one, not that it is unmeasurable — "
+            "`unmeasured_reason` says which of the five reasons applies, and `health` says whether "
+            "an arm was asked for and could not start.\n\n"
             "READ `refresh` BEFORE TRUSTING A RESULT AS CURRENT. A background job keeps each "
             "scope's index in step with its vault; this is what it last managed. "
             "`frozen: true` means the vault changed and the rebuild REFUSED, so these passages "
@@ -348,6 +353,7 @@ def _tool_search(args: dict, cfg: Config) -> dict:
         return render.search_payload(
             result, scope=scope, query=query, statuses=statuses,
             include_sources=include_sources, unavailable=cfg.stack.unavailable,
+            wiring=cfg.stack.wiring,
             db=str(entry.db), filter_notes=(clamp_note,) if clamp_note else (),
             registry=cfg.registry,
         )

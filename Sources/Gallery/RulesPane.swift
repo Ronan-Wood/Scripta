@@ -139,17 +139,20 @@ private struct DeviationSpecimen: Identifiable {
             caption: "default corpus, active, verified — nothing departed",
             passage: Passage(id: "adr-031", snippet: "Blue marks interaction and nothing else.",
                              citation: "02-areas/record-and-register.md", vault: "prism",
-                             status: .active, docType: .decision, confidence: .verified)),
+                             status: .active, docType: .decision, confidence: .verified,
+                             documentClass: .referenceFrozen)),
         DeviationSpecimen(
             caption: "judged and unsettled — a proposal read as a decision is a wrong action",
             passage: Passage(id: "adr-044", snippet: "A per-scope refresh budget.",
                              citation: "02-areas/refresh-budget.md", vault: "prism",
-                             status: .active, docType: .decision, confidence: .proposed)),
+                             status: .active, docType: .decision, confidence: .proposed,
+                             documentClass: .referenceFrozen)),
         DeviationSpecimen(
             caption: "outside the default corpus — you asked for superseded notes",
             passage: Passage(id: "adr-014", snippet: "supersedes names one note.",
                              citation: "02-areas/envelope-v7.md", vault: "prism",
-                             status: .superseded, docType: .decision, confidence: .stated)),
+                             status: .superseded, docType: .decision, confidence: .stated,
+                             documentClass: .referenceFrozen)),
         DeviationSpecimen(
             caption: "conversation class — confidence varies WITHIN a transcript",
             passage: Passage(id: "call-0714", snippet: "…so we'd drop the rerank entirely.",

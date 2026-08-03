@@ -62,7 +62,20 @@ extension PassageStatus: PassageAxis {
 extension PassageDocumentClass: PassageAxis {
     /// Marked with `stale` and not `danger`, matching the status axis and `ExclusionBar`: "outside
     /// the default corpus" is one reason and gets one tone, whichever axis carried it there.
-    var prominence: SpineBadge.Prominence { withheldAs == nil ? .record : .excluded }
+    ///
+    /// `unreported` takes the ABSENT tier, the same one `unstated` confidence takes, and for the
+    /// same reason: the field was never filled in. It is emphatically not `.record` — a settled
+    /// badge on an axis the engine could not answer is the lie this whole spine exists to prevent,
+    /// and it is what a defaulted `reference-frozen` drew here before the class reached the wire.
+    /// Written as a switch and not off `withheldAs` because those are different questions: the
+    /// class is unknown, which is not the same as known-and-not-withheld.
+    var prominence: SpineBadge.Prominence {
+        switch self {
+        case .unreported: return .absent
+        case .conversation: return .excluded
+        case .referenceFrozen, .referenceVersioned: return .record
+        }
+    }
 }
 
 extension PassageConfidence: PassageAxis {

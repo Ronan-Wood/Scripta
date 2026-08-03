@@ -74,7 +74,7 @@ extension EngineEnvelope {
         // First, above every other fault: a result set whose corpus is unnamed cannot be judged at
         // all, because every other line here is a claim ABOUT that corpus.
         if !scope.isNamed { out.append(unnamedScopeNote) }
-        out.append(contentsOf: healthNotes)
+        out.append(contentsOf: healthFaultNotes)
         if !unavailableArms.isEmpty {
             let names = unavailableArms.map(\.label).joined(separator: " · ")
             out.append(EngineNote(
@@ -85,6 +85,8 @@ extension EngineEnvelope {
         if degraded { out.append(degradedNote) }
         out.append(contentsOf: frozenNotes)
         if expectedMRR == nil { out.append(unmeasuredNote) }
+        out.append(contentsOf: healthAbsenceNotes)
+        out.append(contentsOf: healthContextNotes)
         if case .notInstalled = health, upgrade == nil { out.append(defaultTierNote) }
         return out
     }
@@ -96,20 +98,58 @@ extension EngineEnvelope {
                 + "nobody can identify, so none of them can be checked.")
     }
 
-    private var healthNotes: [EngineNote] {
+    /// SPLIT INTO THREE BY SEVERITY, because `EngineHealth` stopped being one severity when it grew
+    /// the states the wire can report. `notes` claims an order — faults, then absence, then context
+    /// — and a single `healthNotes` block inserted at the top would have put a helper-toned
+    /// "nothing was asked for" line ABOVE the danger line naming an arm that could not start.
+    private var healthFaultNotes: [EngineNote] {
         switch health {
-        // `notInstalled` is deliberately absent from this switch. It is the default state, and the
-        // upgrade line below already says what it means, priced.
-        case .ready, .notInstalled:
+        case .ready, .notInstalled, .lexicalOnly, .unreported:
             return []
-        case .down(let detail):
-            return [EngineNote(id: "down", marker: "engine down", tone: Ink.danger, text: detail)]
+        case .unreachable:
+            // SUPPRESSED WHEN THE ARMS ARE NAMED, which is the usual case: the line above already
+            // says the same thing and says it better, with the arm names on it. Reporting one
+            // condition twice is what the degraded derivation was fixed for once already.
+            //
+            // The engine's own note is NOT rendered here. It is documentation for a programmatic
+            // consumer — it names `unavailable` as a field and explains what the probe cannot see —
+            // and pasting it onto a bar would put wire vocabulary in front of a reader. It stays on
+            // the model for a caller that wants it.
+            guard unavailableArms.isEmpty else { return [] }
+            return [EngineNote(
+                id: "unreachable", marker: "unreachable", tone: Ink.danger,
+                // No cause, deliberately: the engine's probe collapses a refused connection, a
+                // timeout and a missing model into one answer, so neither side can say which.
+                text: "Something was requested and could not start, and the engine could not say "
+                    + "which arm. The stack that ran is not the one that was asked for.")]
         case .schemaMismatch(let found, let expected):
             return [EngineNote(
                 id: "schema", marker: "schema", tone: Ink.danger,
                 text: "The index on disk is \(found); this build reads \(expected). Recompose "
                     + "before trusting these results.")]
         }
+    }
+
+    /// Absent evidence, drawn like every other absent verdict: `stale`, dotted, never silent. The
+    /// caller reported no wiring, so nothing here answers for an arm that failed to start — which is
+    /// a different claim from "no arm failed", and under rule 3 silence would make it the latter.
+    private var healthAbsenceNotes: [EngineNote] {
+        guard case .unreported(let detail) = health else { return [] }
+        return [EngineNote(
+            id: "wiring", marker: "wiring", tone: Ink.stale,
+            text: detail ?? "This answer did not report which retrieval arms it wired, so nothing "
+                + "below says whether a requested arm failed to start.",
+            dotted: true)]
+    }
+
+    /// Context: true, quiet, and not a fault. `lexical_only` is the zero-dependency path working as
+    /// configured, so it takes the same helper tone as the default-tier line rather than a colour.
+    private var healthContextNotes: [EngineNote] {
+        guard case .lexicalOnly(let detail) = health else { return [] }
+        return [EngineNote(
+            id: "lexical", marker: "lexical only", tone: Ink.textHelper,
+            text: detail ?? "No local-model arm was requested. That is a configuration, not a "
+                + "fault.")]
     }
 
     private var degradedNote: EngineNote {
@@ -140,10 +180,14 @@ extension EngineEnvelope {
         }
     }
 
+    /// The engine sends a TOKEN, not a sentence; `UnmeasuredReason.gloss` is where the token becomes
+    /// one, in `SubstrateKit` beside the vocabulary it belongs to. The fallback covers the case the
+    /// engine leaves open — a null MRR with no reason, which only an engine older than the field
+    /// produces — and it states the absence rather than dressing it as a low score.
     private var unmeasuredNote: EngineNote {
         EngineNote(
             id: "unmeasured", marker: "unmeasured", tone: Ink.stale,
-            text: unmeasuredReason
+            text: unmeasuredReason?.gloss
                 ?? "This stack was never measured at \(cohort), so there is no quality number for "
                 + "it — not a low one.",
             dotted: true)

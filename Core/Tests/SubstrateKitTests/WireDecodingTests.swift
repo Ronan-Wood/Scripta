@@ -11,6 +11,13 @@ final class WireDecodingTests: XCTestCase {
                                     payload: try GoldenFixture.payload(GoldenFixture.search))
     }
 
+    func testTheConversationSearchRoundTripsLosslessly() throws {
+        try JSONDiff.assertLossless(
+            WireSearchResult.self,
+            payload: try GoldenFixture.payload(GoldenFixture.searchIncludingSources)
+        )
+    }
+
     func testStatusPayloadRoundTripsLosslessly() throws {
         try JSONDiff.assertLossless(WireStatusResult.self,
                                     payload: try GoldenFixture.payload(GoldenFixture.status))
@@ -78,6 +85,9 @@ final class WireDecodingTests: XCTestCase {
         XCTAssertEqual(first.expandRef, "scripta/scripta-doc3a-mcp-server#c00002")
         XCTAssertEqual(first.status, "active")
         XCTAssertEqual(first.confidence, "stated")
+        XCTAssertEqual(first.documentClass, "reference-frozen",
+                       "the class is on the wire now — a missing key would read as `null` and map "
+                       + "to `.unreported` without anything else failing")
         XCTAssertEqual(first.supersedes, [], "supersedes is a LIST since v8, empty not null")
         XCTAssertNil(first.text, "`text` is null on a search result, never absent")
         XCTAssertTrue(first.truncated)
@@ -92,6 +102,40 @@ final class WireDecodingTests: XCTestCase {
         XCTAssertEqual(result.filters.statusesExcluded, ["archived", "superseded"])
         XCTAssertTrue(result.filters.sourcesExcluded)
         XCTAssertEqual(result.filters.notes, [])
+
+        let mode = result.retrievalMode
+        XCTAssertEqual(mode.embedderState, "off",
+                       "the embedder has its own state word now, not just an emptied model key")
+        XCTAssertEqual(mode.unmeasuredReason, "no_vector_arm",
+                       "a null expected_mrr arrives WITH the reason the engine declined")
+        XCTAssertTrue(mode.health.known)
+        XCTAssertEqual(mode.health.state, "unreachable")
+        XCTAssertEqual(mode.health.arms,
+                       ["embedder": "unavailable", "hyde": "unavailable",
+                        "reranker": "unavailable"])
+    }
+
+    /// THE ONE CAPTURE WHERE `document_class` VARIES. Default retrieval withholds the conversation
+    /// class, so the first search cannot distinguish a decoder that reads the field from one that
+    /// ignores it — every value there is the same. This one asked for sources back.
+    func testTheConversationSearchCarriesMoreThanOneDocumentClass() throws {
+        let result = try JSONDecoder().decode(
+            WireSearchResult.self,
+            from: try GoldenFixture.payload(GoldenFixture.searchIncludingSources)
+        )
+        XCTAssertFalse(result.filters.sourcesExcluded)
+
+        let classes = Set((result.passages + result.outlineRecords).map(\.documentClass))
+        XCTAssertEqual(classes, ["conversation", "reference-frozen"])
+
+        let transcript = try XCTUnwrap(
+            result.passages.first { $0.documentClass == "conversation" }
+        )
+        let mapped = try transcript.mapped()
+        XCTAssertEqual(mapped.documentClass, .conversation)
+        XCTAssertEqual(mapped.withheldAs, [.sources],
+                       "a transcript passage must reach the card marked, which is what it could not "
+                       + "do while the axis was supplied by the caller")
     }
 
     func testStatusDecodesCountsArmsAndDrift() throws {

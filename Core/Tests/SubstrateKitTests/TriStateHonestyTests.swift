@@ -82,19 +82,28 @@ final class TriStateHonestyTests: XCTestCase {
     /// reach a `Double` without naming the case, so it cannot become a lower bound or a zero.
     func testUnmeasuredMRRIsNotZero() throws {
         let mode = try decode(WireRetrievalMode.self, """
-            {"embedder": null, "hyde": "off", "reranker": "off", "expected_mrr": null,
-             "cohort": "44-case semantic", "degraded": false, "fallbacks": [], "unavailable": []}
+            {"embedder": null, "embedder_state": "off", "hyde": "off", "reranker": "off",
+             "expected_mrr": null, "unmeasured_reason": "no_vector_arm",
+             "cohort": "44-case semantic", "degraded": false, "fallbacks": [], "unavailable": [],
+             "health": {"known": true, "state": "lexical_only",
+                        "arms": {"embedder": "off", "hyde": "off", "reranker": "off"},
+                        "note": "no local-model arm was requested"}}
             """)
         XCTAssertEqual(mode.expectedMRR, .unmeasured)
         XCTAssertNil(mode.expectedMRR.wireValue)
         XCTAssertNotEqual(mode.expectedMRR, .measured(0))
 
         let measured = try decode(WireRetrievalMode.self, """
-            {"embedder": "qwen3-embedding:0.6b", "hyde": "ran", "reranker": "ran",
-             "expected_mrr": 0.698, "cohort": "44-case semantic", "degraded": false,
-             "fallbacks": [], "unavailable": []}
+            {"embedder": "qwen3-embedding:0.6b", "embedder_state": "ran", "hyde": "ran",
+             "reranker": "ran", "expected_mrr": 0.698, "unmeasured_reason": null,
+             "cohort": "44-case semantic", "degraded": false, "fallbacks": [], "unavailable": [],
+             "health": {"known": true, "state": "ready",
+                        "arms": {"embedder": "wired", "hyde": "wired", "reranker": "wired"},
+                        "note": null}}
             """)
         XCTAssertEqual(measured.expectedMRR, .measured(0.698))
+        XCTAssertNil(measured.unmeasuredReason,
+                     "a number never needs a reason — the engine asserts the same invariant")
     }
 
     /// The live capture is the unmeasured case — no local model server was running — so the
@@ -107,6 +116,34 @@ final class TriStateHonestyTests: XCTestCase {
         XCTAssertEqual(result.retrievalMode.unavailable.count, 3)
         XCTAssertFalse(result.retrievalMode.degraded,
                        "nothing FELL BACK — three arms never started, which is a different claim")
+    }
+
+    // MARK: - passage.document_class
+
+    /// THE FIFTH FIELD, and the newest. `document_class: null` says the index row carries no class;
+    /// it must reach `PassageDocumentClass.unreported` and never `.referenceFrozen`, which is the
+    /// value two-thirds of the corpus has and the one that reads as settled.
+    ///
+    /// The absence is a CASE and not an `Optional`, for the same reason as the four above: an
+    /// optional invites `?? .referenceFrozen`, which is the defaulting that relabelled six migrated
+    /// conversations one layer down and would have put the same bug at this boundary.
+    func testANullDocumentClassIsNotReferenceFrozen() throws {
+        let wire = try decode(WirePassage.self, """
+            {"expand_ref": "scripta/x#c1", "citation": "c", "path": "p", "page": null,
+             "n_chars": 3, "document_class": null, "status": "active", "doc_type": "reference",
+             "confidence": "stated", "domains": [], "vault": "v", "supersedes": [],
+             "snippet": "s", "text": null, "truncated": true}
+            """)
+        XCTAssertNil(wire.documentClass)
+
+        let passage = try wire.mapped()
+        XCTAssertEqual(passage.documentClass, .unreported)
+        XCTAssertNotEqual(passage.documentClass, .referenceFrozen)
+        XCTAssertNil(passage.documentClass.wireToken,
+                     "the absent class has no token, so nothing can round-trip it into a claim")
+        XCTAssertEqual(passage.withheldAs, [],
+                       "an unknown class asserts no membership either way — the spine says the "
+                       + "axis is unanswered, the card edge stays silent")
     }
 
     // MARK: - note.stale
@@ -194,9 +231,14 @@ final class TriStateHonestyTests: XCTestCase {
         """
         {"scope": "scripta", "db": "/tmp/scripta.db", "query": "q", "passages": [],
          "outline_records": [],
-         "retrieval_mode": {"embedder": null, "hyde": "off", "reranker": "off",
-                            "expected_mrr": null, "cohort": "44-case semantic", "degraded": false,
-                            "fallbacks": [], "unavailable": []},
+         "retrieval_mode": {"embedder": null, "embedder_state": "off", "hyde": "off",
+                            "reranker": "off", "expected_mrr": null,
+                            "unmeasured_reason": "no_vector_arm", "cohort": "44-case semantic",
+                            "degraded": false, "fallbacks": [], "unavailable": [],
+                            "health": {"known": true, "state": "lexical_only",
+                                       "arms": {"embedder": "off", "hyde": "off",
+                                                "reranker": "off"},
+                                       "note": "no local-model arm was requested"}},
          "filters": {"statuses_included": ["active", "complete"],
                      "statuses_excluded": ["archived", "superseded"], "sources_excluded": true,
                      "doc_type": null, "document_class": null, "notes": []},

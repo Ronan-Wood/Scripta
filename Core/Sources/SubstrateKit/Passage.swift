@@ -105,22 +105,64 @@ public enum PassageStatus: String, CaseIterable, Identifiable {
 /// exactly the same confident register as the conclusion. No per-value marker can fix that, which
 /// is why the engine withholds the whole class — and why rendering one as settled default-corpus
 /// knowledge is the exact lie the spine exists to prevent.
-public enum PassageDocumentClass: String, CaseIterable, Identifiable {
+///
+/// NOT `RawRepresentable`, and that is the point of the fourth case. `unreported` is the ABSENCE of
+/// a class, so it has no token in `classes.POLICIES` and must never be reachable from a wire string
+/// — a `String` raw value would hand every caller an `init(rawValue:)` that could conjure it, and
+/// `allCases.map(\.rawValue)` would then claim the engine has a fourth class. The wire token and the
+/// displayed word are separate properties for the same reason `EngineArmState` splits them.
+public enum PassageDocumentClass: CaseIterable, Identifiable, Hashable, Sendable {
     /// A published edition that will not change, and the engine's default when a source says
     /// nothing. Six migrated conversations were relabelled this by a silent default once already.
-    case referenceFrozen = "reference-frozen"
+    case referenceFrozen
     /// A living spec whose passages are only true for a stated version.
-    case referenceVersioned = "reference-versioned"
+    case referenceVersioned
     /// A captured conversation: raw material for notes, never a note itself.
     case conversation
 
-    public var id: String { rawValue }
-    public var label: String { rawValue }
+    /// `document_class: null` — this index row carries no class at all.
+    ///
+    /// THE HONEST ABSENCE, and the narrow thing it claims. It does NOT mean "the note declared
+    /// nothing": the markdown reader defaults an undeclared `class:` to `reference-frozen` at
+    /// ingest, so that distinction is already gone by the time a passage exists. It means the row
+    /// itself was written without a class, which `render.passage` reaches only for a document built
+    /// outside the reader. Defaulting THAT to `reference-frozen` would be a second copy of the bug
+    /// that relabelled the six, one layer further from the evidence.
+    case unreported
 
+    /// The key this class has in `classes.POLICIES`, or `nil` for the case that is not a class.
+    /// `RenderContractTests` pins the non-nil ones against the engine's own dict.
+    public var wireToken: String? {
+        switch self {
+        case .referenceFrozen: return "reference-frozen"
+        case .referenceVersioned: return "reference-versioned"
+        case .conversation: return "conversation"
+        case .unreported: return nil
+        }
+    }
+
+    /// Always a word, because the badge always draws one. `unreported` is not softened into a blank
+    /// — an axis drawn empty is indistinguishable from an axis nobody rendered.
+    public var label: String { wireToken ?? "unreported" }
+    public var id: String { label }
+
+    /// The class the engine sent, or `nil` for a token this build has no class for. `unreported` is
+    /// unreachable through here by construction: it has no token to match.
+    public static func named(_ token: String) -> PassageDocumentClass? {
+        allCases.first { $0.wireToken == token }
+    }
+
+    /// The tokens a wire value may take, for a refusal that can name what it knows.
+    public static let wireTokens: [String] = allCases.compactMap(\.wireToken)
+
+    /// `nil` for `unreported` DELIBERATELY, and it is an under-report rather than a claim: with no
+    /// class on the row we can say neither that this passage is a withheld conversation nor that it
+    /// is not. The axis still speaks — the spine draws `unreported` with `absent` prominence — but
+    /// the card edge, which asserts membership, stays silent rather than asserting either way.
     public var withheldAs: RetrievalClass? {
         switch self {
         case .conversation: return .sources
-        case .referenceFrozen, .referenceVersioned: return nil
+        case .referenceFrozen, .referenceVersioned, .unreported: return nil
         }
     }
 }
@@ -189,8 +231,10 @@ public struct Passage: Identifiable {
     public let vault: String
     public let status: PassageStatus
     public let docType: PassageDocType
-    /// The third exclusion axis. Defaulted, because the engine defaults it — and the default is the
-    /// one that reads as settled, so the passage has to say which one it is rather than imply it.
+    /// The third exclusion axis. NO DEFAULT on the initialiser below: the default used to be
+    /// `referenceFrozen`, which is the value that reads as settled, so every caller that had nothing
+    /// to say silently said the one thing this axis exists to stop them saying. A caller that does
+    /// not know now passes `unreported`, which is a word on screen rather than a plausible one.
     public let documentClass: PassageDocumentClass
     public let confidence: PassageConfidence
     public let domains: [String]
@@ -205,7 +249,7 @@ public struct Passage: Identifiable {
                 status: PassageStatus,
                 docType: PassageDocType,
                 confidence: PassageConfidence,
-                documentClass: PassageDocumentClass = .referenceFrozen,
+                documentClass: PassageDocumentClass,
                 domains: [String] = [],
                 supersedes: [String] = []) {
         self.id = id

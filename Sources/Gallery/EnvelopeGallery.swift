@@ -58,8 +58,7 @@ private enum Sample {
         arms: [.embedder("qwen3-embedding:0.6b"), .hyde("qwen2.5:7b"),
                .reranker("cross-encoder", .ran)],
         expectedMRR: nil, frozen: false,
-        unmeasuredReason: "Rerank ran through the cross-encoder, an arm never measured at "
-            + "44-case semantic. Per-corpus runs are in EXPERIMENTS.md.")
+        unmeasuredReason: .unmeasuredRerankModel)
 
     /// `refresh.frozen == nil`. Everything else about this run is clean, which is the point: the
     /// only thing standing between this and a healthy render is one dotted line.
@@ -72,15 +71,14 @@ private enum Sample {
         arms: [.embedder("qwen3-embedding:0.6b"), .hyde("apple-fm", .fellBack),
                .reranker("qwen2.5:7b")],
         expectedMRR: nil, frozen: false,
-        unmeasuredReason: "A wired arm fell back mid-run, so the stack that answered is not one "
-            + "that was ever measured.",
+        unmeasuredReason: .unmeasuredHydeModel,
         fallbacks: ["hyde: ollama connection reset, fell back to apple-fm"])
 
     /// `degraded` asserted with nothing to back it. The bar says so rather than dropping the row,
     /// because a degradation with no reasons is still a degradation.
     static let degradedSilently = EngineEnvelope(
         scope: "prism", arms: ollama, expectedMRR: nil, frozen: false,
-        unmeasuredReason: "The run reported a degradation, so no measured tier applies.",
+        unmeasuredReason: .unmeasuredArmCombination,
         degraded: true)
 
     /// The CLI's ordering bug, rendered. With the reranker dead the engine returns the genuine
@@ -93,11 +91,14 @@ private enum Sample {
                .reranker(nil, .unavailable)],
         expectedMRR: 0.603, frozen: false)
 
-    static let down = EngineEnvelope(
+    /// `health.state == "unreachable"`, in the engine's own words — which name the model and the
+    /// host and deliberately do NOT say whether it is missing or stopped, because the probe cannot
+    /// tell. The specimen exists to prove that sentence still reads as actionable without a cause.
+    static let unreachable = EngineEnvelope(
         scope: "cbre", arms: apple, expectedMRR: EngineTier.floor, frozen: false,
         fallbacks: ["embed: ollama unreachable, fell back to apple-nlcontextual",
                     "hyde: ollama unreachable, fell back to apple-fm"],
-        health: .down("The local model server stopped answering, so every arm ran on-device."))
+        health: .unreachable("hyde 'qwen2.5:7b' unreachable at http://127.0.0.1:11434"))
 
     static let schema = EngineEnvelope(
         scope: "school", arms: apple, expectedMRR: EngineTier.floor, frozen: false,
@@ -196,10 +197,10 @@ private struct DegradationCard: View {
 private struct EngineStateCard: View {
     var body: some View {
         Card(title: "Engine states",
-             note: "not-installed is the default configuration and stays monochrome. Down and schema-mismatch are faults someone can act on, and they are the only red in this component.") {
+             note: "not-installed is the default configuration and stays monochrome. Unreachable and schema-mismatch are faults someone can act on, and they are the only red in this component.") {
             VStack(alignment: .leading, spacing: Gap.s12) {
-                SpecimenRow(name: "down", detail: "installed and unreachable — a fault, unlike not-installed") {
-                    EngineBar(envelope: Sample.down)
+                SpecimenRow(name: "unreachable", detail: "requested and could not start — the engine cannot say whether it is missing or stopped") {
+                    EngineBar(envelope: Sample.unreachable)
                 }
                 SpecimenRow(name: "schema mismatch", detail: "the index was written by another build") {
                     EngineBar(envelope: Sample.schema)

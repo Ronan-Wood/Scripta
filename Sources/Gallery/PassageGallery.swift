@@ -159,7 +159,7 @@ private struct SupersedesList: View {
 private struct SpineMatrix: View {
     var body: some View {
         Card(title: "Every status x confidence combination",
-             note: "Drawn, not asserted. Both badges come from the same `prominence` the passage draws with, and the census below counts the coloured ones from the same source. document_class is held at its default here — a conversation-class passage adds exactly one mark to every row below, which is the section further down.") {
+             note: "Drawn, not asserted. Both badges come from the same `prominence` the passage draws with, and the census below counts the coloured ones from the same source. document_class is not varied here — a conversation-class passage adds exactly one mark to every row below, which is the section further down.") {
             VStack(alignment: .leading, spacing: Gap.s6) {
                 Census()
                 RowRule()
@@ -210,7 +210,7 @@ private struct MatrixRow: View {
 private struct Census: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s2) {
-            CensusRow(label: "combinations (document_class at its default)",
+            CensusRow(label: "combinations (document_class not varied)",
                       value: "\(SpineCensus.combinations.count)")
             CensusRow(label: "entirely monochrome", value: "\(SpineCensus.count(marks: 0))")
             CensusRow(label: "one coloured mark", value: "\(SpineCensus.count(marks: 1))")
@@ -332,6 +332,7 @@ private enum Sample {
         status: .active,
         docType: .decision,
         confidence: .verified,
+        documentClass: .referenceFrozen,
         domains: ["design-system", "color"])
 
     static let proposed = Passage(
@@ -342,6 +343,7 @@ private enum Sample {
         status: .active,
         docType: .decision,
         confidence: .proposed,
+        documentClass: .referenceFrozen,
         domains: ["retrieval", "indexing"])
 
     static let inferred = Passage(
@@ -352,6 +354,7 @@ private enum Sample {
         status: .active,
         docType: .explanation,
         confidence: .inferred,
+        documentClass: .referenceFrozen,
         domains: ["retrieval"])
 
     static let unjudged = Passage(
@@ -362,6 +365,7 @@ private enum Sample {
         status: .active,
         docType: .reference,
         confidence: .unjudged,
+        documentClass: .referenceFrozen,
         domains: ["shell", "migration"])
 
     static let archived = Passage(
@@ -372,6 +376,7 @@ private enum Sample {
         status: .archived,
         docType: .decision,
         confidence: .verified,
+        documentClass: .referenceFrozen,
         domains: ["design-system", "transcript"])
 
     static let superseded = Passage(
@@ -382,6 +387,7 @@ private enum Sample {
         status: .superseded,
         docType: .decision,
         confidence: .stated,
+        documentClass: .referenceFrozen,
         domains: ["schema"])
 
     static let conversation = Passage(
@@ -416,6 +422,7 @@ private enum Sample {
         status: .active,
         docType: .decision,
         confidence: .verified,
+        documentClass: .referenceFrozen,
         domains: ["schema", "retrieval"],
         supersedes: ["adr-014", "adr-021", "note-0774"])
 }

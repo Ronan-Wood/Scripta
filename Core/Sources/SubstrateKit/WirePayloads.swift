@@ -26,9 +26,9 @@ import Foundation
 /// `kind` is present only on `outline_records` (`render.outline_record` sets `rec["kind"] =
 /// "outline"`); a passage has no such key, so it is optional here and omitted on re-encode.
 ///
-/// NO `document_class`. `Hit` carries one (`index_store.Hit.document_class`) and `render.passage`
-/// does not emit it — see `SubstrateMapping.swift`, which refuses to guess the axis rather than
-/// defaulting a transcript to `reference-frozen`.
+/// `document_class` is `string | null`, and the null is a VALUE: the index row carries no class at
+/// all. It is decoded as `String?` and mapped to `PassageDocumentClass.unreported`, never defaulted
+/// to `reference-frozen` — see `SubstrateMapping.swift`.
 public struct WirePassage: Codable, Equatable, Sendable {
     /// The scope-qualified handle to pass back to `expand`. `null` when the query addressed an
     /// index by path and there is no scope to resolve a ref through.
@@ -37,6 +37,10 @@ public struct WirePassage: Codable, Equatable, Sendable {
     public let path: String
     public let page: Int?
     public let nChars: Int
+    /// What KIND of artifact this came out of (`classes.POLICIES`). `null` when the index row
+    /// carries no class — an absence, and NOT recoverable as "the note declared nothing", which the
+    /// markdown reader already collapsed into `reference-frozen` at ingest.
+    public let documentClass: String?
     public let status: String
     public let docType: String
     public let confidence: String
@@ -53,14 +57,15 @@ public struct WirePassage: Codable, Equatable, Sendable {
     public let kind: String?
 
     public init(expandRef: String?, citation: String, path: String, page: Int?, nChars: Int,
-                status: String, docType: String, confidence: String, domains: [String],
-                vault: String?, supersedes: [String], snippet: String, text: String?,
-                truncated: Bool, kind: String? = nil) {
+                documentClass: String?, status: String, docType: String, confidence: String,
+                domains: [String], vault: String?, supersedes: [String], snippet: String,
+                text: String?, truncated: Bool, kind: String? = nil) {
         self.expandRef = expandRef
         self.citation = citation
         self.path = path
         self.page = page
         self.nChars = nChars
+        self.documentClass = documentClass
         self.status = status
         self.docType = docType
         self.confidence = confidence
@@ -77,6 +82,7 @@ public struct WirePassage: Codable, Equatable, Sendable {
         case expandRef = "expand_ref"
         case citation, path, page
         case nChars = "n_chars"
+        case documentClass = "document_class"
         case status
         case docType = "doc_type"
         case confidence, domains, vault, supersedes, snippet, text, truncated, kind
@@ -89,6 +95,9 @@ public struct WirePassage: Codable, Equatable, Sendable {
         path = try c.decode(String.self, forKey: .path)
         page = try c.decodeIfPresent(Int.self, forKey: .page)
         nChars = try c.decode(Int.self, forKey: .nChars)
+        // `decodeIfPresent` collapses "key absent" and "key is null" — both correct. An engine too
+        // old to emit the key has reported no class, which maps to the same `unreported`.
+        documentClass = try c.decodeIfPresent(String.self, forKey: .documentClass)
         status = try c.decode(String.self, forKey: .status)
         docType = try c.decode(String.self, forKey: .docType)
         confidence = try c.decode(String.self, forKey: .confidence)
@@ -108,6 +117,7 @@ public struct WirePassage: Codable, Equatable, Sendable {
         try c.encode(path, forKey: .path)
         try c.encodeExplicitNull(page, forKey: .page)
         try c.encode(nChars, forKey: .nChars)
+        try c.encodeExplicitNull(documentClass, forKey: .documentClass)
         try c.encode(status, forKey: .status)
         try c.encode(docType, forKey: .docType)
         try c.encode(confidence, forKey: .confidence)
@@ -220,16 +230,75 @@ extension KeyedDecodingContainer {
 
 // MARK: - Retrieval mode
 
+/// `render.engine_health` — the condition of the ARMS THEMSELVES, a different axis from what they
+/// did on this query. Always present in `retrieval_mode`, always with all four keys.
+///
+/// This block is what retired the client's parse of `unavailable`'s prose. The engine builds each
+/// entry there with the arm's name first, and the Swift side used to recover the arm by splitting on
+/// the leading token — a contract in a sentence, which nobody can see break. `arms` is the same fact
+/// as structure, and `render.engine_health` forces `unreachable` whenever `unavailable` is non-empty
+/// even when it could attribute nothing, so the two carriers cannot contradict each other.
+public struct WireEngineHealth: Codable, Equatable, Sendable {
+    /// `false` when the caller reported no wiring. NOT folded into `ready`.
+    public let known: Bool
+    /// `"ready"`, `"lexical_only"`, `"unreachable"` — `null` iff `known` is false.
+    public let state: String?
+    /// Per-arm BUILD state (`stack.ARM_*`): `"wired"`, `"unavailable"`, `"off"`. `null` iff `known`
+    /// is false. Every arm always appears when it is present at all.
+    public let arms: [String: String]?
+    /// `null` only in the `ready` case — a healthy stack does not need a sentence.
+    public let note: String?
+
+    /// `stack.ARM_UNAVAILABLE`, named once. The one value in `arms` the mapping acts on, so it is a
+    /// constant with a contract test behind it rather than a literal at the comparison.
+    public static let armUnavailable = "unavailable"
+
+    public init(known: Bool, state: String?, arms: [String: String]?, note: String?) {
+        self.known = known
+        self.state = state
+        self.arms = arms
+        self.note = note
+    }
+
+    enum CodingKeys: String, CodingKey { case known, state, arms, note }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        known = try c.decode(Bool.self, forKey: .known)
+        state = try c.decodeIfPresent(String.self, forKey: .state)
+        arms = try c.decodeIfPresent([String: String].self, forKey: .arms)
+        note = try c.decodeIfPresent(String.self, forKey: .note)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(known, forKey: .known)
+        try c.encodeExplicitNull(state, forKey: .state)
+        try c.encodeExplicitNull(arms, forKey: .arms)
+        try c.encodeExplicitNull(note, forKey: .note)
+    }
+}
+
 /// `render.retrieval_mode` — which arms actually ran and what that is measured to be worth.
 public struct WireRetrievalMode: Codable, Equatable, Sendable {
     /// The embedder KEY that ran, or `null`. Null is absence, not the string `"lexical-only"`.
     public let embedder: String?
+    /// The embedder's STATE WORD, in the same vocabulary the other two arms use: `"ran"`, `"off"`,
+    /// `"fell_back"`. It exists because `embedder` alone could not say it — a key that empties on a
+    /// fallback is byte-identical to an arm nobody asked for, so the arm the coverage guard degrades
+    /// most often was the one arm incapable of reporting that it had. Refines `embedder` strictly:
+    /// `"ran"` iff that key is non-null.
+    public let embedderState: String
     /// A STATE WORD, not a model name: `"ran"`, `"off"`, `"fell_back"`
     /// (`retriever._capability`).
     public let hyde: String
     /// A state word: `"ran"`, `"skipped"` (the adaptive gate declined), `"off"`, `"fell_back"`.
     public let reranker: String
     public let expectedMRR: MeasuredMRR
+    /// A `retriever.UNMEASURED_REASONS` token, or `null` — and `null` iff `expectedMRR` is a number.
+    /// Stringly here like every other vocabulary: an unknown token must refuse in the mapping, by
+    /// name, rather than make the whole payload undecodable.
+    public let unmeasuredReason: String?
     /// The eval cohort `expectedMRR` was measured on. Travels with every number so nothing compares
     /// across cohorts.
     public let cohort: String
@@ -238,49 +307,71 @@ public struct WireRetrievalMode: Codable, Equatable, Sendable {
     public let fallbacks: [String]
     /// Arms that were REQUESTED and could not start — the one thing `Capability` cannot say,
     /// because such an arm reports `off`, which is byte-identical to an arm nobody asked for.
-    /// Free prose built by `stack.py`, each entry led by the arm's name.
+    /// Free prose built by `stack.py`, each entry led by the arm's name. KEPT FOR WHAT IS UNIQUELY
+    /// ITS OWN — the model, and the host it was looked for at — which is what a human acts on. The
+    /// arm NAMES come from `health.arms` instead; nothing here is parsed any more.
     public let unavailable: [String]
+    /// The same condition as structure, for all three arms at once. Always sent.
+    public let health: WireEngineHealth
 
-    public init(embedder: String?, hyde: String, reranker: String, expectedMRR: MeasuredMRR,
-                cohort: String, degraded: Bool, fallbacks: [String], unavailable: [String]) {
+    public init(embedder: String?, embedderState: String, hyde: String, reranker: String,
+                expectedMRR: MeasuredMRR, unmeasuredReason: String?, cohort: String,
+                degraded: Bool, fallbacks: [String], unavailable: [String],
+                health: WireEngineHealth) {
         self.embedder = embedder
+        self.embedderState = embedderState
         self.hyde = hyde
         self.reranker = reranker
         self.expectedMRR = expectedMRR
+        self.unmeasuredReason = unmeasuredReason
         self.cohort = cohort
         self.degraded = degraded
         self.fallbacks = fallbacks
         self.unavailable = unavailable
+        self.health = health
     }
 
     enum CodingKeys: String, CodingKey {
-        case embedder, hyde, reranker
+        case embedder
+        case embedderState = "embedder_state"
+        case hyde, reranker
         case expectedMRR = "expected_mrr"
-        case cohort, degraded, fallbacks, unavailable
+        case unmeasuredReason = "unmeasured_reason"
+        case cohort, degraded, fallbacks, unavailable, health
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         embedder = try c.decodeIfPresent(String.self, forKey: .embedder)
+        // REQUIRED, both of them. An engine that omits either is older than this contract, and the
+        // honest outcome is one loud `.undecodablePayload` naming the key — not an envelope that
+        // quietly re-derives the embedder's state from a model key, which is the exact
+        // understatement `embedder_state` was added to end.
+        embedderState = try c.decode(String.self, forKey: .embedderState)
         hyde = try c.decode(String.self, forKey: .hyde)
         reranker = try c.decode(String.self, forKey: .reranker)
         expectedMRR = MeasuredMRR(try c.decodeIfPresent(Double.self, forKey: .expectedMRR))
+        unmeasuredReason = try c.decodeIfPresent(String.self, forKey: .unmeasuredReason)
         cohort = try c.decode(String.self, forKey: .cohort)
         degraded = try c.decode(Bool.self, forKey: .degraded)
         fallbacks = try c.decode([String].self, forKey: .fallbacks)
         unavailable = try c.decode([String].self, forKey: .unavailable)
+        health = try c.decode(WireEngineHealth.self, forKey: .health)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeExplicitNull(embedder, forKey: .embedder)
+        try c.encode(embedderState, forKey: .embedderState)
         try c.encode(hyde, forKey: .hyde)
         try c.encode(reranker, forKey: .reranker)
         try c.encodeExplicitNull(expectedMRR.wireValue, forKey: .expectedMRR)
+        try c.encodeExplicitNull(unmeasuredReason, forKey: .unmeasuredReason)
         try c.encode(cohort, forKey: .cohort)
         try c.encode(degraded, forKey: .degraded)
         try c.encode(fallbacks, forKey: .fallbacks)
         try c.encode(unavailable, forKey: .unavailable)
+        try c.encode(health, forKey: .health)
     }
 }
 
