@@ -10,27 +10,68 @@
 # Composes are cheap when nothing changed (reconcile reports "unchanged") and embeds are
 # content-addressed, so a quiet run costs seconds. Serial by design — one model at a time.
 #
+# IT RUNS THE DEPLOYED ENGINE, NEVER THE WORKING TREE. This script used to exec `$REPO` — the tree
+# the operator edits — every 900 seconds, and on 2026-08-03 an uncommitted v8->v9 schema bump
+# reached all six live scopes inside one tick. `b334da4` guarded that specific shape and named what
+# it left open: "no separation between code being edited and code running against real data". The
+# separation is now a PINNED DEPLOYMENT — an export of one commit at `~/.substrate/engine`, made by
+# an explicit `substrate-deploy` and proven file-by-file before anything is composed. Editing the
+# tree cannot change what runs here; committing cannot either; only deploying can.
+# `tools/deployment.py` carries the argument for that over the two cheaper options.
+#
+# The compose paths come from the deployment RECORD rather than from `$0`, which retires a hazard
+# rather than guarding it: where the indexes live is no longer derivable from where this script was
+# invoked, so no symlink, shim or copy of it can compose six scopes into a directory nobody reads.
+#
 # EVERY PATH THROUGH THIS SCRIPT RECORDS ITS OUTCOME (`substrate refresh-record`), and that is not
 # bookkeeping — it is the only thing standing between a failure here and a silently wrong answer.
 # `compose` returns before it opens the index database, so when it refuses, the OLD index stays and
 # every query keeps answering from it in an envelope byte-identical to a healthy run. This job made
 # that worse rather than better: it turned freshness a human used to check into freshness a human
 # ASSUMES. The record is what the search response reads to say `refresh.frozen`. A path that
-# returns without recording puts the assumption back.
+# returns without recording puts the assumption back — including, and especially, the paths added
+# above: a refusal to run unverified code that nobody could see would be an outage disguised as a
+# quiet week.
 set -uo pipefail
 
-# Derived from this script's own location now that it lives IN the repo. It was an absolute path
-# while the script sat in ~/.local/bin, which is where the deployment path still points — see the
-# shim there, which holds the one machine-specific line and execs this.
+# Derived from this script's own location, and now used for ONE thing: finding the deployment
+# verifier that everything else comes from. It was an absolute path while the script sat in
+# ~/.local/bin, which is where the deployment path still points — see the shim there
+# (`tools/substrate-refresh.shim` is the copy to install), which holds the one machine-specific
+# line and prefers the deployed agent over this one.
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 SCOPES=(prism scripta cbre research school clovis)
 LOG="$HOME/Library/Logs/substrate-refresh.log"
 LOCK="$HOME/.substrate/refresh.lock"
 SUBSTRATE="$HOME/.local/bin/substrate"
+RECORD="$HOME/.substrate/engine.json"
+DEPLOYMENT="$REPO/tools/deployment.py"
+
+# Empty until the deployment has been PROVEN. Everything below reads them through `cli`, so the
+# window in which this script could act on an unverified engine is the window in which they are
+# empty — and nothing in that window composes, embeds or reads an index.
+ENGINE="" DATA="" UV="" COMMIT=""
 
 mkdir -p "$(dirname "$LOG")" "$(dirname "$LOCK")"
 exec >>"$LOG" 2>&1
 say() { echo "$(date '+%Y-%m-%d %H:%M:%S')  $*"; }
+
+# One entry point for the engine, so there is exactly one place that decides WHICH code runs.
+#
+# The deployed engine once it has verified; the installed wrapper before that. The fallback exists
+# for the recorder alone — `$SUBSTRATE` execs the working tree, so it is the thing this script
+# stopped trusting, and it is trusted here for one job: writing the JSON line that says the
+# deployment could not be verified. That message matters most in exactly the states where the
+# deployment is unusable, so it cannot be delivered through the deployment. Its blast radius is one
+# small machine-local state file whose reader already refuses a bad shape; `compose` and `embed`,
+# which write the indexes, are never reached with `$ENGINE` empty.
+cli() {
+  if [ -n "$ENGINE" ]; then
+    ( cd "$ENGINE" && exec "$UV" run --quiet --frozen python -m substrate.cli "$@" )
+  else
+    "$SUBSTRATE" "$@"
+  fi
+}
 
 # The recorder is the signal path, so its own failure must not be quiet — a silent failure here
 # leaves every scope reporting the LAST outcome forever, which is the healthy-looking state.
@@ -47,42 +88,40 @@ record() {
   [ $# -gt 0 ] || { say "WARNING: record '$outcome' called with no scopes"; return 1; }
   local args=()
   for s in "$@"; do args+=(--scope "$s"); done
-  "$SUBSTRATE" refresh-record "${args[@]}" --outcome "$outcome" --quiet \
+  cli refresh-record "${args[@]}" --outcome "$outcome" --quiet \
     || say "WARNING: could not record '$outcome' for $* — searches will report a stale outcome"
 }
 
-# REPO is DERIVED, so it has to be checked. `set -u` does not catch this: a failed `cd` leaves REPO
-# set to the empty string rather than unset, and with no `-e` the script sails on to compose into
-# "/out-vault/$s-index". Worse is the case that SUCCEEDS — `dirname "$0"` follows the invocation
-# path, not the real one, so replacing the exec-shim with the more obvious `ln -s` makes REPO
-# "$HOME/.local", a writable directory. The agent would then compose six scopes there, re-register
-# every one of them against the new location, and record `refreshed`/`frozen: false` — while every
-# query kept reading the old indexes. A false-healthy signal emitted by the writer of the signal,
-# which is the one failure this script exists to make impossible.
-#
-# Placed after `record()` so the failure can be RECORDED rather than only logged: a tick that
-# cannot find the repo has verified nothing, and `skipped` is the outcome that says so.
-# The CLI wrapper is the recorder AND the composer, so if it is missing every scope silently keeps
-# its last healthy verdict: compose fails, and the `record compose_failed` that would have said so
-# fails too, through the same absent binary. Checked FIRST and reported to the log, because at that
-# point there is no channel left to record through — this is the one failure the signal cannot
-# carry, so it exits non-zero to leave a trace in launchd's own accounting.
+# Checked FIRST because it is the only recording channel that exists before the deployment has been
+# verified, and every refusal below this line has to be able to say so. Without it, a tick that
+# refuses to run unverified code cannot report that it refused: the record fails through the same
+# absent binary, and all six scopes keep serving their last healthy verdict. There is no channel
+# left to record through at this point, so it exits non-zero to leave a trace in launchd's own
+# accounting.
 [ -x "$SUBSTRATE" ] || {
-  say "FATAL: $SUBSTRATE is missing or not executable — cannot compose and cannot record."
+  say "FATAL: $SUBSTRATE is missing or not executable — no channel left to report through."
   exit 1
 }
 
-[ -n "$REPO" ] && [ -f "$REPO/substrate/cli.py" ] && [ -f "$REPO/pyproject.toml" ] || {
-  say "FATAL: \$0=$0 does not resolve to a substrate checkout (REPO='$REPO') — refusing to"
-  say "       compose into a guessed path. If the deployment is a symlink, make it an exec shim."
-  record skipped "${SCOPES[@]}"
+# REPO is DERIVED, so it has to be checked. `set -u` does not catch this: a failed `cd` leaves REPO
+# set to the empty string rather than unset, and with no `-e` the script sails on. The consequence
+# is narrower than it used to be — the compose paths come from the deployment record now, so a
+# mis-derived REPO can no longer send six indexes to a guessed directory — but it is still fatal in
+# the direction that matters: without the verifier there is no way to establish what code would
+# run, and running an engine on that basis is the whole failure this script was rebuilt to remove.
+[ -n "$REPO" ] && [ -f "$DEPLOYMENT" ] || {
+  say "FATAL: \$0=$0 does not resolve to a substrate checkout (REPO='$REPO') — the deployment"
+  say "       verifier at tools/deployment.py is not there, so nothing can be verified."
+  record engine_unverified "${SCOPES[@]}"
   exit 1
 }
 
-# launchd already refuses to run two instances of one label, so this guards the hand-run case:
-# two composes racing on the same --clean index root leave the loser's assert_composed failing on
-# content it did not ingest. `mkdir` because it is atomic and because macOS has no flock(1).
-# A crashed run would otherwise wedge the lock forever, so a lock whose PID is gone is taken over.
+# launchd already refuses to run two instances of one label, so this guards the hand-run case, and
+# `substrate-deploy` takes the SAME lock: two composes racing on one --clean index root leave the
+# loser's assert_composed failing on content it did not ingest, and a deploy landing between the
+# verification below and the compose would run half of one engine and half of another. `mkdir`
+# because it is atomic and because macOS has no flock(1). A crashed run would otherwise wedge the
+# lock forever, so a lock whose PID is gone is taken over.
 if ! mkdir "$LOCK" 2>/dev/null; then
   # Validated as a STRICTLY POSITIVE integer before use. `kill -0 -1` signals every process the
   # user owns and `kill -0 0` signals the caller's own process group, so a pid file holding either
@@ -102,10 +141,10 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   stale_by_age=""
   [ -n "$(find "$LOCK" -maxdepth 0 -mmin +60 2>/dev/null)" ] && stale_by_age=1
   if [ -n "$owner" ] && [ -z "$stale_by_age" ] && kill -0 "$owner" 2>/dev/null; then
-    # NOT recorded: another pass owns these scopes right now and is about to record its own
-    # outcome. Writing `skipped` here would overwrite a live pass's result with the news that a
-    # duplicate declined to run, which is true of this process and false of the scope.
-    say "skip: refresh $owner still running"; exit 0
+    # NOT recorded: another pass — or a deploy — owns these scopes right now and is about to record
+    # its own outcome. Writing `skipped` here would overwrite a live pass's result with the news
+    # that a duplicate declined to run, which is true of this process and false of the scope.
+    say "skip: pid $owner holds the lock (a refresh tick or a deploy)"; exit 0
   fi
   [ -n "$stale_by_age" ] && say "lock held by $owner for over an hour — taking it over"
   say "clearing stale lock (owner gone)"
@@ -119,6 +158,66 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 echo $$ >"$LOCK/pid"
 trap 'rm -rf "$LOCK"' EXIT
+
+# ---------------------------------------------------------------- what code is about to run
+#
+# INSIDE THE LOCK, deliberately. Verification and use have to be on the same side of it or the
+# check is advisory: `substrate-deploy` swaps the tree while holding this lock, so a deploy landing
+# between a check outside and a compose inside would be verified against the engine that is no
+# longer there. The remaining window is this script's own — nothing else may write $ENGINE while
+# the lock is held.
+#
+# Refused rather than degraded, and recorded rather than logged. A tick that cannot establish which
+# engine it would run has verified nothing about any scope, and `engine_unverified` is the outcome
+# that says exactly that: no attempt, no basis for a verdict, and a remedy that is a human action.
+# Silence here would be the worst available outcome — six scopes holding a `frozen: false` from
+# whenever the deployment last worked, ageing quietly, with the agent apparently running fine.
+# The reason is captured rather than left to interleave: the verifier writes it to stderr, which is
+# already this log, so without the temp file the explanation lands ABOVE the line introducing it
+# and without a timestamp. `/dev/stderr` is the fallback, not `/dev/null` — if mktemp fails the
+# message is worth having unprefixed far more than it is worth discarding.
+verr=$(mktemp -t substrate-refresh-verify) || verr=""
+# `if ! plan=$(...)`, not an assignment followed by `$?`: the second form silently stops testing
+# the right command the moment anything is inserted between the two lines.
+if ! plan=$(python3 "$DEPLOYMENT" --verify "$RECORD" 2>"${verr:-/dev/stderr}"); then
+  say "DEPLOYMENT UNVERIFIED — refusing to compose anything:"
+  [ -n "$verr" ] && while IFS= read -r line; do say "    $line"; done <"$verr"
+  say "    Deploy the engine you want running, then this resumes on the next tick:"
+  say "        $REPO/tools/substrate-deploy          # HEAD"
+  say "        $REPO/tools/substrate-deploy --show   # what is deployed now"
+  [ -n "$verr" ] && rm -f "$verr"
+  record engine_unverified "${SCOPES[@]}"
+  exit 1
+fi
+[ -n "$verr" ] && rm -f "$verr"
+
+# Parsed key-by-key rather than `eval`ed: the plan is a small trusted file, but `eval` on a path
+# would make any future field of it executable, and the difference costs four lines.
+while IFS='=' read -r key value; do
+  case "$key" in
+    ENGINE) ENGINE=$value ;;
+    DATA)   DATA=$value ;;
+    UV)     UV=$value ;;
+    COMMIT) COMMIT=$value ;;
+  esac
+done <<PLAN
+$plan
+PLAN
+if [ -z "$ENGINE" ] || [ -z "$DATA" ] || [ -z "$UV" ] || [ -z "$COMMIT" ]; then
+  # The verifier exited 0 and said something this script cannot use. Treated as a refusal, not as a
+  # partial success: composing with a half-parsed plan is the one thing the plan exists to prevent.
+  ENGINE=""
+  say "DEPLOYMENT UNVERIFIED — tools/deployment.py exited 0 with an unusable plan."
+  record engine_unverified "${SCOPES[@]}"
+  exit 1
+fi
+
+# NOT logged: whether this shell came from the deployed tree or the source one. It is a STANDING
+# CONDITION — an install where ~/.local/bin/substrate-refresh still points at the repo produces it
+# on every tick — and a standing condition in an event log is the "nothing changed every fifteen
+# minutes" noise this script's quiet-by-default policy exists to prevent. It is also harmless: the
+# engine is pinned either way, and this shell only chooses paths. `substrate-deploy` reports it
+# once, to a human, where it can be acted on.
 
 if ! curl -sf -m 5 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
   # Recorded, not just logged. This exit leaves every scope unverified against its vault, and the
@@ -151,7 +250,7 @@ for s in "${SCOPES[@]}"; do
   # silently — the `current` branch logs nothing and the summary line is suppressed when nothing
   # changed. That is the exact false-healthy signal this whole mechanism exists to remove, emitted
   # by its own writer. Decided in Python where the shape is, and defaulting to `unknown`.
-  drift=$("$SUBSTRATE" status --scope "$s" --lexical-only --json 2>/dev/null \
+  drift=$(cli status --scope "$s" --lexical-only --json 2>/dev/null \
           | python3 -c 'import json,sys
 try:
     d = json.load(sys.stdin)["drift"]
@@ -169,24 +268,23 @@ except Exception: print("unknown")' 2>/dev/null)
   # breaks for an unknown reason. It is the wrong one here, because the thing that changed is the
   # CODE, not the vault, and `compose --clean` against a bumped schema is a migration.
   #
-  # That is not hypothetical: on 2026-08-03 an UNCOMMITTED v8->v9 bump in the working tree reached
-  # all six live scopes inside one 900s tick, because this script execs `$REPO` directly. It was a
-  # pure relabel and nothing was lost, but the decision belonged to the operator and a scheduler
-  # took it. A bump with different chunk geometry would have re-chunked 684 notes and killed every
-  # stored `expand_ref`.
+  # The pin has changed what this guard is FOR. A schema bump can no longer arrive by itself: the
+  # engine only moves when someone runs `substrate-deploy`, so reaching this branch means an
+  # operator deployed an engine whose schema the live indexes predate. That is a decision, and this
+  # is the report on it — not, as on 2026-08-03, a scheduler discovering an editor's half-finished
+  # work and migrating six live scopes off it inside 900 seconds.
   #
   # `122a45d` already settled the rule this broke — "migration is opt-in — every read path refuses,
   # `--migrate` is not `--rebuild`". This is the write path honouring it: refuse, record, and say
-  # what to run. A human recomposing after a schema change is a decision; this script doing it at
-  # 900-second intervals is an accident waiting for a worse bump.
+  # what to run.
   if [ "$drift" = "unknown" ]; then
-    mismatch=$("$SUBSTRATE" status --scope "$s" --lexical-only --json 2>&1 >/dev/null \
+    mismatch=$(cli status --scope "$s" --lexical-only --json 2>&1 >/dev/null \
                | grep -ci "schema" || true)
     if [ "${mismatch:-0}" -gt 0 ]; then
-      say "$s: SCHEMA MISMATCH — index predates this engine. REFUSING to recompose:"
-      say "    that is a migration, and it is the operator's call, not this job's."
+      say "$s: SCHEMA MISMATCH — index predates the deployed engine (${COMMIT:0:12}). REFUSING to"
+      say "    recompose: that is a migration, and it is the operator's call, not this job's."
       say "    Run: substrate compose \"\$HOME/OneDrive/vaults/$s-vault\" --clean \\"
-      say "         --index-root \"$REPO/out-vault/$s-index\" --db \"$REPO/out-vault/$s.db\""
+      say "         --index-root \"$DATA/$s-index\" --db \"$DATA/$s.db\""
       record schema_mismatch "$s"
       failed=$((failed + 1)); continue
     fi
@@ -207,13 +305,13 @@ except Exception: print("unknown")' 2>/dev/null)
 
   # The failure records go in IMMEDIATELY, before the loop can be interrupted. These are the
   # states a reader must not miss, so they are never held in a variable waiting for a tidy exit.
-  if ! "$SUBSTRATE" compose "$HOME/OneDrive/vaults/$s-vault" --clean \
-        --index-root "$REPO/out-vault/$s-index" --db "$REPO/out-vault/$s.db" >/dev/null; then
+  if ! cli compose "$HOME/OneDrive/vaults/$s-vault" --clean \
+        --index-root "$DATA/$s-index" --db "$DATA/$s.db" >/dev/null; then
     say "$s: COMPOSE FAILED — index left as-is, will retry next tick"
     record compose_failed "$s"
     failed=$((failed + 1)); continue
   fi
-  if ! "$SUBSTRATE" embed --db "$REPO/out-vault/$s.db" >/dev/null; then
+  if ! cli embed --db "$DATA/$s.db" >/dev/null; then
     say "$s: EMBED FAILED — scope is 0-vector and will degrade until the next run"
     record embed_failed "$s"
     failed=$((failed + 1)); continue

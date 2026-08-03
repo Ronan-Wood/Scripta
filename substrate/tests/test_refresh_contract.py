@@ -8,10 +8,15 @@ recompose a scope; it then records an outcome that `render` and `introspect` rea
 minutes" — and a key that changes MEANING degrades it to recording `unchanged`, the strongest
 healthy claim in the vocabulary, for scopes nobody checked. Both are quiet.
 
-These tests pin the two vocabularies at their SOURCE — `freshness.drift`, `introspect` and
-`refresh_state.OUTCOMES` — against the literal strings the shell script reads. They fail when the
-engine moves, which is the direction that matters: the script cannot be changed by an engine
-refactor, so the engine has to be told.
+These tests pin the vocabularies at their SOURCE — `freshness.drift`, `introspect`,
+`refresh_state.OUTCOMES` and `tools/deployment.py`'s plan keys — against the literal strings the
+shell script reads. They fail when the engine moves, which is the direction that matters: the
+script cannot be changed by an engine refactor, so the engine has to be told.
+
+WHAT LIVES HERE AND WHAT DOES NOT. This file holds the boundary: the words and keys that cross
+between shell and Python. The BEHAVIOUR on the other side of that boundary — that the agent runs a
+deployed engine rather than the working tree, and refuses loudly when it cannot prove which — is
+executed in `tests/test_refresh_deploy.py`.
 
 **What is and is not executed here.** The engine side is exercised for real: `drift` is computed
 over actual files, and the unresolvable-scope case calls `status_payload` rather than grepping
@@ -58,7 +63,12 @@ _PROBE_KEYS = ("error", "checkable", "stale")
 _AGENT_OUTCOMES = ("unchanged", "refreshed", "compose_failed", "embed_failed", "skipped",
                    # Added when the agent stopped recomposing across a schema bump. It is the
                    # one outcome that reports a refusal to ACT rather than a failure to.
-                   "schema_mismatch")
+                   "schema_mismatch",
+                   # Added when the agent stopped running the working tree at all. A tick that
+                   # cannot prove which engine it would run refuses every scope and says so —
+                   # `tests/test_refresh_deploy.py` executes that path; this pins the WORD, which
+                   # is the half that crosses the shell/Python boundary.
+                   "engine_unverified")
 
 
 def _seeded_store(db: str) -> IndexStore:
@@ -274,13 +284,19 @@ def test_agent_refuses_a_repo_it_cannot_resolve() -> None:
 
     `dirname "$0"` follows the invocation path, not the real one, so deploying the agent as a
     symlink (the obvious simplification of the exec shim) silently made REPO the symlink's parent —
-    a writable directory. The agent would compose six scopes there, re-register all of them against
-    the new location, and record `refreshed`/`frozen: false`, while every query kept reading the
-    untouched old indexes. The signal's own writer emitting a false-healthy verdict.
+    a writable directory. The agent used to compose six scopes there, re-register all of them
+    against the new location, and record `refreshed`/`frozen: false`, while every query kept reading
+    the untouched old indexes. The signal's own writer emitting a false-healthy verdict.
 
-    Run under a throwaway HOME so the log, the lock and `refresh.json` all land in the sandbox —
-    the script records `skipped` on this path, and pointing that at the real state file would make
-    the test degrade the live freshness signal for six scopes every time it ran.
+    HALF OF THAT IS NOW STRUCTURAL rather than guarded: the compose paths come from the deployment
+    record, so a mis-derived REPO can no longer aim six indexes at a guessed directory. What is
+    left is worse if unguarded — without `tools/deployment.py` the agent has no way to establish
+    WHICH engine it would run, which is the whole separation. So it refuses, and it refuses with
+    `engine_unverified` rather than `skipped`: this is not a precondition that will clear itself.
+
+    Run under a throwaway HOME so the log, the lock and `refresh.json` all land in the sandbox.
+    Pointing them at the real state file would have this test degrade the live freshness signal for
+    six scopes every time it ran.
     """
     import os
     import subprocess as sp
@@ -291,11 +307,13 @@ def test_agent_refuses_a_repo_it_cannot_resolve() -> None:
     link.symlink_to(_AGENT)          # REPO resolves to tmp/, which is not a checkout
 
     # The agent checks its recorder BEFORE its repo, deliberately: a missing `substrate` means the
-    # REPO guard's own `record skipped` would fail silently too. So the sandbox gets a stub, and
-    # what this test observes is the REPO refusal rather than the recorder one.
+    # REPO guard's own record would fail silently too. So the sandbox gets a stub — one that LOGS
+    # its argv, because "it refused" and "it refused where a reader can see it" are different
+    # claims and only the second one matters.
+    calls = tmp / "calls.log"
     stub = tmp / ".local" / "bin" / "substrate"
     stub.parent.mkdir(parents=True)
-    stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {calls}\nexit 0\n', encoding="utf-8")
     stub.chmod(0o755)
 
     env = {**os.environ, "HOME": str(tmp)}
@@ -303,13 +321,58 @@ def test_agent_refuses_a_repo_it_cannot_resolve() -> None:
     assert r.returncode == 1, f"an unresolvable REPO must exit non-zero, got {r.returncode}"
     log = (tmp / "Library" / "Logs" / "substrate-refresh.log").read_text("utf-8")
     assert "does not resolve to a substrate checkout" in log, log[-400:]
+    recorded = calls.read_text("utf-8") if calls.is_file() else ""
+    assert "--outcome engine_unverified" in recorded, (
+        f"the refusal was not recorded, so all six scopes keep their last healthy verdict: "
+        f"{recorded!r}")
     # And it must not have composed anything into the guessed path.
     assert not (tmp / "out-vault").exists(), "the agent composed into a path it could not verify"
 
 
+def test_agent_reads_exactly_the_plan_keys_the_verifier_emits() -> None:
+    """The OTHER shell/Python boundary in this system, pinned the same way as the drift probe.
+
+    `tools/deployment.py --verify` prints `KEY=value` lines and the agent parses them into the
+    variables it composes with. Nothing type-checks that: a renamed key leaves the agent's variable
+    empty, and while the emptiness guard turns that into a refusal rather than a compose into "" —
+    fail-closed, deliberately — the result is a refresh that is off for good with a message about
+    an "unusable plan" that names nothing.
+
+    Two directions, because they fail differently:
+      * every key the agent READS must be one the verifier EMITS (else it is never populated);
+      * every key the agent reads must also be one it REQUIRES to be non-empty (else a key that
+        stopped arriving is silently used as the empty string, and `--db ""` is a compose into the
+        current directory).
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_dep", _REPO / "tools" / "deployment.py")
+    dep = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dep)
+
+    src = _AGENT.read_text("utf-8")
+    block = src[src.index('case "$key" in'):]
+    block = block[:block.index("esac")]
+    read = set(re.findall(r"^\s*([A-Z_]+)\)", block, re.M))
+    required = set(re.findall(r'\[ -z "\$([A-Z_]+)" \]', src))
+    emitted = set(dep._EMIT_ORDER)
+
+    assert read, "the agent parses no plan keys at all; it cannot know which engine to run"
+    assert read <= emitted, (
+        f"the agent reads {sorted(read - emitted)}, which tools/deployment.py does not emit — "
+        "those variables are empty on every tick")
+    assert read == required, (
+        f"the agent reads {sorted(read)} but only refuses on {sorted(required)}. A plan key that "
+        "is read without being required is one that can silently arrive empty.")
+
+
 def test_agent_is_executable_and_derives_its_own_repo() -> None:
     """The move is only safe if the script still finds the repo. It used to carry an absolute path;
-    now it derives one from its own location, and the shim in ~/.local/bin holds the machine fact."""
+    now it derives one from its own location, and the shim in ~/.local/bin holds the machine fact.
+
+    REPO's job shrank when the agent stopped composing into it — the index paths come from the
+    deployment record now — but it did not go away: it is how the agent finds the verifier that
+    everything else depends on, which is why the validation below is still fatal."""
     import os
 
     assert os.access(_AGENT, os.X_OK), f"{_AGENT} is not executable"

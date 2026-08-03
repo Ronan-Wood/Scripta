@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Deployment shim — the copy that belongs at ~/.local/bin/substrate-refresh.
+#
+#   install:  install -m 755 tools/substrate-refresh.shim ~/.local/bin/substrate-refresh
+#
+# It lives in the repo so it is reviewed and versioned with the agent it starts, and it is applied
+# by hand because ~/.local/bin and ~/Library/LaunchAgents are the operator's, not a session's. The
+# launchd job (com.ronanwood.substrate-refresh.plist) still points at ~/.local/bin/substrate-refresh
+# and needs NO change — which is the point of a shim.
+#
+# TWO LINES, AND THE ORDER IS THE WHOLE DESIGN.
+#
+# The DEPLOYED agent first. `substrate-deploy` publishes an export of one commit to
+# ~/.substrate/engine, and everything under it — this script's counterpart included — is pinned
+# there. Preferring it is what makes the scheduled path fully deployed: not just the engine that
+# writes the indexes, but the shell that decides when to write them. An edit in the working tree
+# changes neither until someone deploys.
+#
+# The SOURCE agent second, and only when there is no deployed one. Without this arm a machine that
+# has never deployed fails at `exec` — launchd logs "no such file" to a file nobody tails, no scope
+# is recorded, and all six keep serving their last healthy verdict while nothing runs. That is the
+# exact false-healthy silence the refresh record exists to remove. The source agent reached this
+# way cannot compose anything: its first act is to verify the deployment, which is precisely what
+# is missing, so it refuses, records `engine_unverified` for all six scopes, and exits non-zero.
+#
+# The absolute path below is the one machine-specific fact in this system, and this file is where
+# it is allowed to live — the agent, the deploy tool and the verifier all derive their paths from
+# $0, $HOME or the deployment record so that the repo copy stays portable.
+set -uo pipefail
+
+DEPLOYED="$HOME/.substrate/engine/tools/substrate-refresh"
+SOURCE="/Users/ronanwood/CodeHome/CallTranscriber/substrate/tools/substrate-refresh"
+
+[ -x "$DEPLOYED" ] && exec "$DEPLOYED" "$@"
+exec "$SOURCE" "$@"
