@@ -135,20 +135,52 @@ _STACKS: dict[str, dict] = {
 }
 
 
-def _expected_mrr(
+# WHY there is no number — one token per way `_measured_tier` can fail to find one. A closed
+# vocabulary rather than prose because a consumer switches on it, and because "unmeasured" with no
+# reason is indistinguishable from a bug: the engine knows which of these five applies at the
+# moment it declines to publish a number, and that knowledge used to die there.
+#
+# They are NOT severities and do not rank. Two of them are ordinary configuration (`no_vector_arm`
+# is `--no-vector` or `--lexical-only`; `unmeasured_arm_combination` is what `query`'s
+# embedder-only default produces every time), and three mean the stack that ran is not a stack
+# EXPERIMENTS.md measured. None of them implies a fault — a fault is `fallbacks`/`unavailable`.
+UNMEASURED_REASONS: dict[str, str] = {
+    "no_vector_arm": "no vector arm contributed, and no lexical-only stack is measured at cohort",
+    "unmeasured_embedder": "the embedder that ran is not one of the measured stacks",
+    "unmeasured_hyde_model": "HyDE ran a model this stack's tier was not measured with",
+    "unmeasured_rerank_model": "the reranker ran a model this stack's tier was not measured with",
+    "unmeasured_arm_combination": "this on/off combination of arms was never measured for this "
+                                  "stack",
+}
+
+
+def _measured_tier(
     embed_key: str, hyde_model: str, rerank_model: str, hyde_in_tier: bool, rerank_in_tier: bool
-) -> float | None:
-    """The measured 44-case MRR for the EXACT stack that ran, or None if this configuration was
-    never measured. No interpolation, no family generalization, no lower-bound guessing — the
-    tiers are model-specific, so anything but an exact match is honestly unmeasured."""
+) -> tuple[float | None, str | None]:
+    """`(measured 44-case MRR, None)` for the EXACT stack that ran, or `(None, reason)` when this
+    configuration was never measured. No interpolation, no family generalization, no lower-bound
+    guessing — the tiers are model-specific, so anything but an exact match is honestly unmeasured.
+
+    The number and the reason are returned TOGETHER rather than computed by two functions, because
+    they are one decision with two halves: a reason derived separately would agree with the number
+    on the day it was written and disagree the first time a branch here changed, and the wrong half
+    is the one a caller reads out loud.
+
+    Exactly one of the pair is ever non-None, which `Capability` re-asserts at construction.
+    """
     stack = _STACKS.get(embed_key)
     if stack is None:
-        return None
+        # An empty key is not an unknown embedder — it is the absence of one, which is the vector
+        # arm having contributed nothing at all (never wired, or degraded out by the coverage guard
+        # or a mid-run fallback). Same None, different fact, and only one of them is fixed by
+        # pulling a model.
+        return None, ("no_vector_arm" if not embed_key else "unmeasured_embedder")
     if hyde_in_tier and hyde_model != stack["hyde"]:
-        return None
+        return None, "unmeasured_hyde_model"
     if rerank_in_tier and rerank_model != stack["reranker"]:
-        return None
-    return stack["mrr"].get((hyde_in_tier, rerank_in_tier))
+        return None, "unmeasured_rerank_model"
+    mrr = stack["mrr"].get((hyde_in_tier, rerank_in_tier))
+    return (mrr, None) if mrr is not None else (None, "unmeasured_arm_combination")
 
 
 @dataclass(frozen=True)
@@ -159,14 +191,44 @@ class Capability:
     dropped mid-run; a run with any fallback is a real degradation the caller must not treat as
     full-quality. `expected_mrr` is the measured envelope for THIS exact stack — None when the
     configuration was never measured at `cohort` (honest absence, not a smoothed guess; a number
-    is always an exact measured tier, never an estimate)."""
+    is always an exact measured tier, never an estimate), and `unmeasured_reason` is which of
+    `UNMEASURED_REASONS` made it None.
+
+    `embedder_state` exists because the other two arms had a state word and this one had only a
+    model KEY. An embedder that fell back mid-run empties that key — byte-identical to an embedder
+    nobody asked for — so the arm the coverage guard degrades most often was the one arm incapable
+    of saying it had degraded. The condition was not lost (it is in `fallbacks`), but the arm's own
+    row understated it, and a reader comparing three arms was reading two vocabularies.
+    """
 
     embedder: str                 # embedder key that ran, "" if the vector arm did not contribute
+    embedder_state: str           # "ran" | "off" | "fell_back" — the same words `hyde` uses
     hyde: str                     # "ran" | "off" | "fell_back"
     reranker: str                 # "ran" | "skipped" (adaptive gate) | "off" | "fell_back"
     expected_mrr: float | None    # exact measured MRR for this stack, or None if unmeasured
+    unmeasured_reason: str | None  # an UNMEASURED_REASONS token; None iff there IS a number
     cohort: str                   # the eval cohort that number was measured on
     fallbacks: tuple[str, ...]    # arms that fell back mid-run, with reasons — a field, not a log
+
+    def __post_init__(self) -> None:
+        """The two halves of the tier verdict must agree. A number WITH a reason claims two
+        contradictory things at once; a null with no reason is the state this field was added to
+        remove — "unmeasured" that a consumer cannot tell from a bug. `_measured_tier` returns them
+        as a pair so production cannot break this; the check is what stops a hand-built Capability
+        (a fixture, a future adapter) from putting the hole back through the side door."""
+        if (self.expected_mrr is None) != (self.unmeasured_reason is not None):
+            raise ValueError(
+                f"expected_mrr={self.expected_mrr!r} with unmeasured_reason="
+                f"{self.unmeasured_reason!r}: exactly one of the two is set. A number never needs "
+                f"a reason, and an absent number always does — one of "
+                f"{sorted(UNMEASURED_REASONS)}."
+            )
+        if self.unmeasured_reason is not None and self.unmeasured_reason not in UNMEASURED_REASONS:
+            raise ValueError(
+                f"unmeasured_reason {self.unmeasured_reason!r} is not one of "
+                f"{sorted(UNMEASURED_REASONS)}. A token no consumer has an interpretation for "
+                f"reports nothing — the same as sending null, with the appearance of an answer."
+            )
 
     @property
     def degraded(self) -> bool:
@@ -254,7 +316,7 @@ def _retrieve(
     # returns [] on an empty space — so without this the trace shows a live embedder and the
     # capability stamps a measured tier on what is really a lexical-only run. Degrading here is
     # what keeps the envelope honest: `embedder` empties, HyDE (which only ever feeds the vector
-    # query) reports off, and `_expected_mrr` returns None rather than a number the stack did not
+    # query) reports off, and `_measured_tier` returns None rather than a number the stack did not
     # earn. Fail OPEN, like every other arm on this path — a lexical answer correctly labelled is
     # useful; `eval` is the caller that must refuse instead, because it publishes the number.
     # The commonest cause is a key change orphaning the stored vectors, which is why the reason
@@ -458,6 +520,16 @@ def _capability(
     embedder = "" if (not emb_provided or trace.embedder_fell_back) else embed_key
     emb_ok = bool(embedder)
 
+    # Read in the SAME order the key is: fell-back first, because an arm that was provided and then
+    # dropped is provided AND empty, and testing provision first would report it `off` — which is
+    # the exact collapse the key already suffers and this field exists to undo.
+    if trace.embedder_fell_back:
+        embedder_state = "fell_back"
+    elif emb_provided:
+        embedder_state = "ran"
+    else:
+        embedder_state = "off"
+
     if not (hyde_provided and emb_provided):
         hyde = "off"
     elif trace.hyde_fell_back:
@@ -479,11 +551,12 @@ def _capability(
         reranker = "off"              # wired, but the pipeline never reached the rerank stage
 
     tier_key = embed_key if emb_ok else ""
-    exp = _expected_mrr(tier_key, hyde_model, rerank_model,
-                        hyde == "ran", reranker in ("ran", "skipped"))
+    exp, why = _measured_tier(tier_key, hyde_model, rerank_model,
+                              hyde == "ran", reranker in ("ran", "skipped"))
     return Capability(
-        embedder=embedder, hyde=hyde, reranker=reranker,
-        expected_mrr=exp, cohort=_COHORT, fallbacks=tuple(trace.fallback_reasons),
+        embedder=embedder, embedder_state=embedder_state, hyde=hyde, reranker=reranker,
+        expected_mrr=exp, unmeasured_reason=why, cohort=_COHORT,
+        fallbacks=tuple(trace.fallback_reasons),
     )
 
 

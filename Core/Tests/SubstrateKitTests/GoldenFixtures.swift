@@ -4,18 +4,29 @@ import XCTest
 // MARK: - Real frames from the real engine
 //
 // PROVENANCE. Every file in `Fixtures/` is the byte-for-byte HTTP response body of a live
-// `substrate-mcp --http 127.0.0.1:8765`, captured 2026-08-03 against the operator's real composed
-// scopes (`scripta`: 57 documents, 527 passages, index_version v8:84fda18a439c). Nothing was
-// hand-written, reformatted or trimmed. The calls, in order:
+// `substrate-mcp --http 127.0.0.1:8765`, RE-CAPTURED 2026-08-03 against the operator's real composed
+// scopes (`scripta`: 57 documents, 527 passages, index_version v8:84fda18a439c) after the engine
+// grew `passage.document_class` and `retrieval_mode`'s `embedder_state` / `unmeasured_reason` /
+// `health`. Nothing was hand-written, reformatted or trimmed. The calls, in order:
 //
 //   search.frame.json       tools/call search      {"scope":"scripta","query":"what did we decide
 //                                                   about the retrieval envelope"}
+//   search-sources.frame.json
+//                           tools/call search      {"scope":"scripta","query":"diff-only
+//                                                   adversarial review reviewer sees only the
+//                                                   diff","include_sources":true}
 //   status.frame.json       tools/call status      {"scope":"scripta"}
 //   list_scopes.frame.json  tools/call list_scopes {}
 //   expand.frame.json       tools/call expand      {"expand_ref":"scripta/scripta-doc3a-mcp-server
 //                                                   #c00002","mode":"note"}
 //   tool-fault.frame.json   tools/call status      {"scope":"no-such-scope"}  → isError: true
 //   rpc-error.frame.json    method "nope/nope"                                → error -32601
+//
+// THE SECOND SEARCH EARNS ITS PLACE. Default retrieval withholds the conversation class, so every
+// passage in the first one carries `document_class: "reference-frozen"` and a decoder that ignored
+// the field entirely would round-trip it. `search-sources` asks for the class back and really does
+// return transcript passages, which is the only fixture here where the axis takes a value that
+// changes what the spine draws.
 //
 // A HAND-BUILT FIXTURE WOULD PROVE NOTHING. The whole failure this decoder exists to avoid is
 // believing a shape the engine does not actually send, and a fixture written from the same reading
@@ -28,13 +39,16 @@ import XCTest
 
 enum GoldenFixture {
     static let search = "search.frame.json"
+    /// The same tool with `include_sources: true` — the one capture carrying conversation-class hits.
+    static let searchIncludingSources = "search-sources.frame.json"
     static let status = "status.frame.json"
     static let listScopes = "list_scopes.frame.json"
     static let expand = "expand.frame.json"
     static let toolFault = "tool-fault.frame.json"
     static let rpcError = "rpc-error.frame.json"
 
-    static let all = [search, status, listScopes, expand, toolFault, rpcError]
+    static let all = [search, searchIncludingSources, status, listScopes, expand, toolFault,
+                      rpcError]
 
     /// The captured response body.
     ///

@@ -18,10 +18,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from substrate.retrieve.retriever import (  # noqa: E402
+    UNMEASURED_REASONS,
+    Capability,
     RetrievalResult,
     Trace,
     _capability,
-    _expected_mrr,
+    _measured_tier,
 )
 from substrate.store.index_store import IndexStore  # noqa: E402
 
@@ -36,37 +38,71 @@ def _cap(trace, *, embed_key=_OLLAMA, emb=True, hyde_model="qwen2.5:7b", hyde=Tr
 
 
 # ---------------------------------------------------------------- tier envelope
+#
+# `_measured_tier` returns the pair (number, reason). These assert BOTH halves, because a null
+# whose reason is wrong is a worse answer than a null with none: the reason is what a caller reads
+# out loud, and it is the half nothing else in the payload can cross-check.
 
 def test_expected_mrr_exact_stacks() -> None:
-    assert _expected_mrr(_OLLAMA, "qwen2.5:7b", "qwen2.5:7b", True, True) == 0.698
-    assert _expected_mrr(_OLLAMA, "qwen2.5:7b", "qwen2.5:7b", True, False) == 0.603
-    assert _expected_mrr("apple-nlcontextual", "apple-fm", "apple-fm", True, True) == 0.593
-    assert _expected_mrr("apple-nlcontextual", "apple-fm", "apple-fm", True, False) == 0.467
-    assert _expected_mrr("apple-nlcontextual", "apple-fm", "apple-fm", False, False) == 0.343
+    assert _measured_tier(_OLLAMA, "qwen2.5:7b", "qwen2.5:7b", True, True) == (0.698, None)
+    assert _measured_tier(_OLLAMA, "qwen2.5:7b", "qwen2.5:7b", True, False) == (0.603, None)
+    assert _measured_tier("apple-nlcontextual", "apple-fm", "apple-fm", True, True) == (0.593, None)
+    assert _measured_tier("apple-nlcontextual", "apple-fm", "apple-fm", True, False) == (0.467, None)
+    assert _measured_tier("apple-nlcontextual", "apple-fm", "apple-fm", False, False) == (0.343, None)
 
 
 def test_expected_mrr_wrong_embedder_is_unmeasured() -> None:
     """A different embedder is a different measured number (nomic 0.656, 8b 0.683) — never stamp
     the qwen3 0.698 on it; refuse with None."""
-    assert _expected_mrr("nomic-embed-text#nomic", "qwen2.5:7b", "qwen2.5:7b", True, True) is None
-    assert _expected_mrr("qwen3-embedding:8b#raw", "qwen2.5:7b", "qwen2.5:7b", True, True) is None
+    unknown = (None, "unmeasured_embedder")
+    assert _measured_tier("nomic-embed-text#nomic", "qwen2.5:7b", "qwen2.5:7b", True, True) == unknown
+    assert _measured_tier("qwen3-embedding:8b#raw", "qwen2.5:7b", "qwen2.5:7b", True, True) == unknown
 
 
 def test_expected_mrr_swapped_arm_model_is_unmeasured() -> None:
     """A swapped HyDE or rerank model (e.g. the cross-encoder, measured 0.708) is a different
-    stack → unmeasured, not the shipped 0.698."""
-    assert _expected_mrr(_OLLAMA, "gemma3:4b", "qwen2.5:7b", True, True) is None
-    assert _expected_mrr(_OLLAMA, "qwen2.5:7b", "dengcao/Qwen3-Reranker-4B", True, True) is None
+    stack → unmeasured, not the shipped 0.698. The reason names WHICH arm was swapped: "no number"
+    is actionable only if the reader knows which model to put back."""
+    assert _measured_tier(_OLLAMA, "gemma3:4b", "qwen2.5:7b", True, True) == (
+        None, "unmeasured_hyde_model")
+    assert _measured_tier(_OLLAMA, "qwen2.5:7b", "dengcao/Qwen3-Reranker-4B", True, True) == (
+        None, "unmeasured_rerank_model")
 
 
 def test_expected_mrr_mixed_provider_is_unmeasured() -> None:
-    assert _expected_mrr("apple-nlcontextual", "qwen2.5:7b", "apple-fm", True, True) is None
+    assert _measured_tier("apple-nlcontextual", "qwen2.5:7b", "apple-fm", True, True) == (
+        None, "unmeasured_hyde_model")
 
 
 def test_expected_mrr_unmeasured_combos_return_none() -> None:
-    assert _expected_mrr(_OLLAMA, "qwen2.5:7b", "qwen2.5:7b", False, False) is None  # ollama emb-alone
-    assert _expected_mrr("", "", "", False, False) is None                            # lexical-only
-    assert _expected_mrr("apple-nlcontextual", "apple-fm", "apple-fm", False, True) is None
+    combo = (None, "unmeasured_arm_combination")
+    assert _measured_tier(_OLLAMA, "qwen2.5:7b", "qwen2.5:7b", False, False) == combo  # emb-alone
+    assert _measured_tier("apple-nlcontextual", "apple-fm", "apple-fm", False, True) == combo
+
+
+def test_no_embedder_is_a_different_reason_from_an_unknown_one() -> None:
+    """Both return no number and the two are opposite facts: one stack asked for no vector arm,
+    the other ran an embedder nothing was ever measured on. Collapsing them would tell a caller to
+    pull a model when the real answer is `--no-vector`, or the reverse."""
+    assert _measured_tier("", "", "", False, False) == (None, "no_vector_arm")
+    assert _measured_tier("bge-m3#raw", "", "", False, False) == (None, "unmeasured_embedder")
+
+
+def test_every_reason_is_in_the_published_vocabulary() -> None:
+    """A token no consumer has an interpretation for reports nothing while looking like an answer.
+    `Capability` refuses one, so this pins that the reasons the tier lookup actually PRODUCES are
+    inside the set that refusal is written against."""
+    produced = {
+        _measured_tier(*args)[1]
+        for args in (
+            ("", "", "", False, False),
+            ("bge-m3#raw", "", "", False, False),
+            (_OLLAMA, "gemma3:4b", "qwen2.5:7b", True, True),
+            (_OLLAMA, "qwen2.5:7b", "cross", True, True),
+            (_OLLAMA, "qwen2.5:7b", "qwen2.5:7b", False, False),
+        )
+    }
+    assert produced == set(UNMEASURED_REASONS), produced ^ set(UNMEASURED_REASONS)
 
 
 # ---------------------------------------------------------------- arm-status derivation
@@ -74,8 +110,10 @@ def test_expected_mrr_unmeasured_combos_return_none() -> None:
 def test_full_ollama_stack() -> None:
     cap = _cap(Trace(vector=15, expanded=True, reranked=True))
     assert cap.embedder == _OLLAMA
+    assert cap.embedder_state == "ran"
     assert cap.hyde == "ran" and cap.reranker == "ran"
     assert cap.expected_mrr == 0.698
+    assert cap.unmeasured_reason is None, "a measured number needs no excuse"
     assert cap.fallbacks == () and cap.degraded is False
 
 
@@ -128,15 +166,32 @@ def test_embedder_fell_back_is_lexical_only() -> None:
               fallback_reasons=["embedder: connection refused"])
     cap = _cap(t)
     assert cap.embedder == ""            # vector arm did not contribute
+    assert cap.embedder_state == "fell_back"
     assert cap.hyde == "ran"             # it did run; its output was just discarded
     assert cap.expected_mrr is None      # lexical-only unmeasured at cohort
+    assert cap.unmeasured_reason == "no_vector_arm"
     assert cap.fallbacks == ("embedder: connection refused",)
 
 
 def test_lexical_only_no_arms_provided() -> None:
     cap = _cap(Trace(direct=15), emb=False, hyde=False, rr=False)
     assert cap.embedder == "" and cap.hyde == "off" and cap.reranker == "off"
+    assert cap.embedder_state == "off"
     assert cap.expected_mrr is None and cap.fallbacks == ()
+    assert cap.unmeasured_reason == "no_vector_arm"
+
+
+def test_an_embedder_that_fell_back_is_not_one_nobody_asked_for() -> None:
+    """The embedder arm's own gap. `embedder` empties on a fallback, which is byte-identical to
+    the key of an arm that was never wired — so the one arm the coverage guard degrades most often
+    was the one arm that could not report having degraded. The state word is what separates them;
+    asserting a DIFFERENCE rather than a value, because both still send `embedder: ""`."""
+    fell = _cap(Trace(vector=0, embedder_fell_back=True,
+                      fallback_reasons=["no vectors: 0/595 under 'qwen3'"]))
+    never = _cap(Trace(direct=15), emb=False)
+    assert fell.embedder == never.embedder == ""
+    assert fell.embedder_state != never.embedder_state
+    assert (fell.embedder_state, never.embedder_state) == ("fell_back", "off")
 
 
 def test_two_arms_fall_back_names_both() -> None:
@@ -224,6 +279,36 @@ def test_shipped_objects_match_stacks() -> None:
     ak = AppleEmbedder().key
     assert ak in _STACKS and _STACKS[ak]["hyde"] == AppleFMExpander().model
     assert _STACKS[ak]["reranker"] == AppleFMReranker().model
+
+
+def _capability_kwargs(**over) -> dict:
+    kw = dict(embedder="", embedder_state="off", hyde="off", reranker="off", expected_mrr=None,
+              unmeasured_reason="no_vector_arm", cohort="44-case semantic", fallbacks=())
+    kw.update(over)
+    return kw
+
+
+def test_a_number_and_a_reason_cannot_both_be_stated() -> None:
+    """The two halves of the tier verdict are one decision. A number carrying a reason claims to
+    be both measured and not; a null with no reason is the "unmeasured, indistinguishable from a
+    bug" state the reason field was added to remove. `_measured_tier` returns them as a pair so
+    production cannot reach either, and this pins the door a fixture would otherwise walk in by."""
+    for bad in (dict(expected_mrr=0.698), dict(unmeasured_reason=None)):
+        try:
+            Capability(**_capability_kwargs(**bad))
+        except ValueError:
+            continue
+        raise AssertionError(f"{bad} should not construct a Capability")
+
+
+def test_an_uninterpretable_reason_is_refused() -> None:
+    """A token outside `UNMEASURED_REASONS` reports nothing while looking like an answer — the
+    same failure as sending null, wearing the appearance of a claim."""
+    try:
+        Capability(**_capability_kwargs(unmeasured_reason="because"))
+    except ValueError:
+        return
+    raise AssertionError("an unknown reason token should not construct a Capability")
 
 
 def test_result_is_frozen_contract() -> None:

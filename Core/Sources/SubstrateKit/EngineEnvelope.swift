@@ -20,12 +20,91 @@ import Foundation
 /// on purpose — `unavailable` is byte-identical to `off` in the raw capability record, which is why
 /// it travels as its own field (`retrieval_mode.unavailable`), and it is the more urgent of the two
 /// because it means the stack the caller asked for is not the stack that ran.
-public enum EngineArmState: String {
+///
+/// NOT `RawRepresentable`, and the reason is the one case that matters most. `fellBack` reads
+/// `"fell back"` on screen and `"fell_back"` on the wire; while those were one `rawValue` the
+/// display string won, so `EngineArmState(rawValue: "fell_back")` — the obvious way to decode an arm
+/// — returned `nil` for the only run-time state that reports a degradation. Nil, not a throw: the
+/// arm silently became "no state at all". Two properties now, and neither can stand in for the
+/// other; the wire direction is a lookup that REFUSES an unknown word rather than returning nil.
+public enum EngineArmState: CaseIterable, Hashable, Sendable {
     case ran
     case skipped
     case off
-    case fellBack = "fell back"
+    case fellBack
+    /// Requested and could not start. Derived, never sent: `render.retrieval_mode` reports `off` for
+    /// such an arm and says which one it was in `health.arms`, so this state has no wire token.
     case unavailable
+
+    /// What `retrieval_mode.embedder_state` / `.hyde` / `.reranker` can literally contain, or `nil`
+    /// for the state the engine never puts in one of those fields.
+    public var wireToken: String? {
+        switch self {
+        case .ran: return "ran"
+        case .skipped: return "skipped"
+        case .off: return "off"
+        case .fellBack: return "fell_back"
+        case .unavailable: return nil
+        }
+    }
+
+    /// DISPLAY TEXT. A space in `fell back`, and it is a different string from the wire token on
+    /// purpose — writing them as one value is the defect this type was split to remove.
+    public var label: String {
+        switch self {
+        case .ran: return "ran"
+        case .skipped: return "skipped"
+        case .off: return "off"
+        case .fellBack: return "fell back"
+        case .unavailable: return "unavailable"
+        }
+    }
+
+    /// The wire direction, and the only one. A word outside this table has no entry, so a caller
+    /// gets `nil` to refuse on rather than a state it did not mean.
+    public static let byWireToken: [String: EngineArmState] = Dictionary(
+        uniqueKeysWithValues: allCases.compactMap { state in state.wireToken.map { ($0, state) } }
+    )
+
+    /// In `allCases` order, so a refusal lists them the way this file declares them.
+    public static let wireTokens: [String] = allCases.compactMap(\.wireToken)
+}
+
+/// `retriever.UNMEASURED_REASONS` — WHY `expected_mrr` is null.
+///
+/// A closed vocabulary, because "unmeasured" with no reason is indistinguishable from a bug and the
+/// engine knows which of the five applies at the moment it declines. None of them is a fault: two
+/// are ordinary configuration and three mean the stack that ran is not one `EXPERIMENTS.md`
+/// measured. Faults live in `fallbacks` and `health`.
+///
+/// The raw value IS the wire token here — unlike `EngineArmState`, there is no display/wire split to
+/// make, because none of these words is ever shown. `gloss` is the sentence.
+public enum UnmeasuredReason: String, CaseIterable, Hashable, Sendable {
+    /// `--no-vector` / `--lexical-only`: no vector arm contributed at all.
+    case noVectorArm = "no_vector_arm"
+    case unmeasuredEmbedder = "unmeasured_embedder"
+    case unmeasuredHydeModel = "unmeasured_hyde_model"
+    case unmeasuredRerankModel = "unmeasured_rerank_model"
+    /// What `query`'s embedder-only default produces every time.
+    case unmeasuredArmCombination = "unmeasured_arm_combination"
+
+    /// The token as a sentence a reader can act on. Ours to word — only the token crosses the wire
+    /// — and kept to the same claim `UNMEASURED_REASONS` makes, no wider.
+    public var gloss: String {
+        switch self {
+        case .noVectorArm:
+            return "No vector arm contributed, and no lexical-only stack has been measured at this "
+                + "cohort."
+        case .unmeasuredEmbedder:
+            return "The embedder that ran is not one of the measured stacks."
+        case .unmeasuredHydeModel:
+            return "HyDE ran a model this stack's tier was not measured with."
+        case .unmeasuredRerankModel:
+            return "The reranker ran a model this stack's tier was not measured with."
+        case .unmeasuredArmCombination:
+            return "This on/off combination of arms was never measured for this stack."
+        }
+    }
 }
 
 /// One arm of the query-time stack: embedder, HyDE, or reranker.
@@ -48,7 +127,7 @@ public struct EngineArm: Identifiable {
     /// Apple-tier answer and a full-stack answer legibly different beyond one decimal place.
     public var detail: String {
         if state == .ran, let model { return model }
-        return state.rawValue
+        return state.label
     }
 
     public static func embedder(_ model: String?, _ state: EngineArmState = .ran) -> EngineArm {
@@ -65,17 +144,46 @@ public struct EngineArm: Identifiable {
 }
 
 /// The engine's own condition, which is a different axis from what the arms did.
+///
+/// FOUR OF THESE COME OFF THE WIRE (`render.engine_health`) and two do not; the split is marked on
+/// each case rather than left for a reader to work out, because a case nothing can produce is a
+/// state nobody reviews.
 public enum EngineHealth {
+    /// `health.state == "ready"`. Every wired arm started. A healthy stack sends no note.
     case ready
 
-    /// No local model server installed. THE ZERO-INSTALL DEFAULT, NOT A FAULT — it is the state a
-    /// fresh download is in, and it delivers 85% of the ceiling.
+    /// `health.state == "lexical_only"` — no local-model arm was REQUESTED. A configuration, not a
+    /// fault, and not the same as `notInstalled`: nothing was asked for, so nothing was probed.
+    case lexicalOnly(String?)
+
+    /// `health.state == "unreachable"` — an arm was requested and could not start.
+    ///
+    /// WHY IT DID NOT START IS NOT REPORTED AND MUST NOT BE INFERRED. The engine's probe collapses a
+    /// refused connection, a timeout and a missing model into one answer, so "no model server
+    /// installed" — the zero-install default, not a fault — and "installed and down" are the same
+    /// observation from where it runs. This case was `down(String)`, whose name asserted the second
+    /// reading; the engine declines to make that claim, so this one does too.
+    ///
+    /// The payload is the engine's note, carried but NOT drawn: it names `unavailable` as a field
+    /// and explains what the probe cannot see, which is documentation for a programmatic consumer
+    /// rather than a sentence for a reader. The other two wire states carry notes that ARE prose,
+    /// and those are drawn.
+    case unreachable(String?)
+
+    /// `health.known == false` — the caller never reported which arms it wired. ABSENT EVIDENCE, and
+    /// deliberately not folded into `ready`: a healthy-looking default that requires nothing to have
+    /// happened is the same shape as `refresh.frozen` reading `false` with no record behind it.
+    case unreported(String?)
+
+    /// NO WIRE SOURCE. No local model server installed — THE ZERO-INSTALL DEFAULT, NOT A FAULT, the
+    /// state a fresh download is in, and it delivers 85% of the ceiling. Nothing in a search payload
+    /// can distinguish it from `unreachable`; it is reachable only from a caller that knows by other
+    /// means, and it is what `upgrade` prices.
     case notInstalled
 
-    /// Installed and unreachable. This one *is* a fault: the user set something up and it stopped.
-    case down(String)
-
-    /// The index on disk was written by a different schema than this build reads.
+    /// NO WIRE SOURCE, and none is needed: a schema mismatch never produces a payload at all. The
+    /// MCP server raises before retrieval and the CLI exits 2, so this state is carried by a caller
+    /// that saw the refusal, never by a `search` result.
     case schemaMismatch(found: String, expected: String)
 }
 
@@ -175,9 +283,13 @@ public struct EngineEnvelope {
     /// `nil` means this exact stack was never measured. It is NOT a nearest-tier estimate, a lower
     /// bound, or a zero, and nothing downstream may turn it into one.
     public let expectedMRR: Double?
-    /// Why there is no number. Required in practice: "unmeasured" without a reason is
-    /// indistinguishable from a bug, and the engine always knows which of the five reasons applies.
-    public let unmeasuredReason: String?
+    /// Why there is no number — `retrieval_mode.unmeasured_reason`, one of a closed five.
+    ///
+    /// `nil` means NO TOKEN WAS SENT, which the engine does exactly when there is a number: it
+    /// asserts the two halves as an invariant at construction. So a nil reason beside a nil MRR is
+    /// not "unmeasured for no reason" — the state this field removed — it is an engine older than
+    /// the field, and the two are told apart by looking at `expectedMRR`.
+    public let unmeasuredReason: UnmeasuredReason?
     public let cohort: String
 
     public let degraded: Bool
@@ -196,7 +308,7 @@ public struct EngineEnvelope {
                 arms: [EngineArm],
                 expectedMRR: Double?,
                 frozen: Bool?,
-                unmeasuredReason: String? = nil,
+                unmeasuredReason: UnmeasuredReason? = nil,
                 cohort: String = EngineTier.cohort,
                 fallbacks: [String] = [],
                 degraded: Bool? = nil,

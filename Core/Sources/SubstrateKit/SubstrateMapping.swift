@@ -53,21 +53,11 @@ private func mapToken<T: RawRepresentable & CaseIterable>(
 extension WirePassage {
     /// One wire passage as a `Passage`.
     ///
-    /// `documentClass` IS A PARAMETER AND HAS NO DEFAULT, and that is the whole point of this
-    /// signature. `index_store.Hit` carries a `document_class`; `render.passage` does not emit it.
-    /// So the axis is simply not on the wire — and it is drawn, as a stated spine axis
-    /// (`Sources/Theme/Components/Passage.swift`, `SpineAxis("document_class", documentClass)`).
-    /// Defaulting it to `.referenceFrozen` would print an axis the engine never reported: right
-    /// two-thirds of the time by luck, and on a conversation it is exactly the lie
-    /// `PassageDocumentClass` was written to prevent.
-    ///
-    /// `filters.sources_excluded` does not rescue it either. `classes.EXCLUDED_CLASSES` is
-    /// `{"conversation"}`, so excluding sources rules out ONE of the three values and leaves
-    /// `reference-frozen` and `reference-versioned` indistinguishable.
-    ///
-    /// When `render.passage` starts emitting the key, `RenderContractTests` fails; the fix is to
-    /// decode it and delete this parameter.
-    public func mapped(documentClass: PassageDocumentClass) throws -> Passage {
+    /// `documentClass` USED TO BE A PARAMETER, because `render.passage` did not emit the key and the
+    /// caller had to state an axis nobody could know. It does emit it now, so the parameter is gone
+    /// and the axis comes off the wire like every other one — the change `RenderContractTests` was
+    /// written to demand.
+    public func mapped() throws -> Passage {
         guard let expandRef else {
             throw SubstrateMappingRefusal.unaddressablePassage(citation: citation)
         }
@@ -81,10 +71,29 @@ extension WirePassage {
             status: try mapToken(status, field: "status", to: PassageStatus.self),
             docType: try mapToken(docType, field: "doc_type", to: PassageDocType.self),
             confidence: try mapToken(confidence, field: "confidence", to: PassageConfidence.self),
-            documentClass: documentClass,
+            documentClass: try mappedDocumentClass(),
             domains: domains,
             supersedes: supersedes
         )
+    }
+
+    /// The class the engine reported, or the absence of one.
+    ///
+    /// `null` is `.unreported`, NOT `.referenceFrozen`. It says this index row carries no class at
+    /// all, which is a narrower claim than "the note declared nothing" — the markdown reader already
+    /// defaulted an undeclared `class:` at ingest, and that is the defaulting that once relabelled
+    /// six migrated conversations under a fully green compose. A token this build has no class for
+    /// refuses by name; `mapToken` cannot be used because `PassageDocumentClass` is deliberately not
+    /// `RawRepresentable` — a raw value would make `unreported` decodable from a wire string.
+    private func mappedDocumentClass() throws -> PassageDocumentClass {
+        guard let documentClass else { return .unreported }
+        guard let klass = PassageDocumentClass.named(documentClass) else {
+            throw SubstrateMappingRefusal.unknownToken(
+                field: "document_class", value: documentClass,
+                known: PassageDocumentClass.wireTokens
+            )
+        }
+        return klass
     }
 }
 
@@ -114,74 +123,101 @@ extension WireRetrievalMode {
     ///
     /// TWO TRANSLATIONS HERE ARE FORCED BY THE ENGINE'S OWN DESIGN, not chosen:
     ///
-    /// 1. `"fell_back"` on the wire is `EngineArmState.fellBack`, whose `rawValue` is `"fell back"`
-    ///    — a SPACE, because that string is display text. `EngineArmState(rawValue:)` would return
-    ///    nil on every fallen-back arm and quietly lose the one state that matters most.
+    /// 1. `"fell_back"` on the wire is `EngineArmState.fellBack`, whose `label` is `"fell back"` —
+    ///    a SPACE, because that string is display text. The two used to be one `rawValue`, which
+    ///    made `EngineArmState(rawValue: "fell_back")` return nil on every fallen-back arm; the type
+    ///    no longer has a raw value, and `byWireToken` is the only door in.
     /// 2. An arm that was requested and could not start reports `off`, byte-identical to an arm
-    ///    nobody asked for; `render.retrieval_mode` says so out loud and carries `unavailable` as a
-    ///    separate field precisely because `Capability` cannot express the difference. So an `off`
-    ///    arm named in `unavailable` is promoted to `.unavailable`. Matching is on the LEADING
-    ///    TOKEN of each entry, which is how `stack.py` builds all three; `RenderContractTests` pins
-    ///    that.
+    ///    nobody asked for. `health.arms` is where that distinction survives, so an `off` arm the
+    ///    BUILD map calls `unavailable` is promoted. This used to split `unavailable`'s prose on its
+    ///    leading token — a contract living in an engine sentence, which nobody can see break.
     ///
-    /// KNOWN FIDELITY LOSS, stated rather than hidden: an embedder that fell back mid-run arrives
-    /// as `embedder: null`, which is the same value an embedder that never ran sends, so its arm
-    /// maps to `.off` rather than `.fellBack`. It does not read as healthy — `degraded` and
-    /// `fallbacks` both carry the condition and the envelope raises its degraded line off them —
-    /// but the arm row itself understates. Fixing it needs an arm-level state for the embedder on
-    /// the wire, which `Capability.embedder` (a model key, not a state word) does not have.
+    /// THE EMBEDDER NO LONGER UNDERSTATES. Its state used to be derived from `embedder != nil`, so
+    /// an embedder that fell back mid-run — which empties that key — read as `off`, the same as one
+    /// nobody asked for. `embedder_state` is that arm's own state word and is used directly.
+    ///
+    /// When `health.arms` is absent (`known: false`, a caller that reported no wiring) no arm is
+    /// promoted, and nothing is silently lost: `health` itself maps to `.unreported`, whose note
+    /// says in the engine's own words that it cannot answer for a requested arm.
     public func mappedArms() throws -> [EngineArm] {
-        let embedState: EngineArmState = embedder != nil
-            ? .ran
-            : (isUnavailable("embedder") ? .unavailable : .off)
-        return [
-            EngineArm.embedder(embedder, embedState),
+        [
+            EngineArm.embedder(embedder,
+                               try armState(embedderState, field: "embedder_state",
+                                            arm: "embedder")),
             EngineArm.hyde(nil, try armState(hyde, field: "hyde", arm: "hyde")),
             EngineArm.reranker(nil, try armState(reranker, field: "reranker", arm: "reranker")),
         ]
     }
 
-    private func isUnavailable(_ arm: String) -> Bool {
-        unavailable.contains { entry in
-            entry.split(separator: " ", maxSplits: 1).first.map(String.init) == arm
-        }
-    }
-
     private func armState(_ word: String, field: String, arm: String) throws -> EngineArmState {
-        let state: EngineArmState
-        switch word {
-        case "ran": state = .ran
-        case "off": state = .off
-        case "skipped": state = .skipped
-        case "fell_back": state = .fellBack
-        default:
+        guard let state = EngineArmState.byWireToken[word] else {
             throw SubstrateMappingRefusal.unknownToken(
-                field: field, value: word, known: ["ran", "off", "skipped", "fell_back"]
+                field: field, value: word, known: EngineArmState.wireTokens
             )
         }
-        return (state == .off && isUnavailable(arm)) ? .unavailable : state
+        let requestedButDead = health.arms?[arm] == WireEngineHealth.armUnavailable
+        return (state == .off && requestedButDead) ? .unavailable : state
+    }
+
+    /// Why there is no measured number, as a value rather than a token.
+    ///
+    /// `nil` when the engine sent none — which, given the engine's own invariant, means either that
+    /// there IS a number or that the engine predates the field. Both are honest absences of a
+    /// reason; neither is a reason this side invented.
+    public func mappedUnmeasuredReason() throws -> UnmeasuredReason? {
+        guard let unmeasuredReason else { return nil }
+        return try mapToken(unmeasuredReason, field: "unmeasured_reason", to: UnmeasuredReason.self)
+    }
+}
+
+// MARK: - Engine health
+
+extension WireEngineHealth {
+    /// `render.engine_health` as the condition the envelope reports.
+    ///
+    /// `known: false` is `.unreported` and NOT `.ready`. That is the whole reason the engine sends
+    /// the flag separately: a caller that never said which arms it wired has not reported a healthy
+    /// stack, and reading it as one is the same defect as `refresh.frozen` defaulting to `false`.
+    ///
+    /// `unreachable` does NOT become an installed-vs-down verdict, because the engine refuses to
+    /// make one: its probe collapses a refused connection, a timeout and a missing model into a
+    /// single answer. `EngineHealth.notInstalled` therefore has no wire source and is never produced
+    /// here — inferring it from `unreachable` would be the client claiming a fact nothing measured.
+    public func mapped() throws -> EngineHealth {
+        guard known else { return .unreported(note) }
+        switch state {
+        case "ready": return .ready
+        case "lexical_only": return .lexicalOnly(note)
+        case "unreachable": return .unreachable(note)
+        default:
+            // Includes `state: null` with `known: true`, which the engine's own contract forbids.
+            // A contradiction refuses by name rather than picking whichever half looks healthier.
+            throw SubstrateMappingRefusal.unknownToken(
+                field: "retrieval_mode.health.state", value: state ?? "null",
+                known: ["ready", "lexical_only", "unreachable"]
+            )
+        }
     }
 }
 
 extension WireSearchResult {
     /// The capability half of this payload.
     ///
-    /// Two fields on `EngineEnvelope` have no wire source and are left alone rather than invented:
+    /// BOTH FIELDS THAT USED TO HAVE NO WIRE SOURCE NOW HAVE ONE. `unmeasuredReason` is
+    /// `retrieval_mode.unmeasured_reason`, a closed token rather than a sentence this side composed;
+    /// `health` is `retrieval_mode.health`, and it is passed rather than left at its `.ready`
+    /// default — which was a false-healthy reading of a payload that had never been asked.
     ///
-    /// - `unmeasuredReason`. `EngineEnvelope` says the engine "always knows which of the five
-    ///   reasons applies" — it does, and it does not send it: `render.retrieval_mode` emits
-    ///   `expected_mrr` and no companion reason. Composing one from `unavailable` and `fallbacks`
-    ///   would be a client-authored sentence attributed to the engine.
-    /// - `health`. Nothing on the wire distinguishes "no local model server installed" (the
-    ///   zero-install default, not a fault) from "installed and unreachable" (a fault). The
-    ///   condition is not lost: an unreachable arm lands in `unavailable`, becomes `.unavailable`,
-    ///   and `unavailableArms` drives its own higher-severity note.
+    /// One distinction is still NOT on the wire and is not invented here: `EngineHealth`'s
+    /// installed-vs-down split. The engine reports `unreachable` and a note saying it cannot
+    /// attribute the cause, so `.notInstalled` is never produced by this mapping.
     public func mappedEnvelope() throws -> EngineEnvelope {
         EngineEnvelope(
             scope: Self.mappedScope(scope),
             arms: try retrievalMode.mappedArms(),
             expectedMRR: retrievalMode.expectedMRR.wireValue,
             frozen: refresh.frozen.wireValue,
+            unmeasuredReason: try retrievalMode.mappedUnmeasuredReason(),
             cohort: retrievalMode.cohort,
             fallbacks: retrievalMode.fallbacks,
             // ONLY UPWARD. `EngineEnvelope` derives `degraded` from the arms as well as the
@@ -190,7 +226,8 @@ extension WireSearchResult {
             // switch that derivation off — the caller-outranks-inference door, walked through by
             // default. So `true` is forwarded (the engine has seen something we cannot) and `false`
             // becomes `nil`, which lets the safety net stay armed.
-            degraded: retrievalMode.degraded ? true : nil
+            degraded: retrievalMode.degraded ? true : nil,
+            health: try retrievalMode.health.mapped()
         )
     }
 

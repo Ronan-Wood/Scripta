@@ -94,6 +94,23 @@ def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
     judged" and NEVER as "uncertain"; it is the state of 530 of 657 migrated notes and carries no
     signal about the claim at all.
 
+    `document_class` is a DIFFERENT AXIS from all of those — not what job the note does, but what
+    KIND of artifact it came out of (`classes.POLICIES`). It is here because `conversation` is the
+    class default retrieval withholds, and a conversation passage that arrived without it was
+    indistinguishable from default corpus: it rendered as settled knowledge, when the reason the
+    class is withheld at all is that confidence varies WITHIN a transcript and a mid-conversation
+    passage may be reasoning the same session abandoned four turns later.
+
+    ABSENCE CROSSES AS NULL, never as a class name, and the distinction it does NOT recover is
+    worth stating precisely. `chunks.document_class` is NOT NULL and the markdown reader defaults
+    an undeclared `class:` to `reference-frozen` at INGEST — the defaulting that once relabelled
+    six migrated conversations under a fully green compose. So by the time a Hit reaches here, "the
+    note declared reference-frozen" and "the note declared nothing" are already one value, and no
+    honest field on this side can separate them; a reader who needs that must look at the note.
+    What null means here is narrower and true: this index row carries no class at all, which is
+    reachable only for a document built outside the reader. Defaulting THAT to `reference-frozen`
+    would be a second copy of the same bug, one layer further from the evidence.
+
     `full=True` is the `expand` path — same envelope, whole text, so a consumer never has to
     reconcile two different passage shapes. ONE key set either way: `text` is null on a search
     result rather than absent, and `snippet` is present on an expanded one. Emitting `text` only
@@ -111,6 +128,11 @@ def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
         "path": h.path_str,
         "page": h.page_label_start,
         "n_chars": h.n_chars or len(h.text),
+        # What KIND of artifact this came out of — the axis `applied_filters` reports the FILTER
+        # for and the passage itself did not state. `or None` so an index row with no class says
+        # so, rather than borrowing the class of the two-thirds of the corpus that are frozen
+        # references (see the docstring: this is not the same as recovering an undeclared class).
+        "document_class": h.document_class or None,
         # The spine — the reason this payload exists at all.
         "status": h.status,
         "doc_type": h.doc_type,
@@ -135,32 +157,113 @@ def outline_record(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS) -> 
     return rec
 
 
-def retrieval_mode(result: RetrievalResult, *, unavailable: tuple[str, ...] = ()) -> dict:
+def retrieval_mode(result: RetrievalResult, *, unavailable: tuple[str, ...] = (),
+                   wiring: dict[str, str] | None = None) -> dict:
     """Which arms actually ran and what that is measured to be worth.
 
     Doc 2 §7 sketched this as embedder/generator; the engine tracks the two generator-backed arms
     separately (HyDE feeds the vector query, the reranker reorders the fused list) and they fail
     independently, so both are reported rather than collapsed into one flag. `expected_mrr` is the
     measured tier for THIS exact stack or an honest null — never an estimate, never a number
-    generalized from a neighbouring configuration.
+    generalized from a neighbouring configuration. `unmeasured_reason` is why there is no number,
+    and it is not optional garnish: "unmeasured" alone is indistinguishable from a bug, while the
+    engine knew which of `retriever.UNMEASURED_REASONS` applied at the moment it declined.
+
+    `embedder_state` is the state word the embedder arm never had. `hyde` and `reranker` report
+    what they DID; the embedder reported only its model key, which empties on a fallback and is
+    then byte-identical to an arm nobody asked for. Three arms, two vocabularies, and the missing
+    one belonged to the arm the vector-coverage guard degrades most often.
 
     `unavailable` is the one thing `Capability` cannot say. An arm that was requested but could
     not start reports `off` — correctly, nothing ran — which is byte-identical to an arm nobody
     asked for. To a caller those are opposite situations: one means "this stack was never
     measured", the other means "start Ollama and ask again". The condition exists at the point the
     stack is built and would otherwise die there, which is the Boundary Principle exactly.
+
+    `health` is that same condition as STRUCTURE rather than prose, for all three arms at once —
+    see `engine_health`. It does not replace `unavailable`: the prose still carries the model and
+    the host it was looked for at, which is what a human acts on. It replaces the parse a consumer
+    was otherwise forced to run over our sentences to recover the arm name.
     """
     c = result.capability
     return {
         "embedder": c.embedder or None,     # null, not "lexical-only": absence is not a model name
+        "embedder_state": c.embedder_state,
         "hyde": c.hyde,
         "reranker": c.reranker,
         "expected_mrr": c.expected_mrr,
+        "unmeasured_reason": c.unmeasured_reason,
         "cohort": c.cohort,
         "degraded": c.degraded,
         "fallbacks": list(c.fallbacks),
         "unavailable": list(unavailable),
+        "health": engine_health(wiring, unavailable),
     }
+
+
+# What the caller did not tell us, said as itself. A wiring-less call is a caller that never
+# reported which arms it asked for — not a caller whose arms are all fine.
+_WIRING_UNREPORTED = (
+    "the caller did not report which arms it wired, so nothing here says whether a requested arm "
+    "failed to start. `substrate status` reports the arms this process holds."
+)
+_NOTHING_ASKED = (
+    "no local-model arm was requested — the zero-dependency path, which is a configuration and "
+    "not a fault."
+)
+_SOMETHING_DID_NOT_START = (
+    "an arm was requested and could not start; `unavailable` names it and where it was looked "
+    "for. WHY it did not start is NOT reported here and must not be inferred: the probe collapses "
+    "a refused connection, a timeout and a missing model into one answer, so 'no model server "
+    "installed' — the zero-install default, not a fault — and 'installed and down' are the same "
+    "observation from where this runs."
+)
+_UNATTRIBUTED = (
+    "something was requested and could not start, but no entry in `unavailable` names one of the "
+    "known arms — so this cannot say WHICH. Read `unavailable` directly; the arms map below is "
+    "reporting less than the prose does."
+)
+
+
+def engine_health(wiring: dict[str, str] | None, unavailable: tuple[str, ...] = ()) -> dict:
+    """The condition of the arms THEMSELVES — a different axis from what they did on this query.
+
+    Every state here is observable. The one a UI most wants is not: "no local model server
+    installed" and "installed and unreachable" need different words on screen, and this engine
+    cannot tell them apart. `available()` returns a bool over a probe that swallows a refused
+    connection, a timeout and a missing model alike, and nothing anywhere looks for an
+    installation — so a field claiming that distinction would be reporting a guess, which is worse
+    than the field being absent. It is stated in `note` instead, because "we cannot tell" is an
+    answer and silence is not.
+
+    `known: false` is a caller that passed no wiring. Not folded into `ready`: a healthy-looking
+    default that requires nothing to have happened is the shape every field in this module exists
+    to remove — the same reason `refresh.frozen` is null rather than false with no record.
+
+    `unavailable` is read only to make the two carriers unable to CONTRADICT each other. The arm
+    map recovers its names from the leading token of each entry, and an entry that led with
+    something else would drop out of the map silently while remaining in the prose — leaving this
+    to report `ready` over a stack with a dead arm. So a non-empty `unavailable` forces
+    `unreachable` whichever way the attribution went; the map says which arm when it can, and says
+    that it cannot when it cannot.
+    """
+    from substrate.stack import ARMS, ARM_OFF, ARM_UNAVAILABLE
+
+    if wiring is None:
+        return {"known": False, "state": None, "arms": None, "note": _WIRING_UNREPORTED}
+    # Normalized against the arm vocabulary rather than copied: a map missing an arm would make
+    # that arm's absence mean either `off` or "this caller predates the field", and a map carrying
+    # an extra key would put a name on the wire that no consumer has an arm for.
+    arms = {a: wiring.get(a, ARM_OFF) for a in ARMS}
+    named = ARM_UNAVAILABLE in arms.values()
+    if named or unavailable:
+        state = "unreachable"
+        note = _SOMETHING_DID_NOT_START if named else _UNATTRIBUTED
+    elif set(arms.values()) == {ARM_OFF}:
+        state, note = "lexical_only", _NOTHING_ASKED
+    else:
+        state, note = "ready", None     # a healthy stack does not need a sentence
+    return {"known": True, "state": state, "arms": arms, "note": note}
 
 
 def applied_filters(
@@ -222,6 +325,7 @@ def search_payload(
     document_class: str | None = None,
     chars: int = SNIPPET_CHARS,
     unavailable: tuple[str, ...] = (),
+    wiring: dict[str, str] | None = None,
     db: str | None = None,
     filter_notes: tuple[str, ...] = (),
     registry: str | None = None,
@@ -253,6 +357,12 @@ def search_payload(
     not — a docstring asserting a property nobody implemented, which is the failure this repo has
     now recorded five times.)
 
+    `wiring` is the counter-example to `refresh`, and the asymmetry is not an oversight. It is the
+    adapter's PROCESS state — which arms this CLI invocation or this long-lived server managed to
+    start — and no amount of reading from here can recover it, so it is passed or it is absent.
+    Absent is a real answer (`health.known: false`) rather than a defaulted-healthy one, which is
+    what makes forgetting it loud instead of flattering.
+
     EVERY key is produced here. Both adapters previously bolted one field on after the fact — the
     CLI a `db`, the server a clamp note — so the two emitted structurally different envelopes
     while the help text promised one shape, and the exact-key-set test could not see either.
@@ -270,7 +380,7 @@ def search_payload(
         "query": query,
         "passages": [passage(h, scope=scope, chars=chars) for h in result.passages],
         "outline_records": [outline_record(h, scope=scope, chars=chars) for h in result.outlines],
-        "retrieval_mode": retrieval_mode(result, unavailable=unavailable),
+        "retrieval_mode": retrieval_mode(result, unavailable=unavailable, wiring=wiring),
         "filters": applied_filters(statuses, include_sources=include_sources, doc_type=doc_type,
                                    document_class=document_class, notes=filter_notes),
         "index_version": result.index_version,

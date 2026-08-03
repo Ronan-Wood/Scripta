@@ -780,7 +780,8 @@ def cmd_query(args: argparse.Namespace) -> int:
                     result, scope=args.scope, query=args.text,
                     statuses=statuses, include_sources=args.include_sources,
                     document_class=args.doc_class, chars=args.chars,
-                    unavailable=unavailable, db=db_path, registry=args.registry,
+                    unavailable=unavailable, wiring=st.wiring, db=db_path,
+                    registry=args.registry,
                 ), indent=2, ensure_ascii=False))
                 return 0
         # Derived from the SAME function the --json envelope uses, not from a second reading of
@@ -852,7 +853,7 @@ def cmd_query(args: argparse.Namespace) -> int:
             if unavailable:
                 # Checked FIRST, because every branch below describes the stack that ran and this
                 # is the case where that is NOT the stack the caller asked for. Both orderings
-                # were wrong before: with the reranker dead, `_expected_mrr` returns the genuine
+                # were wrong before: with the reranker dead, `_measured_tier` returns the genuine
                 # no-rerank tier and branch 2 printed it as a confident "measured tier"; with BOTH
                 # generator arms dead it returns None and the final branch called that
                 # "embedder-only by design" — a fault reported as a deliberate config.

@@ -10,6 +10,13 @@ and drift the first time one gained a flag. So the wiring is one function and bo
 configuration was never measured" from "your daemon is down", because only one of them is fixable
 by starting Ollama. That distinction is what `unavailable` carries, as a field, to the response.
 
+It carries it TWICE, on purpose and from one source: `unavailable` is prose naming the model and
+the host it was looked for at, and `wiring` is the same fact as a per-arm state word derived from
+it. The prose is what a human acts on; the state word is what a UI switches on, and without it
+every consumer re-parses our sentences. What NEITHER can say is whether a local model server is
+absent or merely down — `available()` collapses a refused connection, a timeout and a missing
+model into one False — so nothing here reports that, rather than guessing it.
+
 Everything here is local-only and fails soft: an unreachable arm is dropped and named, never
 retried against a remote, never silently substituted with a different model. The measured tiers
 are model-specific (retriever._STACKS), so a substitution would produce an unmeasured stack
@@ -32,6 +39,29 @@ APPLE_POOL = 10      # Apple FM overflows above ~10 candidates (measured)
 DEFAULT_CACHE = Path.home() / ".substrate" / "vector-cache.db"
 
 
+# The three query-time arms, named ONCE. Every `unavailable` entry LEADS with one of these names
+# (see `_unreachable`), which is what lets `unavailable_arms` recover the arm structurally instead
+# of a consumer parsing our prose — the Swift client was doing exactly that, and a client-side
+# parse of an engine sentence is a contract nobody can see break.
+ARMS = ("embedder", "hyde", "reranker")
+
+# What `build` managed to do with an arm. A BUILD-time vocabulary, deliberately not the run-time
+# one (`Capability.hyde` etc. say ran/skipped/off/fell_back): an arm can be wired and still never
+# run, and collapsing the two axes is how "nothing ran" came to mean four different things.
+ARM_WIRED = "wired"                # asked for, and it started
+ARM_UNAVAILABLE = "unavailable"    # asked for, could not start
+ARM_OFF = "off"                    # nobody asked
+
+
+def _unreachable(arm: str, model: object, where: object) -> str:
+    """The ONE spelling of an `unavailable` entry, so the arm name is always its leading token.
+
+    Three hand-written f-strings agreed on that shape by habit; `unavailable_arms` now depends on
+    it, and a habit that something depends on is a rule that should be enforced in one place.
+    """
+    return f"{arm} {model!r} unreachable at {where}"
+
+
 @dataclass(frozen=True)
 class Stack:
     """The three query-time arms, each None when off or unreachable.
@@ -44,6 +74,34 @@ class Stack:
     expander: object | None = None
     reranker: object | None = None
     unavailable: tuple[str, ...] = ()
+
+    @property
+    def unavailable_arms(self) -> tuple[str, ...]:
+        """`unavailable`, as arm NAMES. Derived from the prose rather than stored beside it: two
+        fields carrying one fact is how they come to disagree, and the disagreement would be
+        invisible because only one of them is human-readable."""
+        lead = (e.split(" ", 1)[0] for e in self.unavailable)
+        return tuple(a for a in lead if a in ARMS)
+
+    @property
+    def wiring(self) -> dict[str, str]:
+        """Per-arm BUILD state — the one thing `Capability` structurally cannot say.
+
+        An arm that could not start is handed to `retrieve()` as None, which is byte-identical to
+        an arm nobody asked for, so the capability envelope reports `off` for both. This is where
+        that distinction still exists, and it is a field so it survives the trip to a caller.
+
+        Every arm appears, always, `off` included: a map that listed only the interesting arms
+        would make "hyde is missing from this dict" mean either "off" or "this build predates the
+        field", which is the disappearing-field defect the whole envelope is written to avoid.
+        """
+        bad = set(self.unavailable_arms)
+        live = {"embedder": self.embedder, "hyde": self.expander, "reranker": self.reranker}
+        return {
+            arm: (ARM_WIRED if live[arm] is not None
+                  else ARM_UNAVAILABLE if arm in bad else ARM_OFF)
+            for arm in ARMS
+        }
 
 
 def build(
@@ -94,8 +152,8 @@ def build(
                 else OllamaEmbedder(model=embed_model, prefix_style=embed_style))
         embedder = cand if cand.available() else None
         if embedder is None:
-            unavailable.append(f"embedder {embed_model!r} unreachable at "
-                               f"{getattr(cand, 'host', 'the local daemon')}")
+            unavailable.append(_unreachable("embedder", embed_model,
+                                            getattr(cand, "host", "the local daemon")))
 
     expander = None
     if hyde_model:
@@ -105,8 +163,8 @@ def build(
               else HyDE(model=hyde_model, cache=_cache()))
         expander = hc if hc.available() else None
         if expander is None:
-            unavailable.append(f"hyde {hyde_model!r} unreachable at "
-                               f"{getattr(hc, 'host', 'the local daemon')}")
+            unavailable.append(_unreachable("hyde", hyde_model,
+                                            getattr(hc, "host", "the local daemon")))
 
     reranker = None
     if rerank_model:
@@ -158,8 +216,8 @@ def build(
             # The ARM's model, not the caller's word for it: `cross` is a sentinel, and the whole
             # value of naming an unreachable arm is that the reader can act on it — which means
             # printing the tag they have to pull, not the alias they typed.
-            unavailable.append(f"reranker {getattr(rc, 'model', rerank_model)!r} unreachable at "
-                               f"{getattr(rc, 'host', 'the local daemon')}")
+            unavailable.append(_unreachable("reranker", getattr(rc, "model", rerank_model),
+                                            getattr(rc, "host", "the local daemon")))
 
     return Stack(embedder=embedder, expander=expander, reranker=reranker,
                  unavailable=tuple(unavailable))
