@@ -100,6 +100,28 @@ OUTCOMES: dict[str, dict] = {
                  "daemon was unreachable), so nothing has verified the index against the vault "
                  "since `succeeded`."),
     },
+    # `frozen: None` for the same reason `skipped` is — nothing was attempted, so neither verdict
+    # has a basis — but it is a DISTINCT outcome because the two need opposite responses and one
+    # of them is durable. `skipped` names a transient precondition the agent waits out (start
+    # Ollama, or do nothing and it clears itself). This one never clears itself: the refresh agent
+    # runs a PINNED export of one commit at `~/.substrate/engine`, and when that export cannot be
+    # proven — never deployed, half-written, clobbered, or a file changed since — it refuses the
+    # whole tick and will refuse every tick until a human runs `substrate-deploy`. Folding it into
+    # `skipped` would send that human to check the embedding daemon while all six scopes aged.
+    #
+    # The refusal is the point. Before it, the agent exec'd the working TREE every 900 seconds,
+    # and on 2026-08-03 an uncommitted schema bump reached all six live scopes inside one tick.
+    # `schema_mismatch` catches the one shape that made itself visible by refusing to be read; this
+    # catches the general case, where the engine that would run is simply not the engine anyone
+    # decided to run — a re-chunk, a changed `document_class` rule, a half-saved ingest module.
+    "engine_unverified": {
+        "success": False, "frozen": None,
+        "note": ("the refresh agent REFUSED this tick: the engine it would have run could not be "
+                 "verified against its deployment record, so it composed nothing and checked "
+                 "nothing. The index is untouched and as good as `succeeded` says — this is a "
+                 "stopped maintenance job, not a damaged scope. It will not clear on its own: run "
+                 "`tools/substrate-deploy --show` to see why, then `tools/substrate-deploy`."),
+    },
     # `frozen: True` for the same reason `compose_failed` is: the index on disk is not this
     # engine's, so nothing here reflects the current vault and answers built from it are stale by
     # construction. It is a DISTINCT outcome rather than a compose failure because no compose was

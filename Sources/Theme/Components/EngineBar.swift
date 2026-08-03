@@ -269,7 +269,12 @@ private struct EngineNoteStack: View {
     }
 }
 
-private struct EngineNoteRow: View {
+/// One commentary line. Internal rather than private since the first consumer arrived: a REFUSED
+/// query — the engine down, an unknown scope, an index on another schema — reports conditions the
+/// envelope has no field for and cannot render as a bar, but they stack directly under one and have
+/// to line up on the same marker column. The alternative was a second renderer of this exact row,
+/// which is the defect `EnvelopeMarkerLabel` was extracted to remove one layer down.
+struct EngineNoteRow: View {
     let note: EngineNote
 
     var body: some View {

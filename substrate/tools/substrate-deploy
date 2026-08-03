@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# Publish one commit of this repo as the engine the unattended refresh agent runs.
+#
+#   substrate-deploy                 deploy HEAD
+#   substrate-deploy <commit-ish>    deploy something else (a tag, a known-good sha, a rollback)
+#   substrate-deploy --show          what is deployed now, and whether it still verifies
+#
+# WHY A DEPLOY STEP AT ALL. `com.ronanwood.substrate-refresh` execs the working tree every 900
+# seconds. On 2026-08-03 an uncommitted v8->v9 schema bump reached all six live scopes inside one
+# tick. `b334da4` guarded that specific shape and said so: "the refresh agent still execs $REPO —
+# the working tree — so uncommitted engine changes still reach live indexes on the next tick."
+# `tools/deployment.py` records why a pinned export was chosen over refusing on a dirty tree and
+# over refusing on a diff against HEAD; the short version is that those two turn the refresh OFF
+# while the engine is being worked on, and a guard that is usually tripped gets disabled.
+#
+# A DEPLOYMENT IS A COMMIT, never a working tree. `git archive` reads the commit, so a dirty tree
+# neither blocks a deploy nor leaks into one — it is REPORTED, because the thing an operator most
+# often means by "deploy" is "deploy what I am looking at", and what they are looking at is not
+# what this ships. Deploying an unnamed pile of edits would also make rollback impossible:
+# `substrate-deploy <previous-sha>` is the whole recovery procedure and it needs a name to say.
+set -euo pipefail
+
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+ENGINE="$HOME/.substrate/engine"
+RECORD="$HOME/.substrate/engine.json"
+MANIFEST="$HOME/.substrate/engine.manifest"
+DEPLOYMENT="$REPO/tools/deployment.py"
+INSTALLED_SHIM="$HOME/.local/bin/substrate-refresh"
+# The SAME lock the refresh agent takes, deliberately: a deploy landing between the agent's
+# verification and its compose would run half of one engine and half of another — precisely the
+# state the pin exists to make unreachable.
+LOCK="$HOME/.substrate/refresh.lock"
+LOCK_WAIT=120
+
+STAGE= HELD=
+cleanup() { [ -n "$STAGE" ] && rm -rf "$STAGE" "$STAGE.manifest"; [ -n "$HELD" ] && rm -rf "$LOCK"; return 0; }
+trap cleanup EXIT
+
+die() { echo "substrate-deploy: $*" >&2; exit 1; }
+
+# Reported HERE and nowhere else. Whether launchd starts the deployed agent or the one in the repo
+# is a standing condition, and a standing condition belongs in a read-out a human asked for, not in
+# an event log that gets a line every 900 seconds. The engine is pinned either way — this only
+# decides whether the shell that drives it is too.
+shim_note() {
+  # BOTH arms print the remedy. An earlier version reported "NOT INSTALLED" and stopped, which
+  # named a fact and no action — the shape of message that gets read, understood and not acted on.
+  if [ ! -f "$INSTALLED_SHIM" ]; then
+    echo "  shim    nothing at $INSTALLED_SHIM — launchd has nothing to start."
+  elif grep -q '\.substrate/engine' "$INSTALLED_SHIM" 2>/dev/null; then
+    return 0
+  else
+    echo "  shim    $INSTALLED_SHIM starts the REPO agent, not the deployed one."
+  fi
+  echo "          To pin the agent shell as well as the engine (launchd needs no change):"
+  echo "            install -m 755 $REPO/tools/substrate-refresh.shim $INSTALLED_SHIM"
+}
+
+if [ ! -f "$REPO/substrate/cli.py" ] || [ ! -f "$DEPLOYMENT" ]; then
+  die "\$0=$0 does not resolve to a substrate checkout (REPO='$REPO')"
+fi
+
+TARGET=HEAD
+DATA_ROOT="$REPO/out-vault"
+SHOW=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --show) SHOW=1; shift ;;
+    --data-root) [ $# -ge 2 ] || die "--data-root needs a directory"; DATA_ROOT=$2; shift 2 ;;
+    -h|--help) sed -n '2,6p' "$0"; exit 0 ;;
+    -*) die "unknown option $1" ;;
+    *) TARGET=$1; shift ;;
+  esac
+done
+
+# ------------------------------------------------------------------ --show
+
+if [ -n "$SHOW" ]; then
+  [ -f "$RECORD" ] || die "nothing is deployed — no record at $RECORD. Run: $0"
+  if ! python3 "$DEPLOYMENT" --verify "$RECORD"; then
+    echo "the deployment does NOT verify (reason above). The refresh agent is refusing every tick"
+    echo "and recording engine_unverified for all six scopes. Re-run: $0"
+    exit 1
+  fi
+  deployed=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$RECORD")
+  head=$(git -C "$REPO" rev-parse HEAD)
+  if [ "$deployed" != "$head" ]; then
+    # NOT an error and not a warning. A pin behind HEAD is the normal state of a repo being worked
+    # in — it is what "the code being edited is not the code running" looks like from here.
+    behind=$(git -C "$REPO" rev-list --count "$deployed..$head" 2>/dev/null || echo '?')
+    echo "BEHIND=$behind commit(s) behind HEAD (expected while the engine is being worked on)"
+  fi
+  shim_note
+  exit 0
+fi
+
+# ------------------------------------------------------------------ resolve what to ship
+
+COMMIT=$(git -C "$REPO" rev-parse --verify "${TARGET}^{commit}" 2>/dev/null) \
+  || die "'$TARGET' is not a commit in $REPO"
+# This project is a subdirectory of its git repo, so the tree to export is the commit's subtree,
+# not the whole commit. Derived rather than assumed: at the repo root the prefix is empty and the
+# commit itself is the right tree.
+#
+# Resolved FROM THE TOPLEVEL, which is not decoration. `<commit>:<path>` is interpreted relative to
+# the current directory, so running it from $REPO makes `HEAD:substrate` mean `substrate/substrate`
+# — the Python package, which has no pyproject.toml and is not an engine. Measured: it exports the
+# wrong tree and the check below is what catches it.
+TOP=$(git -C "$REPO" rev-parse --show-toplevel)
+PREFIX=$(git -C "$REPO" rev-parse --show-prefix)
+TREE="$COMMIT${PREFIX:+:${PREFIX%/}}"
+
+# Absolute, and RECORDED — launchd hands the agent PATH=/usr/bin:/bin:/usr/sbin:/sbin, where `uv`
+# does not exist. Resolving it here, interactively and with a real PATH, is what keeps the
+# machine-specific fact in a machine-local record instead of in the repo.
+UV=$(command -v uv) || die "uv is not on PATH; the deployed engine could not be run"
+case "$UV" in
+  /*) ;;
+  *) UV="$(cd "$(dirname "$UV")" && pwd)/$(basename "$UV")" ;;
+esac
+
+[ -d "$DATA_ROOT" ] || die "data root $DATA_ROOT is not a directory"
+DATA_ROOT=$(cd "$DATA_ROOT" && pwd)
+case "$ENGINE/" in
+  "$REPO"/*) die "engine root $ENGINE is inside the repo — that is not a deployment" ;;
+esac
+
+# ------------------------------------------------------------------ lock
+
+mkdir -p "$HOME/.substrate"
+i=0
+while [ "$i" -lt "$LOCK_WAIT" ]; do
+  if mkdir "$LOCK" 2>/dev/null; then HELD=1; break; fi
+  i=$((i + 1)); sleep 1
+done
+# A bounded WAIT rather than the agent's stale-lock takeover logic, and the difference is the
+# caller: a person is standing here and can look. A second copy of the pid-liveness and lock-age
+# heuristics is a second copy to keep correct, and the cost of being wrong here is one retry.
+[ -n "$HELD" ] || die "could not take $LOCK within ${LOCK_WAIT}s — a refresh tick or another deploy holds it"
+echo $$ >"$LOCK/pid"
+
+# ------------------------------------------------------------------ export, sign, swap
+
+STAGE=$(mktemp -d "$HOME/.substrate/.deploy-XXXXXXXX")
+git -C "$TOP" archive --format=tar "$TREE" | tar -x -C "$STAGE"
+for required in substrate/cli.py pyproject.toml uv.lock; do
+  [ -f "$STAGE/$required" ] || die "$TREE does not contain a substrate engine (no $required)"
+done
+
+# The manifest is taken over the STAGE, before anything has run in it, and it is written BESIDE the
+# stage rather than inside it. `uv` puts a `.venv` in the tree and Python puts `__pycache__` beside
+# every module; both appear after deployment, and a manifest that covered itself or them would fail
+# its own verification on the next tick.
+python3 "$DEPLOYMENT" --manifest "$STAGE" >"$STAGE.manifest"
+
+rm -rf "$ENGINE.previous"
+if [ -d "$ENGINE" ]; then mv "$ENGINE" "$ENGINE.previous"; fi
+mv "$STAGE" "$ENGINE"
+mv "$STAGE.manifest" "$MANIFEST.new"
+STAGE=
+
+# Primed HERE, not on the first tick. `uv run` would otherwise build the environment inside the
+# 900-second job under launchd's minimal environment with no terminal to report to — and if that
+# needs the network at 3am it fails, and the failure gets recorded as a compose failure, which
+# names the wrong thing.
+( cd "$ENGINE" && "$UV" sync --frozen --quiet ) || die "could not build the environment in $ENGINE"
+
+# Manifest first, record second, both atomic. Both torn states fail CLOSED: a new manifest under
+# the old record mismatches the recorded signature, and a new record over the old manifest
+# mismatches it too. Either way the agent refuses and records — the direction allowed to be wrong.
+mv "$MANIFEST.new" "$MANIFEST"
+SIGNATURE=$(python3 "$DEPLOYMENT" --sign "$MANIFEST")
+
+# Values are passed as ARGUMENTS, not interpolated into the Python source. A home directory with a
+# quote or a backslash in it would otherwise write a record that does not parse — discovered by the
+# agent, at 3am, as an unverifiable deployment.
+python3 - "$RECORD" "$COMMIT" "$ENGINE" "$REPO" "$DATA_ROOT" "$UV" "$MANIFEST" "$SIGNATURE" <<'PY'
+import json, os, sys, tempfile
+from datetime import datetime, timezone
+
+path, commit, engine, source, data, uv, manifest, signature = sys.argv[1:9]
+record = {
+    "version": 1,
+    "commit": commit,
+    "deployed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    "engine_root": engine,
+    "source_repo": source,
+    "data_root": data,
+    "uv": uv,
+    "manifest": manifest,
+    "signature": signature,
+}
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".engine-", suffix=".json")
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    json.dump(record, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, path)
+PY
+
+rm -rf "$ENGINE.previous"
+
+# ------------------------------------------------------------------ report
+
+python3 "$DEPLOYMENT" --verify "$RECORD" >/dev/null \
+  || die "the deployment did not verify immediately after being written — $ENGINE is not usable"
+
+echo "deployed $(git -C "$REPO" log -1 --oneline "$COMMIT")"
+echo "  engine  $ENGINE"
+echo "  data    $DATA_ROOT"
+shim_note
+dirty=$(git -C "$REPO" status --porcelain -- . | head -20)
+if [ -n "$dirty" ]; then
+  # Reported, never blocking. This tree is dirty most days and none of it shipped; saying so is the
+  # difference between a pin the operator chose and a pin that surprises them at 3am.
+  echo "  NOT deployed — the working tree differs from $TARGET:"
+  echo "$dirty" | sed 's/^/    /'
+fi

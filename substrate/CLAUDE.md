@@ -32,6 +32,21 @@ Non-negotiables from that file:
   manifest, domain, capability). **Reserved:** `status` = the note lifecycle only
   (active / complete / archived / superseded); the retrieval-stack state is `capability`.
 
+## The refresh agent runs a DEPLOYED engine, not this tree
+
+`com.ronanwood.substrate-refresh` used to exec this working tree every 900 seconds, and on
+2026-08-03 an uncommitted schema bump reached all six live scopes inside one tick. It now runs an
+export of one commit at `~/.substrate/engine`, proven file-by-file before it composes anything.
+
+**Editing this repo does not change what the refresh runs. Neither does committing.** Only
+`tools/substrate-deploy` does — and the pin sitting behind HEAD is the normal state of a repo being
+worked in, not a fault. When the deployment cannot be proven the agent refuses the whole tick and
+records `engine_unverified` for every scope; `tools/substrate-deploy --show` says why.
+
+Do not "simplify" this back into running `$REPO` directly. `tools/deployment.py` carries the
+argument for the pin over the two cheaper guards (refuse-if-dirty, refuse-if-uncommitted) that were
+considered and rejected.
+
 ## Discipline
 
 `audit → review → implement → verify`. `/crosscheck` right after implementing (auto-applies what

@@ -74,16 +74,54 @@ targetTemplates:
       # here is what puts the row inside the contrast gate's scan, which never reaches app views:
       # `SpeakerMark` also ships with it, and `TranscriptExporter` reads the same mark for print.
       #
-      # NOT added, and each for a reason worth keeping: `SurfaceCard`/`SurfaceRow`/`SurfaceEmpty`
-      # (the reader has no card, list row or empty state), `Passage*` and `Engine*`/`Exclusion*`
-      # (they render substrate retrieval, which this view never shows), `ControlProgress` (nothing
-      # here reports progress).
+      # NOT added by the Viewer, and each for a reason worth keeping: `SurfaceCard`/`SurfaceRow`
+      # (the reader has no card or list row), `Passage*` and `Engine*`/`Exclusion*` (they render
+      # substrate retrieval, which that view never shows), `ControlProgress` (nothing there reports
+      # progress). The Ask migration below has since claimed four of those; `SurfaceCard` and
+      # `SurfaceRow` are still dead code in this target.
       - path: Sources/Theme/Components/ControlState.swift
       - path: Sources/Theme/Components/ControlIcon.swift
       - path: Sources/Theme/Components/ControlButton.swift
       - path: Sources/Theme/Components/ControlPill.swift
       - path: Sources/Theme/Components/ControlField.swift
       - path: Sources/Theme/Components/SpokenLine.swift
+      # The Ask migration's ADD — the vault brain (Doc 3 §4 step 1). Ask GAINS the ability to query
+      # composed substrate scopes; the call-search path is untouched and the two stores coexist
+      # permanently, so these arrive alongside the Viewer's six rather than replacing anything.
+      #
+      # Six of them are the answer surfaces, and they come as a set because each is the previous
+      # one's renderer:
+      #
+      #   Passage        — `@_exported import SubstrateKit` and the spine's presentation half
+      #                    (`PassageAxis`, the four `prominence` maps). It is what teaches this
+      #                    target the word `Passage` at all; nothing below compiles without it.
+      #   PassageSpine   — `SpineBadge` + `PassageSpine`, which `PassageCard` draws
+      #   PassageCard    — one retrieved note: spine, snippet, provenance
+      #   EngineEnvelope — `EngineNote` and `EngineEnvelope.notes`, the commentary `EngineBar` draws
+      #                    AND the line type a refused query reports its own conditions in
+      #   EngineBar      — the capability envelope: which tier answered, and `EnvelopeMarkerLabel` /
+      #                    `EnvelopeMarker`, the marker column every other row here stacks against
+      #   ExclusionBar   — what was withheld, and the control that includes it. Doc 3 §5: a reader
+      #                    who does not know a class was withheld concludes it does not exist.
+      #
+      # Two more are supporting parts this surface genuinely needs and the Viewer did not:
+      #
+      #   ControlProgress — `Spinner`. The engine may not be running and a search with the
+      #                     cross-encoder takes seconds, so an in-flight state is unavoidable here.
+      #   SurfaceEmpty    — `EmptyState`. A healthy answer with ZERO results is not any of the four
+      #                     failure states, and it needed a shape that is visibly not a refusal.
+      #
+      # STILL NOT ADDED: `SurfaceCard` and `SurfaceRow`. Both surfaces here are the envelope family's
+      # own `.surface(Ink.layer)` boxes and neither is a list row, so the directory-level exclude
+      # keeps doing its job for the two migrations after this one.
+      - path: Sources/Theme/Components/Passage.swift
+      - path: Sources/Theme/Components/PassageSpine.swift
+      - path: Sources/Theme/Components/PassageCard.swift
+      - path: Sources/Theme/Components/EngineEnvelope.swift
+      - path: Sources/Theme/Components/EngineBar.swift
+      - path: Sources/Theme/Components/ExclusionBar.swift
+      - path: Sources/Theme/Components/ControlProgress.swift
+      - path: Sources/Theme/Components/SurfaceEmpty.swift
       - path: Skill/scripta/SKILL.md
         buildPhase: resources
       - path: Resources/Fonts
@@ -99,6 +137,12 @@ targetTemplates:
         product: ScriptaCore
       - package: ScriptaCore
         product: ScriptaShared
+      # The line the Gallery's own comment said would have to be added here the day a migration
+      # brought `PassageCard` into the app. That day is this one: `Passage.swift` re-exports
+      # SubstrateKit into whichever target compiles it, and the answer surfaces name `Passage`,
+      # `EngineEnvelope` and `ExclusionFilter` without importing anything.
+      - package: ScriptaCore
+        product: SubstrateKit
     info:
       path: Sources/App/Info.plist
       properties:

@@ -2,19 +2,43 @@ import SwiftUI
 
 /// Clovis — private, on-device chat over the user's calls. Retrieval + Foundation Models,
 /// cited to source calls; conversations persist per workspace. Everything stays local.
+///
+/// TWO BRAINS, PERMANENTLY (Doc 3 §4). Substrate holds zero transcript content — every composed
+/// scope is an Obsidian vault — so the vault brain is ADDITIVE and the call brain below it is
+/// untouched: the same retrieval, the same conversations, the same workspace privacy wall. The
+/// selector above them exists because Doc 3 §6 makes "which corpus am I asking" the one exception
+/// to "surface effects, never mechanism"; a reader who cannot tell which brain answered reads a
+/// vault's silence as a fact about their calls.
 struct AskView: View {
     @ObservedObject private var ask = AppModel.shared.ask
     @ObservedObject private var app = AppModel.shared
+    @ObservedObject private var vault = SubstrateAskModel.shared
 
     var body: some View {
+        VStack(spacing: 0) {
+            AskBrainBar(brain: $vault.brain)
+            Rectangle().fill(Carbon.borderSubtle).frame(height: 1)
+            brainContent
+        }
+        .background(Carbon.background)
+        .onAppear { ask.activate(group: app.activeGroup) }
+        .onChange(of: app.activeGroup) { _, group in ask.activate(group: group) }
+    }
+
+    @ViewBuilder private var brainContent: some View {
+        switch vault.brain {
+        case .calls: callsColumns
+        case .vault: SubstrateAskView(model: vault)
+        }
+    }
+
+    /// The existing call-search surface, moved down a level and otherwise unchanged.
+    private var callsColumns: some View {
         HStack(spacing: 0) {
             conversationSidebar
             Rectangle().fill(Carbon.borderSubtle).frame(width: 1)
             chatColumn
         }
-        .background(Carbon.background)
-        .onAppear { ask.activate(group: app.activeGroup) }
-        .onChange(of: app.activeGroup) { _, group in ask.activate(group: group) }
     }
 
     // MARK: - Conversation list (workspace-scoped, like everything else)
@@ -226,5 +250,34 @@ struct AskView: View {
     private func submit() {
         guard canSend else { return }
         Task { await ask.send() }
+    }
+}
+
+/// Which corpus is being asked. Two chips rather than a mode nobody can see: the two stores hold
+/// disjoint content — calls on the local index, notes in the composed scopes — so an answer from
+/// one says nothing at all about the other, and a reader who mistakes which one they asked will
+/// take a silence for a fact.
+private struct AskBrainBar: View {
+    @Binding var brain: SubstrateAskModel.Brain
+
+    var body: some View {
+        HStack(spacing: Gap.s6) {
+            EnvelopeMarkerLabel(name: "asking")
+            chip("Calls", .waveform, .calls)
+            chip("Vault notes", .book, .vault)
+            Spacer(minLength: Gap.s8)
+        }
+        // `Gap`, not `Space`, and the mix is only at this seam: the bar's contents are Record &
+        // Register components, so the box around them is measured in that layer's tokens. The
+        // values match the Carbon chrome it abuts (16 / 8) rather than coincidentally landing there.
+        .padding(.horizontal, Gap.s16)
+        .padding(.vertical, Gap.s8)
+    }
+
+    private func chip(_ title: String, _ glyph: Glyph, _ value: SubstrateAskModel.Brain) -> some View {
+        Pill(text: title,
+             glyph: glyph,
+             style: brain == value ? .selected : .neutral,
+             action: { brain = value })
     }
 }

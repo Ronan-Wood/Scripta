@@ -71,6 +71,23 @@ public enum SubstrateTransportFailure: Equatable, Sendable, CustomStringConverti
     /// Carries the decoder's own description, which names the key or type that disagreed.
     case undecodablePayload(String)
 
+    /// Whether this "failure" is really the caller's own cancellation coming back as one.
+    ///
+    /// It arrives as `.unreachable` because that is literally what URLSession reports — a request
+    /// that was torn down did not reach the host — and at the transport layer those are the same
+    /// event. One layer up they are opposites: `cannotConnectToHost` means start the engine, and
+    /// `cancelled` means nothing happened at all. Rendering the second as the first tells a reader
+    /// their engine is down because they changed tabs.
+    ///
+    /// Answered HERE rather than at each call site because there is more than one caller and they
+    /// were not treating it alike: the search path guarded cancellation and the scope roster did
+    /// not, so leaving Ask drew a red fault card about a healthy engine — and it persisted, because
+    /// the roster only re-lists from its unasked state.
+    public var isCancellation: Bool {
+        if case .unreachable(_, let code) = self { return code == .cancelled }
+        return false
+    }
+
     public var description: String {
         switch self {
         case .unreachable(let reason, let code):

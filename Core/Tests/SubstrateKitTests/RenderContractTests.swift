@@ -155,6 +155,20 @@ final class RenderContractTests: XCTestCase {
         let source = try PythonSource.load("substrate/substrate/refresh_state.py")
         XCTAssertEqual(try source.binding("OUTCOMES").keys(), [
             "unchanged", "refreshed", "compose_failed", "embed_failed", "skipped",
+            // Both added 2026-08-03, both reporting a refusal to ACT rather than a failure to, and
+            // both `frozen` verdicts that are NOT `false` — which is why they belong in a test that
+            // exists to notice the table moving.
+            //
+            // `schema_mismatch` (frozen: true): the index on disk was built by a different engine,
+            // so it was refused rather than answered from. `engine_unverified` (frozen: null): the
+            // refresh agent could not prove the engine it would run matches its deployment record,
+            // so it composed nothing and checked nothing — a stopped maintenance job, not a damaged
+            // scope, and unlike `skipped` it never clears itself.
+            //
+            // This test caught them, and it caught a real process failure with them: the Python
+            // side of `schema_mismatch` shipped in b334da4 with only the PYTHON suite run. A
+            // contract that spans two languages is not verified by running one of them.
+            "engine_unverified", "schema_mismatch",
         ])
     }
 
