@@ -15,6 +15,7 @@ Two properties make this more than a dump:
 
 from __future__ import annotations
 
+from substrate import classes
 from substrate.markdown import reader
 from substrate.models import Block, Document, Kind
 from substrate.text.hyphens import Calibration, calibrate, dehyphenate
@@ -135,7 +136,17 @@ def frontmatter(doc: Document, extra: dict | None = None) -> str:
         "app": "substrate",
         "doc_id": doc.doc_id,
         "title": doc.title or doc.doc_id,
-        "document_class": doc.document_class,
+    }
+    # Written only when the note actually HAS a class. `classes.UNCLASSIFIED_CLASS` is the absence
+    # marker, and §3b makes re-ingestion a designed operation — emitting `document_class:
+    # unclassified` would turn "this note declared nothing" into a declaration on the engine's own
+    # artifact, which `classes.apply` then refuses on the way back in. Absence round-trips as
+    # absence, the same way an `unjudged` confidence round-trips by having no key at all.
+    # Positional, not appended: a declared class keeps its place in the block, so the emitted
+    # markdown of the PDF corpus is byte-identical to before.
+    if doc.document_class and doc.document_class != classes.UNCLASSIFIED_CLASS:
+        f["document_class"] = doc.document_class
+    f.update({
         "source_path": doc.source_path,
         "source_sha256": doc.source_sha256,
         "source_pages": doc.source_pages,
@@ -143,7 +154,7 @@ def frontmatter(doc: Document, extra: dict | None = None) -> str:
         "extractor_arm": doc.extractor_arm,
         "layout_model": doc.layout_model,
         "pipeline_version": doc.pipeline_version,
-    }
+    })
     if doc.version:
         f["version"] = doc.version
     if doc.version_date:

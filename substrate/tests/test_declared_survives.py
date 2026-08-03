@@ -39,8 +39,14 @@ DECLARED = [
     ("status",         "complete",           "status",         "active"),
     ("doc_type",       "decision",           "doc_type",       "reference"),
     ("confidence",     "verified",           "confidence",     "unjudged"),
-    ("document_class", "conversation",       "document_class", "reference-frozen"),
-    ("class",          "conversation",       "document_class", "reference-frozen"),
+    ("document_class", "conversation",       "document_class", ""),
+    ("class",          "conversation",       "document_class", ""),
+    # The one class a note can declare that is ALSO what the old default invented. Nothing else in
+    # this table can catch a regression to `or "reference-frozen"` in the reader: every other row
+    # declares a value the default is not, so a restored default leaves them green while silently
+    # relabelling the 91% again. A declared `reference-frozen` must survive as declared — see
+    # `test_a_declared_reference_frozen_is_not_confused_with_an_absent_one`.
+    ("class",          "reference-frozen",   "document_class", ""),
     ("title",          "A Declared Title",   "title",          None),
     ("doc_id",         "declared-doc-id",    "doc_id",         None),
     # §3b raw provenance. Doc 2 calls this system-contract, and it is the field this whole test
@@ -111,13 +117,21 @@ def test_the_class_alias_that_caused_this() -> None:
 
 
 def test_an_undeclared_field_still_takes_its_default() -> None:
-    """The guard must not accidentally require declaration — absence is legal and meaningful."""
+    """The guard must not accidentally require declaration — absence is legal and meaningful.
+
+    Both axes resolve at the GATE and not in the reader, which is the property that keeps "declared"
+    and "absent" separable: the reader leaves confidence None and the class empty, `spine` and
+    `classes` decide what each becomes.
+    """
     tmp = Path(tempfile.mkdtemp())
     doc, _b, _s = read_markdown(_note(tmp, "bare.md", {}))
     assert doc.confidence is None, "the reader must not invent a confidence"
-    assert doc.document_class == "reference-frozen"
+    assert doc.document_class == "", "the reader must not invent a document_class"
     r = ingest_markdown(_note(tmp, "bare2.md", {}), tmp / "out2", require_status=True)
     assert r.confidence == "unjudged", "absence must resolve to unjudged at the gate, not earlier"
+    assert r.run["class"]["document_class"] == "unclassified", (
+        "an undeclared class must resolve to the absence marker at the class gate — "
+        f"got {r.run['class']['document_class']!r}")
 
 
 def test_every_meta_key_the_vault_maps_is_read_by_the_reader() -> None:

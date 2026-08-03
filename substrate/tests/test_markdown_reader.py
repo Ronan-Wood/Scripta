@@ -187,9 +187,15 @@ def test_frontmatter_recovers_spine() -> None:
     assert doc.version == "go1.26"
 
 
-def test_no_frontmatter_synthesises_id_and_default_class() -> None:
+def test_no_frontmatter_synthesises_id_and_declares_no_class() -> None:
+    """The reader derives what it can DERIVE and invents nothing else.
+
+    doc_id and source_sha256 are functions of the file — the reader is entitled to both. The class
+    is not: it is a claim about what kind of artifact this is, and only the note can make it. This
+    assertion used to read `== "reference-frozen"  # default`, which is the defect in one line.
+    """
     doc, _, _ = read_markdown(_write(_tmp(), SAMPLE))
-    assert doc.document_class == "reference-frozen"  # default
+    assert doc.document_class == "", "the reader must not invent a document_class"
     assert doc.doc_id.startswith("note-") and len(doc.doc_id) > len("note-")
     assert doc.source_sha256  # derived from file bytes
 

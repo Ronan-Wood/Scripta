@@ -319,7 +319,9 @@ def cmd_rechunk(args: argparse.Namespace) -> int:
 
     doc = Document(
         doc_id=run["doc_id"], source_path=run["source"], source_sha256=run["source_sha256"],
-        source_pages=run["pages"], document_class=cls.get("document_class", "reference-frozen"),
+        # Absence resolves to the marker, never to a real class — see reconcile.py, same rule.
+        source_pages=run["pages"],
+        document_class=cls.get("document_class") or classes.UNCLASSIFIED_CLASS,
         blocks=blocks, title=cls.get("title"), version=cls.get("version"),
         version_date=cls.get("version_date"),
         extractor=run.get("extract", {}).get("extractor", ""),
@@ -1378,7 +1380,10 @@ def main(argv: list[str] | None = None) -> int:
 
     ing = sub.add_parser("ingest")
     ing.add_argument("--pdf", required=True)
-    ing.add_argument("--doc-class", required=True, choices=sorted(classes.POLICIES))
+    # DECLARABLE_CLASSES, not POLICIES: `unclassified` is a policy key so the chunker and the class
+    # gate can look it up, but offering it here would let the CLI declare the absence marker —
+    # which `classes.apply` refuses anyway, so the choice would be a dead option that reads live.
+    ing.add_argument("--doc-class", required=True, choices=sorted(classes.DECLARABLE_CLASSES))
     ing.add_argument("--out", required=True)
     ing.add_argument("--pages", default=None, help="e.g. 1-40")
     ing.add_argument("--batch", type=int, default=100)
@@ -1386,8 +1391,9 @@ def main(argv: list[str] | None = None) -> int:
 
     ingmd = sub.add_parser("ingest-md")
     ingmd.add_argument("--md", required=True)
-    ingmd.add_argument("--doc-class", default=None, choices=sorted(classes.POLICIES),
-                       help="overrides frontmatter; defaults to it, else reference-frozen")
+    ingmd.add_argument("--doc-class", default=None, choices=sorted(classes.DECLARABLE_CLASSES),
+                       help="overrides frontmatter; defaults to it, else `unclassified` — the "
+                            "absence value, which is retrieved by default and marked as undeclared")
     ingmd.add_argument("--out", required=True)
     ingmd.set_defaults(func=cmd_ingest_md)
 
