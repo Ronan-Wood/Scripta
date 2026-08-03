@@ -100,6 +100,22 @@ OUTCOMES: dict[str, dict] = {
                  "daemon was unreachable), so nothing has verified the index against the vault "
                  "since `succeeded`."),
     },
+    # `frozen: True` for the same reason `compose_failed` is: the index on disk is not this
+    # engine's, so nothing here reflects the current vault and answers built from it are stale by
+    # construction. It is a DISTINCT outcome rather than a compose failure because no compose was
+    # attempted — the agent refused to start one. That refusal is the point: recomposing across a
+    # schema bump is a MIGRATION, `122a45d` made migration opt-in on every read path, and a job
+    # running every 900 seconds is not an opt-in. On 2026-08-03 the absence of this outcome let a
+    # scheduler migrate six live scopes off an uncommitted bump in the working tree.
+    "schema_mismatch": {
+        "success": False, "frozen": True,
+        "note": ("FROZEN — the index on disk was built by a different schema version than this "
+                 "engine reads, so it was refused rather than answered from. The refresh agent "
+                 "did NOT recompose: rebuilding across a schema change is a migration and belongs "
+                 "to a human who can see what it costs. Run `substrate compose <vault> --clean` "
+                 "for this scope when you are ready; until then this scope answers from nothing "
+                 "and every other verdict about it is meaningless."),
+    },
 }
 
 _UNKNOWN_NOTE = (
