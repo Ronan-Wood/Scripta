@@ -38,13 +38,13 @@ def _chunk(text: str, *, doc_id: str = "doc1") -> dict:
 
 
 def _write(d: Path, text: str = "orig", *, title: str = "My Doc", doc_id: str = "doc1",
-           elapsed: float = 1.0) -> None:
+           elapsed: float = 1.0, source: str = "/x.pdf") -> None:
     """Write one ingested output directory (document.md never changes across calls here)."""
     d.mkdir(parents=True, exist_ok=True)
     (d / "document.md").write_text("# My Doc\n\nbody\n")
     (d / "chunks.jsonl").write_text(json.dumps(_chunk(text, doc_id=doc_id)) + "\n")
     (d / "run.json").write_text(json.dumps({
-        "doc_id": doc_id, "source": "/x.pdf", "source_sha256": "abc", "pages": 9,
+        "doc_id": doc_id, "source": source, "source_sha256": "abc", "pages": 9,
         "class": {"document_class": "reference-frozen", "title": title,
                   "version": None, "version_date": None},
         "extract": {"extractor": "docling"}, "coverage": 0.97, "elapsed_s": elapsed,
@@ -63,6 +63,39 @@ def test_add_then_unchanged() -> None:
         assert reconcile(s, out).added == ["doc1"]
     with IndexStore(db) as s:
         assert reconcile(s, out).unchanged == ["doc1"]
+
+
+def test_a_moved_note_reindexes_so_source_path_follows_it() -> None:
+    """A note MOVED without being edited changes none of chunks/class/spine/provenance, so the
+    diff key did not move and reconcile reported `unchanged` — keeping the stored row and its now
+    dangling `source_path`.
+
+    Observed 2026-08-03 on the real research vault: one note moved into its own directory, the
+    index kept `02-areas/scoop-watch.md`, a second `compose --clean` said `unchanged 144`, and only
+    deleting the database cleared it. Two consequences, and the second is the one that bites.
+    `freshness.drift` compares vault paths to indexed ones, so it reported the same filename as
+    both added AND removed — permanently stale, on the signal built to say when the index is
+    behind. And `expand` reads the note from `source_path`, so search returned the passage while
+    opening it hit a path that no longer existed.
+
+    Nothing else in the suite could catch it: every other case here varies content, and a move is
+    the one edit that changes where a note IS without changing what it SAYS.
+    """
+    out, db = _fresh()
+    _write(out / "doc1", source="/vault/02-areas/note.md")
+    with IndexStore(db) as s:
+        assert reconcile(s, out).added == ["doc1"]
+        assert s.documents()[0]["source_path"] == "/vault/02-areas/note.md"
+
+    # Same doc_id, same chunks, same class/spine/provenance — only the path moved.
+    _write(out / "doc1", source="/vault/02-areas/note-area/note.md")
+    with IndexStore(db) as s:
+        rep = reconcile(s, out)
+        assert rep.updated == ["doc1"] and rep.unchanged == [], (
+            f"a moved note must re-index, got updated={rep.updated} unchanged={rep.unchanged}")
+        assert s.documents()[0]["source_path"] == "/vault/02-areas/note-area/note.md", (
+            "source_path still points at where the note used to be — expand would open a "
+            "path that does not exist")
 
 
 def test_rechunk_reindexes() -> None:
