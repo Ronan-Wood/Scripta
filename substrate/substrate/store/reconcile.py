@@ -146,12 +146,30 @@ def reconcile(store: IndexStore, out_root: Path) -> Report:
         # note's status/domains/supersession or its vault leaves chunks.jsonl and document.md
         # byte-identical, so keying on those alone would silently keep the OLD status and never
         # re-index — a status change that never takes effect is precisely the silent-loss shape.
+        #
+        # `source` joins it for the same reason and a worse consequence: MOVING a note without
+        # editing it changes none of the four above, so reconcile reported `unchanged` and kept the
+        # stored row — including its now-dangling `source_path`. Observed 2026-08-03 moving one note
+        # into its own directory: the index recorded `02-areas/scoop-watch.md` after the file lived
+        # at `02-areas/scoop-watch/scoop-watch.md`, a second `compose --clean` reported
+        # `unchanged 144` and did not fix it, and only deleting the database cleared it.
+        #
+        # Two things break, and the second is the one that matters. `freshness.drift` compares vault
+        # paths against indexed ones, so it reported the same filename as both `added` and `removed`
+        # — permanently stale, on the signal built to say when the index is behind. And `expand`
+        # READS THE NOTE FROM `source_path`: search returned the passage happily while expanding it
+        # opened a path that no longer existed. A retrievable passage nobody can open is the
+        # silent-loss shape again, one field over.
         content_sha = hashlib.sha256(
             b"\x00".join((
                 chunks_bytes,
                 json.dumps(run.get("class", {}), sort_keys=True).encode("utf-8"),
                 json.dumps(run.get("spine", {}), sort_keys=True).encode("utf-8"),
                 json.dumps(run.get("provenance", {}), sort_keys=True).encode("utf-8"),
+                # The stored FIELD, not run.json's raw key: `source_path` is what a dangling
+                # reference is read from, so the key has to move when that moves and not when
+                # something upstream of it happens to be spelled differently.
+                str(doc.source_path).encode("utf-8"),
             ))
         ).hexdigest()
         known = store.stage_hash(doc.doc_id, "index")
