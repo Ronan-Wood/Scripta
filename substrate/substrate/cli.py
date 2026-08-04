@@ -279,6 +279,47 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def cmd_export_transcripts(args: argparse.Namespace) -> int:
+    """Scripta transcripts → a composable vault (Doc 3 §4 step 3). Writes; never composes.
+
+    Deliberately does NOT compose or register: the export and the index are separate acts because
+    the destination is a privacy decision. Doc 3 §4 puts this corpus at a local, non-synced path
+    with the scope name as the wall, and a command that picked a path and registered a scope would
+    make that decision on the operator's behalf, once, silently. It prints the two commands
+    instead.
+    """
+    from substrate.transcript_export import ExportError, export_workspace
+
+    try:
+        rep = export_workspace(
+            Path(args.source), Path(args.vault), args.workspace,
+        )
+    except ExportError as e:
+        print(f"FATAL (export): {e}", file=sys.stderr)
+        return 2
+
+    for n in rep.notes:
+        print(f"  {n.rel_source}  ->  {n.doc_id}")
+    for path, why in rep.skipped:
+        print(f"  skipped {path}: {why}")
+    for path in rep.pruned:
+        print(f"  pruned {path.name} (no transcript behind it any more)")
+    print(f"\n  {len(rep.notes)} transcript(s) -> {rep.vault}  ·  scope {rep.scope!r}")
+    if rep.source_sync_root is not None:
+        # Not a failure of this export — the destination gate passed. It is the other half of the
+        # same condition, held by a setting this command does not own, so it is stated rather than
+        # left for someone to rediscover.
+        print(f"\nWARNING: the SOURCE transcripts are inside the cloud-synced tree "
+              f"{rep.source_sync_root}.\n  The export is local, but the originals are already "
+              f"synced. Doc 3 §4's condition is only half met until Scripta's outputFolderPath "
+              f"moves.", file=sys.stderr)
+    print(f"\nNext (the operator's call — this command composes nothing and registers nothing):\n"
+          f"  substrate compose {rep.vault} \\\n"
+          f"      --index-root <local-index-dir> --db <local-db> --clean\n"
+          f"  substrate query --scope {rep.scope} --include-sources '<question>'")
+    return 0
+
+
 def cmd_review(args: argparse.Namespace) -> int:
     from substrate.report.review import build
 
@@ -1540,6 +1581,18 @@ def main(argv: list[str] | None = None) -> int:
     emb.add_argument("--cache", default="out/vector-cache.db",
                      help="durable content-addressed cache; survives index rebuilds")
     emb.set_defaults(func=cmd_embed)
+
+    ex = sub.add_parser("export-transcripts",
+                        help="export a Scripta workspace's transcripts into a composable vault "
+                             "(class: conversation). Writes the vault only — composing and "
+                             "registering the scope stay separate, deliberate acts")
+    ex.add_argument("source", help="the workspace's transcript folder (Scripta's outputFolderPath)")
+    ex.add_argument("vault", help="destination vault directory — MUST be local and non-synced; "
+                                  "call transcripts are the most sensitive content the app holds")
+    ex.add_argument("--workspace", default="default",
+                    help="workspace name; the scope becomes scripta-<workspace> (Doc 3 §4), and "
+                         "the scope name is the privacy wall between workspaces")
+    ex.set_defaults(func=cmd_export_transcripts)
 
     rev = sub.add_parser("review")
     rev.add_argument("dir")
