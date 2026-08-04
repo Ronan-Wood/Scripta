@@ -1055,6 +1055,79 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_digests(args: argparse.Namespace) -> int:
+    """Which digests are behind the area they summarise — a VAULT check, not an index one.
+
+    Deliberately a separate command from `status` rather than a field on it. `status` answers
+    "can this index be trusted", every field of which is read from a store that opened; this needs
+    no index at all, so it still runs on a vault that was never composed or whose index refuses on
+    a schema mismatch. And the two remedies differ in kind: a stale index is fixed by
+    `substrate compose`, which the refresh agent already runs unattended, while a digest behind its
+    area is fixed by a human rewriting a note. `substrate.digests` carries the full argument.
+    """
+    from substrate import digests
+    from substrate import vault as _vault
+
+    if args.scope is not None and args.project_vault is not None:
+        # Same refusal as `_resolve_db`: a caller naming both has two vaults in mind, and honouring
+        # one by precedence would audit a vault they did not choose while looking like the one they
+        # did.
+        print(f"FATAL: --scope {args.scope!r} and vault {args.project_vault!r} name two different "
+              "vaults. Pass one.", file=sys.stderr)
+        return 2
+    if args.scope is not None:
+        if not args.scope.strip():
+            print(f"FATAL: --scope {args.scope!r} names no scope.", file=sys.stderr)
+            return 2
+        try:
+            vault_path = scopes.resolve(args.scope, args.registry).vault
+        except scopes.ScopeError as e:
+            print(f"FATAL (scope): {e}", file=sys.stderr)
+            return 2
+    elif args.project_vault is not None:
+        vault_path = Path(args.project_vault).expanduser()
+    else:
+        print("FATAL: pass a project vault path or --scope NAME.", file=sys.stderr)
+        return 2
+
+    try:
+        payload = digests.audit(_vault.resolve_scope(vault_path))
+    except _vault.VaultError as e:
+        print(f"FATAL (vault): {e}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    if not payload["digests"]:
+        print(f"  {vault_path}: no digests in the composed scope — nothing to check.")
+        return 0
+    print(f"  {vault_path}  ·  {len(payload['digests'])} digest(s): {payload['measured']} measured "
+          f"({payload['behind']} behind), {payload['unmeasurable']} UNMEASURABLE")
+    print(f"      {payload['note']}")
+    for r in payload["digests"]:
+        head = f"{r['vault']}/{r['area']}"
+        if not r["measurable"]:
+            print(f"  UNMEASURABLE  {head}  ·  {Path(r['path']).name}")
+            print(f"      {r['reason']}")
+        elif r["stale"]:
+            print(f"  BEHIND  {head}  ·  {Path(r['path']).name}  ·  {len(r['newer'])} of "
+                  f"{r['members']} member(s) newer than the digest")
+            for p in r["newer"][:5]:
+                print(f"      newer: {p}")
+        else:
+            print(f"  current  {head}  ·  {Path(r['path']).name}  ·  {r['members']} member(s)")
+    if payload["unreadable"]:
+        # `stale: false` over notes that were never examined is the overstated completeness this
+        # whole engine keeps retracting — say the sweep was incomplete, as `status` does for drift.
+        print(f"  INCOMPLETE — {len(payload['unreadable'])} note(s) unreadable, so a digest may be "
+              "behind its area without this saying so")
+        for p in payload["unreadable"][:5]:
+            print(f"      unreadable: {p}")
+    return 0
+
+
 def _refresh_outcomes() -> list[str]:
     """The outcome vocabulary, read from the module that INTERPRETS it rather than restated here.
     A hand-copied `choices` list is how an outcome becomes recordable but unreadable."""
@@ -1528,6 +1601,19 @@ def main(argv: list[str] | None = None) -> int:
                           "`substrate-mcp --lexical-only`")
     stt.add_argument("--json", action="store_true")
     stt.set_defaults(func=cmd_status)
+
+    dg = sub.add_parser("digests",
+                        help="which digests are behind the area they summarise. A VAULT check — "
+                             "it needs no index, so it runs on a vault that was never composed")
+    dg.add_argument("project_vault", nargs="?", default=None,
+                    help="path to the project vault (holds .substrate.toml)")
+    dg.add_argument("--scope", default=None,
+                    help="name the vault through the registry instead of by path")
+    dg.add_argument("--registry", default=None,
+                    help=f"scope registry to resolve --scope against (default ${scopes.ENV_VAR}, "
+                         f"else {scopes.DEFAULT_REGISTRY})")
+    dg.add_argument("--json", action="store_true")
+    dg.set_defaults(func=cmd_digests)
 
     rr = sub.add_parser("refresh-record",
                         help="record what an unattended refresh pass did to a scope, so a search "

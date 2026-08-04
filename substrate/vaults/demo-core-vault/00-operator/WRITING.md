@@ -56,10 +56,22 @@ cap, not a default: if the digest makes no claim of its own, write `unstated` �
 declared; `unjudged` is what absence becomes* below for why that is not the same as picking a value
 to fill the field.
 
-**A digest is an ordinary note and lives in an indexed folder** — `02-areas/<area>-digest.md` or
-`04-synthesis/<area>.md`. Never write one as `00-index/MEMORY.md` or `log.md`: those keep their own
-jobs (the human content map, the append-only history), are never indexed, and putting a spine on one
-is refused rather than silently dropped.
+**A digest's membership is FOLDER POSITION, not `[[links]]`.** Its area is the directory it sits in,
+and its members are the atomic notes in that directory — so a digest goes INSIDE the area it
+summarises: `02-areas/<area>/<area>-digest.md`, beside the notes it points at. Links are human
+relations for navigation. They are titles rather than resolvable refs, they cross areas freely, and
+nothing machine-readable consumes them; treating them as membership would make an unwritten
+convention load-bearing, and the first digest that linked a note by title would read as broken.
+
+A digest sitting flat in `02-areas/` therefore has no area at all — its siblings are whatever else
+happens to be filed in that drawer. `substrate digests` reports that one UNMEASURABLE rather than
+claiming a membership set the vault does not express, so a flat digest is not merely untidy: it is
+the shape nothing can check.
+
+**A digest is an ordinary note and lives in an indexed folder** — `02-areas/<area>/<area>-digest.md`
+or `04-synthesis/<area>/<area>.md`. Never write one as `00-index/MEMORY.md` or `log.md`: those keep
+their own jobs (the human content map, the append-only history), are never indexed, and putting a
+spine on one is refused rather than silently dropped.
 
 ## confidence — how settled a claim is (Doc 2 §6b)
 

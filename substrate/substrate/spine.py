@@ -38,6 +38,10 @@ DOC_TYPES: frozenset[str] = frozenset(
     {"decision", "explanation", "reference", "how-to", "digest"}
 )
 DEFAULT_DOC_TYPE = "reference"
+# Named because `digests.py` keys an entire check on this one value, and a hand-copied string there
+# would be a second author for a vocabulary this module owns — the shape `cli._refresh_outcomes`
+# already refuses for the refresh outcomes.
+DIGEST_DOC_TYPE = "digest"
 
 # CONFIDENCE — how settled a note's claims are, and the axis `status` was silently absorbing.
 #
