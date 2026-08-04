@@ -1538,8 +1538,17 @@ def main(argv: list[str] | None = None) -> int:
     comp.add_argument("--index-root", default="out-vault/index",
                       help="where per-note ingest dirs are written (disposable, kept off cloud-sync)")
     comp.add_argument("--db", default="out-vault/index.db")
+    # The name invites "start from scratch" and the flag does not do that — it removes the
+    # INDEX-ROOT, never the database. That reading cost an hour on 2026-08-03: a moved note kept a
+    # dangling `source_path`, `--clean` was run twice, it reported `unchanged 144` both times, and
+    # the conclusion drawn was that the flag was broken. The flag was fine; reconcile's diff key did
+    # not include `source_path`, so nothing asked the store to update the row. Convergence is
+    # reconcile's job and always was — this only guarantees a full re-ingest to converge FROM.
     comp.add_argument("--clean", action="store_true",
-                      help="remove the index-root first, so a deleted note leaves no stale dir")
+                      help="remove the index-root (the ingest tree) first, so a deleted note leaves "
+                           "no stale dir. Does NOT drop the database: rows are converged by "
+                           "reconcile, which re-indexes on any change to chunks, class, spine, "
+                           "provenance or source path. To truly start over, delete the --db file.")
     comp.add_argument("--registry", default=None,
                       help=f"scope registry to record into (default ${scopes.ENV_VAR}, else "
                            f"{scopes.DEFAULT_REGISTRY})")
