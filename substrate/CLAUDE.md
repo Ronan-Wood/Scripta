@@ -18,8 +18,15 @@ fixture. The operator's real vaults live outside the repo at `~/OneDrive/vaults/
 `compose` at a path; it does not care which.
 
 `WRITING.md` therefore exists in two places — here, and in the real core-vault — with no generation
-step keeping them in sync. They are byte-identical today. **Edit the real one and copy it here**, or
-they fork silently.
+step keeping them in sync. **Edit the real one and copy it here**, or they fork silently.
+
+**They are forked right now, and deliberately.** As of 2026-08-03 the repo copy is AHEAD by the
+digest-membership rule (membership is folder position, not `[[links]]`; a digest lives inside the
+area it summarises), which also corrects a placement line that had been prescribing the flat
+`02-areas/<area>-digest.md` shape — the shape `substrate digests` now reports UNMEASURABLE. The real
+core-vault was not touched because a session does not write the operator's vault. Copy this file to
+`~/OneDrive/vaults/core-vault/00-operator/WRITING.md` to close the fork; until then the standard the
+vaults are actually authored against still names the old shape.
 
 Non-negotiables from that file:
 - **Lead with the conclusion; no preamble/postamble.**
