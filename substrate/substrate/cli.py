@@ -1,10 +1,18 @@
 """substrate — ingest reference documents into markdown + chunks.
 
-    ingest  --pdf X --doc-class reference-frozen --out DIR
+    ingest  PATH --out DIR                                   (format detected from the path)
+    ingest  --pdf X --doc-class reference-frozen --out DIR    (the PDF arm, unchanged)
+    formats                                                   (what is accepted, and what is not)
     verify  DIR
 
 Ingestion is deterministic for a pinned extractor: no model generates text anywhere in this
 path. Outputs are files; the blast radius is a directory.
+
+Exit codes, and the split is the point: **2 is an INPUT problem** (no such file, a format this
+engine will not attempt, bytes it cannot decode) and **3 is a GATE** (the class policy, the spine
+contract, A18 coverage, or a conversion whose faithfulness could not be established). A 2 says
+"give me a different file"; a 3 says "this file is not safe to index and here is what is wrong
+with it".
 """
 
 from __future__ import annotations
@@ -13,6 +21,7 @@ import argparse
 import json
 import sqlite3
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -29,15 +38,63 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
+    """Ingest ONE source document, whatever it is. The format is detected, not declared.
+
+    Three arms behind one command, chosen by `extract.convert.spec_for`:
+
+      * **pdf** — the original batched Docling extractor, byte-for-byte unchanged, and still the
+        only arm that REQUIRES `--doc-class`. Reached by a `.pdf` path or by `--pdf`.
+      * **markdown / text** — the stdlib reader, no Docling, no torch. Reached by `.md`/`.txt` or
+        by `--md` (which forces this arm regardless of extension, as `ingest-md` always has).
+      * **converted** — DOCX/PPTX/XLSX/HTML/CSV/VTT/AsciiDoc/LaTeX/email/EPUB/image, converted to
+        markdown by Docling and then handed to the SAME `ingest_markdown` body a vault note goes
+        through. So every one of them clears the class policy, the spine contract and A18.
+
+    `--pdf` and `--md` are retained because compose and tooling name them; the positional path is
+    the addition.
+    """
+    from substrate.extract import convert
+
+    given = [v for v in (getattr(args, "path", None), args.pdf, args.md) if v]
+    if len(given) != 1:
+        print("FATAL: name exactly one input — a path, or --pdf PATH, or --md PATH",
+              file=sys.stderr)
+        return 2
+    src = Path(given[0]).expanduser()
+    if not src.exists():
+        print(f"FATAL: no such file: {src}", file=sys.stderr)
+        return 2
+
+    if args.pdf:
+        spec = convert.PDF
+    elif args.md:
+        spec = convert.MARKDOWN  # an explicit declaration: read it as markdown whatever it is named
+    else:
+        try:
+            spec = convert.spec_for(src)
+        except convert.UnsupportedFormat as e:
+            print(f"FATAL (format): {e}", file=sys.stderr)
+            return 2
+
+    if spec.arm == "pdf":
+        if not args.doc_class:
+            print("FATAL: --doc-class is required for PDF and only for PDF. The other formats "
+                  f"default to ABSENCE (stored as {classes.UNCLASSIFIED_CLASS}, retrieved by "
+                  "default, drawn as undeclared); the PDF arm has always demanded a declaration "
+                  f"and relaxing that is a separate decision. Choose one of "
+                  f"{sorted(classes.DECLARABLE_CLASSES)}.", file=sys.stderr)
+            return 2
+        return _ingest_pdf(args, src)
+    if spec.arm in ("markdown", "text"):
+        return _ingest_markdown_file(args, src, spec)
+    return _ingest_converted(args, src, spec)
+
+
+def _ingest_pdf(args: argparse.Namespace, pdf: Path) -> int:
     configure()
     from substrate.chunk.chunker import chunk
     from substrate.extract.docling_arm import DoclingExtractor
     from substrate.markdown.emit import emit, frontmatter
-
-    pdf = Path(args.pdf).expanduser()
-    if not pdf.exists():
-        print(f"FATAL: no such file: {pdf}", file=sys.stderr)
-        return 2
 
     out = Path(args.out).expanduser()
     out.mkdir(parents=True, exist_ok=True)
@@ -100,28 +157,62 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def cmd_ingest_md(args: argparse.Namespace) -> int:
-    """Ingest a markdown file → canonical Document → chunks. The single-file vault path.
+    """`ingest-md --md X` — retained verbatim; compose and tooling name it.
 
-    A thin wrapper over ``markdown.ingest.ingest_markdown`` (the one shared body, used by the
-    manifest-composition path too). Standalone ingest is LENIENT on status — an absent status
-    defaults to 'active' (the existing corpus predates the field); an invalid status or a
-    superseded note with no link is still refused. The strict path is `compose` (require_status).
+    Equivalent to `ingest --md X`, and delegates to the same body so the two cannot drift.
     """
-    from substrate.markdown.ingest import CoverageError, ingest_markdown
-    from substrate.spine import SpineError
+    from substrate.extract import convert
 
     src = Path(args.md).expanduser()
     if not src.exists():
         print(f"FATAL: no such file: {src}", file=sys.stderr)
         return 2
+    return _ingest_markdown_file(args, src, convert.MARKDOWN)
+
+
+def _ingest_markdown_file(args: argparse.Namespace, src: Path, spec) -> int:
+    """Markdown (or plain text) → canonical Document → chunks. The single-file vault path.
+
+    A thin wrapper over ``markdown.ingest.ingest_markdown`` (the one shared body, used by the
+    manifest-composition path too). Standalone ingest is LENIENT on status — an absent status
+    defaults to 'active' (the existing corpus predates the field); an invalid status or a
+    superseded note with no link is still refused. The strict path is `compose` (require_status).
+
+    Plain text rides the SAME reader, with one difference carried in a `SourceOrigin`: a `.txt`
+    may have no heading at all, so the filename supplies a last-resort title. A `.md` gets no such
+    fallback — a vault note that cannot name itself is refused today and that gate is not this
+    change's to move.
+    """
+    from substrate.markdown.ingest import CoverageError, UnretrievableError, ingest_markdown
+    from substrate.models import SourceOrigin
+    from substrate.spine import SpineError
 
     out = Path(args.out).expanduser()
-    print(f"ingesting : {src.name}  (markdown)")
+    print(f"ingesting : {src.name}  ({spec.token})")
+
+    # ALWAYS an origin, because this function IS the foreign-document path: `ingest <file>` (line 89)
+    # and `ingest-md --md` (line 170) both land here, while `compose` — the one path where a note's
+    # frontmatter IS authoritative, because the operator wrote it into their own vault — calls
+    # `ingest_markdown` directly with none. So `origin is not None` reads as "this file was handed to
+    # us", which is precisely the condition under which its spine must not be believed; see the block
+    # in `markdown/ingest.py`.
+    #
+    # It was previously set only for the `text` arm, which left `--md` trusted: the exact arm the
+    # Library's "read it as markdown anyway" control uses. That also left `--md` outside the
+    # zero-chunk `UnretrievableError` gate, which is armed by the same flag.
+    #
+    # `title` stays TEXT-ONLY. A `.txt` may legitimately have no heading, so the filename is a
+    # last-resort title; a `.md` that cannot name itself is refused today and that gate is not this
+    # change's to move.
+    origin = SourceOrigin(
+        source_format=spec.token,
+        title=src.stem if spec.arm == "text" else None,
+    )
 
     try:
         # Standalone ingest carries no composition provenance — vault/tier are set only by the
         # `compose` path (from the resolved manifest), which calls ingest_markdown() directly.
-        r = ingest_markdown(src, out, doc_class=args.doc_class, require_status=False)
+        r = ingest_markdown(src, out, doc_class=args.doc_class, require_status=False, origin=origin)
     except ValueError as e:  # over-size file or non-UTF-8 bytes — refuse cleanly, no traceback
         print(f"\nFATAL: cannot read {src.name}: {e}", file=sys.stderr)
         return 2
@@ -134,7 +225,94 @@ def cmd_ingest_md(args: argparse.Namespace) -> int:
     except CoverageError as e:
         print(f"\nFATAL (A18): {e}", file=sys.stderr)
         return 3
+    except UnretrievableError as e:
+        print(f"\nFATAL (unretrievable): {e}", file=sys.stderr)
+        return 3
 
+    _print_ingest_result(r, out)
+    return 0
+
+
+def _ingest_converted(args: argparse.Namespace, src: Path, spec) -> int:
+    """A non-PDF, non-markdown document → Docling markdown → the SAME gate-enforcing ingest body.
+
+    The markdown is a temporary derivative and is thrown away: `document.md` in the output dir is
+    the artifact of record, and a second copy of the same body would be a second thing to keep in
+    agreement. Identity does NOT travel with the temp file — see `models.SourceOrigin`.
+    """
+    from substrate.extract import convert
+    from substrate.extract.base import doc_id_for, sha256_file
+    from substrate.markdown.ingest import CoverageError, UnretrievableError, ingest_markdown
+    from substrate.models import SourceOrigin
+    from substrate.spine import SpineError
+
+    out = Path(args.out).expanduser()
+    try:
+        conv = convert.to_markdown(src, spec)
+    except convert.ConversionRefused as e:
+        print(f"\nFATAL (conversion): {e}", file=sys.stderr)
+        return 3
+
+    origin = SourceOrigin(
+        source_format=spec.token,
+        path=str(src),
+        sha256=sha256_file(src),
+        doc_id=doc_id_for(src),
+        extractor=conv.extractor,
+        extractor_arm=f"docling-{spec.token}",
+        pages=conv.pages,
+        title=src.stem,
+        stats=conv.stats,
+    )
+
+    with tempfile.TemporaryDirectory(prefix="substrate-convert-") as td:
+        tmp = Path(td) / f"{src.stem}.md"
+        tmp.write_text(conv.markdown, "utf-8")
+        try:
+            r = ingest_markdown(
+                tmp, out, doc_class=args.doc_class, require_status=False, origin=origin
+            )
+        except ValueError as e:
+            print(f"\nFATAL: cannot read the converted markdown for {src.name}: {e}",
+                  file=sys.stderr)
+            return 2
+        except classes.ClassPolicyError as e:
+            print(f"\nFATAL (class policy): {e}", file=sys.stderr)
+            return 3
+        except SpineError as e:
+            print(f"\nFATAL (spine): {e}", file=sys.stderr)
+            return 3
+        except CoverageError as e:
+            print(f"\nFATAL (A18): {e}", file=sys.stderr)
+            return 3
+        except UnretrievableError as e:
+            print(f"\nFATAL (unretrievable): {e}", file=sys.stderr)
+            return 3
+
+    _print_ingest_result(r, out)
+    return 0
+
+
+def cmd_formats(args: argparse.Namespace) -> int:
+    """What this engine will ingest, what it will not, and why not."""
+    from substrate.extract import convert
+
+    rows = convert.table()
+    w0 = max(len(r[0]) for r in rows)
+    w1 = max(len(r[1]) for r in rows)
+    w2 = max(len(r[2]) for r in rows)
+    print(f"  {'format':<{w0}}  {'extensions':<{w1}}  {'doc class':<{w2}}  note")
+    for token, exts, cls, note in rows:
+        print(f"  {token:<{w0}}  {exts:<{w1}}  {cls:<{w2}}  {note}")
+    print(f"\n  doc class: a file EXTENSION is evidence about the container, not the document, so "
+          f"every\n  detected format defaults to ABSENCE — stored as "
+          f"{classes.UNCLASSIFIED_CLASS}, retrieved by default,\n  drawn as undeclared. Declare "
+          f"one with --doc-class {sorted(classes.DECLARABLE_CLASSES)}.\n  PDF is the exception "
+          f"and requires it, as it always has.")
+    return 0
+
+
+def _print_ingest_result(r, out: Path) -> None:
     run, rstats, cstats = r.run, r.run["extract"], r.run["chunk"]
     print(f"\n  title      : {r.title}")
     if run["class"].get("version"):
@@ -155,9 +333,28 @@ def cmd_ingest_md(args: argparse.Namespace) -> int:
     print(f"  well-formed: {cstats['well_formed_pct']}%  (fragments: {cstats['short_fragments']})")
     print(f"  A14 re-emit coverage    : {run['coverage']}")
     print(f"  A18 source→chunk coverage: {r.source_coverage}")
+    # The raw→markdown gate, printed with its probe. `null` reads as "nobody measured this", which
+    # is a different claim from 1.0 and must stay one on screen as well as in run.json.
+    if "raw_coverage" in rstats:
+        print(f"  raw→markdown coverage    : {rstats['raw_coverage']}  "
+              f"(probe: {rstats['raw_coverage_probe']})")
+    print(f"  format     : {run['source_format']}  ·  title from {rstats.get('title_source')}")
     print(f"  elapsed    : {run['elapsed_s']}s")
     print(f"\nwrote -> {out}")
-    return 0
+
+    # A bare `None` on the coverage line is honest and easy to miss, and this is the ONE hole the
+    # widened surface still has: for a format with no independent reading, content Docling lost on
+    # the way into the markdown is undetectable — A18 measures markdown→chunks, so it reports 1.0
+    # over whatever survived. Measured 2026-08-04 on a four-line JPEG: RapidOCR dropped the third
+    # line entirely, and every gate stayed green. So the absence of evidence is said out loud, on
+    # stderr, rather than left as a null for someone to interpret.
+    if rstats.get("raw_coverage") is None and rstats.get("raw_coverage_probe") == "unavailable":
+        print(
+            f"\nWARNING: {run['source_format']} has no independent raw-text probe, so raw→markdown\n"
+            "  coverage is UNMEASURED, not verified. A18 above only proves the converted markdown\n"
+            "  reached the chunks — it cannot see content lost before that. Spot-check the body.",
+            file=sys.stderr,
+        )
 
 
 def _refuse_destructive_clean(index_root: Path, scope) -> str:
@@ -305,6 +502,29 @@ def cmd_export_transcripts(args: argparse.Namespace) -> int:
     for path in rep.pruned:
         print(f"  pruned {path.name} (no transcript behind it any more)")
     print(f"\n  {len(rep.notes)} transcript(s) -> {rep.vault}  ·  scope {rep.scope!r}")
+    if rep.foreign:
+        # THE EXCLUSION IS THE FEATURE, so it is stated rather than left as a silent difference
+        # between the folder's size and the export's. A privacy wall nobody can see working is
+        # indistinguishable from the bug this replaced — where the count matched because every
+        # workspace got everything. Grouped and counted, not listed: the filenames belong to
+        # workspaces this export is not about, and printing them here would leak across the wall
+        # the line exists to report.
+        by_group: dict[str, int] = {}
+        for _, group in rep.foreign:
+            by_group[group] = by_group.get(group, 0) + 1
+        detail = ", ".join(f"{g!r}: {n}" for g, n in sorted(by_group.items()))
+        print(f"  {len(rep.foreign)} left in place, belonging to other workspaces ({detail})")
+    if rep.not_transcripts:
+        # COUNTED BY MARKER, because the marker is the whole finding. Before this gate existed the
+        # export said "4 transcript(s)" for one transcript, one note, one PDF and one entity stub —
+        # and a number that is simply correct now would leave an operator who remembers the old one
+        # wondering which files went missing. Naming what was held back, by the key that held it
+        # back, is what turns a smaller count into a legible one.
+        by_marker: dict[str, int] = {}
+        for _, marker in rep.not_transcripts:
+            by_marker[marker or "no app: marker"] = by_marker.get(marker or "no app: marker", 0) + 1
+        detail = ", ".join(f"{m}: {n}" for m, n in sorted(by_marker.items()))
+        print(f"  {len(rep.not_transcripts)} left in place, not call transcripts ({detail})")
     if rep.source_sync_root is not None:
         # Not a failure of this export — the destination gate passed. It is the other half of the
         # same condition, held by a setting this command does not own, so it is stated rather than
@@ -1492,16 +1712,33 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="substrate")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    ing = sub.add_parser("ingest")
-    ing.add_argument("--pdf", required=True)
+    ing = sub.add_parser("ingest", help="ingest one source document; run `substrate formats` for "
+                                        "what is accepted")
+    ing.add_argument("path", nargs="?", default=None,
+                     help="the document. Format detected from the extension; --pdf / --md declare "
+                          "it instead")
+    # `required=True` is gone from BOTH of these and neither is a loosened gate:
+    #   * --pdf: the positional path is the general entry point, so the flag became one of three
+    #     ways to name an input. Passing it still routes to the PDF arm unconditionally.
+    #   * --doc-class: still required FOR PDF, enforced in cmd_ingest where the arm is known,
+    #     because argparse cannot express "required only when the input is a PDF". Every other
+    #     format defaults to absence — see extract/convert.py's module docstring for why an
+    #     extension is not evidence about a document's class.
+    ing.add_argument("--pdf", default=None, help="read PATH as PDF (the original arm)")
+    ing.add_argument("--md", default=None, help="read PATH as markdown whatever it is named")
     # DECLARABLE_CLASSES, not POLICIES: `unclassified` is a policy key so the chunker and the class
     # gate can look it up, but offering it here would let the CLI declare the absence marker —
     # which `classes.apply` refuses anyway, so the choice would be a dead option that reads live.
-    ing.add_argument("--doc-class", required=True, choices=sorted(classes.DECLARABLE_CLASSES))
+    ing.add_argument("--doc-class", default=None, choices=sorted(classes.DECLARABLE_CLASSES))
     ing.add_argument("--out", required=True)
-    ing.add_argument("--pages", default=None, help="e.g. 1-40")
-    ing.add_argument("--batch", type=int, default=100)
+    ing.add_argument("--pages", default=None, help="e.g. 1-40 (PDF only)")
+    ing.add_argument("--batch", type=int, default=100, help="(PDF only)")
     ing.set_defaults(func=cmd_ingest)
+
+    fmts = sub.add_parser("formats",
+                          help="every accepted input format, the doc-class default for each, and "
+                               "the formats this engine REFUSES with the specific reason")
+    fmts.set_defaults(func=cmd_formats)
 
     ingmd = sub.add_parser("ingest-md")
     ingmd.add_argument("--md", required=True)
