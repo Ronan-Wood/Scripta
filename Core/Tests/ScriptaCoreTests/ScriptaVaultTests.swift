@@ -302,4 +302,82 @@ final class ScriptaVaultTests: XCTestCase {
         XCTAssertTrue(text.contains("{3: 1}") || text.contains("3: 1"),
                       "the transcript did not compose as tier 3:\n\(text)")
     }
+
+    /// ONE SCOPE, BOTH CORPORA — the property Doc 4 §8 rests on.
+    ///
+    /// Live retrieval during a call must answer from the workspace's calls AND its curated notes in
+    /// a single query; querying two scopes and merging in Swift is retrieval logic in the client,
+    /// which Doc 3 §6 forbids. That requires the workspace vault to INHERIT the curated one, and
+    /// requires the engine to accept an `inherits` path this app wrote.
+    ///
+    /// Asserted through the engine because Swift cannot check it: `_resolve_inherit` resolves a
+    /// non-absolute entry against the vault's PARENT, so a manifest that looks right can still
+    /// compose the wrong directory — or none, and refuse.
+    func testAVaultInheritsTheCuratedVaultAndBothComposeIntoOneScope() throws {
+        let engine = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".substrate/engine", isDirectory: true)
+        let python = engine.appendingPathComponent(".venv/bin/python")
+        guard FileManager.default.isExecutableFile(atPath: python.path) else {
+            throw XCTSkip("no deployed engine at \(engine.path)")
+        }
+
+        // The curated vault, somewhere else entirely — as `cbre-vault` is, in OneDrive.
+        let curated = root.appendingPathComponent("curated", isDirectory: true)
+        let notes = curated.appendingPathComponent("02-areas", isDirectory: true)
+        try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
+        try """
+        ---
+        title: A curated note
+        status: active
+        doc_type: reference
+        confidence: stated
+        domains: [work]
+        ---
+
+        # A curated note
+
+        The lease review is due before the quarter closes.
+        """.write(to: notes.appendingPathComponent("lease.md"), atomically: true, encoding: .utf8)
+
+        // The workspace vault: the app's, holding a call, inheriting the curated one.
+        let vaults = root.appendingPathComponent("vaults", isDirectory: true)
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: vaults, inherits: [curated])
+        try vault.write()
+        try """
+        ---
+        doc_id: inherit-test-call
+        title: A call
+        status: \(TranscriptSpine.status)
+        doc_type: \(TranscriptSpine.docType)
+        confidence: \(TranscriptSpine.confidence)
+        class: \(TranscriptSpine.documentClass)
+        domains: [transcript]
+        ---
+
+        # A call
+
+        **[0:01] You:** We should look at the lease before quarter end.
+        """.write(to: vault.transcripts.appendingPathComponent("call.md"),
+                  atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = python
+        process.currentDirectoryURL = engine
+        process.arguments = ["-m", "substrate.cli", "compose", vault.root.path,
+                             "--index-root", root.appendingPathComponent("idx2").path,
+                             "--db", root.appendingPathComponent("inherit.db").path,
+                             "--registry", root.appendingPathComponent("scopes2.toml").path]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        XCTAssertEqual(process.terminationStatus, 0, "compose refused an inheriting vault:\n\(text)")
+        // Both vaults present in one scope — the whole point. `A-compose` reports per-vault counts.
+        XCTAssertTrue(text.contains("'curated'"), "the inherited vault did not compose:\n\(text)")
+        XCTAssertTrue(text.contains("'cbre'"), "the workspace vault did not compose:\n\(text)")
+    }
 }
