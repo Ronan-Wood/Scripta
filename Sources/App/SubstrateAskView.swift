@@ -21,6 +21,7 @@ import SwiftUI
 
 struct SubstrateAskView: View {
     @ObservedObject var model: SubstrateAskModel
+    @ObservedObject private var engine = SubstrateEngine.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -28,20 +29,179 @@ struct SubstrateAskView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Ink.background)
-        .task { await model.activate() }
+        .task { engine.startIfIdle() }
     }
 
-    /// The roster is the gate, not the query. The engine can be down before a question is ever
-    /// asked — the state a fresh machine is in — and learning that only by asking is the wrong
-    /// order to learn it in.
+    /// THE SUPERVISOR IS THE OUTER GATE AND THE ROSTER IS THE INNER ONE, in that order, because
+    /// Scripta now owns the engine's process (Doc 3 §2) and the states that ownership adds are not
+    /// the states a query has. Listing scopes at an engine that was spawned four seconds ago comes
+    /// back as `cannotConnectToHost` and renders as "engine down" — a healthy state drawn as a
+    /// fault, the same shape as the cancelled-`URLSession` bug `listScopes` had to guard. So the
+    /// roster is not asked at all until the engine answers.
     @ViewBuilder private var column: some View {
-        switch model.roster {
+        switch engine.lifecycle {
+        case .idle, .starting:
+            VaultEngineStarting(lifecycle: engine.lifecycle)
+        case .notInstalled, .portBusy, .failed:
+            VaultEngineRefusal(lifecycle: engine.lifecycle, restart: engine.restart)
+        case .serving:
+            VaultRoster(model: model)
+        }
+    }
+}
+
+/// The roster, fetched exactly once the engine answers. `.task` lives here rather than on the pane
+/// so it fires on the starting → serving transition instead of on first appearance, which is what
+/// makes "the engine was still coming up" and "the engine has no scopes" different events.
+private struct VaultRoster: View {
+    @ObservedObject var model: SubstrateAskModel
+    @ObservedObject private var scopes = SubstrateScopes.shared
+
+    var body: some View {
+        content.task { await model.activate() }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch scopes.roster {
         case .unasked, .listing:
             VaultProbe()
         case .refused(let refusal):
             VaultRosterRefusal(refusal: refusal) { Task { await model.listScopes() } }
         case .listed(let rows):
             VaultConsole(model: model, rows: rows)
+        }
+    }
+}
+
+// MARK: - The engine's own states
+//
+// FOUR STATES OWNERSHIP ADDED, and none of them is `VaultRefusal.engineDown`. That case answers
+// "the query found nothing listening"; these answer "what is the process this app is responsible
+// for doing right now", and the two were only ever the same thing while nobody owned the process.
+
+/// Spawned, not yet answering. NOT A FAULT and not a bare spinner: the cross-encoder builds its
+/// retrieval stack before `serve_http` binds, so seconds of closed port are the design. The counter
+/// moves for the same reason `VaultProbe`'s does — a stalled start has to look stalled.
+struct VaultEngineStarting: View {
+    let lifecycle: SubstrateEngine.Lifecycle
+
+    var body: some View {
+        HStack(spacing: Gap.s8) {
+            Spinner()
+            Text(sentence).proseText(Register.proseSm, Ink.textSecondary)
+            if case .starting(_, let since) = lifecycle { VaultElapsed(started: since) }
+            Spacer(minLength: Gap.s8)
+        }
+        .padding(Metrics.pageGutter)
+    }
+
+    private var sentence: String {
+        guard case .starting(let source, _) = lifecycle else {
+            return "Waiting for Scripta to start the substrate engine…"
+        }
+        return "Starting the substrate engine (\(source.label)). It loads its retrieval stack "
+            + "before it binds the port, so this takes a few seconds."
+    }
+}
+
+struct VaultEngineRefusal: View {
+    let lifecycle: SubstrateEngine.Lifecycle
+    let restart: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Gap.s12) {
+            VaultEngineCard(lifecycle: lifecycle, restart: restart)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: Metrics.listMaxWidth, alignment: .leading)
+        .padding(Metrics.pageGutter)
+    }
+}
+
+/// Drawn in the envelope family for the same reason `VaultRefusalCard` is: same `EngineNote` line
+/// type, same marker column, same tones, so a supervisor state and a refused query stack as one
+/// system rather than as an alert bolted beside a console.
+private struct VaultEngineCard: View {
+    let lifecycle: SubstrateEngine.Lifecycle
+    let restart: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Gap.s8) {
+            ForEach(lifecycle.notes) { EngineNoteRow(note: $0) }
+            if let verbatim = lifecycle.verbatim { VaultVerbatim(text: verbatim) }
+            VaultRetry(title: lifecycle.retryTitle, action: restart)
+        }
+        .padding(Metrics.cardPaddingCompact)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .surface(Ink.layer)
+    }
+}
+
+extension SubstrateEngine.Lifecycle {
+
+    var notes: [EngineNote] {
+        switch self {
+        case .notInstalled:
+            return [EngineNote(
+                // NOT RED, and for the same reason `engineDown` is not: this is the ORDINARY state
+                // of every machine that has not installed an engine yet, which today is every
+                // machine but the operator's. "It crashed" and "there is none" need different
+                // sentences or the first run reads as a failure.
+                id: "absent", marker: "no engine", tone: Ink.textHelper,
+                text: "Scripta runs the substrate engine itself, and there is none on this Mac to "
+                    + "run. Your calls are on the local index and are unaffected — this is only "
+                    + "the vault brain. The paths it looked at are below.")]
+        case .portBusy(let port, let occupant):
+            return [EngineNote(
+                id: "port", marker: "port \(port)", tone: Ink.warning,
+                text: occupant.sentence(port: port))]
+        case .failed(let source, let reason, _):
+            return [EngineNote(
+                id: "failed", marker: "failed", tone: Ink.danger,
+                text: "\(reason) It was \(source.label). Its own last words are below.")]
+        case .idle, .starting, .serving:
+            return []
+        }
+    }
+
+    /// The machine's own words, never this file's paraphrase of them — the searched paths, or the
+    /// stderr the process wrote on its way out. A supervisor that reports "could not start" and
+    /// keeps the reason to itself sends the operator to a log it already had.
+    var verbatim: String? {
+        switch self {
+        case .notInstalled(let searched):
+            return searched.isEmpty ? nil : searched.joined(separator: "\n")
+        case .failed(_, _, let stderr):
+            return stderr.isEmpty ? nil : stderr
+        case .idle, .starting, .serving, .portBusy:
+            return nil
+        }
+    }
+
+    var retryTitle: String {
+        if case .notInstalled = self { return "Look again" }
+        return "Start the engine"
+    }
+}
+
+extension SubstrateEngine.Occupant {
+
+    /// Both arms name the port AND the remedy. A stale orphan from a crash and an engine the
+    /// operator started by hand are the two things this can be, and Scripta will not adopt either:
+    /// an engine it did not spawn is one it cannot promise to stop.
+    func sentence(port: Int) -> String {
+        let socket = SubstrateEngine.endpoint
+        switch self {
+        case .anEngine(let scopes):
+            let roster = scopes.map { " It answered with \($0) scope\($0 == 1 ? "" : "s")." } ?? ""
+            return "A substrate engine is already answering on \(socket), and Scripta did not "
+                + "start it.\(roster) It is either one you ran by hand or an orphan a previous "
+                + "crash left behind — `lsof -nP -iTCP:\(port) -sTCP:LISTEN` names it. Scripta "
+                + "will not adopt a process it cannot promise to stop; quit it and press below."
+        case .aStranger(let detail):
+            return "Something is listening on \(socket) and it is not a substrate engine, so "
+                + "Scripta cannot bind the port its own engine needs: \(detail). "
+                + "`lsof -nP -iTCP:\(port) -sTCP:LISTEN` names it. Free the port and press below."
         }
     }
 }
@@ -132,7 +292,7 @@ private struct VaultScopeChips: View {
                 ForEach(rows, id: \.scope) { row in
                     Pill(text: row.scope,
                          style: VaultScopeHealth.style(row, selected: row.scope == model.scope),
-                         action: { model.select(scope: row.scope) })
+                         action: { model.bind(scope: row.scope) })
                 }
             }
         }
@@ -143,7 +303,7 @@ private struct VaultScopeChips: View {
 /// inheritance no longer resolves WITH its fault rather than omitting it — an omitted scope reads
 /// as one that was never composed — so a chip for a scope that cannot answer is drawn and marked
 /// rather than hidden.
-private enum VaultScopeHealth {
+enum VaultScopeHealth {
     static func style(_ row: WireScopeRow, selected: Bool) -> PillStyle {
         if selected { return .selected }
         if row.error != nil { return .danger }
@@ -171,7 +331,7 @@ private enum VaultScopeHealth {
     }
 }
 
-private struct VaultScopeNote: View {
+struct VaultScopeNote: View {
     let note: EngineNote
 
     var body: some View {
@@ -225,7 +385,7 @@ private struct VaultRunStrip: View {
     }
 }
 
-private struct VaultElapsed: View {
+struct VaultElapsed: View {
     let started: Date
 
     var body: some View {
@@ -419,7 +579,7 @@ private struct VaultRefusalScope: View {
 /// The engine's own sentence, unedited and selectable. Every recognised refusal is a PROMOTION of
 /// this string into better words; keeping the original beneath them is what makes a classifier that
 /// stops matching degrade into a rendered engine sentence rather than into silence.
-private struct VaultVerbatim: View {
+struct VaultVerbatim: View {
     let text: String
 
     var body: some View {
@@ -431,7 +591,7 @@ private struct VaultVerbatim: View {
     }
 }
 
-private struct VaultRetry: View {
+struct VaultRetry: View {
     let title: String
     let action: () -> Void
 
@@ -458,12 +618,16 @@ extension VaultRefusal {
         case .engineDown:
             return [EngineNote(
                 id: "down", marker: "engine down", tone: Ink.textHelper,
-                // NOT RED. Scripta hosts the engine, so this is what a machine looks like before it
-                // is started — the zero-install default, not a fault. Colouring it would make the
-                // ordinary first-run state the loudest thing in the product.
+                // STILL NOT RED, and the reason has moved rather than gone. It used to be "this is
+                // what a machine looks like before you start it". Scripta now starts it, so the
+                // remaining way to reach this from a query is an engine that went away between the
+                // roster and the search — and the supervisor is already flipping the pane to its
+                // own `failed` card, which carries the stderr. Colouring it would put a second,
+                // louder and less informative report of one event on screen.
                 text: "Nothing is listening on "
-                    + "\(SubstrateClient.defaultEndpoint.absoluteString). Start the substrate "
-                    + "engine and try again; your calls are on the local index and are unaffected.")]
+                    + "\(SubstrateClient.defaultEndpoint.absoluteString). Scripta runs the engine "
+                    + "itself, so it stopped underneath this query; the pane is about to say why. "
+                    + "Your calls are on the local index and are unaffected.")]
         case .transport(let failure):
             return [EngineNote(
                 id: "transport", marker: "transport", tone: Ink.danger,

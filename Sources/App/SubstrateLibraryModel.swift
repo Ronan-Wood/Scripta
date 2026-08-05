@@ -143,6 +143,18 @@ final class SubstrateLibraryModel: ObservableObject {
 
     func chooseVault(_ url: URL) { vaultOverride = url }
 
+    /// Follow the active workspace (Doc 3 §7). Called from `AppModel.activeGroup.didSet`, because
+    /// this model is a singleton that outlives the pane and sampling `AppSettings.activeGroup` at
+    /// init is what left the rail exporting into the workspace that was active when the app
+    /// launched. Refused mid-job: an export names its workspace in the vault manifest it is writing,
+    /// and moving the target under a running compose is the desync this pair was just fixed for.
+    func adoptWorkspace() {
+        guard !isWorking else { return }
+        let active = AppSettings.activeGroup
+        guard workspace != active else { return }
+        workspace = active          // `didSet` retires any hand-picked destination
+    }
+
     /// One job at a time, and it is a real constraint rather than caution: two composes racing on
     /// one `--clean` index root leave the loser asserting over content it did not ingest, which is
     /// the hazard the refresh agent takes a lock for.
