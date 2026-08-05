@@ -104,6 +104,43 @@ final class ScriptaVaultTests: XCTestCase {
         XCTAssertFalse(failures.isEmpty, "an unreadable root must report a failure")
     }
 
+    /// "This workspace has no vault" and "I could not look" are different answers, and a caller
+    /// that collapses them is the lying wipe: `WorkspaceDeleter` would report zero files, delete
+    /// nothing, show success, and the operator would hand over the laptop.
+    func testAnAbsentVaultAndAnUnreadableRootAreDifferentAnswers() throws {
+        // Absent: no failure, no vault. An ordinary state — a workspace not yet recorded into.
+        let absent = ScriptaVault.existingVault(forScope: "nope", under: root)
+        XCTAssertNil(absent.vault)
+        XCTAssertTrue(absent.failures.isEmpty, "an absent vault is not a failure to look")
+
+        // Present.
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        let found = ScriptaVault.existingVault(forScope: "cbre", under: root)
+        XCTAssertEqual(found.vault?.standardizedFileURL, vault.root.standardizedFileURL)
+        XCTAssertTrue(found.failures.isEmpty)
+
+        // Unreadable: NO vault reported, but a failure that must stop any deletion.
+        let locked = root.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                       ofItemAtPath: locked.path) }
+        let blind = ScriptaVault.existingVault(forScope: "cbre", under: locked)
+        XCTAssertNil(blind.vault)
+        XCTAssertFalse(blind.failures.isEmpty, "an unreadable root must not read as 'no vault'")
+    }
+
+    /// An absent ROOT is genuinely no vaults — a fresh install before the first recording — and
+    /// must not be reported as a failure, or every such launch would refuse operations it should
+    /// simply find nothing for.
+    func testAnAbsentRootIsNoVaultsRatherThanAFailure() {
+        let missing = root.appendingPathComponent("never-created", isDirectory: true)
+        let found = ScriptaVault.vaultRoots(under: missing)
+        XCTAssertTrue(found.vaults.isEmpty)
+        XCTAssertTrue(found.failures.isEmpty, "absence is not a failure to look: \(found.failures)")
+    }
+
     // MARK: - The name that would have deleted the folder
 
     /// `URL.appendingPathComponent("")` RETURNS THE RECEIVER — measured, not assumed — so before

@@ -5,31 +5,104 @@ import ScriptaCore
 /// feature (I6). Destructive and strictly user-initiated (confirmed in the UI with an exact count).
 ///
 /// Safety: only ever touches files that parse as app-authored transcripts (owner marker on its own
-/// line, via `TranscriptStore.list()`) AND carry the target group. A user's own vault notes lack
-/// the marker, so they can never be caught. Unlike the retention pruner it does NOT also gate on
-/// the filename shape — for a privacy wipe, completeness matters (an untitled "Call …" left behind
-/// would be a leak), and the marker + explicit group already guarantee app ownership.
+/// line, via `TranscriptStore.list()`) AND belong to the target workspace — by their `group:` in the
+/// flat layout, or by sitting inside that workspace's vault (Doc 4 §7). A user's own vault notes
+/// lack the marker, so they can never be caught. Unlike the retention pruner it does NOT also gate
+/// on the filename shape — for a privacy wipe, completeness matters (an untitled "Call …" left
+/// behind would be a leak), and ownership is already established.
+///
+/// **IT REFUSES RATHER THAN UNDER-REPORTS, and that is the whole difference between this and a
+/// wipe that lies.** Both halves of the count used to fail silently to zero: `TranscriptStore.list`
+/// returns `[]` when the folder cannot be read (`?? []`), and it is non-recursive, so once
+/// transcripts move into vaults a flat listing finds nothing. Either way the confirmation dialog
+/// would have said "0 calls", the wipe would have deleted nothing, reported success, and the
+/// operator would have handed over the laptop. A privacy feature that cannot establish what it is
+/// about to delete must say so — an error is recoverable, a false all-clear is not.
 ///
 /// Cascade: removes the Markdown file, the index rows (chunks / FTS / transcript), and the
 /// group's sole-provenance registry entities. As the knowledge layer adds tables, extend here —
 /// this stays the single call site.
 enum WorkspaceDeleter {
+
+    enum WipeError: LocalizedError {
+        /// Some location could not be read, so the set of files is a lower bound.
+        case incomplete([String])
+
+        var errorDescription: String? {
+            switch self {
+            case .incomplete(let reasons):
+                return "Cannot list every file in this workspace, so a wipe cannot be shown to be "
+                    + "complete: \(reasons.joined(separator: "; ")). Refusing rather than deleting "
+                    + "part of it and reporting success — for a privacy wipe an incomplete result "
+                    + "is worse than none, because nothing afterwards would say it was incomplete."
+            }
+        }
+    }
+
     /// Files that would be deleted for `group` ("" = ungrouped) — drives the confirmation count.
-    static func candidates(group: String, in vault: URL = AppSettings.outputFolder) -> [URL] {
-        TranscriptStore.list(in: vault).filter { $0.group == group }.map(\.url)
+    ///
+    /// Throws when any location is unreadable. The count this feeds is the operator's evidence that
+    /// the wipe covered everything, so a number derived from a partial listing is the failure.
+    static func candidates(group: String, in root: URL = AppSettings.outputFolder) throws -> [URL] {
+        var failures: [String] = []
+        var found: [URL] = []
+
+        // The flat layout: transcripts directly in the root, selected by their own `group:`.
+        found += TranscriptStore.list(in: root).filter { $0.group == group }.map(\.url)
+        if !directoryIsReadable(root) {
+            failures.append("\(root.lastPathComponent) could not be listed")
+        }
+
+        // The vault layout: LOCATION is the partition, so everything under this workspace's vault
+        // belongs to it and no `group:` is consulted. That is the point of §7 — a transcript's
+        // workspace stops being a field that can disagree with where the file is.
+        let located = ScriptaVault.existingVault(forScope: group, under: root)
+        failures += located.failures
+        if let vault = located.vault {
+            let transcripts = ScriptaVault.transcripts(inVaultAt: vault)
+            found += TranscriptStore.list(in: transcripts).map(\.url)
+            if !directoryIsReadable(transcripts), FileManager.default.fileExists(atPath: transcripts.path) {
+                failures.append("\(vault.lastPathComponent)'s transcripts could not be listed")
+            }
+        }
+
+        guard failures.isEmpty else { throw WipeError.incomplete(failures) }
+        // Deduplicated by path: a transcript reached through both layouts is one file, and deleting
+        // it twice would inflate the count the operator is shown as proof of completeness.
+        var seen = Set<String>()
+        return found.filter { seen.insert($0.standardizedFileURL.path).inserted }
+    }
+
+    /// Distinguishes "no transcripts here" from "could not look", which `TranscriptStore.list`
+    /// collapses into an empty array. An absent directory is readable-and-empty, not a failure —
+    /// a workspace with no vault yet is an ordinary state.
+    private static func directoryIsReadable(_ url: URL) -> Bool {
+        if !FileManager.default.fileExists(atPath: url.path) { return true }
+        return (try? FileManager.default.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) != nil
     }
 
     @discardableResult
-    static func delete(group: String) -> Int {
+    static func delete(group: String) throws -> Int {
         // Capture BOTH switchable globals once: a vault switch (repoint) landing mid-cascade must
         // not split the halves — files from vault A but stubs/registry purged in vault B.
-        let vault = AppSettings.outputFolder
+        let root = AppSettings.outputFolder
         let registry = EntityRegistry.shared
         var deleted = 0
-        for url in candidates(group: group, in: vault) {
+        // Enumerated BEFORE anything is removed, and the throw happens here — so a refusal leaves
+        // the workspace untouched rather than half-wiped.
+        let doomed = try candidates(group: group, in: root)
+        for url in doomed {
             try? FileManager.default.removeItem(at: url)
             IndexStore.shared?.remove(path: url.path)   // cascade: transcript row + chunks + FTS
             deleted += 1
+        }
+        // The workspace's vault directory goes with its contents — otherwise a wiped workspace
+        // leaves a manifest naming a scope, which the engine would still compose (to nothing) and
+        // which still names the workspace on disk. Only ever the vault for THIS scope, and only one
+        // that was actually discovered under the root.
+        if let vault = ScriptaVault.existingVault(forScope: group, under: root).vault {
+            try? FileManager.default.removeItem(at: vault)
         }
         // Knowledge cascade — named workspaces only: "" is BOTH the ungrouped bucket here and the
         // registry's GLOBAL sentinel for vocabulary (terms/termVocab treat groups == [""] as
@@ -39,7 +112,7 @@ enum WorkspaceDeleter {
         if !group.isEmpty {
             registry.purge(group: group)
             // Vault stubs (Entities/<group>/) go too, toggle or no toggle — marker-gated inside.
-            EntityMirror.purge(group: group, vault: vault)
+            EntityMirror.purge(group: group, vault: root)
             if let store = IndexStore.shared {
                 IndexBuilder.syncTerms(store: store, registry: registry)
             }
