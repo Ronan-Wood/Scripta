@@ -76,13 +76,26 @@ public enum TranscriptWriter {
         yaml += "date: \(dateStr)\n"
         yaml += "time: \"\(timeStr)\"\n"
         yaml += "duration: \"\(formatClock(duration))\"\n"
-        if !cleanTitle.isEmpty { yaml += "title: \"\(cleanTitle)\"\n" }
+        // `title` IS ALWAYS WRITTEN, including the untitled case. It used to be omitted when empty,
+        // and `heading` — the very value being omitted — was computed on the line above and used
+        // for the H1, so the file carried the title in prose and withheld it as data. The exporter
+        // then read it back out of the H1 with a regex (`_title_for`), and every other reader had to
+        // do the same or fall back to the filename. One computed value, stated once, in the field
+        // that means it.
+        yaml += "title: \"\(heading)\"\n"
         yaml += "participants: [\(participantList)]\n"
         yaml += "tags: [\(tagList)]\n"
         // Recorded from a single source, unlabeled. Absent = a normal two-party call.
         if isConference { yaml += "mode: conference\n" }
         // The privacy/workspace partition. Absent/empty = ungrouped. Captured at record time.
         if !group.isEmpty { yaml += "group: \"\(sanitizeScalar(group))\"\n" }
+        // The spine, so the file is a self-describing note rather than one that only becomes a note
+        // after `transcript_export` synthesises four values it could have read. See `TranscriptSpine`
+        // for why each is what it is, and why the exporter still authors its own for now.
+        yaml += "status: \(TranscriptSpine.status)\n"
+        yaml += "doc_type: \(TranscriptSpine.docType)\n"
+        yaml += "confidence: \(TranscriptSpine.confidence)\n"
+        yaml += "class: \(TranscriptSpine.documentClass)\n"
         yaml += "app: \(ownerMarker)\n"
         yaml += "---\n\n# \(heading)"
         return yaml
