@@ -245,23 +245,44 @@ enum IndexBuilder {
         }
     }
 
+    /// THE FAILURE THIS CLOSES, recorded where the removal happens. `Listing` already refuses to
+    /// treat an unreadable folder as an empty one — but a vaults root is READABLE and holds no
+    /// `.md` at all, because scope directories have no extension and the `.md` filter dropped them.
+    /// The listing succeeded with zero files, the guard never fired, and every indexed row was
+    /// removed on the first pass after a migration. Reachable at launch and on every 2-second
+    /// watcher fire, which is why this landed BEFORE any file moved rather than after.
+    ///
+    /// Discovery lives in `ScriptaVault.transcriptLocations` so it can be tested; this file is in
+    /// the app target and `swift test` cannot reach it.
     static func reconcile(store: IndexStore) {
         // One registry snapshot for the whole pass: a mid-pass folder change must not split the
         // pass across two registries (old-vault names contaminating the new vault's file).
         let registry = EntityRegistry.shared
-        let transcriptListing = mdFiles(in: AppSettings.outputFolder, mustExist: true)
+        let (locations, discoveryFailures) =
+            ScriptaVault.transcriptLocations(under: AppSettings.outputFolder)
+        var transcripts: [URL] = []
+        var unreadable = discoveryFailures
+        for location in locations {
+            // `mustExist` only for the output root — a vault whose transcripts directory is absent
+            // genuinely holds no calls yet, the same reading `Notes/` and `Files/` get.
+            let listing = mdFiles(in: location,
+                                  mustExist: location.standardizedFileURL
+                                      == AppSettings.outputFolder.standardizedFileURL)
+            transcripts += listing.files
+            if let failure = listing.failure { unreadable.append(failure) }
+        }
         let noteListing = mdFiles(in: NoteStore.folder, mustExist: false)
         let docListing = mdFiles(in: DocumentImporter.folder, mustExist: false)
-        let transcripts = transcriptListing.files
         let notes = noteListing.files
         let docs = docListing.files
-        let unreadable = [transcriptListing, noteListing, docListing].compactMap(\.failure)
+        unreadable += [noteListing, docListing].compactMap(\.failure)
 
         let start = Date()
         let indexed = store.indexedPaths()
         let livePaths = Set((transcripts + notes + docs).map(\.path))
 
-        // Remove entries whose files no longer exist — ONLY when all three listings succeeded.
+        // Remove entries whose files no longer exist — ONLY when EVERY listing succeeded, across
+        // both layouts and every vault.
         //
         // The removal is the half that needs COMPLETE knowledge: "not on disk" is only a fact if
         // every place the file could be was actually read. One unreadable folder makes the live set
