@@ -83,6 +83,31 @@ final class RecordingSession {
             .appendingPathComponent("pending-captions", isDirectory: true)
         try? FileManager.default.removeItem(at: legacy)
     }
+    /// The workspace a session was recorded into, beside its audio in the session dir.
+    ///
+    /// A plain file rather than a name encoded in the directory: the directory is
+    /// `Scripta-session-<uuid>` and both the sweep (`hasPrefix`) and the orphan scan key on that
+    /// shape, so widening it to carry data would make every workspace name a filename-safety
+    /// problem — and an empty workspace unencodable.
+    private static let groupMarkerName = "workspace"
+
+    private static func writeGroupMarker(_ group: String, in dir: URL) {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? Data(group.utf8).write(to: dir.appendingPathComponent(groupMarkerName))
+    }
+
+    /// The workspace a session recorded into, or `nil` when the marker is absent.
+    ///
+    /// `nil` IS NOT `""`. An absent marker means a session from a build that predates this, whose
+    /// workspace is genuinely unknown; an empty marker means the operator really was in the
+    /// ungrouped workspace. Collapsing them would file an unknowable recording under a named
+    /// workspace on the operator's behalf — the claim `export_workspace` refuses to make.
+    private static func readGroupMarker(in dir: URL) -> String? {
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent(groupMarkerName)),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        return text
+    }
+
     // Paused intervals are spliced out of the audio tracks, so wall-clock duration must
     // splice them out too or the frontmatter overstates the call.
     private var pausedAccum: TimeInterval = 0
@@ -141,12 +166,17 @@ final class RecordingSession {
             let fm = FileManager.default
             let wasConference = !(fm.fileExists(atPath: micURL.path) && fm.fileExists(atPath: systemURL.path))
             do {
+                // The workspace this session was STARTED in, not the one active now. A recovery
+                // runs in a later launch; the active workspace then says nothing about a recording
+                // made before the crash.
+                let recordedGroup = readGroupMarker(in: dir)
                 let url = try await produceTranscript(
                     systemURL: systemURL, micURL: micURL,
                     youWavURL: dir.appendingPathComponent("you.wav"),
                     themWavURL: dir.appendingPathComponent("them.wav"),
                     startedAt: startedAt, duration: duration, snippets: [],
-                    extraTags: ["recovered"], isConference: wasConference)
+                    extraTags: recordedGroup == nil ? ["recovered", "untagged"] : ["recovered"],
+                    isConference: wasConference, group: recordedGroup ?? "")
                 log.notice("recovered orphaned recording → \(url.lastPathComponent, privacy: .public)")
                 try? FileManager.default.removeItem(at: dir)
             } catch let error as NSError where error.domain == "Scripta"
@@ -180,6 +210,15 @@ final class RecordingSession {
         lock.unlock()
         self.mode = mode
         self.group = group
+        // THE WORKSPACE IS WRITTEN DOWN, because a crash is exactly when it would otherwise be
+        // lost. `recoverOrphans` runs in a later launch with no memory of this session, so without
+        // this it can only guess — and the app's guess would be whatever workspace happens to be
+        // active whenever the machine next starts, which is a claim about the operator's data that
+        // nothing supports. The value IS known here; it just was not persisted, which is how the
+        // two untagged transcripts on this machine came to exist. A transcript with no group
+        // refuses the WHOLE workspace export (`transcript_export.export_workspace`), so losing it
+        // is not a missing label — it is a corpus that can never be built.
+        Self.writeGroupMarker(group, in: sessionDir)
         self.extraVocab = extraVocab
         do {
             try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
@@ -458,7 +497,13 @@ final class RecordingSession {
         systemURL: URL, micURL: URL, youWavURL: URL, themWavURL: URL,
         startedAt: Date, duration: TimeInterval,
         snippets: [ScreenSnippet], notes: [CallNote] = [], extraTags: [String] = [],
-        isConference: Bool = false, group: String = "", extraVocab: [String] = []
+        isConference: Bool = false,
+        // NO DEFAULT, and that is the fix rather than a style preference. `group: String = ""` is
+        // what let `recoverOrphans` omit it and produce transcripts belonging to no workspace: the
+        // call site read as complete, the compiler was satisfied, and the loss only surfaced months
+        // later as an export that refuses. A workspace is a decision every caller has to make out
+        // loud — including "" for the ungrouped one.
+        group: String, extraVocab: [String] = []
     ) async throws -> URL {
         // Convert each captured track to the transcription format. The peak tells us whether the
         // track actually carried speech.

@@ -359,6 +359,7 @@ private struct LibraryTranscriptRail: View {
                     + "~/.substrate — a plain dotfolder, not a File Provider root. The engine "
                     + "refuses a synced destination by inode before it writes anything, so a "
                     + "folder you choose is checked rather than trusted.")
+            LibraryUntaggedRow(model: model)
             LibraryWorkspaceRow(model: model)
         }
         .padding(Metrics.cardPadding)
@@ -378,6 +379,55 @@ private struct LibraryTranscriptRail: View {
     }
 }
 
+/// The engine's refusal, with the fix attached.
+///
+/// `export_workspace` aborts the whole export over one untagged transcript and its message ends
+/// "add `group: "<workspace>"` to each transcript's frontmatter". That is the right refusal — an
+/// untagged call belongs to no workspace, and both guessing and dropping it are worse. But the only
+/// way to act on it was to hand-edit YAML, so one missing field could block the corpus forever while
+/// the app that owns the folder grant offered nothing.
+private struct LibraryUntaggedRow: View {
+    @ObservedObject var model: SubstrateLibraryModel
+
+    var body: some View {
+        Group {
+            if !model.untagged.isEmpty {
+                VStack(alignment: .leading, spacing: Gap.s6) {
+                    LibraryNote(
+                        id: "untagged", marker: "blocks the export", tone: Ink.warning,
+                        text: "\(model.untagged.count) transcript\(model.untagged.count == 1 ? "" : "s") "
+                            + "belong\(model.untagged.count == 1 ? "s" : "") to no workspace, so the "
+                            + "engine refuses the whole export rather than filing "
+                            + "\(model.untagged.count == 1 ? "it" : "them") under a workspace nothing "
+                            + "on disk supports. Assigning is the operator's call, not the app's — "
+                            + "these are filed under the name in the field below.")
+                    ForEach(model.untagged) { transcript in
+                        HStack(spacing: Gap.s8) {
+                            Text(transcript.date).typeface(Register.micro, Ink.textHelper)
+                            Text(transcript.title).proseText(Register.proseSm, Ink.textSecondary)
+                                .lineLimit(1)
+                            Spacer(minLength: Gap.s8)
+                            ActionButton(title: named.isEmpty ? "Name a workspace first"
+                                                             : "File under \(named)",
+                                         glyph: .people, rank: .secondary) {
+                                model.assign(transcript)
+                            }
+                            .disabled(named.isEmpty || model.isWorking)
+                        }
+                    }
+                    if let failure = model.repairFailure {
+                        LibraryNote(id: "repair-failed", marker: "not repaired", tone: Ink.danger,
+                                    text: failure)
+                    }
+                }
+            }
+        }
+        .task { model.refreshUntagged() }
+    }
+
+    private var named: String { model.workspace.trimmingCharacters(in: .whitespacesAndNewlines) }
+}
+
 private struct LibraryWorkspaceRow: View {
     @ObservedObject var model: SubstrateLibraryModel
 
@@ -394,12 +444,15 @@ private struct LibraryWorkspaceRow: View {
                      + "workspaces — so this one needs a name before it can have a scope.")
                     .proseText(Register.proseSm, Ink.textHelper)
             }
-            // Stated because the engine's `--workspace` names the SCOPE and its positional argument
-            // names a FOLDER, and Scripta keeps one folder for every workspace: the group is a
-            // field on each transcript, not a directory. So this exports the whole folder.
-            Text("Scripta keeps one transcripts folder for every workspace, so this exports every "
-                 + "transcript in it — not only \(named.isEmpty ? "this workspace" : named)'s. The "
-                 + "engine names the scope it registered when it is done.")
+            // CORRECTED: this said the export takes every transcript in the folder, which was true
+            // of the exporter that walked `rglob("*.md")` and is now false — `export_workspace`
+            // selects on each transcript's own `group:`, compared as a slug so it agrees with the
+            // scope name. Leaving the old sentence up would describe the privacy hole that was
+            // closed as though it were still the behaviour.
+            Text("One folder holds every workspace's calls, so the engine selects on each "
+                 + "transcript's own workspace — \(named.isEmpty ? "this one" : named)'s are "
+                 + "exported and the rest are left in place. It names the scope it registered when "
+                 + "it is done.")
                 .proseText(Register.proseSm, Ink.textHelper)
         }
     }

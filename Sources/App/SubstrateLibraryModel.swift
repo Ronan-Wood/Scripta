@@ -155,6 +155,42 @@ final class SubstrateLibraryModel: ObservableObject {
         workspace = active          // `didSet` retires any hand-picked destination
     }
 
+    // MARK: - Transcripts that belong to no workspace
+
+    /// The transcripts that will refuse the next export, and the remedy the engine names.
+    ///
+    /// `export_workspace` aborts the WHOLE export over any untagged transcript rather than skipping
+    /// it — filing it under the workspace being exported asserts a claim nothing supports, and
+    /// dropping it leaves a call in no scope at all. So one missing field blocks the corpus, and
+    /// until this the only way to act on the refusal was to hand-edit YAML.
+    @Published private(set) var untagged: [TranscriptGroupRepair.Untagged] = []
+
+    /// Surfaced by the rail on appearance and after every repair. Cheap — a directory listing and a
+    /// frontmatter read per file, over one non-recursive folder.
+    func refreshUntagged() {
+        untagged = TranscriptGroupRepair.untagged(in: AppSettings.outputFolder)
+    }
+
+    /// File one untagged transcript under `workspace`. THE OPERATOR NAMES IT: nothing here infers a
+    /// workspace from a filename, a date or the active selection, which is the same reason the
+    /// engine refuses rather than guessing.
+    func assign(_ transcript: TranscriptGroupRepair.Untagged) {
+        let name = workspace.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            try TranscriptGroupRepair.assign(name, to: transcript.url)
+            // The local index partitions on `group` too, so a repair that only touched the file
+            // would leave the call filed one way on disk and another in every in-app surface.
+            if let store = IndexStore.shared { IndexBuilder.index(transcript.url, into: store) }
+        } catch {
+            repairFailure = error.localizedDescription
+        }
+        refreshUntagged()
+    }
+
+    /// The last repair that failed, for the rail to show. Cleared by the next attempt.
+    @Published var repairFailure: String?
+
     /// One job at a time, and it is a real constraint rather than caution: two composes racing on
     /// one `--clean` index root leave the loser asserting over content it did not ingest, which is
     /// the hazard the refresh agent takes a lock for.
