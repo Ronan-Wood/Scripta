@@ -395,13 +395,36 @@ public final class IndexStore {
         return out
     }
 
-    /// True once any chunk is embedded with `model` (so the retriever knows to go hybrid).
-    public func hasVectors(model: String) -> Bool {
+    /// `(vectors stored under `model`, total chunks)` — COMPLETENESS, not presence.
+    ///
+    /// This replaced a `LIMIT 1` presence check, and the difference is not pedantry. `vectorCandidates`
+    /// returns whatever it finds rather than raising, so ONE embedded chunk in five thousand satisfied
+    /// "has vectors", sent the retriever down the hybrid path, and had RRF fuse a 40-item lexical list
+    /// with a 1-item vector list. Reciprocal-rank fusion scores by POSITION, so that single chunk
+    /// arrived at rank 0 and scored as the vector arm's best possible answer — promoting one
+    /// arbitrarily-embedded passage toward the top of every query in the corpus. Worse than no vector
+    /// arm at all, and silent.
+    ///
+    /// Partial coverage is the ORDINARY state, not an exotic one: `IndexBuilder.embedPending` skips a
+    /// path whose embedder call fails and continues the loop, so a single Ollama hiccup mid-batch
+    /// leaves some paths embedded and some not, with nothing recorded anywhere.
+    ///
+    /// This is `substrate/store/index_store.py:785` carried across deliberately, including its JOIN.
+    /// Both delete paths do remove vectors today, so an orphaned vector is not reachable — but a bare
+    /// `COUNT(*)` over `chunk_vectors` would make this guard's correctness depend on every future
+    /// delete path remembering to, and the failure that produces is the one this exists to stop:
+    /// enough orphans to satisfy `embedded >= total` on a partly-embedded index.
+    ///
+    /// Returns the pair rather than a Bool so the caller can tell "never embedded" from "partly
+    /// embedded" — different remedies, and only one of them is a bug.
+    public func vectorCoverage(model: String) -> (embedded: Int, total: Int) {
         let unlock = acquireLock(); defer { unlock() }
-        var n = 0
-        query("SELECT 1 FROM chunk_vectors WHERE embed_model = ? LIMIT 1",
-              bind: { Self.bindStatic($0, 1, model) }) { _ in n = 1 }
-        return n == 1
+        var embedded = 0, total = 0
+        query("SELECT COUNT(*) FROM chunk_vectors v JOIN chunks c ON c.id = v.chunk_id "
+              + "WHERE v.embed_model = ?",
+              bind: { Self.bindStatic($0, 1, model) }) { embedded = Int(sqlite3_column_int64($0, 0)) }
+        query("SELECT COUNT(*) FROM chunks") { total = Int(sqlite3_column_int64($0, 0)) }
+        return (embedded, total)
     }
 
     /// Embed-version discipline: drop every vector NOT from the current model (a model change
