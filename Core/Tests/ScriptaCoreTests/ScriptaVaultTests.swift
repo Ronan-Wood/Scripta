@@ -1,0 +1,179 @@
+import XCTest
+@testable import ScriptaCore
+@testable import ScriptaShared
+
+/// The vault layout, and the manifest the engine has to be able to read.
+///
+/// The layout assertions are not stylistic: `vault._tier_for` derives a note's tier from these exact
+/// path prefixes, so `10-reference` vs `10-references` is the difference between a document
+/// composing as tier 2 and composing as project content.
+final class ScriptaVaultTests: XCTestCase {
+    private var root: URL!
+
+    override func setUpWithError() throws {
+        root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ScriptaVaultTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: root) }
+
+    // MARK: - Layout
+
+    /// Tier is derived from location by `vault._tier_for`, so these prefixes are a contract with the
+    /// engine rather than a naming preference.
+    func testLayoutMatchesTheTiersTheEngineDerives() {
+        let vault = ScriptaVault(root: root, scope: "cbre")
+        XCTAssertTrue(vault.transcripts.path.hasSuffix("/_sources/transcripts"))
+        XCTAssertTrue(vault.notes.path.hasSuffix("/02-areas"))
+        XCTAssertTrue(vault.references.path.hasSuffix("/10-reference"))
+        XCTAssertTrue(vault.manifestURL.path.hasSuffix("/.substrate.toml"))
+    }
+
+    /// `outputFolder` becomes the root that holds vaults, one per scope (Doc 4 §7's open question,
+    /// decided 2026-08-05) — so the operator's existing setting keeps meaning something.
+    func testAScopeGetsItsOwnVaultDirectoryUnderTheRoot() {
+        let vault = ScriptaVault.vault(forScope: "CBRE", under: root)
+        XCTAssertEqual(vault.root.lastPathComponent, "cbre")
+        XCTAssertEqual(vault.scope, "cbre")
+        XCTAssertEqual(vault.root.deletingLastPathComponent().standardizedFileURL,
+                       root.standardizedFileURL)
+    }
+
+    /// The directory name and the scope name are one slug, so they cannot disagree — the failure
+    /// `SubstrateLibraryModel` had when a name and a location were held as two values.
+    func testTheDirectoryNameAndTheScopeNameAreTheSameSlug() {
+        for name in ["CBRE", "cbre", "C.B.R.E.", "  CBRE  "] {
+            let vault = ScriptaVault.vault(forScope: name, under: root)
+            XCTAssertEqual(vault.scope, vault.root.lastPathComponent, "disagreed for \(name)")
+        }
+        XCTAssertEqual(ScriptaVault.vault(forScope: "Work Calls", under: root).scope, "work-calls")
+    }
+
+    // MARK: - The manifest
+
+    func testWriteCreatesTheManifestAndTheTranscriptDirectory() throws {
+        let vault = ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: vault.manifestURL.path))
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: vault.transcripts.path,
+                                                     isDirectory: &isDirectory))
+        XCTAssertTrue(isDirectory.boolValue)
+    }
+
+    /// Regenerated in place rather than written once: a manifest that survives only because an
+    /// earlier build wrote it is a vault that stops composing after a hand-clean, with nothing
+    /// saying why.
+    func testWriteIsIdempotentAndRepairsAHandDeletedManifest() throws {
+        let vault = ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        let first = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+
+        try FileManager.default.removeItem(at: vault.manifestURL)
+        try vault.write()
+        XCTAssertEqual(try String(contentsOf: vault.manifestURL, encoding: .utf8), first)
+    }
+
+    func testInheritsIsWrittenAsAbsolutePaths() throws {
+        let curated = URL(fileURLWithPath: "/Users/x/Library/CloudStorage/OneDrive-Personal/vaults/cbre-vault")
+        let vault = ScriptaVault(root: root, scope: "cbre", inherits: [curated])
+        let manifest = vault.manifest()
+
+        XCTAssertTrue(manifest.contains("name = \"cbre\""), manifest)
+        XCTAssertTrue(manifest.contains("\"\(curated.path)\""), manifest)
+        // `_resolve_inherit` resolves a NON-absolute entry against the vault's parent, so a bare
+        // name would silently mean "a sibling directory" rather than the curated vault.
+        XCTAssertFalse(manifest.contains("inherits = []"), manifest)
+    }
+
+    func testNoInheritsIsAnExplicitEmptyList() {
+        XCTAssertTrue(ScriptaVault(root: root, scope: "cbre").manifest().contains("inherits = []"))
+    }
+
+    /// `_read_manifest` validates `reference_domains` and `reference_pins` and `vault.py` records
+    /// that the features reading them are deferred — "the value was declared, valid-looking, and
+    /// read by nobody", which is how a real defect went unnoticed for a whole phase. Emitting a key
+    /// whose consumer does not exist is not repeated here.
+    func testTheManifestDeclaresNoKeyWithoutAConsumer() {
+        let manifest = ScriptaVault(root: root, scope: "cbre").manifest()
+        XCTAssertFalse(manifest.contains("reference_domains"), manifest)
+        XCTAssertFalse(manifest.contains("reference_pins"), manifest)
+    }
+
+    /// A quote or a backslash in a path is a TOML parse error, and the manifest is the one file
+    /// that must parse or the whole scope refuses to compose.
+    func testHostilePathsStayValidTOML() {
+        let nasty = URL(fileURLWithPath: #"/tmp/a "quoted" \path"#)
+        let manifest = ScriptaVault(root: root, scope: "s", inherits: [nasty]).manifest()
+        XCTAssertTrue(manifest.contains(#"\"quoted\""#), manifest)
+        XCTAssertTrue(manifest.contains(#"\\path"#), manifest)
+    }
+
+    // MARK: - Against the real engine
+
+    /// THE GATE THIS TYPE EXISTS FOR: a vault Swift wrote composes, and the engine agrees about the
+    /// tier of what is in it.
+    ///
+    /// Every assertion above is Swift checking its own output — they would all pass while the engine
+    /// refused the manifest. This one hands the bytes to `substrate compose` and reads its verdict,
+    /// which is the only check that can fail when the two sides disagree.
+    ///
+    /// SKIPPED when no deployed engine is present, the same trade `TransportTests` makes: a suite
+    /// that fails on a machine without the engine is a suite people stop running. On a machine that
+    /// HAS one, a layout change that breaks composition is caught on the first run after it lands.
+    func testAVaultWrittenBySwiftComposesInTheEngine() throws {
+        let engine = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".substrate/engine", isDirectory: true)
+        let python = engine.appendingPathComponent(".venv/bin/python")
+        guard FileManager.default.isExecutableFile(atPath: python.path) else {
+            throw XCTSkip("no deployed engine at \(engine.path); run substrate/tools/substrate-deploy")
+        }
+
+        let vault = ScriptaVault.vault(forScope: "GateTest", under: root)
+        try vault.write()
+        // One note, in the transcript location, carrying the spine capture now declares.
+        try """
+        ---
+        doc_id: gate-test-call
+        title: A call written by Swift
+        status: \(TranscriptSpine.status)
+        doc_type: \(TranscriptSpine.docType)
+        confidence: \(TranscriptSpine.confidence)
+        class: \(TranscriptSpine.documentClass)
+        domains: [transcript]
+        ---
+
+        # A call written by Swift
+
+        **[0:01] You:** Budgets and hiring for the next quarter.
+        """.write(to: vault.transcripts.appendingPathComponent("gate-test-call.md"),
+                  atomically: true, encoding: .utf8)
+
+        let process = Process()
+        process.executableURL = python
+        process.currentDirectoryURL = engine
+        process.arguments = ["-m", "substrate.cli", "compose", vault.root.path,
+                             "--index-root", root.appendingPathComponent("idx").path,
+                             "--db", root.appendingPathComponent("gate.db").path,
+                             "--registry", root.appendingPathComponent("scopes.toml").path]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        XCTAssertEqual(process.terminationStatus, 0,
+                       "the engine refused a vault this type wrote:\n\(text)")
+        // Tier 3 is what `_tier_for` must derive from `_sources/transcripts/`. Asserted because the
+        // path prefixes are a contract with the engine, not a naming preference — a note landing in
+        // the wrong tier composes cleanly and answers wrongly.
+        XCTAssertTrue(text.contains("'gatetest' registered") || text.contains("scope: 'gatetest'"),
+                      "compose did not register the scope the manifest names:\n\(text)")
+        XCTAssertTrue(text.contains("{3: 1}") || text.contains("3: 1"),
+                      "the transcript did not compose as tier 3:\n\(text)")
+    }
+}
