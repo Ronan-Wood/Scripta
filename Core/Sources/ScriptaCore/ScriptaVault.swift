@@ -78,8 +78,55 @@ public struct ScriptaVault: Equatable {
     /// lives, and `transcript_export` writes to the same place — so a transcript written here is
     /// byte-for-byte where the exporter would have put it, which is what lets the exporter be
     /// deleted rather than merely bypassed.
-    public var transcripts: URL {
+    public var transcripts: URL { Self.transcripts(inVaultAt: root) }
+
+    /// The same location, for a caller that has a directory and no scope name — the indexer walking
+    /// the vaults root, which must not have to construct a `ScriptaVault` (and so must not have to
+    /// guess a scope) just to know where to look. One definition, so a layout change cannot move
+    /// the writer without moving the reader.
+    public static func transcripts(inVaultAt root: URL) -> URL {
         root.appendingPathComponent("_sources/transcripts", isDirectory: true)
+    }
+
+    /// Whether a directory is a vault: it carries a manifest. That is the only discriminator that
+    /// works, because the vaults root also holds this app's OTHER directories — `Notes/`, `Files/`,
+    /// `Entities/` — and a name-based check would have to be kept in step with all of them.
+    public static func isVault(_ directory: URL) -> Bool {
+        FileManager.default.fileExists(atPath: directory.appendingPathComponent(manifestName).path)
+    }
+
+    /// Every directory that may hold transcripts under `root`: the root itself, plus each vault
+    /// beneath it. Second element is non-empty when discovery could not be completed.
+    ///
+    /// BOTH LAYOUTS, DELIBERATELY. Transcripts used to sit directly in the output folder; §7 moves
+    /// them into `<root>/<scope>/_sources/transcripts/`. A reader that looked only at the new
+    /// location would see every not-yet-moved transcript as deleted, and one that looked only at
+    /// the old would see every moved transcript as deleted — and `IndexBuilder.reconcile` acts on
+    /// "not found on disk" by REMOVING the row. Reading both is what makes the migration a window
+    /// rather than a cliff.
+    ///
+    /// A DISCOVERY FAILURE IS REPORTED, NOT SWALLOWED, because the locations it returns would
+    /// otherwise be a silent lower bound — and a lower bound is exactly what the caller must not
+    /// delete against. This is `Listing`'s rule one level up: absent evidence is not evidence of
+    /// absence.
+    ///
+    /// It lives here rather than in the indexer so it can be tested: `IndexBuilder` is in the app
+    /// target and `swift test` cannot reach it, which is how two of the six Phase 0 defects
+    /// survived as long as they did (Doc 4 §6).
+    public static func transcriptLocations(under root: URL) -> (locations: [URL], failures: [String]) {
+        var locations = [root]
+        let entries: [URL]
+        do {
+            entries = try FileManager.default.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles])
+        } catch {
+            return (locations, ["\(root.lastPathComponent): \(error.localizedDescription)"])
+        }
+        for entry in entries where isVault(entry) {
+            locations.append(transcripts(inVaultAt: entry))
+        }
+        return (locations, [])
     }
 
     /// Living notes — the operator's own words about this workspace. Tier 3: project thinking, not

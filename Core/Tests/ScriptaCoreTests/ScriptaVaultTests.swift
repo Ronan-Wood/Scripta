@@ -50,6 +50,60 @@ final class ScriptaVaultTests: XCTestCase {
         XCTAssertEqual(try ScriptaVault.vault(forScope: "Work Calls", under: root).scope, "work-calls")
     }
 
+    // MARK: - Finding transcripts across both layouts
+
+    /// The wipe this closes: a vaults root is READABLE and holds no `.md` — scope directories have
+    /// no extension — so `IndexBuilder`'s listing succeeded with zero files, its unreadable-folder
+    /// guard never fired, and the removal pass deleted every indexed row. At launch, and on every
+    /// 2-second watcher fire.
+    func testAVaultsRootReportsTheVaultsTranscriptDirectory() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+
+        let (locations, failures) = ScriptaVault.transcriptLocations(under: root)
+        XCTAssertTrue(failures.isEmpty, "\(failures)")
+        XCTAssertTrue(locations.contains { $0.standardizedFileURL == vault.transcripts.standardizedFileURL },
+                      "the vault's transcripts were not discovered: \(locations)")
+    }
+
+    /// Both layouts at once, which is the only state in which a migration is safe: reading only the
+    /// new location makes every not-yet-moved transcript look deleted, reading only the old makes
+    /// every moved one look deleted, and `reconcile` acts on "not on disk" by REMOVING the row.
+    func testTheFlatRootIsStillAListedLocation() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+
+        let (locations, _) = ScriptaVault.transcriptLocations(under: root)
+        XCTAssertTrue(locations.contains { $0.standardizedFileURL == root.standardizedFileURL },
+                      "the pre-§7 flat layout must still be read: \(locations)")
+    }
+
+    /// The app writes four kinds of directory into this root. Only a manifest makes one a vault —
+    /// a name-based check would need keeping in step with all of them.
+    func testOnlyDirectoriesWithAManifestCountAsVaults() throws {
+        for name in ["Notes", "Files", "Entities"] {
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent(name, isDirectory: true),
+                withIntermediateDirectories: true)
+        }
+        let (locations, failures) = ScriptaVault.transcriptLocations(under: root)
+        XCTAssertTrue(failures.isEmpty, "\(failures)")
+        XCTAssertEqual(locations.count, 1, "only the root itself should be listed: \(locations)")
+    }
+
+    /// A discovery failure is REPORTED, not swallowed — the locations would otherwise be a silent
+    /// lower bound, and a lower bound is exactly what the caller must not delete against.
+    func testAnUnreadableRootIsReportedRatherThanReturningJustTheRoot() throws {
+        let locked = root.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                       ofItemAtPath: locked.path) }
+
+        let (_, failures) = ScriptaVault.transcriptLocations(under: locked)
+        XCTAssertFalse(failures.isEmpty, "an unreadable root must report a failure")
+    }
+
     // MARK: - The name that would have deleted the folder
 
     /// `URL.appendingPathComponent("")` RETURNS THE RECEIVER — measured, not assumed — so before
