@@ -39,7 +39,34 @@ public struct TranscriptMeta: Identifiable, Hashable {
 /// Reads app-authored transcripts from the configured output folder.
 public enum TranscriptStore {
 
-    /// All app-authored transcripts in `folder`, newest first.
+    /// Every app-authored transcript under `root`, across BOTH layouts, newest first.
+    ///
+    /// This is what every reading surface should call. `list(in:)` below is the single-directory
+    /// primitive and sees only what is directly in the folder it is given — which was the whole
+    /// app's view of its own corpus, and would have become an empty one the moment a transcript
+    /// moved into a vault (Doc 4 §7). The audit of that move traced 21 surfaces to this one
+    /// function, every one of them failing to ZERO rather than to an error: the calls list, the
+    /// menu, Meetings, concept backfill, the MCP server, the retention pruner.
+    ///
+    /// Both layouts, for the same reason `IndexBuilder.reconcile` reads both: during a migration a
+    /// transcript is in exactly one of them, and a reader that knows only one place reports the
+    /// other half of the corpus as missing.
+    ///
+    /// The two location sets cannot overlap — the root listing is non-recursive and vault
+    /// transcripts are nested — so nothing is deduplicated here. If that ever stops being true this
+    /// needs a dedupe, or a call appears twice in every list in the app.
+    public static func list(under root: URL) -> [TranscriptMeta] {
+        let (locations, _) = ScriptaVault.transcriptLocations(under: root)
+        // Failures are DELIBERATELY not surfaced here: this feeds display surfaces, where showing
+        // what could be read beats showing nothing. The callers that must not act on a partial set
+        // — `WorkspaceDeleter`, `IndexBuilder`'s removal pass — ask for the failures themselves and
+        // refuse. Splitting it that way keeps "I could not look" load-bearing exactly where acting
+        // on it would destroy something.
+        return locations.flatMap { list(in: $0) }
+            .sorted { ($0.date, $0.time) > ($1.date, $1.time) }
+    }
+
+    /// All app-authored transcripts directly in `folder`, newest first. Non-recursive.
     public static func list(in folder: URL) -> [TranscriptMeta] {
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: folder, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
