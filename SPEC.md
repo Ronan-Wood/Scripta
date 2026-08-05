@@ -22,13 +22,20 @@ frontmatter, written to a user-configured folder (typically inside an Obsidian v
 | Raw audio deletion | Only after transcript verified written + non-empty; failures left for launch-time temp sweep | Spec says delete after *successful* transcription |
 | OCR dedup | Line-level similarity (Jaccard over normalized lines, ~0.85 threshold), persist changed lines | Exact hash too brittle (live clocks/tickers) |
 | Signing | **Apple Development cert** (chosen 2026-07-13; free, via Xcode → Accounts; also enables later notarization) | Stable identity so TCC grants survive rebuilds |
-| Sandbox | **On, all configs** (flipped 2026-07-16 for App Store; original "Off" rationale obsolete — whisper subprocess gone, SCK capture + screenshots proven sandboxed in a real recording) | Folder via security-scoped bookmark; shared index/state via App Group; MCP helper stays unsandboxed (external spawn) and leaves the MAS bundle at submission |
+| Sandbox | **Off, all configs** (2026-07-30, Doc 3 §1. Was Off; flipped On 2026-07-16 for the App Store; flipped back when Doc 3 dropped the App Store — a bundled MCP helper cannot ship in a MAS bundle, and Doc 3 §2 then made the app spawn the substrate engine, which a sandboxed app cannot do) | Folder by stored **path**, not a bookmark — a security-scoped bookmark written under the sandbox does not resolve outside it, so `ContainerPreferences` carries the path forward once and drops the bookmark. Shared index/state stays in the App Group, which is not a sandbox concept: `scripta-mcp` already reaches it unsandboxed. `Scripta-MAS` is now unsubmittable |
 | Known cost (accepted) | macOS 15+ re-prompts monthly for screen-recording permission; cannot be disabled | One click/month |
 
 ## Non-negotiable invariants
 
-- Raw audio and screenshots are ALWAYS ephemeral (true temp dir; launch-time orphan sweep). No setting changes this.
-- Only extracted OCR text is retained, never images.
+- Raw audio and screenshots are ALWAYS ephemeral (true temp dir; launch-time orphan sweep). No
+  setting moves them out of the temp tree or spares them from deletion. One setting extends a
+  screenshot's *life*, and this clause says so because the code has done it since the vision pass
+  landed and the invariant did not: with `visionModel` assigned (default unset — then no image is
+  ever written), up to 20 frames per session wait in a sibling temp dir for the post-call VLM
+  caption pass. Sibling because `cleanup()` deletes the session dir with the audio; still under
+  `NSTemporaryDirectory()` so the OS sweeps them even if Scripta is never launched again. The
+  captioner deletes the directory when it finishes, and `sweepPendingCaptions()` covers a crash.
+- Only extracted OCR text reaches the transcript, never images.
 - No network calls for transcription/OCR, and no cloud LLM calls, ever. In-app model use is
   Apple's on-device Foundation Models (default) plus, opt-in, a user-run local server on
   loopback/LAN (Ollama/LM Studio, OpenAI wire format) — public hosts are refused with no
