@@ -16,9 +16,24 @@ enum Retriever {
         // Hybrid path: fuse lexical (FTS) + semantic (cosine) candidate lists via RRF when the
         // corpus is embedded with the active model. Falls back to pure FTS otherwise (endpoint off,
         // no embedder, or embeddings not built) — the reliability story.
+        // COMPLETE COVERAGE, not presence. `substrate/retrieve/retriever.py:332` states the rule this
+        // mirrors — `n_chunks == 0 or n_vec < n_chunks` degrades the embedder — and both halves earn
+        // their place. A partly-embedded corpus fuses a full lexical list against a near-empty vector
+        // list, and RRF scores by position, so the few embedded chunks take the vector arm's top ranks
+        // on every query regardless of relevance. And zero chunks satisfies `embedded >= total` as
+        // `0 >= 0`, which would call an empty index fully covered — the absence of coverage, not the
+        // completion of it.
+        let coverage = store.vectorCoverage(model: AppSettings.embedModel)
+        let fullyEmbedded = coverage.total > 0 && coverage.embedded >= coverage.total
+        if !AppSettings.embedModel.isEmpty, coverage.embedded > 0, !fullyEmbedded {
+            // Named rather than silently lexical, because "I turned embeddings on and search got no
+            // better" is otherwise unattributable — and the remedy is one button in Settings.
+            log.info("hybrid off: \(coverage.embedded)/\(coverage.total) chunks embedded under \(AppSettings.embedModel, privacy: .public) — re-run the embedding backfill")
+        }
+
         let candidates: [ContextChunk]
         if !AppSettings.embedModel.isEmpty,
-           store.hasVectors(model: AppSettings.embedModel),
+           fullyEmbedded,
            let qvec = await Embedder.embedQuery(query) {
             let fts = store.ftsCandidates(query, group: group, limit: 40)
             let vec = store.vectorCandidates(vector: qvec, group: group, model: AppSettings.embedModel, limit: 40)
