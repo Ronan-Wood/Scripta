@@ -141,6 +141,55 @@ final class ScriptaVaultTests: XCTestCase {
         XCTAssertTrue(found.failures.isEmpty, "absence is not a failure to look: \(found.failures)")
     }
 
+    // MARK: - The workspace is where the file is
+
+    func testATranscriptInAVaultBelongsToThatVaultsScope() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        let call = vault.transcripts.appendingPathComponent("call.md")
+        XCTAssertEqual(ScriptaVault.scope(forTranscriptAt: call, under: root), "cbre")
+    }
+
+    /// The flat layout still answers from frontmatter, so the caller falls back — `nil` here means
+    /// "not derivable", not "no workspace".
+    func testAFlatTranscriptHasNoDerivableScope() {
+        let call = root.appendingPathComponent("Call — 2026-08-05 0900.md")
+        XCTAssertNil(ScriptaVault.scope(forTranscriptAt: call, under: root))
+    }
+
+    /// Structural, not a prefix test. A file that merely lives somewhere below a vault — or below a
+    /// directory this app does not own — must not be claimed by it.
+    func testOnlyTheTranscriptDirectoryItselfCounts() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+
+        // Right vault, wrong directory: a note is not a transcript.
+        let note = vault.notes.appendingPathComponent("thinking.md")
+        XCTAssertNil(ScriptaVault.scope(forTranscriptAt: note, under: root))
+
+        // Nested one level deeper than the transcript directory.
+        let nested = vault.transcripts.appendingPathComponent("sub/call.md")
+        XCTAssertNil(ScriptaVault.scope(forTranscriptAt: nested, under: root))
+
+        // The right shape, but the directory carries no manifest, so it is not a vault.
+        let impostor = root.appendingPathComponent("notavault/_sources/transcripts/call.md")
+        XCTAssertNil(ScriptaVault.scope(forTranscriptAt: impostor, under: root))
+    }
+
+    /// A vault under a DIFFERENT root is not this root's business — otherwise one operator folder
+    /// could claim transcripts belonging to another.
+    func testAVaultUnderAnotherRootIsNotClaimed() throws {
+        let other = root.appendingPathComponent("elsewhere", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: other)
+        try vault.write()
+
+        let call = vault.transcripts.appendingPathComponent("call.md")
+        XCTAssertEqual(ScriptaVault.scope(forTranscriptAt: call, under: other), "cbre")
+        XCTAssertNil(ScriptaVault.scope(forTranscriptAt: call, under: root),
+                     "a vault under another root must not be claimed by this one")
+    }
+
     // MARK: - The name that would have deleted the folder
 
     /// `URL.appendingPathComponent("")` RETURNS THE RECEIVER — measured, not assumed — so before

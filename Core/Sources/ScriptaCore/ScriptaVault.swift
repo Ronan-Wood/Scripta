@@ -140,6 +140,35 @@ public struct ScriptaVault: Equatable {
         return (entries.filter(isVault), [])
     }
 
+    /// The workspace a transcript belongs to, derived from WHERE IT IS. `nil` when it is not inside
+    /// a vault under `root` — the flat layout, where the frontmatter `group:` is still the answer.
+    ///
+    /// Doc 4 §7 retires `group:` as the partition and makes location the partition instead. This is
+    /// that rule, and it is the engine's own: `vault._tier_for` derives a note's tier from its path
+    /// rather than from a flag, "because core-vault holds both tier-1 and tier-2 content" — a field
+    /// and a location that both claim to say where something belongs can disagree, and then every
+    /// reader has to pick one.
+    ///
+    /// That disagreement is not hypothetical. The export gate found `app: call-transcriber-doc`
+    /// sitting three lines under `class: conversation` in a note the exporter had written: the key
+    /// that disproved the classification, carried through unread by the code that made it. A
+    /// `group: "Personal"` on a transcript inside the `cbre` vault is the same shape, and the
+    /// privacy wall is what it would be wrong about.
+    ///
+    /// Matched structurally rather than by prefix: the path must be exactly
+    /// `<root>/<scope>/_sources/transcripts/<file>` and `<scope>` must carry a manifest. A prefix
+    /// test would claim any file that happens to live below a vault, including one in a directory
+    /// this app does not own.
+    public static func scope(forTranscriptAt file: URL, under root: URL) -> String? {
+        let transcriptDirectory = file.deletingLastPathComponent().standardizedFileURL
+        let vaultRoot = transcriptDirectory.deletingLastPathComponent().deletingLastPathComponent()
+        guard transcriptDirectory == transcripts(inVaultAt: vaultRoot).standardizedFileURL,
+              vaultRoot.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL,
+              isVault(vaultRoot)
+        else { return nil }
+        return vaultRoot.lastPathComponent
+    }
+
     /// The vault for one scope beneath `root`, if it exists on disk. `nil` and a failure are
     /// different answers and both are returned, because a caller that treats "could not look" as
     /// "not there" is the lying-wipe bug.
