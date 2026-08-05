@@ -45,18 +45,43 @@ final class RecordingSession {
     /// deletes the audio) doesn't take it.
     var pendingCaptionDir: URL? { captionDir }
 
-    /// Root for ephemeral caption dirs — swept at launch so a crash can't leave screenshots behind.
+    /// Root for ephemeral caption dirs — in the TRUE TEMP TREE, and that is the whole point.
+    ///
+    /// It lived under Application Support, which satisfied "outside the session dir" — the real
+    /// constraint, since `cleanup()` deletes the session dir with the audio and the caption pass runs
+    /// after it — but bought that with the one property the SPEC's "true temp dir" clause exists for:
+    /// **macOS never sweeps Application Support.** `NSTemporaryDirectory()` is cleaned by the OS on
+    /// its own schedule; Application Support is cleaned by nobody.
+    ///
+    /// So `sweepPendingCaptions()` was the ONLY thing that removed a crash's leftovers, and it runs
+    /// at launch — which requires a launch. Record with a vision model assigned, crash, and never
+    /// open Scripta again, and PNG screenshots of whatever was on screen sit there indefinitely.
+    /// In the temp tree the OS clears them whether or not the app is ever run again.
+    ///
+    /// Leaving the SESSION dir never required leaving the TEMP TREE. A sibling directory under
+    /// `NSTemporaryDirectory()` survives `cleanup()` exactly as well, and is swept twice over.
+    /// The per-user temp dir is `/var/folders/…` at 0700 — the same privacy as Application Support,
+    /// so nothing is traded for it.
     static var pendingCaptionsRoot: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Scripta", isDirectory: true)
-            .appendingPathComponent("pending-captions", isDirectory: true)
-        return base
+        URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("Scripta-pending-captions", isDirectory: true)
     }
 
     /// Deletes any leftover caption dirs from a previous run (their transcripts already have OCR
     /// screen text; only the nice-to-have captions are lost). Call on launch.
+    ///
+    /// The Application Support path is swept too, and it is not a compatibility shim — it is the
+    /// only thing that will ever remove screenshots an older build orphaned there. Moving the root
+    /// into the temp tree means nothing else looks at the old location again, and what may be
+    /// sitting in it is PNGs of whatever was on the user's screen when that build crashed. The
+    /// invariant is "launch-time orphan sweep", which is about where orphans can be, not about one
+    /// path. Delete this when no install that wrote there can plausibly remain.
     static func sweepPendingCaptions() {
         try? FileManager.default.removeItem(at: pendingCaptionsRoot)
+        let legacy = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Scripta", isDirectory: true)
+            .appendingPathComponent("pending-captions", isDirectory: true)
+        try? FileManager.default.removeItem(at: legacy)
     }
     // Paused intervals are spliced out of the audio tracks, so wall-clock duration must
     // splice them out too or the frontmatter overstates the call.
