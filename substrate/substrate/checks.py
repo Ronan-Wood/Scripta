@@ -52,7 +52,7 @@ def document_checks(out: Path) -> list[tuple[str, str, bool, str]]:
     display name is not — A14's name changes with the source format — so a caller classifying a
     failure matches the id, never the label.
 
-    APPLICABILITY is per source format, and is a separate question from severity. A1/A1b hunt for
+    APPLICABILITY is per ingest ARM, and is a separate question from severity. A1/A1b hunt for
     EXTRACTION artifacts and are emitted for the PDF path only: `residue` matches
     `[a-z]\\s*[!­‐‑]\\s*[a-z]` because Docling renders DDIA's soft hyphen as `!`, so on authored
     markdown it counts ordinary exclamations — three "word! word" occurrences in one migrated note
@@ -68,7 +68,13 @@ def document_checks(out: Path) -> list[tuple[str, str, bool, str]]:
     chunks = [json.loads(x) for x in (out / "chunks.jsonl").read_text("utf-8").splitlines() if x]
 
     passages = [c for c in chunks if c["kind"] == "passage"]
-    is_md = run.get("source_format") == "markdown"
+    # Applicability follows the ARM that ran, not the format the file started as. A DOCX is
+    # converted to markdown and then ingested by the markdown arm end to end, so it gets A18/A19
+    # (which measure exactly what that arm does) and not A1/A1b (which hunt PDF text-layer glyph
+    # artifacts and, on authored prose, count ordinary exclamation marks as hyphen residue).
+    # `source_format` is the fallback for run.json files written before `ingest_arm` existed — for
+    # those the two questions had the same answer, because markdown was the only markdown-arm input.
+    is_md = run.get("ingest_arm", "markdown" if run.get("source_format") == "markdown" else "") == "markdown"
     checks: list[tuple[str, str, bool, str]] = []
 
     if not is_md:

@@ -142,6 +142,38 @@ class Chunk:
         return d
 
 
+@dataclass(frozen=True)
+class SourceOrigin:
+    """What a markdown body was made FROM, when the markdown is not the source.
+
+    The converted-document arm (DOCX/PPTX/XLSX/HTML/image → docling → markdown → the one
+    gate-enforcing ingest body) hands `ingest_markdown` a TEMPORARY markdown file. Without this,
+    identity would be taken from that temp file: the doc_id would be derived from a path that
+    exists for one second, the `source_sha256` would checksum a derivative, and every
+    provenance field in run.json and the emitted frontmatter would name a file nobody can
+    produce again. So identity travels with the real artifact and this carries it.
+
+    Every override field is optional and applied ONLY when set — the plain-text arm reads the
+    real file directly, so it needs the title and the format token and nothing else.
+
+    `title` is a LAST-RESORT title, used only when the document has no heading and declared none.
+    The class gate requires one (a passage that cannot identify itself is refused), and a
+    converted document legitimately may have no heading at all — a one-slide deck, a bare
+    spreadsheet. The filename is what the operator called the document; it is identity, not an
+    invention, and `run.json` records which of the three sources supplied it.
+    """
+
+    source_format: str                  # run.json["source_format"] — the ORIGINAL format token
+    path: str | None = None
+    sha256: str | None = None
+    doc_id: str | None = None
+    extractor: str | None = None
+    extractor_arm: str | None = None
+    pages: int | None = None
+    title: str | None = None
+    stats: dict = field(default_factory=dict)  # conversion evidence → run.json["extract"]
+
+
 @dataclass
 class Document:
     """A whole extracted document plus the provenance/confidence spine."""

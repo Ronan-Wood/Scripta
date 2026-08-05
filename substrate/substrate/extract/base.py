@@ -28,8 +28,20 @@ def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
+def doc_id_from(stem: str, sha256: str) -> str:
+    """The id SHAPE, for a caller that already knows the fingerprint.
+
+    Split out of `doc_id_for` rather than copied: a second place that builds this string is a second
+    place for the slug rule to drift, and only one of the two would get the next fix. The caller with
+    a fingerprint in hand is the converted-document path, where re-reading the source to recompute
+    a sha it just wrote into `SourceOrigin` would be both wasteful and a hard dependency on the file
+    still being there.
+    """
+    s = "".join(c if c.isalnum() else "-" for c in stem.lower())
+    s = "-".join(filter(None, s.split("-")))[:48]
+    return f"{s}-{sha256[:8]}"
+
+
 def doc_id_for(path: Path) -> str:
     """Stable, human-readable id derived from the filename plus a content fingerprint."""
-    stem = "".join(c if c.isalnum() else "-" for c in path.stem.lower())
-    stem = "-".join(filter(None, stem.split("-")))[:48]
-    return f"{stem}-{sha256_file(path)[:8]}"
+    return doc_id_from(path.stem, sha256_file(path))
