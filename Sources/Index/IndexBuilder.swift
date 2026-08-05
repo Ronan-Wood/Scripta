@@ -23,6 +23,21 @@ enum IndexBuilder {
         }
         let content = TranscriptStore.body(of: url)
 
+        // THE WORKSPACE IS WHERE THE FILE IS (Doc 4 §7). A transcript inside a vault belongs to that
+        // vault's scope, whatever its frontmatter says; only a flat-layout transcript still answers
+        // from `group:`. The index column stays — five query sites partition on it and the privacy
+        // wall is built from them — but its VALUE stops being a field that can disagree with the
+        // location it sits in.
+        let derived = ScriptaVault.scope(forTranscriptAt: url, under: AppSettings.outputFolder)
+        if let derived, !meta.group.isEmpty, derived != ScriptaVault.slug(meta.group) {
+            // Reported, not reconciled: the file is not rewritten here. Location wins because it is
+            // the thing the operator can see, and a stale `group:` is exactly what §7 retires — but
+            // a transcript whose two answers disagree is worth knowing about, since one of them was
+            // the privacy wall until this commit.
+            log.error("\(url.lastPathComponent, privacy: .public) declares group '\(meta.group, privacy: .public)' but sits in the '\(derived, privacy: .public)' vault — indexing it under the vault")
+        }
+        let group = derived ?? meta.group
+
         // Strip NUL/control chars so sqlite3_bind_text (strlen-based) can't truncate the indexed text
         // at an embedded NUL — screen-context OCR of a broken glyph can emit one, the same class the
         // v11 rebuild fixed for the document/note paths (audit L2).
@@ -30,7 +45,7 @@ enum IndexBuilder {
             path: url.path, title: meta.title, date: meta.date, time: meta.time,
             duration: meta.duration, participants: meta.participants, tags: meta.tags,
             summary: Indexing.stripControlChars(Indexing.summary(from: content)), mtime: mtime,
-            mode: meta.isConference ? "conference" : "", group: meta.group,
+            mode: meta.isConference ? "conference" : "", group: group,
             // The full file, verbatim, so the MCP serves get_transcript byte-exact off the index.
             body: Indexing.stripControlChars(content))
 
@@ -57,7 +72,7 @@ enum IndexBuilder {
             let owner = Indexing.stripControlChars(String(line[..<range.lowerBound]).trimmingCharacters(in: .whitespaces))
             let text = Indexing.stripControlChars(String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces))
             guard !owner.isEmpty, !text.isEmpty else { return nil }
-            let ownerID = EntityRegistry.resolveCommitmentOwner(owner, group: meta.group)
+            let ownerID = EntityRegistry.resolveCommitmentOwner(owner, group: group)
             return IndexedActionItem(ownerID: ownerID, text: text, status: done ? "done" : "open")
         }
         store.upsert(transcript, chunks: chunks, actionItems: actionItems)
@@ -68,7 +83,7 @@ enum IndexBuilder {
         // Ledger-gated: only re-runs when the derived content changed. The registry is the identity
         // system-of-record; the entity/mention tables are a cache resolved from it.
         if store.stageHash(path: url.path, stage: "extract") != hash {
-            extractEntities(url: url, group: meta.group, attendees: meta.participants, chunks: chunks, store: store, registry: registry)
+            extractEntities(url: url, group: group, attendees: meta.participants, chunks: chunks, store: store, registry: registry)
             store.recordStage(path: url.path, stage: "extract", hash: hash, model: "nltagger-v1")
         }
     }
