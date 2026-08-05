@@ -34,10 +34,42 @@ public struct ScriptaVault: Equatable {
     /// NAS mount."
     public let inherits: [URL]
 
-    public init(root: URL, scope: String, inherits: [URL] = []) {
+    /// A VAULT WITH NO NAME CANNOT BE CONSTRUCTED, and the guard is here rather than at the call
+    /// sites because of what the missing one did.
+    ///
+    /// `URL.appendingPathComponent("")` returns the RECEIVER — measured, not assumed — so
+    /// `vault(forScope: "", under: outputFolder)` produced a vault whose root WAS the operator's
+    /// output folder. `""` is `AppSettings.activeGroup`'s fresh-install default and every
+    /// unslugifiable name ("———", whitespace) reaches the same place, so the first launch on a new
+    /// machine was the likeliest way to hit it. `write()` would then drop `.substrate.toml` at the
+    /// root of the operator's folder, and §7's "delete the vault directory" would resolve to
+    /// `removeItem(at: outputFolder)`.
+    ///
+    /// The engine refuses the same thing for the same reason — `transcript_export.scope_name` raises
+    /// "workspace {!r} slugifies to nothing; give it a name" — and this side simply did not. Throwing
+    /// rather than returning an optional so the reason travels with the refusal, and validating in
+    /// `init` rather than in the factory so there is no second way to build the bad value.
+    public init(root: URL, scope: String, inherits: [URL] = []) throws {
+        let name = Self.slug(scope)
+        guard !name.isEmpty else { throw VaultError.unnameableScope(scope) }
         self.root = root
-        self.scope = scope
+        self.scope = name
         self.inherits = inherits
+    }
+
+    public enum VaultError: LocalizedError, Equatable {
+        case unnameableScope(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .unnameableScope(let raw):
+                return "A workspace named \(raw.isEmpty ? "\"\"" : "\"\(raw)\"") has no usable "
+                    + "directory or scope name — it reduces to nothing once slugified. Name the "
+                    + "workspace before recording into it. (The engine refuses the same value: "
+                    + "`substrate export-transcripts` raises \"slugifies to nothing; give it a "
+                    + "name\".)"
+            }
+        }
     }
 
     // MARK: - Where things go
@@ -121,9 +153,19 @@ public struct ScriptaVault: Equatable {
     /// holds transcripts (Doc 4 §7's open question, decided 2026-08-05). The operator's existing
     /// setting keeps meaning something, and where it points — synced or not — stays their choice.
     public static func vault(forScope scope: String, under root: URL,
-                             inherits: [URL] = []) -> ScriptaVault {
-        ScriptaVault(root: root.appendingPathComponent(slug(scope), isDirectory: true),
-                     scope: slug(scope), inherits: inherits)
+                             inherits: [URL] = []) throws -> ScriptaVault {
+        let name = slug(scope)
+        guard !name.isEmpty else { throw VaultError.unnameableScope(scope) }
+        let directory = root.appendingPathComponent(name, isDirectory: true)
+        // THE HARM, CHECKED DIRECTLY, not only its cause. Every destructive operation §7 describes
+        // acts on `vault.root`, so a root that resolved to the containing folder would aim
+        // "delete this workspace" at every workspace. The slug guard above already prevents the one
+        // way that happened; this asserts the property that actually matters, so a future change to
+        // path construction cannot reintroduce it quietly.
+        guard directory.standardizedFileURL != root.standardizedFileURL else {
+            throw VaultError.unnameableScope(scope)
+        }
+        return try ScriptaVault(root: directory, scope: name, inherits: inherits)
     }
 
     /// Lowercase ASCII slug — the shape a scope name and a directory name can both be, so the two
