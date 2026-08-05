@@ -25,6 +25,7 @@ enum AppSettings {
         static let calendarGroups = "calendarGroups"
         static let activeGroup = "activeGroup"
         static let workspaceReadScopes = "workspaceReadScopes"
+        static let workspaceReadVaults = "workspaceReadVaults"
         static let summarizeEnabled = "summarizeEnabled"
         static let notesMergeEnabled = "notesMergeEnabled"
         static let promptForDetails = "promptForDetails"
@@ -278,6 +279,23 @@ enum AppSettings {
     static var workspaceReadScopes: [String: String] {
         get { (defaults.dictionary(forKey: Keys.workspaceReadScopes) as? [String: String]) ?? [:] }
         set { defaults.set(newValue, forKey: Keys.workspaceReadScopes) }
+    }
+
+    /// The VAULT PATH of each workspace's bound scope, resolved once when the binding is made.
+    ///
+    /// A cache of engine state, which normally would not be worth the risk — but the engine
+    /// guarantees the thing that makes a cache dangerous cannot happen: `scopes.record` "refuses to
+    /// repoint an existing name at a DIFFERENT vault", so a scope name maps to one vault path for
+    /// as long as that scope exists. The pair cannot silently diverge.
+    ///
+    /// Stored because capture needs it where the roster cannot be reached. A workspace vault
+    /// declares `inherits = [<bound scope's vault>]`, and that manifest is written by
+    /// `RecordingSession.destination(forWorkspace:)` — a `static` running off the main actor as a
+    /// call finishes, while `SubstrateScopes` is `@MainActor`. Resolving at bind time is what lets
+    /// the write path stay synchronous.
+    static var workspaceReadVaults: [String: String] {
+        get { (defaults.dictionary(forKey: Keys.workspaceReadVaults) as? [String: String]) ?? [:] }
+        set { defaults.set(newValue, forKey: Keys.workspaceReadVaults) }
     }
 
     /// The workspace the user is currently in. Retrieval is hard-scoped to it (secure by default) —

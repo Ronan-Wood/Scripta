@@ -510,7 +510,13 @@ final class RecordingSession {
     /// flat folder, which every reader still covers.
     private static func destination(forWorkspace group: String) -> URL {
         let root = AppSettings.outputFolder
-        guard let vault = try? ScriptaVault.vault(forScope: group, under: root) else { return root }
+        // The bound scope's vault becomes this one's `inherits` (Doc 4 §8), so the workspace vault
+        // composes to a scope holding the workspace's calls AND its curated notes — one corpus, one
+        // query, which is what live retrieval during a call requires. Absent when the workspace has
+        // no binding yet: the vault is still written, and still correct, just holding only calls.
+        let inherits = WorkspaceBindings.binding(for: group).inheritsVault.map { [$0] } ?? []
+        guard let vault = try? ScriptaVault.vault(forScope: group, under: root, inherits: inherits)
+        else { return root }
         do {
             try vault.write()
             return vault.transcripts

@@ -161,7 +161,11 @@ final class SubstrateAskModel: ObservableObject {
     /// live, this chooses what that binding points at, and the pair answers one question once.
     func bind(scope name: String) {
         guard scope != name else { return }
-        WorkspaceBindings.bind(workspace, reads: name)
+        // The scope's VAULT PATH is captured here, from the roster, because this is where it is
+        // knowable: capture writes the workspace vault's `inherits` off the main actor, where
+        // `SubstrateScopes` cannot be reached (Doc 4 §8).
+        WorkspaceBindings.bind(workspace, reads: name,
+                               vault: SubstrateScopes.shared.rows.first { $0.scope == name }?.vault)
         scope = name
         refusedInclusion = nil
         let standing = standingQuery

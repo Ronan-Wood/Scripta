@@ -53,6 +53,18 @@ struct WorkspaceBinding: Equatable {
     /// stops being.
     var transcriptVault: URL { SubstrateLibrary.transcriptVault(workspace: workspace) }
 
+    /// The vault directory of the bound scope, for the workspace vault's `inherits` (Doc 4 §8).
+    ///
+    /// THIS IS WHAT MAKES A WORKSPACE VAULT CONTAIN THE WORKSPACE. Without it the app writes a vault
+    /// holding only calls, declaring `inherits = []` — and composing it would both omit the curated
+    /// notes and collide with the registered scope of the same name, which `scopes.record` refuses.
+    /// The collision is what surfaced this: a workspace vault takes the scope's NAME, so it must
+    /// also take on what that scope was composing.
+    var inheritsVault: URL? {
+        AppSettings.workspaceReadVaults[workspace]
+            .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
+    }
+
     var isBound: Bool { readsScope != nil }
 }
 
@@ -77,10 +89,22 @@ enum WorkspaceBindings {
     /// listing, so validating at write time would only move the check to the one moment it cannot
     /// be kept true — a scope can stop resolving after it is bound, and that has to surface as a
     /// stale binding rather than have been prevented at a moment that has passed.
-    static func bind(_ workspace: String, reads scope: String?) {
-        var map = AppSettings.workspaceReadScopes
-        if let scope, !scope.isEmpty { map[workspace] = scope } else { map.removeValue(forKey: workspace) }
-        AppSettings.workspaceReadScopes = map
+    /// `vault` is the bound scope's vault directory, from `WireScopeRow.vault`. Stored beside the
+    /// name because capture needs it off the main actor — see `AppSettings.workspaceReadVaults`.
+    /// Passing `nil` for it binds the name without the path, which leaves the workspace vault
+    /// inheriting nothing: correct only when the caller genuinely does not know the path.
+    static func bind(_ workspace: String, reads scope: String?, vault: String? = nil) {
+        var scopes = AppSettings.workspaceReadScopes
+        var vaults = AppSettings.workspaceReadVaults
+        if let scope, !scope.isEmpty {
+            scopes[workspace] = scope
+            if let vault, !vault.isEmpty { vaults[workspace] = vault } else { vaults.removeValue(forKey: workspace) }
+        } else {
+            scopes.removeValue(forKey: workspace)
+            vaults.removeValue(forKey: workspace)
+        }
+        AppSettings.workspaceReadScopes = scopes
+        AppSettings.workspaceReadVaults = vaults
     }
 
     /// Drop a workspace's binding entirely — for `WorkspaceDeleter`, which wipes a workspace.
