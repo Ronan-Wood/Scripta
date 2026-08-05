@@ -22,8 +22,8 @@ final class ScriptaVaultTests: XCTestCase {
 
     /// Tier is derived from location by `vault._tier_for`, so these prefixes are a contract with the
     /// engine rather than a naming preference.
-    func testLayoutMatchesTheTiersTheEngineDerives() {
-        let vault = ScriptaVault(root: root, scope: "cbre")
+    func testLayoutMatchesTheTiersTheEngineDerives() throws {
+        let vault = try ScriptaVault(root: root, scope: "cbre")
         XCTAssertTrue(vault.transcripts.path.hasSuffix("/_sources/transcripts"))
         XCTAssertTrue(vault.notes.path.hasSuffix("/02-areas"))
         XCTAssertTrue(vault.references.path.hasSuffix("/10-reference"))
@@ -32,8 +32,8 @@ final class ScriptaVaultTests: XCTestCase {
 
     /// `outputFolder` becomes the root that holds vaults, one per scope (Doc 4 §7's open question,
     /// decided 2026-08-05) — so the operator's existing setting keeps meaning something.
-    func testAScopeGetsItsOwnVaultDirectoryUnderTheRoot() {
-        let vault = ScriptaVault.vault(forScope: "CBRE", under: root)
+    func testAScopeGetsItsOwnVaultDirectoryUnderTheRoot() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
         XCTAssertEqual(vault.root.lastPathComponent, "cbre")
         XCTAssertEqual(vault.scope, "cbre")
         XCTAssertEqual(vault.root.deletingLastPathComponent().standardizedFileURL,
@@ -42,18 +42,53 @@ final class ScriptaVaultTests: XCTestCase {
 
     /// The directory name and the scope name are one slug, so they cannot disagree — the failure
     /// `SubstrateLibraryModel` had when a name and a location were held as two values.
-    func testTheDirectoryNameAndTheScopeNameAreTheSameSlug() {
+    func testTheDirectoryNameAndTheScopeNameAreTheSameSlug() throws {
         for name in ["CBRE", "cbre", "C.B.R.E.", "  CBRE  "] {
-            let vault = ScriptaVault.vault(forScope: name, under: root)
+            let vault = try ScriptaVault.vault(forScope: name, under: root)
             XCTAssertEqual(vault.scope, vault.root.lastPathComponent, "disagreed for \(name)")
         }
-        XCTAssertEqual(ScriptaVault.vault(forScope: "Work Calls", under: root).scope, "work-calls")
+        XCTAssertEqual(try ScriptaVault.vault(forScope: "Work Calls", under: root).scope, "work-calls")
+    }
+
+    // MARK: - The name that would have deleted the folder
+
+    /// `URL.appendingPathComponent("")` RETURNS THE RECEIVER — measured, not assumed — so before
+    /// this guard `vault(forScope: "", under: outputFolder)` produced a vault whose root WAS the
+    /// operator's output folder. `""` is `AppSettings.activeGroup`'s fresh-install default, so a
+    /// first launch was the likeliest way to reach it: `write()` would drop `.substrate.toml` at
+    /// the root of their folder, and Doc 4 §7's "delete the vault directory" would resolve to
+    /// `removeItem(at: outputFolder)`.
+    func testAnUnnameableScopeIsRefusedRatherThanResolvingToTheRoot() {
+        for name in ["", "   ", "———", "…"] {
+            XCTAssertThrowsError(try ScriptaVault.vault(forScope: name, under: root),
+                                 "\(name.debugDescription) must not name a vault") { error in
+                XCTAssertEqual(error as? ScriptaVault.VaultError, .unnameableScope(name))
+            }
+            XCTAssertThrowsError(try ScriptaVault(root: root, scope: name),
+                                 "the initializer must refuse it too, or there are two ways in")
+        }
+    }
+
+    /// The property that actually matters, asserted directly rather than only through its cause:
+    /// no vault's root may be the folder that contains vaults.
+    func testAVaultRootIsNeverTheContainingRoot() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        XCTAssertNotEqual(vault.root.standardizedFileURL, root.standardizedFileURL)
+    }
+
+    /// The engine refuses the same value for the same reason, so the two sides agree about what a
+    /// nameable workspace is. `transcript_export.scope_name` raises "slugifies to nothing; give it
+    /// a name" — this message names that kinship so a reader hitting one finds the other.
+    func testTheRefusalNamesTheRemedyAndTheEnginesAgreement() {
+        let message = ScriptaVault.VaultError.unnameableScope("").errorDescription ?? ""
+        XCTAssertTrue(message.contains("Name the workspace"), message)
+        XCTAssertTrue(message.contains("slugifies to nothing"), message)
     }
 
     // MARK: - The manifest
 
     func testWriteCreatesTheManifestAndTheTranscriptDirectory() throws {
-        let vault = ScriptaVault.vault(forScope: "CBRE", under: root)
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
         try vault.write()
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: vault.manifestURL.path))
@@ -67,7 +102,7 @@ final class ScriptaVaultTests: XCTestCase {
     /// earlier build wrote it is a vault that stops composing after a hand-clean, with nothing
     /// saying why.
     func testWriteIsIdempotentAndRepairsAHandDeletedManifest() throws {
-        let vault = ScriptaVault.vault(forScope: "CBRE", under: root)
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
         try vault.write()
         let first = try String(contentsOf: vault.manifestURL, encoding: .utf8)
 
@@ -78,7 +113,7 @@ final class ScriptaVaultTests: XCTestCase {
 
     func testInheritsIsWrittenAsAbsolutePaths() throws {
         let curated = URL(fileURLWithPath: "/Users/x/Library/CloudStorage/OneDrive-Personal/vaults/cbre-vault")
-        let vault = ScriptaVault(root: root, scope: "cbre", inherits: [curated])
+        let vault = try ScriptaVault(root: root, scope: "cbre", inherits: [curated])
         let manifest = vault.manifest()
 
         XCTAssertTrue(manifest.contains("name = \"cbre\""), manifest)
@@ -88,25 +123,25 @@ final class ScriptaVaultTests: XCTestCase {
         XCTAssertFalse(manifest.contains("inherits = []"), manifest)
     }
 
-    func testNoInheritsIsAnExplicitEmptyList() {
-        XCTAssertTrue(ScriptaVault(root: root, scope: "cbre").manifest().contains("inherits = []"))
+    func testNoInheritsIsAnExplicitEmptyList() throws {
+        XCTAssertTrue(try ScriptaVault(root: root, scope: "cbre").manifest().contains("inherits = []"))
     }
 
     /// `_read_manifest` validates `reference_domains` and `reference_pins` and `vault.py` records
     /// that the features reading them are deferred — "the value was declared, valid-looking, and
     /// read by nobody", which is how a real defect went unnoticed for a whole phase. Emitting a key
     /// whose consumer does not exist is not repeated here.
-    func testTheManifestDeclaresNoKeyWithoutAConsumer() {
-        let manifest = ScriptaVault(root: root, scope: "cbre").manifest()
+    func testTheManifestDeclaresNoKeyWithoutAConsumer() throws {
+        let manifest = try ScriptaVault(root: root, scope: "cbre").manifest()
         XCTAssertFalse(manifest.contains("reference_domains"), manifest)
         XCTAssertFalse(manifest.contains("reference_pins"), manifest)
     }
 
     /// A quote or a backslash in a path is a TOML parse error, and the manifest is the one file
     /// that must parse or the whole scope refuses to compose.
-    func testHostilePathsStayValidTOML() {
+    func testHostilePathsStayValidTOML() throws {
         let nasty = URL(fileURLWithPath: #"/tmp/a "quoted" \path"#)
-        let manifest = ScriptaVault(root: root, scope: "s", inherits: [nasty]).manifest()
+        let manifest = try ScriptaVault(root: root, scope: "s", inherits: [nasty]).manifest()
         XCTAssertTrue(manifest.contains(#"\"quoted\""#), manifest)
         XCTAssertTrue(manifest.contains(#"\\path"#), manifest)
     }
@@ -131,7 +166,7 @@ final class ScriptaVaultTests: XCTestCase {
             throw XCTSkip("no deployed engine at \(engine.path); run substrate/tools/substrate-deploy")
         }
 
-        let vault = ScriptaVault.vault(forScope: "GateTest", under: root)
+        let vault = try ScriptaVault.vault(forScope: "GateTest", under: root)
         try vault.write()
         // One note, in the transcript location, carrying the spine capture now declares.
         try """
