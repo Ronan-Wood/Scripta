@@ -8,6 +8,9 @@ struct HubView: View {
     @State private var expanded: Bool = AppSettings.sidebarExpanded
     @State private var confirmingWorkspaceDelete = false
     @State private var deleteCandidateCount = 0
+    /// Why a wipe was refused, when it was. Non-nil drives an alert — a privacy feature that cannot
+    /// prove it covered everything says so rather than showing a confident zero.
+    @State private var wipeRefusal: String?
     @State private var creatingWorkspace = false
     @State private var newWorkspaceName = ""
     @State private var workspaceHovering = false
@@ -49,13 +52,26 @@ struct HubView: View {
             Button("Delete \(deleteCandidateCount) call\(deleteCandidateCount == 1 ? "" : "s")", role: .destructive) {
                 let group = model.activeGroup
                 Task.detached(priority: .userInitiated) {
-                    WorkspaceDeleter.delete(group: group)
-                    await MainActor.run { model.activeGroup = ""; model.reloadCalls() }
+                    do {
+                        try WorkspaceDeleter.delete(group: group)
+                        await MainActor.run { model.activeGroup = ""; model.reloadCalls() }
+                    } catch {
+                        // The set became unlistable between the count and the confirmation. Nothing
+                        // was deleted — `delete` enumerates before it removes — so this is a
+                        // refusal to report, not a partial wipe to explain.
+                        await MainActor.run { wipeRefusal = error.localizedDescription }
+                    }
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This permanently deletes the transcript files for every call in “\(model.activeGroup)”. It also removes people and vocabulary known only in this workspace. This can't be undone.")
+        }
+        .alert("This workspace cannot be wiped", isPresented: .init(
+            get: { wipeRefusal != nil }, set: { if !$0 { wipeRefusal = nil } })) {
+            Button("OK", role: .cancel) { wipeRefusal = nil }
+        } message: {
+            Text(wipeRefusal ?? "")
         }
         .alert("New workspace", isPresented: $creatingWorkspace) {
             TextField("Name (e.g. Deals)", text: $newWorkspaceName)
@@ -248,8 +264,16 @@ struct HubView: View {
             if !model.activeGroup.isEmpty {
                 Divider()
                 Button(role: .destructive) {
-                    deleteCandidateCount = WorkspaceDeleter.candidates(group: model.activeGroup).count
-                    confirmingWorkspaceDelete = true
+                    // A REFUSAL INSTEAD OF A DIALOG. The count is the operator's evidence that the
+                    // wipe covered everything, so a number taken from a listing that failed is
+                    // worse than no dialog at all — they would confirm "0 calls", see success, and
+                    // hand over the laptop.
+                    do {
+                        deleteCandidateCount = try WorkspaceDeleter.candidates(group: model.activeGroup).count
+                        confirmingWorkspaceDelete = true
+                    } catch {
+                        wipeRefusal = error.localizedDescription
+                    }
                 } label: { Label("Delete “\(model.activeGroup)” workspace…", systemImage: "trash") }
             }
         } label: {

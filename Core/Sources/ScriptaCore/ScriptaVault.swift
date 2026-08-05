@@ -114,19 +114,41 @@ public struct ScriptaVault: Equatable {
     /// target and `swift test` cannot reach it, which is how two of the six Phase 0 defects
     /// survived as long as they did (Doc 4 §6).
     public static func transcriptLocations(under root: URL) -> (locations: [URL], failures: [String]) {
-        var locations = [root]
+        let found = vaultRoots(under: root)
+        return ([root] + found.vaults.map(transcripts(inVaultAt:)), found.failures)
+    }
+
+    /// The vault directories under `root`, and any failure that made the answer incomplete.
+    ///
+    /// Separate from `transcriptLocations` because a caller deleting a WORKSPACE needs to know
+    /// which vault is which, not merely where transcripts might be — and it must be able to tell
+    /// "this workspace has no vault" from "I could not look", which a `[URL]` cannot express.
+    public static func vaultRoots(under root: URL) -> (vaults: [URL], failures: [String]) {
         let entries: [URL]
         do {
             entries = try FileManager.default.contentsOfDirectory(
                 at: root, includingPropertiesForKeys: [.isDirectoryKey],
                 options: [.skipsHiddenFiles])
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+                    && error.code == NSFileReadNoSuchFileError {
+            // The root itself is absent: genuinely no vaults, not a failure to look. A fresh
+            // install before the first recording is exactly this.
+            return ([], [])
         } catch {
-            return (locations, ["\(root.lastPathComponent): \(error.localizedDescription)"])
+            return ([], ["\(root.lastPathComponent): \(error.localizedDescription)"])
         }
-        for entry in entries where isVault(entry) {
-            locations.append(transcripts(inVaultAt: entry))
-        }
-        return (locations, [])
+        return (entries.filter(isVault), [])
+    }
+
+    /// The vault for one scope beneath `root`, if it exists on disk. `nil` and a failure are
+    /// different answers and both are returned, because a caller that treats "could not look" as
+    /// "not there" is the lying-wipe bug.
+    public static func existingVault(forScope scope: String,
+                                     under root: URL) -> (vault: URL?, failures: [String]) {
+        let name = slug(scope)
+        guard !name.isEmpty else { return (nil, []) }
+        let found = vaultRoots(under: root)
+        return (found.vaults.first { $0.lastPathComponent == name }, found.failures)
     }
 
     /// Living notes — the operator's own words about this workspace. Tier 3: project thinking, not
