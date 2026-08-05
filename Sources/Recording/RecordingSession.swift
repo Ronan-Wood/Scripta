@@ -493,6 +493,34 @@ final class RecordingSession {
     /// The convert → transcribe → merge → enrich → write pipeline, shared by `stop()` and the
     /// launch-time orphan recovery. Not main-actor bound; call from a detached task. `extraTags`
     /// lets recovery mark a call as recovered.
+    /// Where a call is written: its workspace's vault, or the flat output folder when there is no
+    /// workspace to name one (Doc 4 §7).
+    ///
+    /// THE UNGROUPED CASE STAYS FLAT, DELIBERATELY, and it is the migration path rather than a
+    /// permanent shape. `ScriptaVault` refuses a scope that slugifies to nothing — a vault always
+    /// has a name — and `AppSettings.activeGroup` is `""` on a fresh install, so the alternatives
+    /// were to invent a name on the operator's behalf or to refuse to record. Inventing one is the
+    /// claim `export_workspace` refuses to make; refusing to record loses the call. Writing flat
+    /// loses nothing: `TranscriptStore.list(under:)` and `IndexBuilder.reconcile` both read that
+    /// location, so an ungrouped call stays fully visible and can be filed later.
+    ///
+    /// A FAILURE TO PREPARE THE VAULT FALLS BACK rather than failing the recording. The transcript
+    /// is the only artefact that cannot be recreated — the audio is deleted after a successful
+    /// write — so a manifest that could not be written must not cost the call. The fallback is the
+    /// flat folder, which every reader still covers.
+    private static func destination(forWorkspace group: String) -> URL {
+        let root = AppSettings.outputFolder
+        guard let vault = try? ScriptaVault.vault(forScope: group, under: root) else { return root }
+        do {
+            try vault.write()
+            return vault.transcripts
+        } catch {
+            let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Recording")
+            log.error("could not prepare the vault for \(group, privacy: .public): \(error.localizedDescription, privacy: .public) — writing to the output folder instead")
+            return root
+        }
+    }
+
     static func produceTranscript(
         systemURL: URL, micURL: URL, youWavURL: URL, themWavURL: URL,
         startedAt: Date, duration: TimeInterval,
@@ -562,7 +590,7 @@ final class RecordingSession {
             }
         }
 
-        let url = try TranscriptWriter.write(to: AppSettings.outputFolder, segments: segments,
+        let url = try TranscriptWriter.write(to: destination(forWorkspace: group), segments: segments,
                                              startedAt: startedAt, duration: duration,
                                              tags: tags, title: title, summary: summary,
                                              screenSnippets: snippets, notes: notes,

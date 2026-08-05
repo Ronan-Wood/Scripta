@@ -111,3 +111,67 @@ final class TranscriptStoreLayoutTests: XCTestCase {
                       "a directory with no manifest must not be treated as a vault")
     }
 }
+
+/// Retention across both layouts.
+///
+/// The pruner's shallow listing still SUCCEEDS on a vaults root — it just finds no `.md` — so
+/// without this the feature would fail silently: nothing deleted, nothing reported, transcripts
+/// accumulating past the configured window with no symptom anywhere.
+final class RetentionLayoutTests: XCTestCase {
+    private var root: URL!
+
+    override func setUpWithError() throws {
+        root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("RetentionLayout-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: root) }
+
+    /// `TranscriptWriter.uniqueURL`'s shape — the pruner gates on the filename as well as the
+    /// marker, so a name it does not recognise is never deleted.
+    private func writeOldCall(in directory: URL, named name: String) throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(name)
+        try """
+        ---
+        date: 2020-01-01
+        time: "09:00"
+        app: \(OwnerMarker.value)
+        ---
+
+        # Old call
+        """.write(to: url, atomically: true, encoding: .utf8)
+        let old = Date(timeIntervalSince1970: 0)
+        try FileManager.default.setAttributes([.creationDate: old, .modificationDate: old],
+                                              ofItemAtPath: url.path)
+        return url
+    }
+
+    func testRetentionReachesTranscriptsInsideVaults() throws {
+        let flat = try writeOldCall(in: root, named: "Call — 2020-01-01 0900.md")
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        let inVault = try writeOldCall(in: vault.transcripts, named: "Call — 2020-01-01 0901.md")
+
+        RetentionPruner.pruneIfNeeded(.init(enabled: true, days: 30, folder: root))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flat.path), "flat call not pruned")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: inVault.path),
+                       "a call inside a vault outlived the retention window — the pruner's shallow "
+                       + "listing finds no .md in a vaults root and fails silently")
+    }
+
+    /// The safety property the pruner is built on: the output folder may sit inside someone's real
+    /// Obsidian vault, and only a directory carrying OUR manifest is ever visited. A general
+    /// recursive walk would eventually reach their notes with only the content gates in the way.
+    func testADirectoryWithoutAManifestIsNeverVisited() throws {
+        let foreign = root.appendingPathComponent("SomeonesNotes", isDirectory: true)
+        let survivor = try writeOldCall(in: foreign, named: "Call — 2020-01-01 0900.md")
+
+        RetentionPruner.pruneIfNeeded(.init(enabled: true, days: 30, folder: root))
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: survivor.path),
+                      "the pruner descended into a directory this app did not declare")
+    }
+}
