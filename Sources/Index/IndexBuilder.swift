@@ -192,27 +192,92 @@ enum IndexBuilder {
         }
     }
 
-    static func reconcile(store: IndexStore) {
-        func mdFiles(in folder: URL) -> [URL] {
-            ((try? FileManager.default.contentsOfDirectory(
-                at: folder, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
-            )) ?? []).filter { $0.pathExtension == "md" }
+    /// One directory's markdown, or the fact that it could not be read.
+    ///
+    /// THE DISTINCTION IS THE WHOLE POINT, because `reconcile` deletes every indexed path it does
+    /// not find on disk. `(try? contentsOfDirectory) ?? []` reported an unreadable folder as an
+    /// EMPTY one, so a single failed listing of the output folder removed every row in the index —
+    /// every transcript, note and document — and the next pass would re-index only what it could
+    /// then see. The entity cache prunes itself off those removals, so the loss reached further
+    /// than the rows.
+    ///
+    /// It is not a hypothetical path. `AppSettings.outputFolder` is a user-chosen directory that on
+    /// this machine sits in OneDrive, and reading it returned EPERM twice in one session on
+    /// 2026-08-05 under an ordinary TCC state. Unmounted volumes and revoked folder grants reach
+    /// the same branch.
+    private enum Listing {
+        case files([URL])
+        /// The listing failed. NOT an empty folder — absent evidence is not evidence of absence,
+        /// which is the rule `refresh.frozen` encodes on the engine side and the one this type
+        /// carries here.
+        case unreadable(String)
+
+        /// What was found, or nothing. Safe for the ADDITIVE half of a pass, which cannot lose
+        /// data by seeing too little; never sufficient for the destructive half.
+        var files: [URL] {
+            if case .files(let urls) = self { return urls }
+            return []
         }
+
+        var failure: String? {
+            if case .unreadable(let why) = self { return why }
+            return nil
+        }
+    }
+
+    /// `mustExist` separates a folder whose absence is NORMAL from one whose absence is evidence
+    /// something is wrong. `Notes/` and `Files/` are created lazily on first write, so a fresh
+    /// install genuinely has none and that is zero notes. The output folder is configured by the
+    /// user and created up front: its disappearance means the volume or the grant went away, never
+    /// that the user deleted every call.
+    private static func mdFiles(in folder: URL, mustExist: Bool) -> Listing {
+        do {
+            let urls = try FileManager.default.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles])
+            return .files(urls.filter { $0.pathExtension == "md" })
+        } catch let error as NSError where !mustExist
+                    && error.domain == NSCocoaErrorDomain
+                    && error.code == NSFileReadNoSuchFileError {
+            return .files([])
+        } catch {
+            return .unreadable("\(folder.lastPathComponent): \(error.localizedDescription)")
+        }
+    }
+
+    static func reconcile(store: IndexStore) {
         // One registry snapshot for the whole pass: a mid-pass folder change must not split the
         // pass across two registries (old-vault names contaminating the new vault's file).
         let registry = EntityRegistry.shared
-        let transcripts = mdFiles(in: AppSettings.outputFolder)
-        let notes = mdFiles(in: NoteStore.folder)
-        let docs = mdFiles(in: DocumentImporter.folder)
+        let transcriptListing = mdFiles(in: AppSettings.outputFolder, mustExist: true)
+        let noteListing = mdFiles(in: NoteStore.folder, mustExist: false)
+        let docListing = mdFiles(in: DocumentImporter.folder, mustExist: false)
+        let transcripts = transcriptListing.files
+        let notes = noteListing.files
+        let docs = docListing.files
+        let unreadable = [transcriptListing, noteListing, docListing].compactMap(\.failure)
 
         let start = Date()
         let indexed = store.indexedPaths()
         let livePaths = Set((transcripts + notes + docs).map(\.path))
 
-        // Remove entries whose files no longer exist.
+        // Remove entries whose files no longer exist — ONLY when all three listings succeeded.
+        //
+        // The removal is the half that needs COMPLETE knowledge: "not on disk" is only a fact if
+        // every place the file could be was actually read. One unreadable folder makes the live set
+        // a lower bound, and deleting against a lower bound deletes rows whose files are fine.
+        //
+        // The additive half below still runs on whatever WAS readable, and that asymmetry is
+        // deliberate. Refusing the whole pass would mean a transient permission blip stops the
+        // index updating until someone notices; indexing too little is recoverable on the next
+        // pass, deleting too much is not.
         var removed = 0
-        for path in indexed.keys where !livePaths.contains(path) {
-            store.remove(path: path); removed += 1
+        if let why = unreadable.first {
+            log.error("reconcile: skipping removals — \(unreadable.count) folder(s) unreadable (\(why, privacy: .public)). The index keeps rows whose files could not be listed; they are not evidence of deletion.")
+        } else {
+            for path in indexed.keys where !livePaths.contains(path) {
+                store.remove(path: path); removed += 1
+            }
         }
 
         // Index anything new or modified since it was last indexed.
