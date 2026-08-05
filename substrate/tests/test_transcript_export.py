@@ -39,6 +39,7 @@ from substrate.transcript_export import (  # noqa: E402
     TRANSCRIPT_CLASS,
     TRANSCRIPT_CONFIDENCE,
     TRANSCRIPT_DOC_TYPE,
+    TRANSCRIPT_MARKER,
     TRANSCRIPT_STATUS,
     ExportError,
     _identity,
@@ -59,6 +60,7 @@ duration: "10:29"
 participants: []
 tags: ["call", "project management", "call-transcriber"]
 app: call-transcriber
+group: "default"
 ---
 
 # Call — 2026-07-13 15:39
@@ -77,12 +79,38 @@ duration: "0:20"
 participants: []
 tags: ["call", "call-transcriber"]
 app: call-transcriber
+group: "default"
 ---
 
 # Call — 2026-07-14 15:10
 
 _(No speech detected.)_
 """
+
+
+def _in_group(text: str, group: str) -> str:
+    """The same transcript filed under a different workspace. `group:` is what Scripta writes from
+    `AppSettings.recordingGroup` at record time, and what selection is keyed on."""
+    return text.replace('group: "default"', f'group: "{group}"', 1)
+
+
+def _untagged(text: str) -> str:
+    """A transcript with no `group:` — the real shape of the operator's recovered calls, which
+    predate the workspace being set."""
+    return text.replace('group: "default"\n', "", 1)
+
+
+def _as_marker(text: str, marker: str) -> str:
+    """The same file carrying one of Scripta's OTHER `app:` markers. Scripta writes four kinds of
+    markdown into one output folder — transcripts, `Notes/` living notes, `Files/` extracted PDFs
+    and `Entities/` wikilink stubs — and only the first names a conversation."""
+    return text.replace(f"app: {TRANSCRIPT_MARKER}\n", f"app: {marker}\n", 1)
+
+
+def _unmarked(text: str) -> str:
+    """Markdown with no `app:` key at all — something the operator dropped in the folder, which
+    Scripta did not write and this exporter does not own."""
+    return text.replace(f"app: {TRANSCRIPT_MARKER}\n", "", 1)
 
 
 def _workspace(files: dict[str, str]) -> tuple[Path, Path]:
@@ -226,7 +254,7 @@ def test_manifest_does_not_inherit_a_synced_vault() -> None:
     """Doc 3 §4: the transcript corpus is local and non-synced. Every other scope inherits
     `core-vault` out of OneDrive; composing that tier into THIS index would put synced content in
     the one place that must stay local."""
-    src, vault = _workspace({"a.md": TRANSCRIPT})
+    src, vault = _workspace({"a.md": _in_group(TRANSCRIPT, "work")})
     rep = export_workspace(src, vault, "work")
     manifest = (vault / ".substrate.toml").read_text("utf-8")
     assert 'name = "scripta-work"' in manifest
@@ -300,6 +328,130 @@ def test_empty_source_dir_is_refused() -> None:
         assert "zero notes" in str(e), e
     else:
         raise AssertionError("an empty transcript folder must be refused")
+
+
+def test_another_workspaces_transcripts_are_not_exported() -> None:
+    """THE WALL IS THE FILTER. One `outputFolderPath` holds every workspace's calls, so without
+    selection each workspace's scope held all of them and `scripta-personal` answered with work
+    calls — the privacy wall Doc 3 §4 names being a label rather than a boundary."""
+    src, vault = _workspace({
+        "mine.md": _in_group(TRANSCRIPT, "personal"),
+        "theirs.md": _in_group(TRANSCRIPT, "CBRE"),
+    })
+    rep = export_workspace(src, vault, "personal")
+    assert len(rep.notes) == 1, rep.notes
+    assert [g for _, g in rep.foreign] == ["CBRE"], rep.foreign
+    # The excluded transcript is not merely absent from the report — it is absent from the vault.
+    written = sorted(p.name for p in (vault / "_sources" / "transcripts").glob("*.md"))
+    assert len(written) == 1, written
+
+
+def test_group_is_matched_as_a_slug_because_the_scope_name_is() -> None:
+    """`scope_name` slugifies, so "CBRE" and "cbre" name ONE scope and must select one set of
+    transcripts. Matching raw would let two spellings write the same scope with different
+    contents depending on which was typed."""
+    src, vault = _workspace({"a.md": _in_group(TRANSCRIPT, "CBRE")})
+    rep = export_workspace(src, vault, "cbre")
+    assert len(rep.notes) == 1, rep.notes
+    assert rep.scope == scope_name("CBRE") == "scripta-cbre"
+
+
+def test_an_untagged_transcript_refuses_the_export_and_names_the_remedy() -> None:
+    """Neither filing nor dropping it is acceptable: filing asserts a claim nothing on disk
+    supports, dropping leaves a call in NO scope — unreachable from every corpus that claims to
+    cover it, with nothing saying so."""
+    src, vault = _workspace({
+        "tagged.md": TRANSCRIPT,
+        "recovered.md": _untagged(TRANSCRIPT),
+    })
+    try:
+        export_workspace(src, vault, "default")
+    except ExportError as e:
+        assert "recovered.md" in str(e), e          # names the file
+        assert 'group: "default"' in str(e), e      # names the remedy
+    else:
+        raise AssertionError("an untagged transcript must refuse the export")
+
+
+def test_a_refused_export_writes_nothing() -> None:
+    """The refusal is free of side effects because selection completes before any write. Deciding
+    and writing in one pass would leave however many notes preceded the first untagged file."""
+    src, vault = _workspace({
+        "a-tagged.md": TRANSCRIPT,
+        "z-untagged.md": _untagged(TRANSCRIPT),
+    })
+    try:
+        export_workspace(src, vault, "default")
+    except ExportError:
+        pass
+    notes = vault / "_sources" / "transcripts"
+    assert not notes.exists() or not list(notes.glob("*.md")), list(notes.glob("*.md"))
+
+
+def test_all_foreign_is_refused_with_the_groups_that_do_exist() -> None:
+    """An empty folder and a folder full of OTHER workspaces' calls need different remedies —
+    transcripts vs the right workspace name — so they must not collapse into one message."""
+    src, vault = _workspace({"a.md": _in_group(TRANSCRIPT, "CBRE")})
+    try:
+        export_workspace(src, vault, "personal")
+    except ExportError as e:
+        assert "'CBRE'" in str(e), e
+        assert "zero notes" in str(e), e
+    else:
+        raise AssertionError("a workspace with no transcripts of its own must be refused")
+
+
+def test_only_the_transcript_marker_is_exported() -> None:
+    """Scripta writes four `app:` markers into ONE output folder and all four carry a `group:`, so
+    the workspace filter alone passed every one of them. Measured 2026-08-05 before this gate: a
+    four-file folder reported "4 transcript(s)" for one transcript, one living note, one extracted
+    PDF and one entity stub — each written out as `class: conversation`."""
+    src, vault = _workspace({
+        "Call.md": TRANSCRIPT,
+        "Notes/Deal thoughts.md": _as_marker(TRANSCRIPT, "call-transcriber-note"),
+        "Files/Report — extracted.md": _as_marker(TRANSCRIPT, "call-transcriber-doc"),
+        "Entities/default/Jerry.md": _as_marker(TRANSCRIPT, "call-transcriber-entity"),
+    })
+    rep = export_workspace(src, vault, "default")
+    assert [n.rel_source for n in rep.notes] == ["Call.md"], rep.notes
+    assert sorted(m for _, m in rep.not_transcripts) == [
+        "call-transcriber-doc", "call-transcriber-entity", "call-transcriber-note",
+    ], rep.not_transcripts
+    # Absent from the vault, not merely from the count.
+    written = sorted(p.name for p in (vault / "_sources" / "transcripts").glob("*.md"))
+    assert len(written) == 1, written
+
+
+def test_markdown_with_no_marker_is_not_ours_to_export() -> None:
+    """The RetentionPruner's invariant in the other direction: the app never deletes what it does
+    not own, and publishing what it does not own into a queryable corpus is the same claim."""
+    src, vault = _workspace({"Call.md": TRANSCRIPT, "README.md": _unmarked(TRANSCRIPT)})
+    rep = export_workspace(src, vault, "default")
+    assert [n.rel_source for n in rep.notes] == ["Call.md"], rep.notes
+    assert [(p.name, m) for p, m in rep.not_transcripts] == [("README.md", "")], rep.not_transcripts
+
+
+def test_a_non_transcript_cannot_refuse_the_export_over_its_group() -> None:
+    """THE MARKER GATE RUNS FIRST, and this is why. An entity stub for an ungrouped call carries no
+    usable `group:`, so checked second it would abort an export of real transcripts — naming a file
+    the operator cannot fix by tagging, because a derived stub is not theirs to tag."""
+    src, vault = _workspace({
+        "Call.md": TRANSCRIPT,
+        "Entities/Ungrouped/Jerry.md": _untagged(_as_marker(TRANSCRIPT, "call-transcriber-entity")),
+    })
+    rep = export_workspace(src, vault, "default")     # must not raise
+    assert [n.rel_source for n in rep.notes] == ["Call.md"], rep.notes
+
+
+def test_the_marker_that_disproved_the_class_was_being_copied_through() -> None:
+    """`_RESERVED_KEYS` does not cover `app`, so a note exported before this gate carried
+    `app: call-transcriber-doc` three lines under `class: conversation`. The key that disproved the
+    classification was copied through, unread, by the code that made it — so the guard belongs on
+    the selection, and `app` stays carried through as honest provenance for a real transcript."""
+    src, _ = _workspace({"Call.md": TRANSCRIPT})
+    text, _ = render_note(src / "Call.md", "Call.md")
+    assert f"app: {TRANSCRIPT_MARKER}" in text, text
+    assert f"class: {TRANSCRIPT_CLASS}" in text, text
 
 
 if __name__ == "__main__":

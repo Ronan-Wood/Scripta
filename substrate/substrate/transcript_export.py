@@ -98,6 +98,37 @@ TRANSCRIPT_CONFIDENCE = "unstated"
 
 TRANSCRIPT_CLASS = "conversation"
 
+# The `app:` value that means "this file is a call transcript". Scripta writes four markers into one
+# output folder and only this one names a conversation:
+#
+#   call-transcriber          a call transcript          <output>/*.md
+#   call-transcriber-note     a living note the operator writes by hand   <output>/Notes/
+#   call-transcriber-doc      the extracted text of an imported PDF       <output>/Files/
+#   call-transcriber-entity   a derived wikilink stub, near-contentless   <output>/Entities/<group>/
+#
+# THE MARKER IS THE ONLY THING THAT DISTINGUISHES THEM, and it went unread. `export_workspace`
+# walked `rglob("*.md")`, so the other three carry a `group:` (all of them do — NoteStore, the
+# DocumentImporter and EntityMirror each write one) and passed the workspace filter, and every one
+# was written out as `class: conversation`. Measured 2026-08-05 on a four-file fixture: the exporter
+# reported "4 transcript(s)" for one transcript, one private note, one PDF and one stub.
+#
+# Each of the three is a distinct failure, and none is cosmetic:
+#
+#   * `class: conversation` on a PDF is the precise lie this module's own header says the class axis
+#     exists to prevent. Conversation-class withholding is justified by "confidence varies WITHIN a
+#     transcript"; that argument is simply untrue of a reference document, which then sits outside
+#     default retrieval for a reason that does not apply to it.
+#   * A living note is the operator's own words, not something anyone said on a call. Exporting it
+#     into the transcript scope puts private working notes into the one corpus Doc 3 §4 calls the
+#     most sensitive content the app holds, labelled as a record of a conversation.
+#   * An entity stub is a derived index artefact — a name and a list of `[[links]]`. As a note it is
+#     contentless ballast that dilutes every ranking it appears in.
+#
+# The evidence was already in the artefact: `_RESERVED_KEYS` does not cover `app`, so each exported
+# note carried `app: call-transcriber-doc` three lines under `class: conversation`. The key that
+# disproved the classification was copied through, unread, by the code that made it.
+TRANSCRIPT_MARKER = "call-transcriber"
+
 # The domain floor. `domains` is what retrieval filters on and the exporter cannot infer topics
 # deterministically, so it copies the app's own `tags` (slugified) and guarantees this one value
 # underneath them. Without a floor, an eleventh transcript whose `tags` were empty or unslugifiable
@@ -130,13 +161,25 @@ _MAX_DOMAIN = 64        # _DOMAIN's own cap; truncate rather than let _parse_lis
 
 
 # Cloud-sync roots, as GLOBS under $HOME. `Library/CloudStorage/*` is where macOS mounts every
-# File-Provider service (OneDrive, Dropbox, Google Drive, Box); the CloudDocs entries are iCloud
-# Drive, including the two folders "Desktop & Documents Folders" syncs.
+# File-Provider service (OneDrive, Dropbox, Google Drive, Box).
+#
+# `Library/Mobile Documents/*` IS THE WHOLE DIRECTORY, not iCloud Drive's container within it, and
+# naming only `com~apple~CloudDocs` was a hole rather than a narrower choice. Every child of Mobile
+# Documents is a ubiquity container — that is what the directory IS — so an app-specific one is
+# synced by exactly the same mechanism as iCloud Drive and by definition, not by configuration.
+# Measured on the operator's machine 2026-08-04: `Library/Mobile Documents/iCloud~md~obsidian/
+# Documents/` holds six Obsidian vaults and matched NONE of the old globs. That is the likeliest
+# destination an operator who keeps vaults would pick for a transcript vault, and picking it passed
+# this gate — sending call transcripts, the most sensitive content the app holds, to iCloud while
+# the caller's UI stated the engine had refused a synced destination.
+#
+# A curated list cannot close this: the next container is named by whichever app is installed next.
+# The glob matches the mechanism instead, so a container this file has never heard of is refused.
 _CLOUD_ROOT_GLOBS = (
     "Library/CloudStorage/*",
-    "Library/Mobile Documents/com~apple~CloudDocs",
-    "Library/Mobile Documents/com~apple~CloudDocs/Documents",
-    "Library/Mobile Documents/com~apple~CloudDocs/Desktop",
+    "Library/Mobile Documents/*",
+    "Library/Mobile Documents/*/Documents",
+    "Library/Mobile Documents/*/Desktop",
 )
 
 
@@ -225,6 +268,18 @@ class ExportReport:
     notes: list[ExportedNote] = field(default_factory=list)
     pruned: list[Path] = field(default_factory=list)
     skipped: list[tuple[Path, str]] = field(default_factory=list)
+    # Transcripts belonging to a DIFFERENT workspace, with the group they carry. Separate from
+    # `skipped` because this is the wall doing its job, not a problem: reporting "14 transcripts
+    # belong to other workspaces" is how an operator sees that the filter ran at all. Folded into
+    # `skipped` it would read as 14 things that went wrong.
+    foreign: list[tuple[Path, str]] = field(default_factory=list)
+    # Markdown under `source_dir` that is not a call transcript, with the `app:` value that says so
+    # (or "" where there is none). A THIRD bucket rather than a reuse of `skipped`, because these
+    # three outcomes send an operator to three different places: `skipped` is "something went wrong
+    # with this file", `foreign` is "the privacy wall held", and this is "correctly not a
+    # transcript". A note and an entity stub landing in `skipped` would read as two defects in an
+    # export that did exactly the right thing.
+    not_transcripts: list[tuple[Path, str]] = field(default_factory=list)
     # The sync root the SOURCE transcripts sit in, when they sit in one. Reported, never refused:
     # where Scripta writes transcripts is the app's setting, not this exporter's to veto, and
     # refusing would refuse the only corpus that exists. Reporting it is the point — the condition
@@ -405,7 +460,14 @@ def scope_name(workspace: str) -> str:
 
 
 def export_workspace(source_dir: Path, vault_dir: Path, workspace: str) -> ExportReport:
-    """Export every transcript under `source_dir` into a composable vault at `vault_dir`.
+    """Export the transcripts under `source_dir` that BELONG TO `workspace` into a vault at
+    `vault_dir`.
+
+    Selection is by each transcript's own `group:` frontmatter, compared as a slug so it agrees with
+    `scope_name`. One `outputFolderPath` holds every workspace's calls, so exporting without this
+    filter gave each workspace a scope containing all of them — the privacy wall Doc 3 §4 names being
+    a label rather than a boundary. A transcript with no `group:` REFUSES the whole export; see the
+    message raised below for why neither filing nor dropping it is acceptable.
 
     Idempotent: an unchanged transcript produces a byte-identical note (nothing derived from the
     clock or the run), so re-exporting is a no-op the index sees as no diff.
@@ -430,12 +492,85 @@ def export_workspace(source_dir: Path, vault_dir: Path, workspace: str) -> Expor
     report = ExportReport(scope=scope, vault=vault_dir,
                           source_sync_root=sync_root_for(source_dir))
 
-    written: set[Path] = set()
+    # THE WALL IS THE FILTER, NOT THE NAME. `scope_name` returns `scripta-<workspace>` and Doc 3 §4
+    # calls that name the privacy wall between workspaces — but a name is only a wall if the contents
+    # match it. This loop walked every `*.md` under `source_dir` and exported all of them under
+    # whichever name it was handed, so exporting workspace A and workspace B out of one
+    # `outputFolderPath` produced two scopes with IDENTICAL contents and different labels. An
+    # operator asking `scripta-personal` got their work calls back.
+    #
+    # `group:` is already on each transcript — Scripta writes it from `AppSettings.recordingGroup`,
+    # captured at record time — and the app's own local index partitions on the same value. Nothing
+    # here had to be inferred or added; the data was on disk and unread.
+    #
+    # Compared as SLUGS, not as raw strings, because `scope_name` slugifies: "CBRE" and "cbre" name
+    # one scope, so they have to select one set of transcripts. Comparing raw would let two spellings
+    # write the same scope with different contents on alternate runs.
+    want = _slug(workspace, _MAX_SLUG)
+
+    # CLASSIFY EVERYTHING BEFORE WRITING ANYTHING. The selection can refuse — on an untagged
+    # transcript — and this module's contract is that it never leaves a partial set. Deciding in one
+    # pass and writing in the next is what makes the refusal free of side effects; interleaving them
+    # would leave however many notes had been written before the first untagged file was reached.
+    untagged: list[Path] = []
+    selected: list[tuple[Path, str]] = []
     for src in sorted(source_dir.rglob("*.md")):
         rel = src.relative_to(source_dir).as_posix()
         if any(part.startswith(".") for part in Path(rel).parts):
             report.skipped.append((src, "dotfile"))
             continue
+        try:
+            front, _ = _parse_frontmatter(src.read_text("utf-8", errors="replace"))
+        except OSError as exc:
+            report.skipped.append((src, f"unreadable: {exc}"))
+            continue
+        # THE MARKER GATE COMES FIRST, and the order is load-bearing rather than tidy. The `group:`
+        # rule below REFUSES THE WHOLE EXPORT over an untagged file, and every one of the four
+        # artefact types can be untagged — an entity stub for an ungrouped call carries `group: ""`.
+        # Checked second, a contentless stub would abort an export of real transcripts and name a
+        # file the operator cannot fix by tagging, because it is not theirs to tag. Checked first,
+        # the refusal below can only ever fire for something that really is a call.
+        #
+        # Absence is treated the same as a foreign marker: markdown with no `app:` at all was not
+        # written by Scripta, so it is not this exporter's to publish. That agrees with the
+        # RetentionPruner's own invariant (SPEC: "deletes ONLY app-authored files") — the app is
+        # already careful never to DELETE what it does not own, and exporting what it does not own
+        # into a queryable corpus is the same claim in the other direction.
+        marker = front.get("app", "").strip().strip('"').strip("'")
+        if marker != TRANSCRIPT_MARKER:
+            report.not_transcripts.append((src, marker))
+            continue
+        group = front.get("group", "").strip()
+        if not group:
+            # COLLECTED, NOT SKIPPED, and the export refuses below rather than omitting them here.
+            # An untagged transcript belongs to no workspace, so silently leaving it out puts it in
+            # NO scope at all — present on disk, absent from every corpus that claims to cover it.
+            # That is the silent-absence state, and it is worse than a refusal the operator can act
+            # on: the call is gone from search and nothing ever said so.
+            untagged.append(src)
+            continue
+        if _slug(group, _MAX_SLUG) != want:
+            report.foreign.append((src, group))
+            continue
+        selected.append((src, rel))
+
+    if untagged:
+        shown = "\n".join(f"    {p.name}" for p in sorted(untagged)[:10])
+        more = f"\n    … and {len(untagged) - 10} more" if len(untagged) > 10 else ""
+        raise ExportError(
+            f"{len(untagged)} transcript(s) under {source_dir} carry no `group:`, so this export "
+            f"cannot say whether they belong to {workspace!r}:\n{shown}{more}\n"
+            "Refusing rather than guessing. Filing them under the workspace being exported would "
+            "assert a claim about the operator's data that nothing on disk supports, and dropping "
+            "them would leave calls that exist in no scope at all — unreachable from every corpus "
+            "that claims to cover them, with nothing saying so.\n"
+            f"Remedy: add `group: \"{workspace}\"` to each transcript's frontmatter (or the group it "
+            "does belong to), then export again. Scripta writes this key itself for calls recorded "
+            "after a workspace is set; these predate that or were recovered without one."
+        )
+
+    written: set[Path] = set()
+    for src, rel in selected:
         text, record = render_note(src, rel)
         target = vault_dir / record.note
         # Written only when the bytes differ, so an unchanged corpus does not restat every note's
@@ -446,6 +581,17 @@ def export_workspace(source_dir: Path, vault_dir: Path, workspace: str) -> Expor
         report.notes.append(record)
 
     if not report.notes:
+        # Two different facts, and collapsing them sends the operator to the wrong remedy: an empty
+        # folder needs transcripts, while a folder full of OTHER workspaces' calls needs the right
+        # workspace name. The second is the ordinary consequence of the filter now working.
+        if report.foreign:
+            groups = sorted({g for _, g in report.foreign})
+            raise ExportError(
+                f"No transcript under {source_dir} belongs to workspace {workspace!r}. "
+                f"{len(report.foreign)} belong to: {', '.join(repr(g) for g in groups)}. "
+                "Refusing to write a vault that composes zero notes. Export one of those "
+                "workspaces, or set the workspace to match the calls you meant."
+            )
         raise ExportError(
             f"{source_dir} holds no transcripts. Refusing to write a vault that composes zero "
             "notes — `resolve_scope` would refuse it anyway, one step later and less clearly."
