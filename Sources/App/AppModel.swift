@@ -45,6 +45,13 @@ final class AppModel: ObservableObject {
             AppSettings.activeGroup = activeGroup
             MCPStateFile.write()
             reloadCalls()
+            // Doc 3 §7: the workspace binds the engine side too, and "switching workspaces is
+            // instant — reading a different scope is a query parameter, recompose is only needed
+            // when content changes, never when the reader changes." Both engine surfaces re-read
+            // their binding here rather than sampling `activeGroup` at init, which is what left the
+            // Library pointing at launch-time's workspace (bc950f1).
+            SubstrateAskModel.shared.adoptBinding()
+            SubstrateLibraryModel.shared.adoptWorkspace()
         }
     }
 

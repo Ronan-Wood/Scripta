@@ -24,6 +24,7 @@ enum AppSettings {
         static let watchedCalendarIDs = "watchedCalendarIDs"
         static let calendarGroups = "calendarGroups"
         static let activeGroup = "activeGroup"
+        static let workspaceReadScopes = "workspaceReadScopes"
         static let summarizeEnabled = "summarizeEnabled"
         static let notesMergeEnabled = "notesMergeEnabled"
         static let promptForDetails = "promptForDetails"
@@ -267,7 +268,22 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: Keys.calendarGroups) }
     }
 
-    /// The workspace the user is currently in. Retrieval is hard-scoped to it (secure by default).
+    /// Maps a workspace to the ONE vault scope it reads (Doc 3 §7). Absent = unbound, which is a
+    /// real state and not a default to fill: Ask refuses rather than picking a scope for you.
+    ///
+    /// Stored beside `calendarGroups` because that is already the authority on which workspace an
+    /// artefact belongs to, and this is the same question asked of the engine's side. The WRITE
+    /// scope is deliberately not here — it derives from the workspace name (`WorkspaceBinding`),
+    /// so a name and a location cannot come apart.
+    static var workspaceReadScopes: [String: String] {
+        get { (defaults.dictionary(forKey: Keys.workspaceReadScopes) as? [String: String]) ?? [:] }
+        set { defaults.set(newValue, forKey: Keys.workspaceReadScopes) }
+    }
+
+    /// The workspace the user is currently in. Retrieval is hard-scoped to it (secure by default) —
+    /// the LOCAL call store always was, and since Doc 3 §7 the engine pane beside it is too, via
+    /// `workspaceReadScopes`. Before that binding existed the comment on this line was true of the
+    /// call store and false of the vault Ask, which chose its scope by roster order.
     /// "" = the ungrouped workspace (also the fresh-install default, so the app behaves as one
     /// bucket until groups exist). The explicit "all groups" action is transient, never persisted.
     static var activeGroup: String {

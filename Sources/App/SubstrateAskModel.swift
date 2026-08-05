@@ -31,26 +31,6 @@ final class SubstrateAskModel: ObservableObject {
     /// calls.
     enum Brain: Hashable { case calls, vault }
 
-    /// The scope list, and its own failure modes — which are NOT the query's.
-    ///
-    /// Separate from `Answer` on purpose: the engine can be down before a question is ever asked,
-    /// and that is the state a fresh machine is in. Merging the two would make "the engine is not
-    /// running" reachable only by asking a question first, which is the wrong order to learn it in.
-    enum Roster {
-        case unasked
-        case listing
-        /// The rows verbatim, faults included. `scopes_payload` lists a scope whose inheritance no
-        /// longer resolves WITH its error rather than omitting it, because an omitted scope reads
-        /// as one that was never composed — so this keeps every row it was handed.
-        case listed([WireScopeRow])
-        case refused(VaultRefusal)
-
-        var isListed: Bool {
-            if case .listed = self { return true }
-            return false
-        }
-    }
-
     enum Answer {
         case idle
         /// A completed search, INCLUDING one that matched nothing.
@@ -85,7 +65,13 @@ final class SubstrateAskModel: ObservableObject {
 
     @Published var brain: Brain = .calls
     @Published var query = ""
-    @Published private(set) var roster: Roster = .unasked
+
+    /// The workspace whose binding is on screen. Held so `adoptBinding` can tell a workspace change
+    /// from a no-op, and so the unbound copy can name the workspace the operator has to bind.
+    @Published private(set) var workspace: String = AppSettings.activeGroup
+
+    /// The vault scope this workspace reads (Doc 3 §7), or `nil` when it is unbound. Never chosen
+    /// here — see `adoptBinding`.
     @Published private(set) var scope: String?
     @Published private(set) var answer: Answer = .idle
     @Published private(set) var running: Running?
@@ -116,67 +102,66 @@ final class SubstrateAskModel: ObservableObject {
 
     // MARK: - Scopes
 
+    /// The roster itself lives in `SubstrateScopes` — it is a fact about the engine, and the
+    /// Library needs the same one. What lives here is which scope THIS WORKSPACE reads, and since
+    /// Doc 3 §7 that is not this surface's to choose.
+    ///
+    /// AUTO-ADOPTION IS GONE, and its removal is the point rather than a side effect. This model
+    /// used to take "the first scope with an index" whenever its selection was absent or no longer
+    /// listed, which made "which corpus am I asking" a question about ROSTER ORDER. A workspace
+    /// called Personal read whichever vault the engine happened to list first, and that scope's
+    /// silence about a topic read as a fact about Personal. §7 replaces the choice with a binding:
+    /// the workspace names the scope, and an unbound workspace refuses with the remedy named rather
+    /// than answering from a corpus nobody chose.
+
     /// First appearance only. A refused roster stays refused until the reader retries, because
     /// re-listing on every appearance would turn "the engine is not running" into a flicker.
     func activate() async {
-        guard case .unasked = roster else { return }
-        await listScopes()
+        await SubstrateScopes.shared.activate()
+        adoptBinding()
     }
 
     func listScopes() async {
-        // A roster that is already on screen stays there while it refreshes. This call is reachable
-        // from the bar's own scope segment, and dropping to `.listing` would blank the answer the
-        // reader was looking at in order to re-fetch a list of seven names.
-        if !roster.isListed { roster = .listing }
-        let call = await client.listScopes()
-        switch call {
-        case .ok(let list):
-            roster = .listed(list.scopes)
-            adoptScope(from: list.scopes)
-        case .toolFault(let text):
-            roster = .refused(VaultRefusal.classify(fault: text))
-        case .rpcError(let code, let message):
-            roster = .refused(.rpcError(code: code, message: message))
-        case .transportFailure(let failure):
-            // CANCELLATION IS NOT A REFUSAL, and this is the one path where that mattered without
-            // being guarded. `listScopes` runs under SwiftUI's `.task`, which cancels itself when
-            // the view goes away — tapping the Calls chip, or leaving Ask entirely. A cancelled
-            // URLSession comes back as URLError -999, which no refusal case recognises, so it fell
-            // to the transport arm and drew `Ink.danger`: "the engine answered, but not with a
-            // JSON-RPC response", about an engine that is running perfectly.
-            //
-            // Worse than a wrong frame: `activate()` only re-lists from `.unasked`, and this model
-            // outlives the view, so the red card SURVIVED coming back to the vault brain and sat
-            // there until someone pressed Try again.
-            //
-            // `stop()` already writes this rule down for the search path — "rendering that would
-            // report the engine as down because the reader pressed Stop" — and `run()` honours it
-            // with an epoch-and-cancellation guard. The roster had neither. Returning to `.unasked`
-            // rather than to a refusal is what makes the next `activate()` retry instead of
-            // inheriting a verdict about an event that never happened.
-            if failure.isCancellation || Task.isCancelled {
-                roster = .unasked
-                return
-            }
-            roster = .refused(.of(failure))
-        }
+        await SubstrateScopes.shared.listScopes()
+        adoptBinding()
     }
 
-    /// Keeps the selection if the engine still lists it, otherwise takes the first scope that can
-    /// actually answer. A scope with no index or a broken inheritance stays SELECTABLE — the reader
-    /// has to be able to look at it to find out what is wrong with it — it is just not the one we
-    /// land on unasked.
-    private func adoptScope(from rows: [WireScopeRow]) {
-        if let scope, rows.contains(where: { $0.scope == scope }) { return }
-        scope = rows.first(where: { $0.indexPresent && $0.error == nil })?.scope ?? rows.first?.scope
+    /// Re-read the active workspace's binding. Called on appearance, after a roster listing, and
+    /// whenever the workspace changes — switching workspace is a query parameter change, not a
+    /// recompose, so it is instant by design (§7).
+    func adoptBinding() {
+        let bound = WorkspaceBindings.active
+        guard bound.workspace != workspace || bound.readsScope != scope else { return }
+        workspace = bound.workspace
+        scope = bound.readsScope
+        refusedInclusion = nil
         answer = .idle
+        running = nil
+        task?.cancel()
+        epoch &+= 1
     }
 
-    /// Ask the other brain. Re-runs the standing question, which is the whole gesture: the same
-    /// words against a different corpus is how a reader finds out that an absence was the scope's
-    /// and not the world's.
-    func select(scope name: String) {
+    /// Whether the bound scope is one the engine still lists. `nil` when the roster has not been
+    /// listed yet or there is no binding — absence of a verdict, not a verdict of absence.
+    ///
+    /// A STALE BINDING IS REPORTED, NEVER REPAIRED. Silently falling back to another scope is the
+    /// auto-adoption above, reintroduced through the back door, and it would answer a question
+    /// about one corpus out of another without saying so.
+    var bindingResolves: Bool? {
+        guard let scope else { return nil }
+        guard case .listed(let rows) = SubstrateScopes.shared.roster else { return nil }
+        return rows.contains { $0.scope == scope }
+    }
+
+    /// Bind the ACTIVE WORKSPACE to a scope, and re-ask the standing question against it.
+    ///
+    /// This is an edit to the binding, not a transient selection, and that is what keeps §7's "the
+    /// control that names it is the workspace" true while a scope control still exists on screen.
+    /// There is no precedence rule between the two: the workspace picker chooses which binding is
+    /// live, this chooses what that binding points at, and the pair answers one question once.
+    func bind(scope name: String) {
         guard scope != name else { return }
+        WorkspaceBindings.bind(workspace, reads: name)
         scope = name
         refusedInclusion = nil
         let standing = standingQuery
