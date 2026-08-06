@@ -511,7 +511,9 @@ def export_workspace(source_dir: Path, vault_dir: Path, workspace: str) -> Expor
     ingest, so a note left behind by a deleted transcript would fail the next compose loudly — but
     only after the operator had already deleted the transcript for a reason. The prune is scoped to
     the `_sources/transcripts/` directory this module owns and to `*.md`, so nothing the operator
-    put in the vault by hand is in reach.
+    put in the vault by hand is in reach — and to notes whose transcript this run POSITIVELY
+    ESTABLISHED is gone or is not a transcript. A source that could not be read, or that has not
+    been fully written yet, spares its note instead of deleting it; see `spared` below.
     """
     source_dir = source_dir.expanduser().resolve()
     vault_dir = vault_dir.expanduser().resolve()
@@ -548,6 +550,16 @@ def export_workspace(source_dir: Path, vault_dir: Path, workspace: str) -> Expor
     # transcript — and this module's contract is that it never leaves a partial set. Deciding in one
     # pass and writing in the next is what makes the refusal free of side effects; interleaving them
     # would leave however many notes had been written before the first untagged file was reached.
+    # Notes the prune must LEAVE ALONE, absolute. The prune's licence is evidence that a transcript
+    # is gone; a file this pass could not read is the absence of evidence, not evidence of absence,
+    # and the two were being spent the same way. `doc_id_for_transcript` is derived from the
+    # workspace-relative path and NOTHING ELSE, so the exporter can name the note of a file it never
+    # managed to open — which is the only reason this set can be built at all.
+    spared: set[Path] = set()
+
+    def note_for(rel: str) -> Path:
+        return notes_dir / f"{doc_id_for_transcript(rel)}.md"
+
     untagged: list[Path] = []
     selected: list[tuple[Path, str]] = []
     for src in sorted(source_dir.rglob("*.md")):
@@ -559,6 +571,15 @@ def export_workspace(source_dir: Path, vault_dir: Path, workspace: str) -> Expor
             front, _ = _parse_frontmatter(src.read_text("utf-8", errors="replace"))
         except OSError as exc:
             report.skipped.append((src, f"unreadable: {exc}"))
+            # A FAILED READ USED TO DELETE THE TRANSCRIPT'S NOTE. The file never reached `selected`,
+            # so it never reached `written`, so the prune below took it for a note whose transcript
+            # the operator had deleted — and unlinked it under a SUCCESSFUL export. The three ways
+            # this fires are all ordinary rather than exotic: a file the app is mid-write on, a file
+            # another process holds, and a cloud placeholder whose bytes are still on a provider's
+            # server (`source_sync_root` on this very report exists because the source routinely
+            # lives in OneDrive or iCloud). None of the three says the call is gone; all three said
+            # so to the prune.
+            spared.add(note_for(rel))
             continue
         # THE MARKER GATE COMES FIRST, and the order is load-bearing rather than tidy. The `group:`
         # rule below REFUSES THE WHOLE EXPORT over an untagged file, and every one of the four
@@ -575,6 +596,18 @@ def export_workspace(source_dir: Path, vault_dir: Path, workspace: str) -> Expor
         marker = front.get("app", "").strip().strip('"').strip("'")
         if marker != TRANSCRIPT_MARKER:
             report.not_transcripts.append((src, marker))
+            if not marker:
+                # NO MARKER IS NOT THE SAME FACT AS A FOREIGN MARKER, and only the second licenses
+                # the prune. A file mid-write has no closing `---` yet, so `_parse_frontmatter`
+                # reads the whole thing as body and returns NO fields — indistinguishable here from
+                # markdown that was never Scripta's. Reading the empty marker as "the transcript
+                # stopped existing" is what turned a half-flushed file into a deleted note.
+                #
+                # Costless in the case it is wrong: a README that never was a transcript has no note
+                # at its doc_id to spare. A `call-transcriber-doc` or `-note` marker is a positive
+                # statement about what the file IS, so those still prune — which is what removes the
+                # notes the pre-marker-gate exporter wrote for PDFs and entity stubs.
+                spared.add(note_for(rel))
             continue
         group = front.get("group", "").strip()
         if not group:
@@ -634,7 +667,7 @@ def export_workspace(source_dir: Path, vault_dir: Path, workspace: str) -> Expor
         )
 
     for stale in sorted(notes_dir.glob("*.md")):
-        if stale not in written:
+        if stale not in written and stale not in spared:
             stale.unlink()
             report.pruned.append(stale)
 

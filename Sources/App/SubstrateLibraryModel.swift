@@ -146,14 +146,26 @@ final class SubstrateLibraryModel: ObservableObject {
     /// Follow the active workspace (Doc 3 §7). Called from `AppModel.activeGroup.didSet`, because
     /// this model is a singleton that outlives the pane and sampling `AppSettings.activeGroup` at
     /// init is what left the rail exporting into the workspace that was active when the app
-    /// launched. Refused mid-job: an export names its workspace in the vault manifest it is writing,
-    /// and moving the target under a running compose is the desync this pair was just fixed for.
+    /// launched. Deferred mid-job: an export names its workspace in the vault manifest it is
+    /// writing, and moving the target under a running compose is the desync this pair was just
+    /// fixed for.
+    ///
+    /// DEFERRED, NOT DROPPED — the distinction is the whole of the second fix. Refusing outright
+    /// left the rail bound to the workspace the operator had already left, permanently: nothing
+    /// asks again, so the "It stays in X" sentence, the destination path and the scope this rail
+    /// would compose all named a workspace that stopped being active mid-job. `finish` replays it.
     func adoptWorkspace() {
-        guard !isWorking else { return }
+        guard !isWorking else { missedWorkspaceChange = true; return }
         let active = AppSettings.activeGroup
         guard workspace != active else { return }
         workspace = active          // `didSet` retires any hand-picked destination
     }
+
+    /// That a change was missed, and deliberately NOT which one. By the time a job ends the active
+    /// workspace may have moved again, and replaying a captured name would adopt a workspace the
+    /// operator has since left — so the flag says only "ask again", and `adoptWorkspace` re-reads
+    /// the authority.
+    private var missedWorkspaceChange = false
 
     // MARK: - Transcripts that belong to no workspace
 
@@ -188,15 +200,34 @@ final class SubstrateLibraryModel: ObservableObject {
     func assign(_ transcript: TranscriptGroupRepair.Untagged) {
         let name = workspace.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
+        // HELD, THEN PUBLISHED AFTER THE REFRESH. `refreshUntagged` clears `repairFailure` as its
+        // own "this attempt is over" reset, and it runs at the end of every repair — so a failure
+        // written here was wiped by the line meant to follow it, and the rail's red note could not
+        // appear for the one thing it exists to report. The report has to outlive the refresh.
+        var failure: String?
         do {
             try TranscriptGroupRepair.assign(name, to: transcript.url)
             // The local index partitions on `group` too, so a repair that only touched the file
             // would leave the call filed one way on disk and another in every in-app surface.
-            if let store = IndexStore.shared { IndexBuilder.index(transcript.url, into: store) }
+            if let store = IndexStore.shared {
+                IndexBuilder.index(transcript.url, into: store)
+            } else {
+                // AND A MISSING STORE IS THAT DIVERGENCE, NOT AN EXEMPTION FROM IT. `IndexStore` is
+                // `try? IndexStore()`, so nil means the database would not open; skipping quietly
+                // leaves the file carrying the workspace and every in-app surface still filing the
+                // call the old way, with nothing to re-index it until the transcript changes on
+                // disk again. Reported as a partial repair rather than as a failure, because the
+                // half that the export and the engine read did land.
+                failure = "\(transcript.title) now carries the workspace on disk, but the local "
+                    + "index would not open — so Calls, search and Ask still file it the old way "
+                    + "until you Rebuild Index in Settings. The export reads the file, not the "
+                    + "index, so it is no longer blocked."
+            }
         } catch {
-            repairFailure = error.localizedDescription
+            failure = error.localizedDescription
         }
         refreshUntagged()
+        if let failure { repairFailure = failure }
     }
 
     /// The last repair that failed, for the rail to show. Cleared by the next attempt.
@@ -258,6 +289,13 @@ final class SubstrateLibraryModel: ObservableObject {
         document = file
         forceMarkdown = false
         documentClass = nil
+        // DOMAINS BELONG TO THE DOCUMENT THEY WERE TYPED FOR. This is the class argument one axis
+        // over: `domains` is what retrieval FILTERS on, so carrying the last document's over files
+        // this one under a claim nobody made about it — and unlike a wrong class, a wrong domain is
+        // invisible in the note itself. Cleared here and in `dismiss` because those are the two
+        // moments a new document takes the rail; retyping four characters is cheaper than finding a
+        // mislabelled source later.
+        domains = ""
         job = .idle
     }
 
@@ -310,9 +348,12 @@ final class SubstrateLibraryModel: ObservableObject {
         //    scope when one note fails to ingest, so a document written into the vault before it
         //    passed the class gate takes every other document down with it — and keeps doing so
         //    until someone finds the file.
-        let out = SubstrateLibrary.staging
-            .appendingPathComponent(SubstrateLibrary.slug(file.deletingPathExtension()
-                .lastPathComponent), isDirectory: true)
+        //    AND THE EXTRACTION DOES NOT OUTLIVE THE JOB. It is the document's full text in
+        //    cleartext and it has no reader once `promote` has copied it into the vault; the
+        //    record of what happened is the engine's own transcript, which the report keeps. See
+        //    `SubstrateLibrary.stagingRun` for what a shared, never-swept directory did.
+        let out = SubstrateLibrary.stagingRun(for: file)
+        defer { try? FileManager.default.removeItem(at: out) }
         //    HOW THE FILE IS NAMED TO THE ENGINE IS THE ENGINE'S SHAPE, not a constant here.
         //    `ingest` grew a positional `path` and fourteen detected formats while this surface was
         //    being written; a hardcoded `--pdf` would have refused everything the widening added.
@@ -337,7 +378,12 @@ final class SubstrateLibraryModel: ObservableObject {
         let extraction = await SubstrateCLI.run(cli, arguments)
         steps.append(Step(id: "ingest", title: "Extract", run: extraction, appFailure: nil,
                           skipped: false))
-        guard extraction.succeeded else {
+        // STOPPED IS CHECKED HERE, BETWEEN THE STEPS, because neither of the two below can be
+        // stopped once it has begun: promote is a file copy, and a compose launched into an
+        // already-cancelled task is a subprocess started only to be killed. `SubstrateCLI.run`
+        // reports a cancelled run as not succeeded, so a Stop landing during the extraction is
+        // already covered by the same guard — this is the window after it returned.
+        guard extraction.succeeded, !Task.isCancelled else {
             return finish(title: title, steps: steps + [
                 Step(id: "promote", title: "Add to the library vault", run: nil, appFailure: nil,
                      skipped: true),
@@ -420,6 +466,16 @@ final class SubstrateLibraryModel: ObservableObject {
                     Step(id: "compose", title: "Recompose the scope", run: nil, appFailure: nil,
                          skipped: true)])
             }
+            // A STOP IS HONOURED BEFORE THE RECOMPOSE, NOT DURING IT. This compose is `--clean`:
+            // launching it into a cancelled task means SIGTERM arriving somewhere inside a wipe of
+            // the index root. The scope is left answering from a note that is no longer on disk,
+            // which the next compose refuses over loudly (`assert_composed`) rather than serving
+            // quietly — the right way round for a job the operator stopped halfway.
+            guard !Task.isCancelled else {
+                return finish(title: title, steps: steps + [
+                    Step(id: "compose", title: "Recompose the scope", run: nil, appFailure: nil,
+                         skipped: true)])
+            }
             job = .running(Running(title: title, step: "Recomposing", started: Date(), done: steps))
             // Recomposed against the workspace vault the document was promoted into. `--clean`
             // because a removal must leave no ingest directory behind still answering queries.
@@ -446,7 +502,29 @@ final class SubstrateLibraryModel: ObservableObject {
     func exportTranscripts() {
         guard !isWorking, let cli = SubstrateEngine.shared.serving?.cli else { return }
         let name = workspace.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
+        // SLUGIFIABLE, NOT MERELY NON-EMPTY. A name carrying no ASCII letter or digit — "研究",
+        // "———", an emoji — passes a non-empty test and slugifies to nothing, and every other holder
+        // of this value already refuses it: `scope_name` raises "slugifies to nothing; give it a
+        // name", `ScriptaVault.init` throws `unnameableScope`, `TranscriptGroupRepair.assign`
+        // refuses the repair. This rail carried on, deriving one shared vault directory for every
+        // such workspace and the scope name `transcript-` for all of them. The engine refuses before
+        // it writes a byte, so the collision was never reached — what WAS reached is a destination
+        // on screen naming a directory those workspaces would have shared, and a refusal that cost a
+        // subprocess to arrive. Refused here for the reason `addDocument` states: nothing is spent.
+        guard !SubstrateLibrary.slug(name).isEmpty else {
+            job = .finished(Report(
+                title: "Exporting \(name.isEmpty ? "transcripts" : name)",
+                steps: [Step(id: "workspace", title: "Name the workspace", run: nil,
+                             appFailure: "A workspace's transcripts are exported into a vault named "
+                                 + "after it and composed under a scope named after it, and "
+                                 + "\(name.isEmpty ? "an unnamed workspace" : "\"\(name)\"") "
+                                 + "reduces to nothing that can name either — the engine and the "
+                                 + "vault layout both take ASCII letters and digits only. Give the "
+                                 + "workspace a name containing at least one; nothing was exported.",
+                             skipped: false)],
+                scope: nil, orphaned: nil))
+            return
+        }
         let destination = transcriptVault
         let source = AppSettings.outputFolder
         task = Task { [weak self] in
@@ -465,7 +543,10 @@ final class SubstrateLibraryModel: ObservableObject {
                                                    "--workspace", workspace])
         steps.append(Step(id: "export", title: "Write the transcript vault", run: exported,
                           appFailure: nil, skipped: false))
-        guard exported.succeeded else {
+        // A STOP BETWEEN THE TWO IS HONOURED, for the reason `remove` states about its own: the
+        // compose below is `--clean`, and starting one inside a cancelled task means killing it
+        // mid-wipe. The export itself already wrote the vault, so the next run recomposes it.
+        guard exported.succeeded, !Task.isCancelled else {
             return finish(title: title, steps: steps + [
                 Step(id: "compose", title: "Compose and register the scope", run: nil,
                      appFailure: nil, skipped: true)])
@@ -520,9 +601,24 @@ final class SubstrateLibraryModel: ObservableObject {
     }
 
     private func finish(title: String, steps: [Step], orphaned: URL? = nil) {
-        let scope = Self.registeredScope(in: steps.first { $0.id == "compose" }?.run)
+        // ONLY A COMPOSE THAT SUCCEEDED REGISTERED ANYTHING. The registration line is printed
+        // DURING the run, so a compose that named the scope and then exited non-zero — or was
+        // stopped after printing it — would have put "it is composed and registered, so it is
+        // answering in Ask now" on screen beside a refused step. Read from a failed run, the line is
+        // a claim about a state the engine did not reach; absent, the card says nothing about
+        // registration, which is what an unverified one is worth. This is the single gate rather
+        // than a second condition in the card, because compose is always the last step: a report
+        // whose compose succeeded has no failure after it to contradict.
+        let composed = steps.first { $0.id == "compose" }?.run
+        let scope = composed?.succeeded == true ? Self.registeredScope(in: composed) : nil
         job = .finished(Report(title: title, steps: steps, scope: scope, orphaned: orphaned))
         task = nil
+        // The workspace change this job refused, taken now that it can be. Re-asked rather than
+        // replayed — see `missedWorkspaceChange`.
+        if missedWorkspaceChange {
+            missedWorkspaceChange = false
+            adoptWorkspace()
+        }
         // The roster is what every scope chip and every refresh verdict is drawn from, and a job
         // that just registered a scope has changed it. Re-listed rather than patched locally: the
         // engine is the authority on what exists, and a locally-appended row would be this client
@@ -542,5 +638,6 @@ final class SubstrateLibraryModel: ObservableObject {
         document = nil
         documentClass = nil
         forceMarkdown = false
+        domains = ""   // for the reason `stage` gives: this field is per-document, like the class
     }
 }

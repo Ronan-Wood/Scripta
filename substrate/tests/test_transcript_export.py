@@ -251,6 +251,68 @@ def test_export_prunes_a_note_whose_transcript_is_gone() -> None:
     assert len(list((vault / "_sources/transcripts").glob("*.md"))) == 1
 
 
+def test_an_unreadable_transcript_does_not_delete_its_exported_note() -> None:
+    """A read that FAILED is not evidence the call is gone. Before the spare, an unreadable source
+    never reached `written`, so the prune took its note for one whose transcript the operator had
+    deleted and unlinked it under a green export — and the three ways a read fails here are all
+    ordinary: a file mid-write, a file another process holds, and a cloud placeholder whose bytes
+    are still on a provider's server."""
+    src, vault = _workspace({"a.md": TRANSCRIPT, "locked.md": EMPTY_TRANSCRIPT})
+    first = export_workspace(src, vault, "default")
+    assert len(first.notes) == 2, first.notes
+    note = next(vault / n.note for n in first.notes if n.rel_source == "locked.md")
+
+    (src / "locked.md").chmod(0o000)
+    try:
+        try:
+            (src / "locked.md").read_text("utf-8")
+        except OSError:
+            pass
+        else:  # running as root, or a filesystem that ignores the mode — skip, don't pass vacuously
+            print("      (mode 000 is still readable here — nothing to test against)")
+            return
+        rep = export_workspace(src, vault, "default")
+    finally:
+        (src / "locked.md").chmod(0o644)
+    assert [str(p) for p in rep.pruned] == [], rep.pruned
+    assert note.exists(), f"{note} was pruned because its source could not be read"
+    assert [p.name for p, _ in rep.skipped] == ["locked.md"], rep.skipped
+
+
+def test_a_half_written_transcript_does_not_delete_its_exported_note() -> None:
+    """A file whose frontmatter block has no closing `---` yet parses as pure body, so the `app:`
+    marker reads as absent — indistinguishable from markdown that was never Scripta's. Reading that
+    absence as "the transcript stopped existing" deleted the note of a call that was still being
+    flushed to disk."""
+    src, vault = _workspace({"a.md": TRANSCRIPT, "partial.md": EMPTY_TRANSCRIPT})
+    first = export_workspace(src, vault, "default")
+    note = next(vault / n.note for n in first.notes if n.rel_source == "partial.md")
+
+    (src / "partial.md").write_text(EMPTY_TRANSCRIPT[:60], "utf-8")   # no closing `---` yet
+    rep = export_workspace(src, vault, "default")
+    assert not rep.pruned, rep.pruned
+    assert note.exists(), f"{note} was pruned because its source was caught mid-write"
+    # Still reported as not-a-transcript, because on the bytes available it is not one.
+    assert [(p.name, m) for p, m in rep.not_transcripts] == [("partial.md", "")], rep.not_transcripts
+
+
+def test_a_foreign_marker_still_prunes_the_note_it_wrongly_earned() -> None:
+    """The spare is for ABSENT evidence, not for evidence that disagrees. A `-doc` or `-entity`
+    marker is a positive statement about what the file is, and the notes the pre-marker-gate
+    exporter wrote for PDFs and entity stubs are removed by exactly this prune."""
+    src, vault = _workspace({"Call.md": TRANSCRIPT, "Files/Report.md": TRANSCRIPT})
+    first = export_workspace(src, vault, "default")
+    assert len(first.notes) == 2, first.notes
+
+    (src / "Files/Report.md").write_text(_as_marker(TRANSCRIPT, "call-transcriber-doc"), "utf-8")
+    rep = export_workspace(src, vault, "default")
+    assert len(rep.pruned) == 1, rep.pruned
+    assert [n.rel_source for n in rep.notes] == ["Call.md"], rep.notes
+    assert sorted(p.name for p in (vault / "_sources" / "transcripts").glob("*.md")) == [
+        rep.notes[0].note.name
+    ]
+
+
 def test_manifest_does_not_inherit_a_synced_vault() -> None:
     """Doc 3 §4: the transcript corpus is local and non-synced. Every other scope inherits
     `core-vault` out of OneDrive; composing that tier into THIS index would put synced content in

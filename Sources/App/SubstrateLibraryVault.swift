@@ -42,11 +42,44 @@ enum SubstrateLibrary {
     /// and A18 coverage — in front of the vault instead of behind it.
     static var staging: URL { root.appendingPathComponent("staging", isDirectory: true) }
 
+    /// A staging directory for ONE run, with everything a previous run left behind swept first.
+    ///
+    /// TWO PROPERTIES, AND BOTH WERE MISSING. The directory was `staging/<slug of the basename>`,
+    /// so two documents called `notes.pdf` in different folders shared one — and `promote` reads
+    /// `document.md` out of it, which is a copy of whichever ran last (or, if the second extraction
+    /// wrote a differently-shaped artefact set, of the first). Keyed on the RUN instead: a name that
+    /// cannot be aliased by another file, readable because it appears in the `--out` path the report
+    /// shows the operator.
+    ///
+    /// And the tree is swept, because nothing else ever removed one. Each directory holds the
+    /// document's full text in cleartext, so what accumulated under `~/.substrate` was a second,
+    /// unmanaged copy of every document ever added — including ones whose vault copy the operator
+    /// had since taken back out. One job runs at a time (`isWorking` gates every entry point), so
+    /// nothing else can be reading this tree when a new run starts, which is what makes a sweep here
+    /// safe as well as sufficient — it also clears what an app that quit mid-extraction left.
+    static func stagingRun(for file: URL) -> URL {
+        try? FileManager.default.removeItem(at: staging)
+        let readable = slug(file.deletingPathExtension().lastPathComponent)
+        return staging.appendingPathComponent(
+            "\(readable.isEmpty ? "document" : readable)-\(UUID().uuidString.prefix(8).lowercased())",
+            isDirectory: true)
+    }
+
     /// The transcript vault for one Scripta workspace. One vault per workspace, because Doc 3 §4
     /// makes the SCOPE NAME the privacy wall between them.
+    ///
+    /// A NAME WITH NO SLUG STILL GETS ITS OWN DIRECTORY. The fallback was the literal `unnamed`, so
+    /// every workspace whose name carries no ASCII letter or digit — "研究", "———", an emoji — named
+    /// one shared vault, which is the privacy wall failing open on the exact input the rest of the
+    /// system refuses (`transcript_export.scope_name` raises "slugifies to nothing; give it a name",
+    /// `ScriptaVault` throws `unnameableScope`). Callers refuse such a workspace before they get
+    /// here — `SubstrateLibraryModel.exportTranscripts` does, in its own words — and this makes the
+    /// path harmless rather than merely unreached, since a returned `URL?` cannot be given while
+    /// `WorkspaceBinding.transcriptVault` is declared non-optional.
     static func transcriptVault(workspace: String) -> URL {
-        root.appendingPathComponent("transcripts", isDirectory: true)
-            .appendingPathComponent(slug(workspace).isEmpty ? "unnamed" : slug(workspace),
+        let name = slug(workspace)
+        return root.appendingPathComponent("transcripts", isDirectory: true)
+            .appendingPathComponent(name.isEmpty ? "unnamed-\(digest(workspace))" : name,
                                     isDirectory: true)
     }
 
@@ -117,12 +150,20 @@ enum SubstrateLibrary {
             throw LibraryError.artefactWithoutTitle(document)
         }
 
-        let source = vault.references
-            .appendingPathComponent(sourceDirectoryName(title: title, origin: ingested.origin),
-                                    isDirectory: true)
+        let name = sourceDirectoryName(origin: ingested.origin)
+        let source = vault.references.appendingPathComponent(name, isDirectory: true)
         let passages = source.appendingPathComponent("passages", isDirectory: true)
 
         let manager = FileManager.default
+        // ONE SOURCE DIRECTORY PER ORIGIN, SWEPT BEFORE THE NEW ONE IS WRITTEN. The name below is a
+        // pure function of the origin path now; it was not always, so a document added before that
+        // change has a directory named after its title sitting beside the one this promote is about
+        // to write, and BOTH answer. Removed first rather than after, so the refusal — if the old
+        // copy cannot be removed — arrives before anything has been written and the operator is
+        // asked to clear it by hand instead of being left with two.
+        for stale in staleSources(named: name, for: ingested.origin, in: vault.references) {
+            try manager.removeItem(at: stale)
+        }
         try manager.createDirectory(at: passages, withIntermediateDirectories: true)
         let note = passages.appendingPathComponent("document.md")
         if manager.fileExists(atPath: note.path) { try manager.removeItem(at: note) }
@@ -137,15 +178,50 @@ enum SubstrateLibrary {
     /// `10-reference/<name>/` — tier 2. The tier is DERIVED FROM LOCATION (`vault._tier_for`), and
     /// this is the location that says "an ingested reference source", which is what a library
     /// document is. The operator's own ingested PDFs live under `10-reference/` in core-vault.
-    private static func sourceDirectoryName(title: String, origin: URL) -> String {
-        // Keyed on the ORIGIN PATH, not on the content: re-ingesting an edited file has to land on
-        // the same source directory and replace it, rather than mint a second one that answers
-        // queries beside the first. This is the argument `transcript_export.doc_id_for_transcript`
-        // makes about its own key, and it holds here for the same reason.
-        let digest = SHA256.hash(data: Data(origin.standardizedFileURL.path.utf8))
-            .map { String(format: "%02x", $0) }.joined().prefix(8)
-        let readable = slug(title.isEmpty ? origin.deletingPathExtension().lastPathComponent : title)
-        return "\(readable.isEmpty ? "document" : readable)-\(digest)"
+    ///
+    /// EVERY PART OF THE NAME IS THE KEY. Keyed on the ORIGIN PATH, not on the content: re-ingesting
+    /// an edited file has to land on the same source directory and replace it, rather than mint a
+    /// second one that answers queries beside the first. This is the argument
+    /// `transcript_export.doc_id_for_transcript` makes about its own key, and it holds here for the
+    /// same reason.
+    ///
+    /// The readable half used to be `slug(title)`, and `title` is the ENGINE'S — the document's own
+    /// first heading, read back out of the artefact `ingest` wrote. So the key was stable and the
+    /// NAME WAS NOT: editing the heading (or re-adding under a `--doc-class` whose policy names the
+    /// document differently) produced a second directory for one origin, and the comment above
+    /// described a property the function did not have. Derived from the origin's filename instead —
+    /// a different filename is a different path is a different document, which is the same claim the
+    /// digest makes. The title still declares itself inside the note; it no longer decides where the
+    /// note lives.
+    private static func sourceDirectoryName(origin: URL) -> String {
+        let readable = slug(origin.deletingPathExtension().lastPathComponent)
+        return "\(readable.isEmpty ? "document" : readable)-\(digest(origin.standardizedFileURL.path))"
+    }
+
+    /// Source directories in `references` that were written for the same origin and are not `named`.
+    ///
+    /// Matched on the DIGEST SUFFIX, which is the part that identifies the origin — eight hex
+    /// characters of the SHA-256 of one absolute path, so nothing the operator put in
+    /// `10-reference/` by hand carries it except a directory this app wrote for this exact file.
+    /// A `10-reference/` that cannot be listed is treated as holding nothing rather than as a
+    /// refusal: the very next thing `promote` does is create a directory inside it, so a genuinely
+    /// unreadable one fails loudly a line later, and refusing here would turn a first-ever promote
+    /// (no `10-reference/` yet) into an error.
+    private static func staleSources(named: String, for origin: URL,
+                                     in references: URL) -> [URL] {
+        let suffix = "-\(digest(origin.standardizedFileURL.path))"
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: references, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        return entries.filter {
+            $0.lastPathComponent.hasSuffix(suffix) && $0.lastPathComponent != named
+        }
+    }
+
+    /// Eight hex characters of a SHA-256 — enough to key one operator's documents apart, short
+    /// enough to leave the readable half of a directory name readable.
+    private static func digest(_ text: String) -> String {
+        String(SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }
+            .joined().prefix(8))
     }
 
     /// The three values, each with the argument that chose it, written into the vault where the
