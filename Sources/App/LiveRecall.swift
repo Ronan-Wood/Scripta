@@ -84,14 +84,10 @@ final class LiveRecall: ObservableObject {
         // OFF IS A STATE THAT SAYS SO. Returning silently left the panel a bare header for the whole
         // call, which is exactly the reading `Quiet` exists to prevent: an empty panel beside a live
         // conversation is taken as "the vault knows nothing about this".
-        guard AppSettings.liveRecallEnabled else {
-            quiet = .sentence("Live recall is off, so the vault is not being consulted during this "
-                              + "call. Turn it on under Settings › Intelligence.")
-            return
-        }
-        // The same reasoning for the other way this arrives empty: with live transcription off
-        // nothing is ever transcribed, so there is nothing to recall FROM and the panel would
-        // otherwise claim forever that not enough had been said yet.
+        //
+        // The loop is armed EITHER WAY and `tick` re-reads the switch, so this sentence is the state
+        // on entry rather than a decision for the whole call. With live transcription off there is
+        // nothing to recall from at all, and that one IS decided here: no words will ever arrive.
         guard AppSettings.liveTranscriptionEnabled else {
             quiet = .sentence("Live transcription is off, so there are no words to look anything up "
                               + "with. The call is still being recorded.")
@@ -121,8 +117,17 @@ final class LiveRecall: ObservableObject {
         // left the loop sending live speech to the engine for the rest of the call — a privacy
         // control that only took effect on the NEXT recording, in the one case where it is being
         // used deliberately.
+        //
+        // THE LOOP KEEPS RUNNING; only the QUERY stops. Calling `stop()` here killed the loop, so
+        // turning the switch back on mid-call did nothing until the next recording — and `stop()`
+        // clears `quiet`, so the sentence explaining the blank panel was wiped by the same call
+        // that was supposed to produce it. Nothing is sent while this is off, which is the whole
+        // requirement; a sleeping 20-second loop costs nothing.
         guard AppSettings.liveRecallEnabled else {
-            stop()
+            recall = nil
+            quiet = .sentence("Live recall is off, so the vault is not being consulted during this "
+                              + "call. Turn it on under Settings › Intelligence.")
+            lastAsked = ""
             return
         }
         let binding = WorkspaceBindings.active
@@ -176,6 +181,12 @@ final class LiveRecall: ObservableObject {
                 quiet = nil
                 lastAsked = tail
             } catch {
+                // COMMITTED, unlike the transport failures below. A vocabulary refusal is
+                // deterministic — an unknown spine token fails identically every time — so leaving
+                // this tail un-asked would re-send the same words to the same certain failure every
+                // twenty seconds for the rest of the call. The engine blip the other branches retry
+                // for is a different thing entirely.
+                lastAsked = tail
                 quiet = .refused(scope: scope, .vocabulary("\(error)"))
             }
         case .toolFault(let text):

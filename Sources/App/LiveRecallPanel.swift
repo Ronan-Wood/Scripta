@@ -21,7 +21,12 @@ struct LiveRecallPanel: View {
             if let hit = recall.recall {
                 ForEach(hit.passages) { LiveRecallCard(passage: $0) }
                 footer(hit)
-            } else if let quiet = recall.quiet {
+            }
+            // NOT AN `else`. A refusal used to be reachable only while nothing had been recalled
+            // yet, so an engine that went down mid-call showed as a frozen hit with a counting-up
+            // age — the stale-read-as-current failure, wearing the badge that was meant to prevent
+            // it. The hit stays (it was true when it arrived) and the refusal is drawn beneath it.
+            if let quiet = recall.quiet {
                 switch quiet {
                 case .sentence(let text):
                     Text(text)
@@ -46,17 +51,23 @@ struct LiveRecallPanel: View {
     /// seconds behind the conversation and a stale hit read as current is the panel misleading
     /// rather than helping.
     private func footer(_ hit: LiveRecall.Recall) -> some View {
-        HStack(spacing: Space.x1) {
-            Text(verbatim: "fast retrieval · ranking unmeasured ·")
-            // SELF-UPDATING. Computed against `Date()` at render time it froze during exactly the
-            // stretch it matters in: when the room goes quiet the tail stops changing, the dedup
-            // guard returns before any publish, nothing re-renders, and a five-minute-old hit sat
-            // under a footer still reading "0s ago" — the stale-hit-read-as-current failure this
-            // line exists to prevent.
-            Text(hit.at, style: .relative)
+        VStack(alignment: .leading, spacing: Space.x1) {
+            Text(verbatim: "fast retrieval · ranking unmeasured")
+            // SELF-UPDATING, and on its OWN LINE. Computed against `Date()` at render time it froze
+            // during exactly the stretch it matters in: when the room goes quiet the tail stops
+            // changing, the dedup guard returns before any publish, nothing re-renders, and a
+            // five-minute-old hit sat under a footer still reading "0s ago". `.relative` counts up
+            // on its own — it is also multi-unit and unbounded, which is why it does not share a row
+            // with the arm in a 300pt column.
+            HStack(spacing: Space.x1) {
+                Text(verbatim: "asked")
+                Text(hit.at, style: .relative)
+                Text(verbatim: "ago")
+            }
         }
         .font(CarbonFont.label(11))
         .foregroundStyle(Carbon.textHelper)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

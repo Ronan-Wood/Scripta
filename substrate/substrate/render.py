@@ -28,7 +28,7 @@ import json
 
 from substrate.retrieve.retriever import RetrievalResult
 from substrate.spine import STATUSES, UNJUDGED_CONFIDENCE
-from substrate.store.index_store import Hit
+from substrate.store.index_store import Hit, decode_string_list
 
 SNIPPET_CHARS = 200      # matches `query --chars`, so the two renderings cut at the same point
 OUTLINE_RECORDS = 3      # the shared default, so a bare CLI --json and a bare MCP search agree
@@ -158,18 +158,6 @@ def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
     return out
 
 
-def _string_list(value: object) -> list[str]:
-    """A JSON-decoded `domains` value as the list its contract promises.
-
-    `json.loads` does not guarantee a list — `json.loads("123")` is an int, and a bare comprehension
-    over it raises rather than normalizing. Both wrong shapes resolve to `[]` here: a scalar is not
-    one domain badly stored, it is a row written by something that did not honour the column.
-    """
-    if not isinstance(value, list):
-        return []
-    return [v for v in value if isinstance(v, str)]
-
-
 def document_record(row: dict, *, scope: str | None) -> dict:
     """One note as a BROWSER sees it: its spine, where it came from, and a handle to read it.
 
@@ -213,12 +201,12 @@ def document_record(row: dict, *, scope: str | None) -> dict:
         "status": row.get("status") or "active",
         "doc_type": row.get("doc_type") or "reference",
         "confidence": row.get("confidence") or UNJUDGED_CONFIDENCE,
-        # Both list fields are NORMALIZED, not just decoded. `json.loads` does not guarantee a
-        # list — `json.loads("123")` is an int — and this builder emits the decoded value straight
-        # onto the wire, where `passage()` would at least raise on `list(...)`. A scalar crossing as
-        # `"domains": 123` against a contract that says list is the boundary asserting something
-        # false, and one malformed row would take the whole listing with it.
-        "domains": _string_list(json.loads(row.get("domains") or "[]")),
+        # `decode_string_list`, the SAME decoder `_row_to_hit` runs — so a malformed row reads
+        # identically in a browse list and a search result, which is what "same fallbacks as
+        # `passage`" above actually requires. It also swallows the decode itself: the guard used to
+        # sit after the `json.loads` that raises, so non-JSON text still took the whole listing with
+        # it while the comment claimed otherwise.
+        "domains": decode_string_list(row.get("domains")),
         "supersedes": reader.doc_id_list(json.loads(row.get("supersedes") or "[]")),
         "superseded_by": row.get("superseded_by"),
     }

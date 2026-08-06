@@ -106,6 +106,30 @@ def _like_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def decode_string_list(raw: object) -> list[str]:
+    """A JSON TEXT column as the list of strings its contract promises, from any bytes on disk.
+
+    THREE FAILURES, ONE ANSWER. `json.loads` raises on non-JSON text; it returns a non-list for a
+    bare scalar (`json.loads("123")` is an int); and a legal JSON list can still hold non-strings.
+    Every one of those is a row written by something that did not honour the column, and every one
+    of them used to reach a consumer differently — one as an exception that took a whole listing
+    with it, one as `"domains": 123` against a contract that says list, one as a phantom entry.
+
+    Here rather than in a renderer, because `render.passage` and `render.document_record` both read
+    this column and a normalizer in one of them means a malformed note reads one way in a search
+    result and another in a browse list.
+    """
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(value, list):
+        return []
+    return [v for v in value if isinstance(v, str)]
+
+
 def _col(r: sqlite3.Row, name: str, default: object = None) -> object:
     """Row value by name, or a default when the column is absent from THIS query's projection.
 
@@ -187,7 +211,7 @@ def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
         # before this, but that makes the property depend on a guard two modules away; here it is
         # local. Every consumer below (`list(h.supersedes)`, `','.join(...)`) assumes a sequence.
         supersedes=reader.doc_id_list(json.loads(_col(r, "d_supersedes") or "[]")),
-        domains=json.loads(_col(r, "d_domains") or "[]"),
+        domains=decode_string_list(_col(r, "d_domains")),
         vault=_col(r, "d_vault"),
     )
 
@@ -525,7 +549,7 @@ class IndexStore:
 
     def browse(self, *, statuses: frozenset[str] | None, include_sources: bool,
                vault: str | None = None, doc_type: str | None = None,
-               limit: int = 200, offset: int = 0) -> tuple[list[dict], int]:
+               limit: int = 25, offset: int = 0) -> tuple[list[dict], int]:
         """What a scope HOLDS, one row per note, in a stable order. The browse counterpart to
         `search`: no query, no ranking, no relevance — the whole corpus, filtered and paged.
 
@@ -603,7 +627,13 @@ class IndexStore:
             total = self.db.execute(
                 f"SELECT COUNT(*) FROM documents d{clause}", args).fetchone()[0]
             return [], total
-        return [dict(r) for r in rows], rows[0]["match_total"]
+        # `match_total` is popped rather than passed through: it is this statement's scaffolding and
+        # is indistinguishable from a real `documents` column to anything that iterates the row.
+        out = [dict(r) for r in rows]
+        total = out[0].pop("match_total")
+        for row in out[1:]:
+            row.pop("match_total", None)
+        return out, total
 
     @property
     def index_version(self) -> str:

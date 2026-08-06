@@ -323,7 +323,9 @@ TOOLS = [
             "properties": {
                 "scope": {"type": "string"},
                 "vault": {"type": "string",
-                          "description": "Only notes composed from this vault, by manifest name."},
+                          "description": "Only notes composed from this vault, by manifest name. "
+                                         "Omit it to browse every vault; an empty name is refused "
+                                         "rather than silently matching nothing."},
                 "doc_type": {"type": "string",
                              "description": "Only notes doing this job (spine.DOC_TYPES)."},
                 "include_archived": {"type": "boolean", "description": "Default false."},
@@ -693,9 +695,14 @@ def _tool_documents(args: dict, cfg: Config) -> dict:
     # said so nowhere — an empty list under an unreported filter, which is the exact confusion the
     # filters block exists to prevent. Refusing beats reconciling the two: the empty string names no
     # vault, so the argument is a mistake either way.
-    if vault is not None and not vault.strip():
-        raise ToolError("`vault` is empty. Omit it to browse every vault in the scope; naming no "
-                        "vault would otherwise filter the corpus down to nothing silently.")
+    if vault is not None:
+        # STRIPPED, then used stripped. Validating `vault.strip()` and filtering on the raw string
+        # meant `" prism "` passed the guard and matched nothing — the same silent narrowing the
+        # guard exists to refuse, one space away.
+        vault = vault.strip()
+        if not vault:
+            raise ToolError("`vault` is empty. Omit it to browse every vault in the scope; naming "
+                            "no vault would otherwise filter the corpus down to nothing silently.")
 
     limit, limit_note = _bounded(args.get("limit"), "limit",
                                  default=DEFAULT_DOCUMENTS, maximum=MAX_DOCUMENTS, minimum=1)

@@ -46,10 +46,13 @@ private struct VaultBrowseConsole: View {
 
     var body: some View {
         content
-            // KEYED ON THE SCOPE. A bare `.task` fires once on appear and never again, so a
-            // workspace switch — which resets the model to `.unasked` — left this pane on a
-            // spinner nothing would ever resolve.
-            .task(id: model.loadedScope) { await model.loadIfNeeded() }
+            // ADOPT ON APPEAR, LOAD ON THE TOKEN. Two modifiers because they answer two questions:
+            // opening this screen must re-read the binding (a rebind made in Ask changes the scope
+            // without changing the workspace), and the load must be keyed on something the loading
+            // task itself cannot write — keying it on the scope let the task invalidate its own
+            // trigger and spin forever.
+            .onAppear { model.adoptWorkspace() }
+            .task(id: model.reloadToken) { await model.loadIfNeeded() }
             .sheet(item: $reading) { VaultNoteSheet(document: $0, model: model) }
     }
 
@@ -57,6 +60,8 @@ private struct VaultBrowseConsole: View {
         switch model.state {
         case .unasked, .loading:
             VaultProbe()
+        case .idle:
+            VaultBrowseIdle { Task { await model.load() } }
         case .unbound:
             VaultBrowseUnbound()
         case .refused(let refusal):
@@ -69,6 +74,25 @@ private struct VaultBrowseConsole: View {
         case .listed(let listing):
             VaultBrowseListing(listing: listing, model: model) { reading = $0 }
         }
+    }
+}
+
+/// Asked for and abandoned — a reload cancelled by navigating away with nothing already on screen.
+/// It draws a CONTROL rather than a spinner: nothing is going to resolve this on its own, and a
+/// dead end that looks like progress is the failure the whole state machine is arranged to avoid.
+private struct VaultBrowseIdle: View {
+    let load: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Gap.s12) {
+            EngineNoteRow(note: EngineNote(
+                id: "idle", marker: "not loaded", tone: Ink.textHelper,
+                text: "This vault has not been read yet."))
+            VaultRetry(title: "Read the vault", action: load)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: Metrics.listMaxWidth, alignment: .leading)
+        .padding(Metrics.pageGutter)
     }
 }
 
@@ -179,7 +203,8 @@ private struct VaultFilterRow: View {
                     }
                 }
             }
-            Toggle("Include calls and archived notes", isOn: $model.includesWithheld)
+            Toggle("Include archived notes", isOn: $model.includesArchived)
+            Toggle("Include calls", isOn: $model.includesSources)
                 .toggleStyle(.checkbox)
                 .typeface(Register.micro, Ink.textSecondary)
         }
