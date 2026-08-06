@@ -201,6 +201,19 @@ TOOLS = [
                 "query": {"type": "string", "description": "What to look for, in natural words."},
                 "k": {"type": "integer",
                       "description": f"Max passages (default 5, server maximum {MAX_K})."},
+                "fast": {
+                    "type": "boolean",
+                    "description": (
+                        "Embedder only — no HyDE, no reranker. For a caller that must answer "
+                        "inside a turn of speech: the generator arms are roughly an order of "
+                        "magnitude slower (385ms → 4,558ms measured), which is the wrong trade for "
+                        "a suggestion surfaced during a live conversation and the right one for a "
+                        "question somebody is waiting on. The ranking is weaker and SAYS SO: the "
+                        "reply reports `hyde=off · rerank=off` and a null `expected_mrr` with "
+                        "`unmeasured_arm_combination`, because a fast answer must not wear the "
+                        "measured stack's number."
+                    ),
+                },
                 "include_sources": {
                     "type": "boolean",
                     "description": (
@@ -344,13 +357,29 @@ def _tool_search(args: dict, cfg: Config) -> dict:
     include_sources = bool(args.get("include_sources", False))
     statuses = retriever.statuses(include_archived=bool(args.get("include_archived", False)))
 
+    # `fast`: THE EMBEDDER ONLY, for a caller that must answer inside a turn of speech.
+    #
+    # The arms are bound once at startup, which is right for a server whose callers are all asking
+    # considered questions. Live retrieval during a call is not that caller: EXPERIMENTS.md measures
+    # the generator arms at "roughly an order of magnitude slower, consistent with 385ms → 4,558ms",
+    # and nothing useful arrives 4.5 seconds into a conversation that has already moved on.
+    #
+    # Dropping the arms rather than swapping them, so this cannot become a second stack to keep
+    # measured. And the honesty is automatic rather than added: `Capability` reports what RAN, so a
+    # fast answer reports `hyde=off · rerank=off` and its `expected_mrr` goes null with
+    # `unmeasured_arm_combination` — the same null a bare CLI query already returns. A live hit must
+    # not wear the considered stack's number, which is Doc 4 §8's open question answered in the one
+    # place that can answer it.
+    fast = bool(args.get("fast", False))
+
     entry, store = _open(scope, cfg.registry)
     try:
         result = retriever.retrieve(
             store, query, k=k, statuses=statuses,
             include_sources=include_sources, with_outlines=render.OUTLINE_RECORDS,
-            embedder=cfg.stack.embedder, expander=cfg.stack.expander,
-            reranker=cfg.stack.reranker,
+            embedder=cfg.stack.embedder,
+            expander=None if fast else cfg.stack.expander,
+            reranker=None if fast else cfg.stack.reranker,
         )
         return render.search_payload(
             result, scope=scope, query=query, statuses=statuses,
