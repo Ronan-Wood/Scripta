@@ -116,17 +116,28 @@ public struct SubstrateSearchRequest: Encodable, Sendable {
     public let includeArchived: Bool?
     public let includeSources: Bool?
 
+    /// Embedder only — no HyDE, no reranker. For a caller that must answer inside a turn of speech.
+    ///
+    /// Measured against the live engine 2026-08-06 on the `cbre` scope: 17,274ms considered against
+    /// 286ms fast. The reply SAYS which it got — a fast answer reports `hyde=off · rerank=off` and a
+    /// null `expected_mrr` with `unmeasured_arm_combination` — so a live hit can never be read as
+    /// carrying the measured stack's number. Anything the reader is waiting on deliberately should
+    /// leave this off.
+    public let fast: Bool?
+
     public init(scope: String, query: String, k: Int? = nil,
-                includeArchived: Bool? = nil, includeSources: Bool? = nil) {
+                includeArchived: Bool? = nil, includeSources: Bool? = nil,
+                fast: Bool? = nil) {
         self.scope = scope
         self.query = query
         self.k = k
         self.includeArchived = includeArchived
         self.includeSources = includeSources
+        self.fast = fast
     }
 
     enum CodingKeys: String, CodingKey {
-        case scope, query, k
+        case scope, query, k, fast
         case includeArchived = "include_archived"
         case includeSources = "include_sources"
     }

@@ -168,8 +168,12 @@ targetTemplates:
         ENABLE_HARDENED_RUNTIME: YES
         GENERATE_INFOPLIST_FILE: NO
         COMBINE_HIDPI_IMAGES: YES
-        # Sandboxed in every configuration: the App Store requires it, and the direct build
-        # ships the same way so both channels behave identically.
+        # UNSANDBOXED in every configuration since Doc 3 §1 (2026-07-30) dropped the App Store.
+        # The entitlements file itself records what each surviving key is now worth and why the
+        # two sandbox-only ones went; the reason the sandbox could not stay is that Doc 3 §2 makes
+        # this app spawn the substrate engine, and a sandboxed app cannot launch a subprocess
+        # outside its bundle. NOTE that `Scripta-MAS` below now builds an unsandboxed app and is
+        # therefore unsubmittable — retiring that target is a separate change and is not this pass.
         CODE_SIGN_ENTITLEMENTS: Sources/App/Scripta.entitlements
       configs:
         Debug:
