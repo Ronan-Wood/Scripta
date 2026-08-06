@@ -23,7 +23,15 @@ public struct ScriptaVault: Equatable {
     public let root: URL
 
     /// The scope this vault composes as — the manifest's `name`, and the name the engine registers.
+    /// Always a slug.
     public let scope: String
+
+    /// The workspace's name as the operator wrote it. Kept BESIDE the slug rather than derived from
+    /// it, because slugging is one-way: "Alpha Beta" and "Alpha-Beta" both reduce to `alpha-beta`,
+    /// and telling them apart is the whole point of recording it. Defaulting this from `scope`
+    /// stored a slug where a name belonged and compared the two — the same namespace confusion the
+    /// index had, reproduced inside the guard written to fix it.
+    public let workspace: String
 
     /// Vaults this one composes on top of, as ABSOLUTE paths.
     ///
@@ -54,6 +62,7 @@ public struct ScriptaVault: Equatable {
         guard !name.isEmpty else { throw VaultError.unnameableScope(scope) }
         self.root = root
         self.scope = name
+        self.workspace = scope
         self.inherits = inherits
     }
 
@@ -63,12 +72,15 @@ public struct ScriptaVault: Equatable {
     public init(rootOfExistingVault root: URL) {
         self.root = root
         self.scope = root.lastPathComponent
+        // The name the vault records for itself, or the directory's if it predates that key.
+        self.workspace = Self.workspace(ofVaultAt: root) ?? root.lastPathComponent
         self.inherits = []
     }
 
     public enum VaultError: LocalizedError, Equatable {
         case unnameableScope(String)
         case nameCollidesWithExistingDirectory(String, URL)
+        case vaultBelongsToAnotherWorkspace(String, String)
 
         public var errorDescription: String? {
             switch self {
@@ -84,6 +96,11 @@ public struct ScriptaVault: Equatable {
                     + "deletes a workspace by deleting its folder, so taking over a folder it did "
                     + "not create would put whatever is already in there inside a future wipe. "
                     + "Choose a different workspace name."
+            case .vaultBelongsToAnotherWorkspace(let asked, let owner):
+                return "The folder a workspace named \"\(asked)\" would use already belongs to "
+                    + "\"\(owner)\" — the two names reduce to the same directory. Sharing it would "
+                    + "put both workspaces' calls in one vault, and deleting either would delete "
+                    + "the other's. Choose a name that differs by more than punctuation or case."
             }
         }
     }
@@ -132,13 +149,43 @@ public struct ScriptaVault: Equatable {
     /// by hand can sit anywhere, including under the vaults root, and nothing about where it is says
     /// whose it is.
     public static func isAppVault(_ directory: URL) -> Bool {
+        manifestValue(ownershipKey, in: directory) == "true"
+    }
+
+    /// The workspace name this vault was created for, in the operator's own casing.
+    ///
+    /// Recorded because the DIRECTORY only knows the slug, and slugging is lossy: "CBRE",
+    /// "C.B.R.E." and any two names sharing a 48-character prefix all reduce to one directory. A
+    /// vault that stored only the slug would be re-adopted by the second workspace, and
+    /// `WorkspaceDeleter` takes every transcript in a vault with no `group:` filter — so wiping one
+    /// workspace would delete the other's calls.
+    public static func workspace(ofVaultAt directory: URL) -> String? {
+        manifestValue(workspaceKey, in: directory)
+    }
+
+    static let workspaceKey = "scripta_workspace"
+
+    /// One `key = value` from a manifest, unquoted. A real key match rather than a prefix test:
+    /// `hasPrefix(key) && hasSuffix("true")` accepted `scripta_workspace_vault = false # true`, and
+    /// any key merely STARTING with the ownership key — which is a poor gate for the one check
+    /// standing between a foreign vault and adoption.
+    static func manifestValue(_ key: String, in directory: URL) -> String? {
         guard let manifest = try? String(
             contentsOf: directory.appendingPathComponent(manifestName), encoding: .utf8)
-        else { return false }
-        return manifest.components(separatedBy: "\n").contains {
-            let line = $0.trimmingCharacters(in: .whitespaces)
-            return line.hasPrefix("\(ownershipKey)") && line.hasSuffix("true")
+        else { return nil }
+        for line in manifest.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.hasPrefix("#"), let equals = trimmed.firstIndex(of: "=") else { continue }
+            guard trimmed[trimmed.startIndex..<equals].trimmingCharacters(in: .whitespaces) == key
+            else { continue }
+            var value = trimmed[trimmed.index(after: equals)...]
+                .trimmingCharacters(in: .whitespaces)
+            if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
+                value = String(value.dropFirst().dropLast())
+            }
+            return value
         }
+        return nil
     }
 
     /// Every directory that may hold transcripts under `root`: the root itself, plus each vault
@@ -183,7 +230,14 @@ public struct ScriptaVault: Equatable {
         } catch {
             return ([], ["\(root.lastPathComponent): \(error.localizedDescription)"])
         }
-        return (entries.filter(isVault), [])
+        // `isAppVault`, NOT `isVault`. Everything downstream of this — the pruner's delete list, the
+        // wipe's `removeItem`, the indexer's removal pass — inherits whatever this filter admits,
+        // and `isVault` proves only that SOME manifest exists. A hand-made vault of the operator's
+        // sitting under the vaults root passed it, so the wipe would have removed it whole and the
+        // pruner would have deleted inside it. The adoption guard in `vault(forScope:)` was gated on
+        // ownership; this, the path every destructive caller actually reaches the directory through,
+        // was not.
+        return (entries.filter(isAppVault), [])
     }
 
     /// The workspace a transcript belongs to, derived from WHERE IT IS. `nil` when it is not inside
@@ -259,6 +313,15 @@ public struct ScriptaVault: Equatable {
     public func write() throws {
         let manager = FileManager.default
         try manager.createDirectory(at: transcripts, withIntermediateDirectories: true)
+        // NEVER REWRITE A MANIFEST WITH LESS THAN IT HAD. `inherits` defaults to `[]` and
+        // `init(rootOfExistingVault:)` hardcodes it, so any caller that re-resolved an existing
+        // vault without re-supplying the inheritance would regenerate the manifest without it —
+        // destroying the operator's `inherits`, and any `reference_domains` or `reference_pins`
+        // they had added by hand. That is the same destruction the ownership key exists to prevent,
+        // aimed at an app-created vault instead of a foreign one.
+        //
+        // Regeneration still repairs a MISSING manifest, which is what it was for.
+        if inherits.isEmpty, manager.fileExists(atPath: manifestURL.path) { return }
         try manifest().write(to: manifestURL, atomically: true, encoding: .utf8)
     }
 
@@ -279,6 +342,12 @@ public struct ScriptaVault: Equatable {
             // it created. Remove this line by hand and the app will leave the vault alone rather
             // than adopt it — which is the intended escape hatch, not a way to break it.
             "\(Self.ownershipKey) = true",
+            // The workspace's own name, because the directory only knows the slug and slugging is
+            // lossy: "CBRE" and "C.B.R.E." reduce to one directory, as does any pair sharing a
+            // 48-character prefix. Without this the second workspace re-adopts the first's vault,
+            // and `WorkspaceDeleter` takes every transcript in a vault with no `group:` filter — so
+            // wiping one would delete the other's calls.
+            "\(Self.workspaceKey) = \(Self.tomlString(workspace))",
         ]
         if inherits.isEmpty {
             lines.append("inherits = []")
@@ -347,10 +416,24 @@ public struct ScriptaVault: Equatable {
         // A manifest is evidence that a directory has value, not evidence of whose it is — and
         // adopting one means overwriting its manifest on every recording and removing it entire on
         // a wipe.
-        if FileManager.default.fileExists(atPath: directory.path), !isAppVault(directory) {
-            throw VaultError.nameCollidesWithExistingDirectory(scope, directory)
+        if FileManager.default.fileExists(atPath: directory.path) {
+            guard isAppVault(directory) else {
+                throw VaultError.nameCollidesWithExistingDirectory(scope, directory)
+            }
+            // AND IT MUST BE THIS WORKSPACE'S. Slugging is lossy, so a second workspace can reduce
+            // to the first's directory and would otherwise be handed a vault full of someone else's
+            // calls — which the wipe then takes wholesale, since the vault branch of `candidates`
+            // applies no `group:` filter. A vault written before this key existed reports `nil` and
+            // is accepted, so upgrading does not orphan one.
+            if let owner = workspace(ofVaultAt: directory), owner != scope {
+                throw VaultError.vaultBelongsToAnotherWorkspace(scope, owner)
+            }
+
         }
-        return try ScriptaVault(root: directory, scope: name, inherits: inherits)
+        // The RAW name, not `name`: `init` slugs it for `scope` and keeps the original for
+        // `workspace`. Passing the slug here set both from one value and put a slug
+        // where the display name belonged.
+        return try ScriptaVault(root: directory, scope: scope, inherits: inherits)
     }
 
     /// Lowercase ASCII slug — the shape a scope name and a directory name can both be, so the two

@@ -289,6 +289,67 @@ final class ScriptaVaultTests: XCTestCase {
             .contains("\(ScriptaVault.ownershipKey) = true"))
     }
 
+    /// Slugging is one-way, so two different workspace names can reduce to one directory. Without
+    /// the recorded name the second would be handed the first's vault — and `WorkspaceDeleter`
+    /// takes every transcript in a vault with no `group:` filter, so wiping one would delete the
+    /// other's calls.
+    func testTwoWorkspacesCannotShareOneVault() throws {
+        let first = try ScriptaVault.vault(forScope: "Alpha Beta", under: root)
+        try first.write()
+        XCTAssertEqual(ScriptaVault.workspace(ofVaultAt: first.root), "Alpha Beta")
+
+        XCTAssertThrowsError(try ScriptaVault.vault(forScope: "Alpha-Beta", under: root)) { error in
+            XCTAssertEqual(error as? ScriptaVault.VaultError,
+                           .vaultBelongsToAnotherWorkspace("Alpha-Beta", "Alpha Beta"))
+        }
+        // The owner itself still resolves, including through a differently-cased spelling of the
+        // SAME name — that is one workspace, not two.
+        XCTAssertNoThrow(try ScriptaVault.vault(forScope: "Alpha Beta", under: root))
+    }
+
+    /// `inherits` defaults to `[]`, so a caller that re-resolved an existing vault without
+    /// re-supplying the inheritance regenerated the manifest without it — destroying the operator's
+    /// `inherits`, `reference_domains` and `reference_pins`. That is the destruction the ownership
+    /// key exists to prevent, aimed at an app-created vault instead of a foreign one.
+    func testRewritingWithoutInheritsDoesNotClobberTheManifest() throws {
+        let curated = URL(fileURLWithPath: "/Users/x/vaults/cbre-vault")
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root, inherits: [curated])
+        try vault.write()
+        let original = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        XCTAssertTrue(original.contains(curated.path), original)
+
+        // The same vault, resolved again with no inheritance — the shape capture takes when a
+        // workspace has no binding yet.
+        let bare = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try bare.write()
+        XCTAssertEqual(try String(contentsOf: vault.manifestURL, encoding: .utf8), original,
+                       "a rewrite with no inherits must not drop the inherits already there")
+    }
+
+    /// Regeneration still repairs a manifest that is missing entirely — the case it existed for.
+    func testAMissingManifestIsStillRegenerated() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        try FileManager.default.removeItem(at: vault.manifestURL)
+        try vault.write()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: vault.manifestURL.path))
+    }
+
+    /// The ownership gate is a real key match, not a prefix/suffix test — that accepted
+    /// `scripta_workspace_vault = false # true`, and any key merely starting with the ownership key.
+    func testOwnershipIsParsedNotPatternMatched() throws {
+        let directory = root.appendingPathComponent("faux", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for hostile in ["scripta_workspace_vault = false # true",
+                        "scripta_workspace_vault_other = true",
+                        "# scripta_workspace_vault = true"] {
+            try "name = \"faux\"\n\(hostile)\n".write(
+                to: directory.appendingPathComponent(ScriptaVault.manifestName),
+                atomically: true, encoding: .utf8)
+            XCTAssertFalse(ScriptaVault.isAppVault(directory), "accepted: \(hostile)")
+        }
+    }
+
     /// APFS is case-insensitive, so a vault created as `cbre` inside a pre-existing `CBRE/` is
     /// reported by `contentsOfDirectory` as `CBRE`. Compared case-sensitively the lookup missed its
     /// own vault — and `WorkspaceDeleter` then found zero candidates and reported a successful
