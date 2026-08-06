@@ -94,30 +94,18 @@ struct KnowledgeView: View {
         }
     }
 
-    /// Which corpus this screen is showing. Knowledge was ONLY ever the left one — everything on it
-    /// is derived on-device from the local index over calls — and Doc 4 §8 says the app must also be
-    /// able to look at the vault. The two are not merged into one list because they are not one
-    /// corpus: the digest is this app's reading of its own calls, and the vault is a composed scope
-    /// spanning several vaults, most of which this app did not write.
-    enum Lens: String, CaseIterable, Identifiable {
-        case workspace, vault
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .workspace: return "This workspace"
-            case .vault: return "Vault"
-            }
-        }
-    }
-
-    @State private var lens: Lens = .workspace
+    /// NOT `@State`. `HubContent` rebuilds this pane every time the sidebar reselects the section,
+    /// so a `@State` lens silently reset to the call digest on the way back — the same defect
+    /// `SubstrateAskModel` records for its own `brain` ("the one thing the reader must never be
+    /// wrong about"). Held on the model that already outlives the view.
+    @ObservedObject private var vault = VaultBrowseModel.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             lensPicker
-            switch lens {
+            switch vault.lens {
             case .workspace: knowledgeContent
-            case .vault: VaultBrowseView(model: VaultBrowseModel.shared)
+            case .vault: VaultBrowseView(model: vault)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -179,6 +167,18 @@ struct KnowledgeView: View {
         }
     }
 
+    /// The corpus switch. Its selection lives on `VaultBrowseModel`, not here — see `vault` above.
+    private var lensPicker: some View {
+        Picker("", selection: $vault.lens) {
+            ForEach(VaultBrowseModel.Lens.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .padding(.horizontal, Space.x7)
+        .padding(.top, Space.x5)
+    }
+
     /// Split out of `body` so neither half carries the whole modifier chain. Cost here is a
     /// THRESHOLD, not a ramp, and that is the whole reason this seam exists: bisected, the first
     /// ~7 modifier wraps are free and each one after that costs the solver real time. Not modifier
@@ -194,17 +194,6 @@ struct KnowledgeView: View {
     /// The seam is load-bearing and nothing enforces it. Moving one presentation down here took a
     /// probe from 72ms back to 197ms; a lifecycle modifier up into `body` does the same in reverse.
     /// Anything in the 4...6 range works, which is the slack you have.
-    private var lensPicker: some View {
-        Picker("", selection: $lens) {
-            ForEach(Lens.allCases) { Text($0.title).tag($0) }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
-        .padding(.horizontal, Space.x7)
-        .padding(.top, Space.x5)
-    }
-
     private var knowledgeContent: some View {
         ScrollView {
             // Regrouped by purpose, not build order (M22): at-a-glance counts, then Recent (the

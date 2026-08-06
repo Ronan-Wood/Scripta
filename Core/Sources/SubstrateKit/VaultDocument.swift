@@ -35,8 +35,6 @@ public struct VaultDocument: Identifiable {
     /// The vault layout's tier for this note — 1 operator, 2 reference, 3 everything else. `nil`
     /// when unrecorded.
     public let tier: Int?
-    /// The note's file in the vault. Present so a reader can open it where it actually lives.
-    public let sourcePath: String?
     public let status: PassageStatus
     public let docType: PassageDocType
     public let confidence: PassageConfidence
@@ -49,7 +47,7 @@ public struct VaultDocument: Identifiable {
     public let supersededBy: String?
 
     public init(id: String, title: String?, expandRef: String?, passageCount: Int, vault: String,
-                tier: Int?, sourcePath: String?, status: PassageStatus, docType: PassageDocType,
+                tier: Int?, status: PassageStatus, docType: PassageDocType,
                 confidence: PassageConfidence, documentClass: PassageDocumentClass,
                 domains: [String] = [], supersedes: [String] = [], supersededBy: String? = nil) {
         self.id = id
@@ -58,7 +56,6 @@ public struct VaultDocument: Identifiable {
         self.passageCount = passageCount
         self.vault = vault
         self.tier = tier
-        self.sourcePath = sourcePath
         self.status = status
         self.docType = docType
         self.confidence = confidence

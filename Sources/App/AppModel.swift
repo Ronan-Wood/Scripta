@@ -163,6 +163,11 @@ final class AppModel: ObservableObject {
         case .processing:
             clock?.invalidate(); clock = nil
             meter.level = 0; isPaused = false; pauseStart = nil
+            // STOPPED HERE, not only at `.idle`. Processing a finished call — transcribe, summarize,
+            // caption — runs well past the 20s tick, so the loop fired again AFTER the operator
+            // pressed stop and sent the call's closing words to the engine. Recording over is
+            // recording over.
+            recall.stop()
         case .idle:
             clock?.invalidate(); clock = nil
             startedAt = nil; recordingElapsed = 0; meter.level = 0; isPaused = false; pauseStart = nil

@@ -20,6 +20,26 @@ import SubstrateKit
 final class VaultBrowseModel: ObservableObject {
     static let shared = VaultBrowseModel()
 
+    /// Which corpus the Knowledge screen is showing. It lives HERE rather than as `@State` on that
+    /// screen because `HubContent` rebuilds the pane on every sidebar reselect, which silently reset
+    /// the selection to the call digest — the defect `SubstrateAskModel` records for its own brain.
+    ///
+    /// The two are not merged into one list because they are not one corpus: the digest is this
+    /// app's on-device reading of its own calls, and the vault is a composed scope spanning several
+    /// vaults, most of which this app did not write.
+    enum Lens: String, CaseIterable, Identifiable {
+        case workspace, vault
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .workspace: return "This workspace"
+            case .vault: return "Vault"
+            }
+        }
+    }
+
+    @Published var lens: Lens = .workspace
+
     enum State {
         /// Nothing asked yet — the pane has not been opened, or the workspace just changed.
         case unasked
@@ -44,13 +64,22 @@ final class VaultBrowseModel: ObservableObject {
 
         /// Every vault the corpus composed from, in the order the engine returned them, deduped.
         /// The workspace's own vault and the tier it inherits are both in here, which is what the
-        /// vault filter is for.
-        var vaults: [String] {
+        /// vault filter is for. STORED, not computed: the filter row reads it on every body pass,
+        /// and it is a full sweep of up to a thousand rows.
+        let vaults: [String]
+
+        init(scope: String, documents: [VaultDocument], total: Int, filters: ExclusionFilter,
+             refresh: WireRefreshReport) {
+            self.scope = scope
+            self.documents = documents
+            self.total = total
+            self.filters = filters
+            self.refresh = refresh
             var seen = Set<String>(), order: [String] = []
             for document in documents where !document.vault.isEmpty {
                 if seen.insert(document.vault).inserted { order.append(document.vault) }
             }
-            return order
+            self.vaults = order
         }
     }
 
@@ -61,43 +90,92 @@ final class VaultBrowseModel: ObservableObject {
     /// spend a round trip to show less.
     @Published var vaultFilter: String?
 
-    /// Include the notes the engine withholds by default — archived, superseded, and the
-    /// conversation class that every captured call is. OFF by default, matching Ask, so browse and
-    /// query never disagree about what is in the vault unless the operator asks them to.
-    @Published var showsWithheld = false {
-        didSet { guard oldValue != showsWithheld else { return }; Task { await load() } }
+    /// Widen past the two default exclusions the engine CAN widen: archived notes, and the
+    /// conversation class every captured call is. OFF by default, matching Ask, so browse and query
+    /// never disagree about what is in the vault unless the operator asks them to.
+    ///
+    /// SUPERSEDED IS NOT IN THIS SET AND CANNOT BE. `retriever.statuses(include_archived: true)`
+    /// widens to `{active, complete, archived}` and stops there, so no argument to `documents`
+    /// returns a dead note. This flag once claimed otherwise and the screen contradicted itself: a
+    /// ticked box promising superseded notes above an exclusion bar reporting them withheld, which
+    /// would be read as "my vault has none" — the precise gap-in-the-corpus / gap-in-the-query
+    /// confusion the filters block exists to prevent.
+    @Published var includesWithheld = false {
+        didSet { guard oldValue != includesWithheld else { return }; Task { await load() } }
     }
 
-    /// One page. The engine clamps at 1000 and reports a clamp in `filters.notes`; this asks for the
-    /// clamp rather than paging, because a vault that has outgrown one page is a real product
-    /// question and a silently truncated list is not the way to discover it.
-    private static let pageSize = 1000
+    /// Set when the operator clicks an exclusion chip the engine has no argument for. Ask refuses
+    /// out loud here rather than no-opping, and so does this — a chip that swallows a click is how
+    /// a reader concludes they opened a class they did not.
+    @Published private(set) var refusedInclusion: RetrievalClass?
+
+    /// The disclosure chips are live controls, so a click has to do something. Archived and sources
+    /// are the same one flag because `documents` takes them as one gesture; the other three have no
+    /// argument behind them and say so.
+    func include(_ klass: RetrievalClass) {
+        switch klass {
+        case .archived, .sources:
+            includesWithheld.toggle()
+        case .superseded, .active, .complete:
+            refusedInclusion = klass
+            return
+        }
+        refusedInclusion = nil
+    }
+
+    /// One page, at the engine's maximum — asked for exactly, not over it. Asking for more got the
+    /// same rows back with a clamp note attached, and that note is drawn in the disclosure strip, so
+    /// every single load reported a narrowing that was this app's own doing.
+    ///
+    /// A vault larger than this shows the first page and says so: the header reads "N of TOTAL",
+    /// which is why `total` is on the payload. A silently truncated list is what that exists to
+    /// prevent; paging the UI is a real product question and not one to answer by hiding the count.
+    private static let pageSize = 500
 
     private let client = SubstrateClient(timeout: 30)
-    private var loadedScope: String?
     private var generation = 0
+
+    /// The scope currently on screen. `@Published` because the PANE keys its load on it: a
+    /// `.task` with no id fires once on appear and never again, so a workspace switch left the
+    /// browser on a spinner that nothing would ever resolve.
+    @Published private(set) var loadedScope: String?
 
     // MARK: - Lifecycle
 
-    /// Re-read the active workspace's binding. Called when the workspace changes, exactly as the
-    /// Ask and Library models are — a browser still showing the previous workspace's corpus is the
-    /// privacy partition leaking, not a stale view.
+    /// Re-read the active workspace's binding.
+    ///
+    /// IT BUMPS THE GENERATION, and that is the whole point rather than bookkeeping. Without it a
+    /// switch made while a request was in flight left the reply valid: the guard in `load()` still
+    /// matched, and the PREVIOUS workspace's notes landed on the new workspace's screen. That is the
+    /// privacy partition leaking, not a stale view, and it is what `SubstrateAskModel.adoptBinding`
+    /// spends its `epoch` on.
     func adoptWorkspace() {
         let scope = WorkspaceBindings.active.readsScope
         guard scope != loadedScope else { return }
+        generation &+= 1
         loadedScope = scope
         vaultFilter = nil
+        refusedInclusion = nil
         state = .unasked
     }
 
-    /// Load if nothing has been loaded yet. The pane's `.task` calls this, so navigating back to it
-    /// does not re-fetch a list that is already on screen.
+    /// Load if nothing has been loaded yet.
+    ///
+    /// It re-adopts FIRST. `adoptWorkspace` is idempotent and cheap, and the binding can change
+    /// without the workspace changing — rebinding this workspace to a different scope in Ask goes
+    /// through `WorkspaceBindings.bind`, which nothing here observes. Trusting a cached
+    /// `loadedScope` therefore let the browser keep listing a vault the workspace had been unbound
+    /// from, indefinitely.
     func loadIfNeeded() async {
+        adoptWorkspace()
         if case .unasked = state { await load() }
     }
 
     func load() async {
         guard let scope = WorkspaceBindings.active.readsScope else {
+            // Invalidated here too: a workspace can lose its binding while a request is in flight,
+            // and that reply must not land on a screen that now says there is no vault.
+            generation &+= 1
             loadedScope = nil
             state = .unbound
             return
@@ -108,8 +186,8 @@ final class VaultBrowseModel: ObservableObject {
         state = .loading
 
         let request = SubstrateDocumentsRequest(scope: scope,
-                                                includeArchived: showsWithheld,
-                                                includeSources: showsWithheld,
+                                                includeArchived: includesWithheld,
+                                                includeSources: includesWithheld,
                                                 limit: Self.pageSize)
         let outcome = await client.documents(request)
         // A workspace switched mid-flight must not have the old scope's corpus land on it.
@@ -118,11 +196,18 @@ final class VaultBrowseModel: ObservableObject {
         switch outcome {
         case .ok(let payload):
             do {
-                state = .listed(Listing(scope: scope,
-                                        documents: try payload.mappedDocuments(),
-                                        total: payload.total,
-                                        filters: try payload.filters.mapped(),
-                                        refresh: payload.refresh))
+                let listing = Listing(scope: scope,
+                                      documents: try payload.mappedDocuments(),
+                                      total: payload.total,
+                                      filters: try payload.filters.mapped(),
+                                      refresh: payload.refresh)
+                // A FILTER THE NEW LISTING CANNOT SATISFY IS DROPPED. `Listing.vaults` is derived
+                // from the rows that came back, and the chip row — including the "All vaults"
+                // escape — only draws when there is more than one. So a filter naming a vault this
+                // listing has none of produced an empty list, the words "clear the filter", and no
+                // control on screen that clears it.
+                if let filter = vaultFilter, !listing.vaults.contains(filter) { vaultFilter = nil }
+                state = .listed(listing)
             } catch {
                 // A spine word this build has no case for. Refused by name rather than dropped:
                 // a list quietly missing the rows it could not read understates the corpus.
@@ -133,6 +218,15 @@ final class VaultBrowseModel: ObservableObject {
         case .rpcError(let code, let message):
             state = .refused(.rpcError(code: code, message: message))
         case .transportFailure(let failure):
+            // A CANCELLED REQUEST IS NOT A FAULT. SwiftUI tearing down the pane's `.task` returns
+            // `URLError -999`, which classifies as a transport failure and drew a red card about a
+            // healthy engine — and because this model outlives the view, that card SURVIVED coming
+            // back. Same defect `SubstrateScopes.listScopes` records. `.unasked` rather than
+            // leaving the old state, so the next `loadIfNeeded` retries instead of latching.
+            guard !failure.isCancellation, !Task.isCancelled else {
+                state = .unasked
+                return
+            }
             state = .refused(.of(failure))
         }
     }

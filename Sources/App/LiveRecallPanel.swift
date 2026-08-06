@@ -19,9 +19,7 @@ struct LiveRecallPanel: View {
         VStack(alignment: .leading, spacing: Space.x3) {
             header
             if let hit = recall.recall {
-                ForEach(Array(hit.passages.enumerated()), id: \.offset) { _, passage in
-                    LiveRecallCard(passage: passage)
-                }
+                ForEach(hit.passages) { LiveRecallCard(passage: $0) }
                 footer(hit)
             } else if let quiet = recall.quiet {
                 switch quiet {
@@ -30,10 +28,11 @@ struct LiveRecallPanel: View {
                         .font(CarbonFont.label(12))
                         .foregroundStyle(Carbon.textHelper)
                         .fixedSize(horizontal: false, vertical: true)
-                case .refused(let refusal):
+                case .refused(let scope, let refusal):
                     // The same card every other engine surface draws a refusal with, so "the engine
-                    // is down" reads identically here and in Ask.
-                    VaultRefusalCard(refusal: refusal, retryTitle: nil, retry: nil)
+                    // is down" reads identically here and in Ask — and carrying the scope, because
+                    // nothing else on this screen names the corpus that refused.
+                    VaultRefusalCard(refusal: refusal, scope: scope, retryTitle: nil, retry: nil)
                 }
             }
             Spacer(minLength: 0)
@@ -47,18 +46,18 @@ struct LiveRecallPanel: View {
     /// seconds behind the conversation and a stale hit read as current is the panel misleading
     /// rather than helping.
     private func footer(_ hit: LiveRecall.Recall) -> some View {
-        Text(verbatim: "fast retrieval · ranking unmeasured · \(Self.age.string(from: hit.at, to: Date()) ?? "just now") ago")
-            .font(CarbonFont.label(11))
-            .foregroundStyle(Carbon.textHelper)
+        HStack(spacing: Space.x1) {
+            Text(verbatim: "fast retrieval · ranking unmeasured ·")
+            // SELF-UPDATING. Computed against `Date()` at render time it froze during exactly the
+            // stretch it matters in: when the room goes quiet the tail stops changing, the dedup
+            // guard returns before any publish, nothing re-renders, and a five-minute-old hit sat
+            // under a footer still reading "0s ago" — the stale-hit-read-as-current failure this
+            // line exists to prevent.
+            Text(hit.at, style: .relative)
+        }
+        .font(CarbonFont.label(11))
+        .foregroundStyle(Carbon.textHelper)
     }
-
-    private static let age: DateComponentsFormatter = {
-        let f = DateComponentsFormatter()
-        f.allowedUnits = [.minute, .second]
-        f.unitsStyle = .abbreviated
-        f.maximumUnitCount = 1
-        return f
-    }()
 }
 
 /// One recalled passage. Carries its spine, because a passage from a past CALL is raw material and
@@ -70,7 +69,7 @@ private struct LiveRecallCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.x1) {
             Text(passage.citation)
-                .font(CarbonFont.medium(12)).foregroundStyle(Carbon.interactive).lineLimit(2)
+                .font(CarbonFont.medium(12)).foregroundStyle(Carbon.textPrimary).lineLimit(2)
             if !passage.snippet.isEmpty {
                 Text(passage.snippet)
                     .font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary).lineLimit(4)
@@ -94,8 +93,8 @@ private struct LiveRecallCard: View {
     private var spine: String {
         var parts: [String] = []
         if passage.documentClass == .conversation { parts.append("from a call") }
-        parts.append(passage.status.rawValue)
-        parts.append(passage.confidence.rawValue)
+        parts.append(passage.status.label)
+        parts.append(passage.confidence.label)
         return parts.joined(separator: " · ")
     }
 }
