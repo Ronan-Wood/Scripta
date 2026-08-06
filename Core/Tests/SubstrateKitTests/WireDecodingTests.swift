@@ -33,6 +33,11 @@ final class WireDecodingTests: XCTestCase {
                                     payload: try GoldenFixture.payload(GoldenFixture.expand))
     }
 
+    func testDocumentsPayloadRoundTripsLosslessly() throws {
+        try JSONDiff.assertLossless(WireDocumentsResult.self,
+                                    payload: try GoldenFixture.payload(GoldenFixture.documents))
+    }
+
     /// The round-trip gate has to be able to FAIL, or it proves nothing.
     ///
     /// A decoder that drops a key round-trips cleanly against its own output, which is exactly the
@@ -207,5 +212,65 @@ final class WireDecodingTests: XCTestCase {
         XCTAssertEqual(note.stale, .matches)
         XCTAssertFalse(note.truncated)
         XCTAssertGreaterThan(note.nChars, 0)
+    }
+
+    // MARK: - documents
+
+    func testDocumentsCarriesProvenanceTheScopesOwnFolderDoesNotHold() throws {
+        let result = try JSONDecoder()
+            .decode(WireDocumentsResult.self, from: try GoldenFixture.payload(GoldenFixture.documents))
+
+        // A PAGE, not the corpus — and the payload says both, which is the whole reason `returned`
+        // and `total` are separate fields.
+        XCTAssertEqual(result.returned, 6)
+        XCTAssertEqual(result.returned, result.documents.count)
+        XCTAssertGreaterThan(result.total, result.returned,
+                             "this capture is a page of a larger corpus; if it ever stops being "
+                             + "one, the short-page-vs-small-corpus distinction goes untested")
+
+        // THE PROPERTY THE TOOL EXISTS FOR. Every row composed from a vault that is NOT the scope's
+        // own — reading `scripta`'s directory would have returned none of these six.
+        let vaults = Set(result.documents.compactMap(\.vault))
+        XCTAssertEqual(vaults, ["core-vault"])
+        XCTAssertTrue(result.documents.allSatisfy { $0.tier == 1 })
+
+        // The spine crosses whole, and it maps — a token this build has no case for refuses by
+        // name here rather than arriving as a plausible neighbour.
+        let mapped = try result.mappedDocuments()
+        XCTAssertEqual(mapped.count, 6)
+        XCTAssertTrue(mapped.allSatisfy { $0.expandRef != nil },
+                      "every row in this capture has passages, so every one is readable")
+        XCTAssertTrue(mapped.allSatisfy { $0.passageCount > 0 })
+        // `unclassified` is a WORD on this axis, not the absence of one — the distinction that was
+        // missing when the reader defaulted an undeclared class to `reference-frozen`.
+        XCTAssertTrue(mapped.allSatisfy { $0.documentClass == .unclassified })
+        XCTAssertTrue(mapped.contains { $0.docType == .howTo }, "the capture spans doc_types")
+        XCTAssertTrue(mapped.contains { $0.confidence == .verified })
+
+        // Browse withholds exactly what search withholds, and says so.
+        XCTAssertTrue(result.filters.sourcesExcluded)
+    }
+
+    /// A note with NO passages is a row, not an omission — and its ref is null rather than invented.
+    ///
+    /// Not in the capture (the six rows all have passages), so it is constructed. That is honest
+    /// about what it proves: the DECODER and the MAPPER handle the state, which is the half that
+    /// lives in this module. The engine really does produce it — the live `cbre` scope holds one —
+    /// and the engine-side half is asserted there.
+    func testAPassagelessNoteMapsToAnUnreadableRowRatherThanThrowing() throws {
+        let json = """
+            {"doc_id": "empty-note", "title": null, "expand_ref": null, "passage_count": 0,
+             "vault": "core-vault", "tier": 1, "source_path": "/v/empty.md",
+             "document_class": "unclassified", "status": "active", "doc_type": "reference",
+             "confidence": "unjudged", "domains": [], "supersedes": [], "superseded_by": null}
+            """
+        let wire = try JSONDecoder().decode(WireDocumentRecord.self, from: Data(json.utf8))
+        let mapped = try wire.mapped()
+
+        XCTAssertNil(mapped.expandRef, "an empty note has nothing to expand, and says so")
+        XCTAssertNil(mapped.title)
+        XCTAssertEqual(mapped.passageCount, 0)
+        XCTAssertEqual(mapped.id, "empty-note")
+        try JSONDiff.assertLossless(WireDocumentRecord.self, payload: Data(json.utf8))
     }
 }

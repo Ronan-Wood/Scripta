@@ -138,6 +138,30 @@ final class RenderContractTests: XCTestCase {
         ])
     }
 
+    func testDocumentRecordKeysMatchTheDecoder() throws {
+        XCTAssertEqual(try render().payload(of: "document_record").keys(), [
+            "doc_id", "title", "expand_ref", "passage_count", "vault", "tier", "source_path",
+            "document_class", "status", "doc_type", "confidence", "domains", "supersedes",
+            "superseded_by",
+        ])
+    }
+
+    /// The browse envelope is `search_payload` MINUS `retrieval_mode`, and the absence is asserted
+    /// rather than left to the key list to imply. Nothing retrieved; an arms block here would report
+    /// a stack that did not run, and a null `expected_mrr` beside a list invites the reading that
+    /// the LIST is unmeasured rather than inapplicable.
+    func testDocumentsPayloadIsSearchsEnvelopeWithoutTheArms() throws {
+        let keys = try render().payload(of: "documents_payload").keys()
+        XCTAssertEqual(keys, [
+            "scope", "db", "documents", "returned", "total", "filters", "index_version", "refresh",
+        ])
+        XCTAssertFalse(keys.contains("retrieval_mode"))
+
+        // `returned` AND `total`. Either alone makes a short page indistinguishable from a small
+        // corpus, which is the browse surface's version of a silent exclusion.
+        XCTAssertTrue(keys.contains("returned") && keys.contains("total"))
+    }
+
     // MARK: - refresh_state.py, introspect.py, freshness.py, mcp/server.py
 
     func testRefreshBlockKeysMatchTheDecoder() throws {
@@ -363,7 +387,7 @@ final class RenderContractTests: XCTestCase {
         let sources: [(String, [String])] = [
             ("substrate/substrate/render.py",
              ["passage", "outline_record", "retrieval_mode", "engine_health", "applied_filters",
-              "search_payload"]),
+              "search_payload", "document_record", "documents_payload"]),
             ("substrate/substrate/introspect.py", ["arms", "vector_status", "status_payload",
                                                    "scopes_payload"]),
             ("substrate/substrate/refresh_state.py", ["_block"]),
@@ -383,7 +407,7 @@ final class RenderContractTests: XCTestCase {
                 keys += found
             }
         }
-        XCTAssertEqual(builders, 14)
+        XCTAssertEqual(builders, 16)
         XCTAssertGreaterThanOrEqual(keys, 90, "only \(keys) payload keys parsed out of the engine; "
                                     + "the parser has stopped recognising a declaration shape")
     }

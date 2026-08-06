@@ -502,6 +502,169 @@ public struct WireSearchResult: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - documents (browse)
+
+/// `render.document_record` — one note as a browser sees it.
+///
+/// DELIBERATELY NOT A `WirePassage`. A passage carries a snippet cut for a query; a browse row has
+/// no query behind it, so there is no snippet and `passageCount` says how much there is instead —
+/// a size, which cannot be mistaken for a summary the way an arbitrary first sentence could.
+public struct WireDocumentRecord: Codable, Equatable, Sendable {
+    public let docID: String
+    /// `null` for a note whose frontmatter names no title.
+    public let title: String?
+    /// The handle `expand` reads the note with. `null` for a note with no passages — a real state
+    /// (an empty note is still in the corpus and still appears in this list), not an error.
+    public let expandRef: String?
+    public let passageCount: Int
+    /// WHICH vault in the inheritance chain this note composed from. `null` on a row the index
+    /// carries no provenance for.
+    public let vault: String?
+    public let tier: Int?
+    /// The note's own file, in the vault — not the derived artifact under the index root.
+    public let sourcePath: String?
+    public let documentClass: String?
+    public let status: String
+    public let docType: String
+    public let confidence: String
+    public let domains: [String]
+    /// A LIST as of schema v8 — `[]` when this note replaced nothing, never null.
+    public let supersedes: [String]
+    /// The live note that replaced this dead one. Scalar, because a dead note has exactly one.
+    public let supersededBy: String?
+
+    public init(docID: String, title: String?, expandRef: String?, passageCount: Int,
+                vault: String?, tier: Int?, sourcePath: String?, documentClass: String?,
+                status: String, docType: String, confidence: String, domains: [String],
+                supersedes: [String], supersededBy: String?) {
+        self.docID = docID
+        self.title = title
+        self.expandRef = expandRef
+        self.passageCount = passageCount
+        self.vault = vault
+        self.tier = tier
+        self.sourcePath = sourcePath
+        self.documentClass = documentClass
+        self.status = status
+        self.docType = docType
+        self.confidence = confidence
+        self.domains = domains
+        self.supersedes = supersedes
+        self.supersededBy = supersededBy
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case docID = "doc_id"
+        case title
+        case expandRef = "expand_ref"
+        case passageCount = "passage_count"
+        case vault, tier
+        case sourcePath = "source_path"
+        case documentClass = "document_class"
+        case status
+        case docType = "doc_type"
+        case confidence, domains, supersedes
+        case supersededBy = "superseded_by"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        docID = try c.decode(String.self, forKey: .docID)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        expandRef = try c.decodeIfPresent(String.self, forKey: .expandRef)
+        passageCount = try c.decode(Int.self, forKey: .passageCount)
+        vault = try c.decodeIfPresent(String.self, forKey: .vault)
+        tier = try c.decodeIfPresent(Int.self, forKey: .tier)
+        sourcePath = try c.decodeIfPresent(String.self, forKey: .sourcePath)
+        documentClass = try c.decodeIfPresent(String.self, forKey: .documentClass)
+        status = try c.decode(String.self, forKey: .status)
+        docType = try c.decode(String.self, forKey: .docType)
+        confidence = try c.decode(String.self, forKey: .confidence)
+        domains = try c.decode([String].self, forKey: .domains)
+        supersedes = try c.decode([String].self, forKey: .supersedes)
+        supersededBy = try c.decodeIfPresent(String.self, forKey: .supersededBy)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(docID, forKey: .docID)
+        try c.encodeExplicitNull(title, forKey: .title)
+        try c.encodeExplicitNull(expandRef, forKey: .expandRef)
+        try c.encode(passageCount, forKey: .passageCount)
+        try c.encodeExplicitNull(vault, forKey: .vault)
+        try c.encodeExplicitNull(tier, forKey: .tier)
+        try c.encodeExplicitNull(sourcePath, forKey: .sourcePath)
+        try c.encodeExplicitNull(documentClass, forKey: .documentClass)
+        try c.encode(status, forKey: .status)
+        try c.encode(docType, forKey: .docType)
+        try c.encode(confidence, forKey: .confidence)
+        try c.encode(domains, forKey: .domains)
+        try c.encode(supersedes, forKey: .supersedes)
+        try c.encodeExplicitNull(supersededBy, forKey: .supersededBy)
+    }
+}
+
+/// `render.documents_payload` — the browse envelope.
+///
+/// `search`'s outer shape MINUS `retrieval_mode`, and the absence is load-bearing: nothing
+/// retrieved, so there are no arms to report, and a null `expected_mrr` attached here would invite
+/// the reading that the LIST is unmeasured rather than inapplicable.
+public struct WireDocumentsResult: Codable, Equatable, Sendable {
+    public let scope: String?
+    public let db: String?
+    public let documents: [WireDocumentRecord]
+    /// How many came back on this page, against how many MATCHED. Both, because a page shorter
+    /// than the limit and a corpus that is genuinely that size are otherwise indistinguishable.
+    public let returned: Int
+    public let total: Int
+    public let filters: WireAppliedFilters
+    public let indexVersion: String
+    public let refresh: WireRefreshReport
+
+    public init(scope: String?, db: String?, documents: [WireDocumentRecord], returned: Int,
+                total: Int, filters: WireAppliedFilters, indexVersion: String,
+                refresh: WireRefreshReport) {
+        self.scope = scope
+        self.db = db
+        self.documents = documents
+        self.returned = returned
+        self.total = total
+        self.filters = filters
+        self.indexVersion = indexVersion
+        self.refresh = refresh
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case scope, db, documents, returned, total, filters
+        case indexVersion = "index_version"
+        case refresh
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        scope = try c.decodeIfPresent(String.self, forKey: .scope)
+        db = try c.decodeIfPresent(String.self, forKey: .db)
+        documents = try c.decode([WireDocumentRecord].self, forKey: .documents)
+        returned = try c.decode(Int.self, forKey: .returned)
+        total = try c.decode(Int.self, forKey: .total)
+        filters = try c.decode(WireAppliedFilters.self, forKey: .filters)
+        indexVersion = try c.decode(String.self, forKey: .indexVersion)
+        refresh = try c.decodeRefresh(forKey: .refresh)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeExplicitNull(scope, forKey: .scope)
+        try c.encodeExplicitNull(db, forKey: .db)
+        try c.encode(documents, forKey: .documents)
+        try c.encode(returned, forKey: .returned)
+        try c.encode(total, forKey: .total)
+        try c.encode(filters, forKey: .filters)
+        try c.encode(indexVersion, forKey: .indexVersion)
+        if refresh.wasSent { try c.encode(refresh, forKey: .refresh) }
+    }
+}
+
 // MARK: - drift
 
 /// `freshness.drift` — the vault compared against what the index holds.
