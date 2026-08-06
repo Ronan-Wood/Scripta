@@ -568,22 +568,42 @@ class IndexStore:
             args.append(doc_type)
         clause = f" WHERE {' AND '.join(where)}" if where else ""
 
-        total = self.db.execute(f"SELECT COUNT(*) FROM documents d{clause}", args).fetchone()[0]
+        # ONE STATEMENT, ONE SNAPSHOT. `COUNT(*) OVER ()` rather than a separate `SELECT COUNT(*)`:
+        # the connection is autocommit, so two statements are two WAL read transactions, and the
+        # refresh agent recomposes these files unattended. A compose committing between them made
+        # `total` describe one corpus and the rows another — and `total` exists precisely so a
+        # caller can tell a short page from a small corpus, so a `total` from a different snapshot
+        # is worse than none.
+        #
+        # `+c.kind` in both subqueries, and the unary plus is load-bearing rather than noise. It
+        # deoptimizes the term so SQLite stops choosing `idx_chunks_kind` — which matches every
+        # passage chunk in the scope, making each output row a full corpus scan — and takes
+        # `idx_chunks_doc` instead. These indexes carry no `sqlite_stat1`, so the planner has no
+        # stats to correct itself with. Measured on the operator's `prism` index (321 documents,
+        # 3,564 passages): 966ms before, 24ms after, no schema change.
+        #
         # COALESCE on the sort keys only. A NULL title sorts before every string in SQLite, so an
         # untitled note would head the list of a vault it says nothing about; ordering by the
         # doc_id it falls back to puts it where its name would have put it.
         rows = self.db.execute(
-            "SELECT d.*, "
-            "(SELECT c.chunk_id FROM chunks c WHERE c.doc_id=d.doc_id AND c.kind='passage' "
+            "SELECT d.*, COUNT(*) OVER () AS match_total, "
+            "(SELECT c.chunk_id FROM chunks c WHERE c.doc_id=d.doc_id AND +c.kind='passage' "
             " ORDER BY c.seq LIMIT 1) AS first_chunk_id, "
-            "(SELECT COUNT(*) FROM chunks c WHERE c.doc_id=d.doc_id AND c.kind='passage') "
+            "(SELECT COUNT(*) FROM chunks c WHERE c.doc_id=d.doc_id AND +c.kind='passage') "
             " AS passage_count "
             f"FROM documents d{clause} "
             "ORDER BY COALESCE(d.vault, ''), COALESCE(d.title, d.doc_id), d.doc_id "
             "LIMIT ? OFFSET ?",
             [*args, limit, offset],
         ).fetchall()
-        return [dict(r) for r in rows], total
+        # An empty page carries no window function to read a total off, so the count is asked for
+        # separately ONLY then — the case where there are no rows for a concurrent compose to
+        # disagree with.
+        if not rows:
+            total = self.db.execute(
+                f"SELECT COUNT(*) FROM documents d{clause}", args).fetchone()[0]
+            return [], total
+        return [dict(r) for r in rows], rows[0]["match_total"]
 
     @property
     def index_version(self) -> str:

@@ -140,10 +140,17 @@ final class RenderContractTests: XCTestCase {
 
     func testDocumentRecordKeysMatchTheDecoder() throws {
         XCTAssertEqual(try render().payload(of: "document_record").keys(), [
-            "doc_id", "title", "expand_ref", "passage_count", "vault", "tier", "source_path",
+            "doc_id", "title", "expand_ref", "passage_count", "vault", "tier",
             "document_class", "status", "doc_type", "confidence", "domains", "supersedes",
             "superseded_by",
         ])
+        // `source_path` was here and is deliberately gone: one call returned every note's absolute
+        // path, which is the operator's whole directory layout in bulk over a port any local
+        // process can reach. Asserted as an ABSENCE so re-adding it has to be a decision.
+        XCTAssertFalse(try render().payload(of: "document_record").keys().contains("source_path"),
+                       "`document_record` is emitting source_path again — a browse call now "
+                       + "discloses every note's filesystem path in bulk, which `expand` already "
+                       + "provides one note at a time for a note the caller actually named.")
     }
 
     /// The browse envelope is `search_payload` MINUS `retrieval_mode`, and the absence is asserted

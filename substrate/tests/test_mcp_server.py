@@ -387,6 +387,60 @@ def test_documents_filters_by_vault_and_doc_type_and_reports_both() -> None:
     assert "vault=some-other-vault" in miss["filters"]["notes"]
 
 
+def test_documents_refuses_a_vault_name_that_names_no_vault() -> None:
+    """`vault=""` filtered the corpus to nothing and reported no filter, because `browse` narrowed
+    on `is not None` while the payload disclosed on truthiness. An empty list under a silent filter
+    is the one thing the filters block exists to prevent, so the argument is refused outright."""
+    _, registry = _fixture()
+    assert _call_raw("documents", {"scope": "demo", "vault": ""}, registry).get("isError")
+    assert _call_raw("documents", {"scope": "demo", "vault": "   "}, registry).get("isError")
+    # A name that IS a vault, just not one here, still answers — and still reports the filter.
+    miss = _call("documents", {"scope": "demo", "vault": "elsewhere"}, registry)
+    assert miss["total"] == 0
+    assert "vault=elsewhere" in miss["filters"]["notes"]
+
+
+def test_documents_reports_a_clamped_offset_rather_than_rewriting_it_silently() -> None:
+    _, registry = _fixture()
+    out = _call("documents", {"scope": "demo", "offset": 50_000_000}, registry)
+    assert out["documents"] == []
+    assert any("offset" in n and "clamped" in n for n in out["filters"]["notes"]), out["filters"]
+
+
+def test_documents_does_not_hand_back_every_notes_path_in_bulk() -> None:
+    """`source_path` was the largest field in the record and the most identifying — one call
+    returned the operator's whole directory layout. `expand` still gives the path for a note the
+    caller has actually named, which is one at a time and asked for."""
+    root, registry = _fixture()
+    (doc,) = _call("documents", {"scope": "demo"}, registry)["documents"]
+    assert "source_path" not in doc
+    # No FILESYSTEM path anywhere in the record. Asserted against the fixture's real root rather
+    # than by looking for a "/", because `expand_ref` legitimately contains one as its scope
+    # separator and a blanket check fired on that instead.
+    assert not any(str(root) in str(v) for v in doc.values()), doc
+
+
+def test_documents_pages_small_by_default() -> None:
+    """A caller-chosen page is a caller-chosen response size. The default was 200 records (~30k
+    tokens measured on the operator's `prism` scope) against a `search` ceiling of 50."""
+    assert server.DEFAULT_DOCUMENTS <= server.MAX_K
+    assert server.MAX_DOCUMENTS <= 500
+
+
+def test_documents_normalises_a_malformed_domains_value() -> None:
+    """`json.loads` does not guarantee a list, and this builder emits the decoded value straight
+    onto the wire — so a scalar crossed as `"domains": 123` against a contract that says list."""
+    from substrate.render import document_record
+
+    row = {"doc_id": "d", "title": None, "first_chunk_id": None, "passage_count": 0,
+           "vault": None, "tier": None, "document_class": None, "status": "active",
+           "doc_type": "reference", "confidence": "unjudged",
+           "domains": "123", "supersedes": "null", "superseded_by": None}
+    out = document_record(row, scope="demo")
+    assert out["domains"] == []
+    assert out["supersedes"] == []
+
+
 def test_documents_refuses_a_doc_type_outside_the_vocabulary() -> None:
     """Refused, not returned empty. `doc_type="explaination"` matching zero rows would read as a
     corpus with no explanations rather than as a typo."""
@@ -395,6 +449,7 @@ def test_documents_refuses_a_doc_type_outside_the_vocabulary() -> None:
                      registry).get("isError")
     assert _call_raw("documents", {"scope": "demo", "limit": "10"}, registry).get("isError")
     assert _call_raw("documents", {"scope": "demo", "limit": 0}, registry).get("isError")
+    assert _call_raw("documents", {"scope": "demo", "offset": -1}, registry).get("isError")
     assert _call_raw("documents", {}, registry).get("isError")
 
 

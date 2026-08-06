@@ -521,8 +521,6 @@ public struct WireDocumentRecord: Codable, Equatable, Sendable {
     /// carries no provenance for.
     public let vault: String?
     public let tier: Int?
-    /// The note's own file, in the vault — not the derived artifact under the index root.
-    public let sourcePath: String?
     public let documentClass: String?
     public let status: String
     public let docType: String
@@ -534,7 +532,7 @@ public struct WireDocumentRecord: Codable, Equatable, Sendable {
     public let supersededBy: String?
 
     public init(docID: String, title: String?, expandRef: String?, passageCount: Int,
-                vault: String?, tier: Int?, sourcePath: String?, documentClass: String?,
+                vault: String?, tier: Int?, documentClass: String?,
                 status: String, docType: String, confidence: String, domains: [String],
                 supersedes: [String], supersededBy: String?) {
         self.docID = docID
@@ -543,7 +541,6 @@ public struct WireDocumentRecord: Codable, Equatable, Sendable {
         self.passageCount = passageCount
         self.vault = vault
         self.tier = tier
-        self.sourcePath = sourcePath
         self.documentClass = documentClass
         self.status = status
         self.docType = docType
@@ -559,7 +556,6 @@ public struct WireDocumentRecord: Codable, Equatable, Sendable {
         case expandRef = "expand_ref"
         case passageCount = "passage_count"
         case vault, tier
-        case sourcePath = "source_path"
         case documentClass = "document_class"
         case status
         case docType = "doc_type"
@@ -575,7 +571,6 @@ public struct WireDocumentRecord: Codable, Equatable, Sendable {
         passageCount = try c.decode(Int.self, forKey: .passageCount)
         vault = try c.decodeIfPresent(String.self, forKey: .vault)
         tier = try c.decodeIfPresent(Int.self, forKey: .tier)
-        sourcePath = try c.decodeIfPresent(String.self, forKey: .sourcePath)
         documentClass = try c.decodeIfPresent(String.self, forKey: .documentClass)
         status = try c.decode(String.self, forKey: .status)
         docType = try c.decode(String.self, forKey: .docType)
@@ -593,7 +588,6 @@ public struct WireDocumentRecord: Codable, Equatable, Sendable {
         try c.encode(passageCount, forKey: .passageCount)
         try c.encodeExplicitNull(vault, forKey: .vault)
         try c.encodeExplicitNull(tier, forKey: .tier)
-        try c.encodeExplicitNull(sourcePath, forKey: .sourcePath)
         try c.encodeExplicitNull(documentClass, forKey: .documentClass)
         try c.encode(status, forKey: .status)
         try c.encode(docType, forKey: .docType)

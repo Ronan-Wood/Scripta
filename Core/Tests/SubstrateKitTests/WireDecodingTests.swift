@@ -260,7 +260,7 @@ final class WireDecodingTests: XCTestCase {
     func testAPassagelessNoteMapsToAnUnreadableRowRatherThanThrowing() throws {
         let json = """
             {"doc_id": "empty-note", "title": null, "expand_ref": null, "passage_count": 0,
-             "vault": "core-vault", "tier": 1, "source_path": "/v/empty.md",
+             "vault": "core-vault", "tier": 1,
              "document_class": "unclassified", "status": "active", "doc_type": "reference",
              "confidence": "unjudged", "domains": [], "supersedes": [], "superseded_by": null}
             """
@@ -272,5 +272,27 @@ final class WireDecodingTests: XCTestCase {
         XCTAssertEqual(mapped.passageCount, 0)
         XCTAssertEqual(mapped.id, "empty-note")
         try JSONDiff.assertLossless(WireDocumentRecord.self, payload: Data(json.utf8))
+    }
+
+    /// EVERY nullable key null at once, because the lossless gate can only see a dropped key when
+    /// the captured value IS null. No fixture carries `vault`, `tier` or `document_class` as null,
+    /// so swapping their `encodeExplicitNull` for Swift's default `encodeIfPresent` — the exact
+    /// mistake `WireCoding` exists to prevent — passed every other test in this file.
+    func testEveryNullableDocumentKeySurvivesAsAnExplicitNull() throws {
+        let json = """
+            {"doc_id": "bare", "title": null, "expand_ref": null, "passage_count": 0,
+             "vault": null, "tier": null, "document_class": null, "status": "active",
+             "doc_type": "reference", "confidence": "unjudged", "domains": [], "supersedes": [],
+             "superseded_by": null}
+            """
+        try JSONDiff.assertLossless(WireDocumentRecord.self, payload: Data(json.utf8))
+
+        let mapped = try JSONDecoder()
+            .decode(WireDocumentRecord.self, from: Data(json.utf8)).mapped()
+        // A null class is `.unreported` — the ABSENCE of a class, never the settled-reading default.
+        XCTAssertEqual(mapped.documentClass, .unreported)
+        // A null vault is empty rather than a stand-in word: invented provenance is worse than none.
+        XCTAssertEqual(mapped.vault, "")
+        XCTAssertNil(mapped.tier)
     }
 }

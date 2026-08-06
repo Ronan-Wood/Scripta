@@ -48,6 +48,26 @@ private func mapToken<T: RawRepresentable & CaseIterable>(
     return value
 }
 
+/// The class the engine reported, or the absence of one.
+///
+/// `null` is `.unreported`, NOT `.referenceFrozen`. It says this index row carries no class at all,
+/// which is a narrower claim than "the note declared nothing" — the markdown reader already
+/// defaulted an undeclared `class:` at ingest, and that is the defaulting that once relabelled six
+/// migrated conversations under a fully green compose. A token this build has no class for refuses
+/// by name; `mapToken` cannot be used because `PassageDocumentClass` is deliberately not
+/// `RawRepresentable` — a raw value would make `unreported` decodable from a wire string.
+///
+/// ONE HOME, shared by the passage and the browse row. It was copied into both, and the second copy
+/// had already grown its own doc comment — which is how copies of a rule start disagreeing.
+private func mapDocumentClass(_ token: String?) throws -> PassageDocumentClass {
+    guard let token else { return .unreported }
+    guard let klass = PassageDocumentClass.named(token) else {
+        throw SubstrateMappingRefusal.unknownToken(
+            field: "document_class", value: token, known: PassageDocumentClass.wireTokens)
+    }
+    return klass
+}
+
 // MARK: - Passage
 
 extension WirePassage {
@@ -71,30 +91,12 @@ extension WirePassage {
             status: try mapToken(status, field: "status", to: PassageStatus.self),
             docType: try mapToken(docType, field: "doc_type", to: PassageDocType.self),
             confidence: try mapToken(confidence, field: "confidence", to: PassageConfidence.self),
-            documentClass: try mappedDocumentClass(),
+            documentClass: try mapDocumentClass(documentClass),
             domains: domains,
             supersedes: supersedes
         )
     }
 
-    /// The class the engine reported, or the absence of one.
-    ///
-    /// `null` is `.unreported`, NOT `.referenceFrozen`. It says this index row carries no class at
-    /// all, which is a narrower claim than "the note declared nothing" — the markdown reader already
-    /// defaulted an undeclared `class:` at ingest, and that is the defaulting that once relabelled
-    /// six migrated conversations under a fully green compose. A token this build has no class for
-    /// refuses by name; `mapToken` cannot be used because `PassageDocumentClass` is deliberately not
-    /// `RawRepresentable` — a raw value would make `unreported` decodable from a wire string.
-    private func mappedDocumentClass() throws -> PassageDocumentClass {
-        guard let documentClass else { return .unreported }
-        guard let klass = PassageDocumentClass.named(documentClass) else {
-            throw SubstrateMappingRefusal.unknownToken(
-                field: "document_class", value: documentClass,
-                known: PassageDocumentClass.wireTokens
-            )
-        }
-        return klass
-    }
 }
 
 // MARK: - Vault document
@@ -102,11 +104,12 @@ extension WirePassage {
 extension WireDocumentRecord {
     /// One wire row as a `VaultDocument`.
     ///
-    /// UNLIKE `WirePassage.mapped()`, A MISSING `expandRef` IS NOT A REFUSAL. There, an
-    /// unaddressable passage is a contradiction — it matched, so it has a chunk, so it has a ref —
-    /// and refusing is the only honest answer. Here it is an ordinary state the engine reports on
-    /// purpose: a note with no passages. Throwing would drop that note out of the list of what the
-    /// vault contains, which is precisely the claim this list exists to make correctly.
+    /// UNLIKE `WirePassage.mapped()`, A MISSING `expandRef` IS NOT A REFUSAL — and the reason is
+    /// IDENTITY, not addressability. `Passage.id` IS the expandRef, so a passage without one cannot
+    /// be constructed at all and the throw is the only honest answer. `VaultDocument.id` is the
+    /// `doc_id`, so here the missing ref is one absent FIELD on a row that still exists, and it is
+    /// reported. Throwing would drop that note out of the list of what the vault contains, which is
+    /// precisely the claim this list exists to make correctly.
     ///
     /// Every token still goes through `mapToken`, so a spine word this build has no case for
     /// refuses by name rather than arriving as a plausible neighbour.
@@ -119,30 +122,16 @@ extension WireDocumentRecord {
             // Empty rather than a stand-in word, exactly as `Passage.vault` is.
             vault: vault ?? "",
             tier: tier,
-            sourcePath: sourcePath,
             status: try mapToken(status, field: "status", to: PassageStatus.self),
             docType: try mapToken(docType, field: "doc_type", to: PassageDocType.self),
             confidence: try mapToken(confidence, field: "confidence", to: PassageConfidence.self),
-            documentClass: try mappedDocumentClass(),
+            documentClass: try mapDocumentClass(documentClass),
             domains: domains,
             supersedes: supersedes,
             supersededBy: supersededBy
         )
     }
 
-    /// The class the engine reported, or the absence of one — the same rule `WirePassage` applies,
-    /// for the same reason: `null` is `.unreported`, never `.referenceFrozen`, because defaulting an
-    /// absent class to the value that reads as settled is the bug that once relabelled six migrated
-    /// conversations under a fully green compose.
-    private func mappedDocumentClass() throws -> PassageDocumentClass {
-        guard let documentClass else { return .unreported }
-        guard let klass = PassageDocumentClass.named(documentClass) else {
-            throw SubstrateMappingRefusal.unknownToken(
-                field: "document_class", value: documentClass,
-                known: PassageDocumentClass.wireTokens)
-        }
-        return klass
-    }
 }
 
 extension WireDocumentsResult {

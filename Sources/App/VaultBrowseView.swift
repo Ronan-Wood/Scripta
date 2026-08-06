@@ -46,7 +46,10 @@ private struct VaultBrowseConsole: View {
 
     var body: some View {
         content
-            .task { await model.loadIfNeeded() }
+            // KEYED ON THE SCOPE. A bare `.task` fires once on appear and never again, so a
+            // workspace switch — which resets the model to `.unasked` — left this pane on a
+            // spinner nothing would ever resolve.
+            .task(id: model.loadedScope) { await model.loadIfNeeded() }
             .sheet(item: $reading) { VaultNoteSheet(document: $0, model: model) }
     }
 
@@ -105,11 +108,16 @@ private struct VaultBrowseListing: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Gap.s16) {
+            LazyVStack(alignment: .leading, spacing: Gap.s16) {
                 header
                 if let note = frozenNote { VaultScopeNote(note: note) }
                 VaultFilterRow(listing: listing, model: model)
-                ExclusionBar(filter: listing.filters)
+                ExclusionBar(filter: listing.filters, toggle: model.include)
+                if let refused = model.refusedInclusion {
+                    Text(SubstrateAskModel.refusalSentence(for: refused))
+                        .typeface(Register.micro, Ink.textHelper)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if shown.isEmpty {
                     VaultBrowseEmpty(listing: listing, filtered: model.vaultFilter != nil)
                 } else {
@@ -159,7 +167,7 @@ private struct VaultFilterRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s8) {
-            if listing.vaults.count > 1 {
+            if listing.vaults.count > 1 || model.vaultFilter != nil {
                 HStack(spacing: Gap.s6) {
                     VaultChip(title: "All vaults", selected: model.vaultFilter == nil) {
                         model.vaultFilter = nil
@@ -171,7 +179,7 @@ private struct VaultFilterRow: View {
                     }
                 }
             }
-            Toggle("Include calls, archived and superseded notes", isOn: $model.showsWithheld)
+            Toggle("Include calls and archived notes", isOn: $model.includesWithheld)
                 .toggleStyle(.checkbox)
                 .typeface(Register.micro, Ink.textSecondary)
         }

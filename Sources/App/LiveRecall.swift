@@ -44,8 +44,10 @@ final class LiveRecall: ObservableObject {
     enum Quiet {
         /// This app's own reason — nothing has been said yet, nothing matched, no binding.
         case sentence(String)
-        /// The engine's, rendered by the shared card.
-        case refused(VaultRefusal)
+        /// The engine's, rendered by the shared card. The SCOPE travels with it: a refused query is
+        /// still a claim about a named corpus, and this surface has no scope chip anywhere else, so
+        /// dropping the name leaves a refusal that names nothing.
+        case refused(scope: String?, VaultRefusal)
     }
 
     @Published private(set) var quiet: Quiet?
@@ -67,13 +69,34 @@ final class LiveRecall: ObservableObject {
     private var task: Task<Void, Never>?
     private var lastAsked = ""
 
+    /// Bumped by `stop()`. Cancellation aborts a request in flight, but NOT one whose reply has
+    /// already arrived and whose continuation is queued behind `stop()` on the main actor — that one
+    /// resumes and writes `recall` after the panel was cleared. The next call then opens beside the
+    /// previous call's passages.
+    private var generation = 0
+
     // MARK: - Lifecycle
 
     /// Begin following a call. `transcript` is asked for the words so far each tick; it runs on the
     /// main actor because that is where the live transcriber publishes.
     func start(transcript: @escaping @MainActor () -> String) {
         stop()
-        guard AppSettings.liveRecallEnabled else { return }
+        // OFF IS A STATE THAT SAYS SO. Returning silently left the panel a bare header for the whole
+        // call, which is exactly the reading `Quiet` exists to prevent: an empty panel beside a live
+        // conversation is taken as "the vault knows nothing about this".
+        guard AppSettings.liveRecallEnabled else {
+            quiet = .sentence("Live recall is off, so the vault is not being consulted during this "
+                              + "call. Turn it on under Settings › Intelligence.")
+            return
+        }
+        // The same reasoning for the other way this arrives empty: with live transcription off
+        // nothing is ever transcribed, so there is nothing to recall FROM and the panel would
+        // otherwise claim forever that not enough had been said yet.
+        guard AppSettings.liveTranscriptionEnabled else {
+            quiet = .sentence("Live transcription is off, so there are no words to look anything up "
+                              + "with. The call is still being recorded.")
+            return
+        }
         task = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.tick(transcript())
@@ -85,6 +108,7 @@ final class LiveRecall: ObservableObject {
     func stop() {
         task?.cancel()
         task = nil
+        generation &+= 1
         recall = nil
         quiet = nil
         lastAsked = ""
@@ -93,6 +117,14 @@ final class LiveRecall: ObservableObject {
     // MARK: - One pass
 
     private func tick(_ transcript: String) async {
+        // RE-READ EVERY TICK. It was read once in `start()`, so switching the feature off mid-call
+        // left the loop sending live speech to the engine for the rest of the call — a privacy
+        // control that only took effect on the NEXT recording, in the one case where it is being
+        // used deliberately.
+        guard AppSettings.liveRecallEnabled else {
+            stop()
+            return
+        }
         let binding = WorkspaceBindings.active
         guard let scope = binding.readsScope else {
             // NAMED, NOT BLANK. An unbound workspace has no corpus to recall from, and a panel that
@@ -110,8 +142,13 @@ final class LiveRecall: ObservableObject {
         }
         // The same words twice is the same answer twice. Skipped rather than re-asked, so a pause in
         // the conversation does not spend the engine redrawing what is already on screen.
+        //
+        // COMMITTED ON SUCCESS, not here. Committing before the call meant a tail whose query failed
+        // counted as asked: one engine blip during a lull drew a refusal, the words stopped changing,
+        // and every later tick returned at this guard — leaving a red card up for the rest of the
+        // call with no retry on it, long after the engine recovered.
         guard tail != lastAsked else { return }
-        lastAsked = tail
+        let mine = generation
 
         let request = SubstrateSearchRequest(scope: scope, query: tail, k: 3,
                                              // The workspace's OWN past calls are the most valuable
@@ -120,29 +157,35 @@ final class LiveRecall: ObservableObject {
                                              // a passage from mid-call still reads as raw material.
                                              includeSources: true,
                                              fast: true)
-        switch await client.search(request) {
+        let outcome = await client.search(request)
+        // The reply may have arrived after `stop()` ran. Cancellation cannot catch that one.
+        guard mine == generation, !Task.isCancelled else { return }
+
+        switch outcome {
         case .ok(let payload):
             do {
                 let passages = try payload.passages.map { try $0.mapped() }
                 guard !passages.isEmpty else {
                     quiet = recall == nil
                         ? .sentence("Nothing in \(scope) matches what has been said so far.") : nil
+                    lastAsked = tail
                     return
                 }
                 recall = Recall(prompt: tail, passages: passages,
                                 envelope: try payload.mappedEnvelope(), at: Date())
                 quiet = nil
+                lastAsked = tail
             } catch {
-                quiet = .refused(.vocabulary("\(error)"))
+                quiet = .refused(scope: scope, .vocabulary("\(error)"))
             }
         case .toolFault(let text):
-            quiet = .refused(VaultRefusal.classify(fault: text))
+            quiet = .refused(scope: scope, VaultRefusal.classify(fault: text))
         case .rpcError(let code, let message):
-            quiet = .refused(.rpcError(code: code, message: message))
+            quiet = .refused(scope: scope, .rpcError(code: code, message: message))
         case .transportFailure(let failure):
             // A cancelled call is this object being stopped, not a fault worth drawing.
             guard !failure.isCancellation else { return }
-            quiet = .refused(.of(failure))
+            quiet = .refused(scope: scope, .of(failure))
         }
     }
 

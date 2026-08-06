@@ -158,6 +158,18 @@ def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
     return out
 
 
+def _string_list(value: object) -> list[str]:
+    """A JSON-decoded `domains` value as the list its contract promises.
+
+    `json.loads` does not guarantee a list — `json.loads("123")` is an int, and a bare comprehension
+    over it raises rather than normalizing. Both wrong shapes resolve to `[]` here: a scalar is not
+    one domain badly stored, it is a row written by something that did not honour the column.
+    """
+    if not isinstance(value, list):
+        return []
+    return [v for v in value if isinstance(v, str)]
+
+
 def document_record(row: dict, *, scope: str | None) -> dict:
     """One note as a BROWSER sees it: its spine, where it came from, and a handle to read it.
 
@@ -171,6 +183,12 @@ def document_record(row: dict, *, scope: str | None) -> dict:
     same call a search result's ref takes, hitting the same reader, returning the same envelope
     with the same freshness verdict. A second read path would be a second place for "the vault has
     moved on since the index was built" to be got wrong.
+
+    NO `source_path`. It was here and is deliberately gone: it was the largest field in the record
+    and the most identifying, so a single call handed back every note filename and the operator's
+    whole directory layout in bulk — an amplification `search` did not offer, over a port any local
+    process can reach, and undocumented in the tool contract besides. A caller that has actually
+    selected a note gets the path from `expand`, which is one note at a time and asked for by name.
 
     It is NULL for a note with no passages, and that is the honest answer rather than a defect to
     paper over: an empty note is in the corpus (it appears in this list, which is the point) and
@@ -189,14 +207,18 @@ def document_record(row: dict, *, scope: str | None) -> dict:
         # operator's own note and one they share with every other project.
         "vault": row.get("vault"),
         "tier": row.get("tier"),
-        "source_path": row.get("source_path"),
         "document_class": row.get("document_class") or None,
         # The spine, same keys and same fallbacks as `passage` — a note must not read as one thing
         # in a search result and another in a list.
         "status": row.get("status") or "active",
         "doc_type": row.get("doc_type") or "reference",
         "confidence": row.get("confidence") or UNJUDGED_CONFIDENCE,
-        "domains": json.loads(row.get("domains") or "[]"),
+        # Both list fields are NORMALIZED, not just decoded. `json.loads` does not guarantee a
+        # list — `json.loads("123")` is an int — and this builder emits the decoded value straight
+        # onto the wire, where `passage()` would at least raise on `list(...)`. A scalar crossing as
+        # `"domains": 123` against a contract that says list is the boundary asserting something
+        # false, and one malformed row would take the whole listing with it.
+        "domains": _string_list(json.loads(row.get("domains") or "[]")),
         "supersedes": reader.doc_id_list(json.loads(row.get("supersedes") or "[]")),
         "superseded_by": row.get("superseded_by"),
     }

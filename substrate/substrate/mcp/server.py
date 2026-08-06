@@ -310,9 +310,13 @@ TOOLS = [
             "`expand_ref` reads the note, via `expand` with `mode=\"note\"` — the same call a "
             "search result takes. It is null for a note with no passages, which is a real state "
             "(an empty note is still in the corpus) rather than an error.\n\n"
-            "Defaults match `search`: archived and superseded notes are withheld, and so are "
-            "conversation-class sources. `total` counts what matched before paging, so a short "
-            "page is distinguishable from a small corpus."
+            "Defaults match `search`: archived notes are withheld, and so are conversation-class "
+            "sources. SUPERSEDED NOTES ARE UNREACHABLE HERE — `include_archived` widens to archived "
+            "and stops, so a dead note never appears on any argument; the filters block reports "
+            "that rather than leaving you to infer the vault holds none.\n\n"
+            "`total` counts what matched before paging, so a short page is distinguishable from a "
+            "small corpus. Pages are small on purpose: ask for more only when you mean to read "
+            "more, and use `offset` with `total` rather than one enormous call."
         ),
         "inputSchema": {
             "type": "object",
@@ -326,7 +330,7 @@ TOOLS = [
                 "include_sources": {"type": "boolean",
                                     "description": "Include conversation-class notes. Default "
                                                    "false, as in `search`."},
-                "limit": {"type": "integer", "description": "Default 200, max 1000."},
+                "limit": {"type": "integer", "description": "Default 25, max 500."},
                 "offset": {"type": "integer", "description": "Default 0."},
             },
             "required": ["scope"],
@@ -639,8 +643,14 @@ def _tool_status(args: dict, cfg: Config) -> dict:
         store.close()
 
 
-MAX_DOCUMENTS = 1000
-DEFAULT_DOCUMENTS = 200
+# A CALLER-CHOSEN PAGE IS A CALLER-CHOSEN RESPONSE SIZE, the rule `MAX_K` states and this tool
+# broke. Measured on the operator's `prism` scope at 591 bytes per record as `_dispatch` renders it:
+# the old default of 200 was ~30k tokens that nobody asked for, and the old maximum of 1000 was
+# ~148k — enough to exhaust a model caller's context in one call, against a `search` ceiling of
+# ~8.6k. The default is now in `MAX_K`'s neighbourhood; a caller that genuinely wants the corpus
+# asks for it and pages with `total` and `offset`.
+MAX_DOCUMENTS = 500
+DEFAULT_DOCUMENTS = 25
 
 
 def _bounded(raw: object, name: str, *, default: int, maximum: int,
@@ -678,10 +688,21 @@ def _tool_documents(args: dict, cfg: Config) -> dict:
     vault = args.get("vault")
     if vault is not None and not isinstance(vault, str):
         raise ToolError(f"`vault` must be a string, got {vault!r}.")
+    # AN EMPTY VAULT NAME IS REFUSED, not treated as absent. `browse` filters on `is not None` while
+    # the payload reported the filter on truthiness, so `vault=""` narrowed the corpus to nothing and
+    # said so nowhere — an empty list under an unreported filter, which is the exact confusion the
+    # filters block exists to prevent. Refusing beats reconciling the two: the empty string names no
+    # vault, so the argument is a mistake either way.
+    if vault is not None and not vault.strip():
+        raise ToolError("`vault` is empty. Omit it to browse every vault in the scope; naming no "
+                        "vault would otherwise filter the corpus down to nothing silently.")
 
     limit, limit_note = _bounded(args.get("limit"), "limit",
                                  default=DEFAULT_DOCUMENTS, maximum=MAX_DOCUMENTS, minimum=1)
-    offset, _ = _bounded(args.get("offset"), "offset", default=0, maximum=MAX_DOCUMENTS * 1000)
+    # The offset note is KEPT. Discarding it meant an out-of-range offset was silently rewritten and
+    # the caller got a well-formed empty page with nothing saying its argument had been altered.
+    offset, offset_note = _bounded(args.get("offset"), "offset", default=0,
+                                   maximum=MAX_DOCUMENTS * 1000)
     include_sources = bool(args.get("include_sources", False))
     statuses = retriever.statuses(include_archived=bool(args.get("include_archived", False)))
 
@@ -692,7 +713,8 @@ def _tool_documents(args: dict, cfg: Config) -> dict:
         return render.documents_payload(
             rows, total, scope=scope, statuses=statuses, include_sources=include_sources,
             doc_type=doc_type, vault=vault, index_version=store.index_version, db=str(entry.db),
-            filter_notes=(limit_note,) if limit_note else (), registry=cfg.registry,
+            filter_notes=tuple(n for n in (limit_note, offset_note) if n),
+            registry=cfg.registry,
         )
     finally:
         store.close()
