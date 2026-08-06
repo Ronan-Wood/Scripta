@@ -89,10 +89,14 @@ private struct LibraryDocumentRail: View {
         VStack(alignment: .leading, spacing: Gap.s10) {
             LibrarySectionHeader(
                 title: "Documents",
-                note: "Extracted by the engine, added to a vault Scripta owns at "
-                    + "\(SubstrateCLI.abbreviated(SubstrateLibrary.documentsVault.path)), then "
-                    + "composed and registered as `\(SubstrateLibrary.documentsScope)`. Your own "
-                    + "vaults are read-only to Scripta and nothing here writes to them.")
+                // CORRECTED with the destination: this said the document lands in a standalone
+                // `scripta-library` vault every workspace could query. It now lands in THIS
+                // workspace's vault, walled like its calls — and moving it somewhere shared is a
+                // deliberate promotion rather than what happens by default.
+                note: "Extracted by the engine and added to this workspace's vault under "
+                    + "`10-reference/`, then composed so it is queryable. It stays in "
+                    + "\(model.workspace.isEmpty ? "this workspace" : model.workspace) — sharing a "
+                    + "document across workspaces is a separate, deliberate step.")
             LibraryDropTarget(model: model)
             switch model.surface {
             case .unasked, .asking:
