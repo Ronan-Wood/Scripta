@@ -32,9 +32,14 @@ public enum TranscriptGroupRepair {
     /// folder may live inside a real vault, and `Notes/`, `Files/` and `Entities/` are this app's
     /// other artefact types — none of them transcripts. The owner marker is checked too, so a
     /// foreign markdown file that happens to sit at the root is never rewritten.
-    public static func untagged(in folder: URL) -> [Untagged] {
-        let entries = (try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+    /// `nil` when the folder could not be read — NOT an empty list. An unreadable folder returned
+    /// `[]`, which the repair surface shows as "nothing to repair": the operator is told their
+    /// corpus is clean when it was never looked at. That is the same defect `TranscriptStore`
+    /// gained `listOrFail` to remove, reintroduced in a file written the same day.
+    public static func untagged(in folder: URL) -> [Untagged]? {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        else { return nil }
         return entries
             .filter { $0.pathExtension == "md" }
             .compactMap { url -> Untagged? in
@@ -51,17 +56,19 @@ public enum TranscriptGroupRepair {
 
     /// Write `group:` into one transcript, in place.
     ///
-    /// Inserted immediately BEFORE the `app:` line rather than appended or placed by offset: every
-    /// app-authored transcript has that line — the marker check above guarantees it — so the anchor
-    /// always exists, and the resulting key order matches what `TranscriptWriter` emits for a call
-    /// recorded with a workspace. A repaired file is then byte-comparable with a freshly written
-    /// one instead of merely equivalent.
+    /// Placed where `TranscriptWriter` puts it, so a repaired transcript has the same key ORDER as
+    /// a freshly written one. It is not byte-identical to one and this no longer claims to be: a
+    /// legacy transcript predates the spine keys entirely, and repair adds a workspace, not a spine.
     ///
     /// Replaces an existing empty `group:` rather than adding a second, because two keys of one
     /// name is a frontmatter whose meaning depends on which parser reads it.
     public static func assign(_ workspace: String, to url: URL) throws {
         let raw = TranscriptWriter.sanitizeScalar(workspace)
-        guard !raw.isEmpty else { throw RepairError.emptyWorkspace }
+        // SLUGIFIABILITY is what the engine and `ScriptaVault` both require, and what this error
+        // message names — a value like "..." or an emoji sanitizes fine and slugifies to nothing,
+        // so guarding on `sanitizeScalar` alone stamped a `group:` that every later consumer would
+        // refuse, with nothing said at repair time.
+        guard !raw.isEmpty, !ScriptaVault.slug(raw).isEmpty else { throw RepairError.emptyWorkspace }
 
         let content = try String(contentsOf: url, encoding: .utf8)
         guard let split = Frontmatter.split(content),
@@ -71,8 +78,25 @@ public enum TranscriptGroupRepair {
 
         var lines = split.frontmatter.components(separatedBy: "\n")
         lines.removeAll { $0.trimmingCharacters(in: .whitespaces).hasPrefix("group:") }
+        // A repaired transcript also stops claiming to have no workspace. `recoverOrphans` stamps
+        // `untagged` into `tags:` when it cannot determine one, and that tag feeds the exporter's
+        // `domains` derivation — so leaving it makes a repaired call simultaneously declare a
+        // workspace and assert it has none.
+        if let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("tags:") }) {
+            lines[index] = lines[index]
+                .replacingOccurrences(of: "\"untagged\", ", with: "")
+                .replacingOccurrences(of: ", \"untagged\"", with: "")
+                .replacingOccurrences(of: "\"untagged\"", with: "")
+        }
         let line = "group: \"\(raw)\""
-        if let anchor = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("app:") }) {
+        // BEFORE `status:`, which is where `TranscriptWriter` puts it — the spine keys come after
+        // `group` in a freshly written transcript. Anchoring on `app:` put it after all four, so a
+        // repaired file and a written one differed in key order while the comment here claimed they
+        // were byte-comparable. `app:` remains the fallback for a legacy transcript that predates
+        // the spine and therefore has no `status:` line.
+        let anchor = lines.firstIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("status:") }
+            ?? lines.firstIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("app:") }
+        if let anchor {
             lines.insert(line, at: anchor)
         } else {
             lines.append(line)   // unreachable while the marker check above holds

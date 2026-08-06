@@ -515,14 +515,27 @@ final class RecordingSession {
         // query, which is what live retrieval during a call requires. Absent when the workspace has
         // no binding yet: the vault is still written, and still correct, just holding only calls.
         let inherits = WorkspaceBindings.binding(for: group).inheritsVault.map { [$0] } ?? []
-        guard let vault = try? ScriptaVault.vault(forScope: group, under: root, inherits: inherits)
-        else { return root }
+        let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Recording")
         do {
+            let vault = try ScriptaVault.vault(forScope: group, under: root, inherits: inherits)
             try vault.write()
             return vault.transcripts
         } catch {
-            let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Recording")
-            log.error("could not prepare the vault for \(group, privacy: .public): \(error.localizedDescription, privacy: .public) — writing to the output folder instead")
+            // A NAMED WORKSPACE FALLING BACK IS NOT THE UNGROUPED CASE, and the two shared a branch.
+            // `guard let vault = try? …` swallowed every construction failure into the same silent
+            // `return root` that implements "no workspace to name a vault" — so a call recorded into
+            // a workspace whose vault was REFUSED (a name colliding with an existing directory, or
+            // with another workspace's vault, or one that slugifies to nothing) landed in the flat
+            // root while its frontmatter asserted `group: <name>`, with nothing recorded anywhere.
+            //
+            // The refusals that reach here have multiplied since it was written — the adoption
+            // guard, the ownership guard and the workspace-collision guard all throw — so the branch
+            // that says nothing is now the likeliest one. It still falls back rather than failing
+            // the recording, because the transcript is the only artefact that cannot be recreated,
+            // but it says so.
+            if !group.isEmpty {
+                log.error("no vault for workspace \(group, privacy: .public): \(error.localizedDescription, privacy: .public) — writing to the output folder instead; this call will not be in that workspace's corpus until it is filed")
+            }
             return root
         }
     }
