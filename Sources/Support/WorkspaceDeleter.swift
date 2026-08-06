@@ -46,11 +46,44 @@ enum WorkspaceDeleter {
         }
     }
 
+    /// Everything one wipe will do, resolved ONCE.
+    ///
+    /// `candidates`, `collateral` and `delete` each ran their own `existingVault` scan, so the tree
+    /// whose contents the operator was shown was not provably the tree that got removed — a vault
+    /// appearing, vanishing or changing between the three made the count a description of a
+    /// different state than the action. And `collateral` reported `(0, 0)` when its own scan failed,
+    /// so a transient listing error turned the disclosure into "nothing else" for an action whose
+    /// next step is `removeItem` on a directory tree.
+    ///
+    /// One scan, one plan, and the plan is what gets confirmed and then executed.
+    struct Plan {
+        let group: String
+        /// The transcripts to remove, deduplicated.
+        let calls: [URL]
+        /// The workspace's vault, when it has one. Removed entire.
+        let vault: URL?
+        /// Uploaded documents inside that vault.
+        let documents: Int
+        /// Everything else inside it — hidden files included, since the tree goes.
+        let other: Int
+    }
+
+    /// Resolve the whole wipe. Throws when anything could not be listed, so a plan is either
+    /// complete or absent — never a lower bound presented as a total.
+    static func plan(group: String, in root: URL = AppSettings.outputFolder) throws -> Plan {
+        let located = ScriptaVault.existingVault(forScope: group, under: root)
+        let calls = try candidates(group: group, in: root, vault: located)
+        let counts = try collateral(vault: located.vault)
+        return Plan(group: group, calls: calls, vault: located.vault,
+                    documents: counts.documents, other: counts.other)
+    }
+
     /// Files that would be deleted for `group` ("" = ungrouped) — drives the confirmation count.
     ///
     /// Throws when any location is unreadable. The count this feeds is the operator's evidence that
     /// the wipe covered everything, so a number derived from a partial listing is the failure.
-    static func candidates(group: String, in root: URL = AppSettings.outputFolder) throws -> [URL] {
+    private static func candidates(group: String, in root: URL,
+                                   vault located: (vault: URL?, failures: [String])) throws -> [URL] {
         var failures: [String] = []
         var found: [URL] = []
 
@@ -66,8 +99,8 @@ enum WorkspaceDeleter {
 
         // The vault layout: LOCATION is the partition, so everything under this workspace's vault
         // belongs to it and no `group:` is consulted. That is the point of §7 — a transcript's
-        // workspace stops being a field that can disagree with where the file is.
-        let located = ScriptaVault.existingVault(forScope: group, under: root)
+        // workspace stops being a field that can disagree with where the file is. The vault is
+        // resolved by `plan` and passed in, so the directory counted is the directory deleted.
         failures += located.failures
         if let vault = located.vault {
             let transcripts = ScriptaVault.transcripts(inVaultAt: vault)
@@ -107,21 +140,19 @@ enum WorkspaceDeleter {
     /// all went unmentioned. A disclosure that is a strict subset of the destruction is the same
     /// defect it was written to fix, just smaller. Recursive for the same reason: a `10-reference/`
     /// holding forty sources across three directories counted as three.
-    static func collateral(group: String, in root: URL = AppSettings.outputFolder)
-        -> (documents: Int, other: Int) {
-        guard let vault = ScriptaVault.existingVault(forScope: group, under: root).vault
-        else { return (0, 0) }
+    private static func collateral(vault: URL?) throws -> (documents: Int, other: Int) {
+        guard let vault else { return (0, 0) }
         let layout = ScriptaVault(rootOfExistingVault: vault)
         let manager = FileManager.default
 
-        func files(under directory: URL) -> Set<String> {
+        func files(under directory: URL) -> Set<String>? {
             // NO `.skipsHiddenFiles`. `delete` removes the tree, so a dotfile is destroyed just as
             // surely as a visible one — `.obsidian/`, `.git/`, a compose run's hidden index — and
             // excluding them made the disclosure a strict subset of the destruction again, one
             // commit after that was supposed to be fixed.
             guard let walker = manager.enumerator(at: directory,
                                                   includingPropertiesForKeys: [.isRegularFileKey],
-                                                  options: []) else { return [] }
+                                                  options: []) else { return nil }
             var out: Set<String> = []
             for case let url as URL in walker
             where (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
@@ -129,28 +160,38 @@ enum WorkspaceDeleter {
             }
             return out
         }
+        // A directory that is absent has nothing in it; one that cannot be WALKED is unknown, and
+        // an unknown count under an action that removes the tree is the disclosure failing quietly.
+        func known(_ directory: URL) throws -> Set<String> {
+            if !manager.fileExists(atPath: directory.path) { return [] }
+            guard let found = files(under: directory) else {
+                throw WipeError.incomplete(["\(directory.lastPathComponent) could not be walked"])
+            }
+            return found
+        }
 
-        let everything = files(under: vault)
-        let documents = files(under: layout.references)
+        let everything = try known(vault)
+        let documents = try known(layout.references)
         // Transcripts are already in the call count the operator confirms; the manifest is this
         // app's own. Everything else is what they have not been told about yet.
-        let transcripts = files(under: layout.transcripts)
+        let transcripts = try known(layout.transcripts)
         let manifest = layout.manifestURL.standardizedFileURL.path
         let other = everything.subtracting(documents).subtracting(transcripts).subtracting([manifest])
         return (documents.count, other.count)
     }
 
 
+    /// Execute a plan. Takes the SAME resolution the operator confirmed rather than recomputing it,
+    /// so the tree removed is the tree they were shown.
     @discardableResult
-    static func delete(group: String) throws -> Int {
+    static func delete(_ plan: Plan) throws -> Int {
+        let group = plan.group
         // Capture BOTH switchable globals once: a vault switch (repoint) landing mid-cascade must
         // not split the halves — files from vault A but stubs/registry purged in vault B.
         let root = AppSettings.outputFolder
         let registry = EntityRegistry.shared
         var deleted = 0
-        // Enumerated BEFORE anything is removed, and the throw happens here — so a refusal leaves
-        // the workspace untouched rather than half-wiped.
-        let doomed = try candidates(group: group, in: root)
+        let doomed = plan.calls
         // COUNTED ONLY IF IT WENT. `try?` discarded the error while the count and the index removal
         // both proceeded, so a locked or permission-denied transcript stayed on disk, vanished from
         // the index — putting it beyond `reconcile`'s reach — and was reported to the operator as
@@ -169,7 +210,18 @@ enum WorkspaceDeleter {
         // leaves a manifest naming a scope, which the engine would still compose (to nothing) and
         // which still names the workspace on disk. Only ever the vault for THIS scope, and only one
         // that was actually discovered under the root.
-        if let vault = ScriptaVault.existingVault(forScope: group, under: root).vault {
+        if let vault = plan.vault {
+            // INDEX ROWS FOR THE WHOLE TREE, not just the counted calls. `removeItem` takes
+            // everything under the vault, but only `doomed` had its row removed — so any `.md` the
+            // indexer held and `TranscriptStore.list` skipped (it marker-gates, the indexer does
+            // not) kept its full verbatim body in FTS after a privacy wipe, recoverable only if a
+            // later reconcile happened to run with every listing succeeding.
+            if let store = IndexStore.shared {
+                let prefix = vault.standardizedFileURL.path + "/"
+                for path in store.indexedPaths().keys where path.hasPrefix(prefix) {
+                    store.remove(path: path)
+                }
+            }
             do { try FileManager.default.removeItem(at: vault) }
             catch { undeleted.append("the \(vault.lastPathComponent) vault: \(error.localizedDescription)") }
         }
@@ -186,6 +238,12 @@ enum WorkspaceDeleter {
             // later workspace of the same name silently re-adopting a wiped one's binding.
             WorkspaceBindings.forget(group)
             registry.purge(group: group)
+            // AND UNDER THE SLUG. `IndexBuilder` falls back to indexing and registering entities
+            // under the vault's slug when no known workspace matches it — a renamed or de-listed
+            // workspace — so a purge that only ever used the display name would leave those behind.
+            // Purging a name that was never used is a no-op; missing one is the wipe not wiping.
+            let slug = ScriptaVault.slug(group)
+            if slug != group { registry.purge(group: slug) }
             // Vault stubs (Entities/<group>/) go too, toggle or no toggle — marker-gated inside.
             EntityMirror.purge(group: group, vault: root)
             if let store = IndexStore.shared {
