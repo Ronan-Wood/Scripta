@@ -27,7 +27,9 @@ close one layer down. So:
    must survive into Docling's markdown. Where no such reading exists — an image, an EPUB, a
    LaTeX source — coverage is recorded as `null` with the probe named `unavailable`, NEVER as a
    passing number. Absent evidence is not a clean result; that distinction is `refresh.frozen`'s
-   and it is the same one here.
+   and it is the same one here. A probe that EXISTS and could not run is a third state and is
+   named as one (`ooxml-x-failed`, with the exception): recording it under the probe's own name
+   made a crashed probe indistinguishable from one that measured clean.
 
 ## Doc class
 
@@ -60,6 +62,17 @@ from substrate.markdown.reader import _TOKEN, content_coverage
 # substantially there" is. A conversion that drops a slide, a sheet or a section falls far below
 # this; a rendering difference does not.
 RAW_COVERAGE_GATE = 0.95
+
+# The probe names written to `run.json["raw_coverage_probe"]` when there is NO measurement, and
+# there are three of them rather than one because "this format has no probe" and "this format's
+# probe broke" are different facts about the same `null` coverage. Recording the second under the
+# probe's own name is how a DOCX whose probe crashed printed a bare `None`, skipped the 0.95 gate
+# and exited 0 with no warning: the loud "UNMEASURED, not verified" line keys on `unavailable`, and
+# a crashed `ooxml-w` did not say `unavailable`. Suffixes rather than a flat vocabulary so the probe
+# that failed is still named — `ooxml-x-failed` sends an operator to openpyxl, `failed` does not.
+UNAVAILABLE = "unavailable"     # this format has no independent reading of the source, by design
+FAILED = "-failed"              # the probe raised: a missing package, a file that is not a zip
+EMPTY = "-empty"                # the probe read the source and found no word token in it
 
 
 class UnsupportedFormat(RuntimeError):
@@ -220,15 +233,49 @@ class Conversion:
 # ---------------------------------------------------------------------------
 
 _XML_TEXT = {"ooxml-w": r"<w:t\b[^>]*>(.*?)</w:t>", "ooxml-p": r"<a:t\b[^>]*>(.*?)</a:t>"}
+# Comments are stripped FIRST and by their own rule: `<!-- see foo > bar -->` closes at the `>`
+# INSIDE it under any `<[^>]*>` pattern, leaving `bar -->` behind as probe "words" that a faithful
+# conversion never contains — the instrument refusing the document, which is the failure this
+# section has already shipped once.
+_COMMENT = re.compile(r"<!--.*?-->", re.S)
 # `head` joins script/style, and it is not a nicety: `<head><title>X</title>` repeats the page's
 # own H1 in a region Docling correctly treats as metadata rather than body. Counting it made the
 # probe demand the title TWICE in the markdown, and a correct conversion of a four-line page was
 # refused at 0.9231 with `Missing: ['Boundary', 'Principle']` — a false refusal caused entirely by
 # the measuring instrument. The multiset diff is what exposed it; a presence test would have hidden
 # it until a page whose head held content the body did not.
-_SCRIPT = re.compile(r"<(script|style|head)\b.*?</\1\s*>", re.I | re.S)
-_TAG = re.compile(r"<[^>]*>")
+#
+# `title` joins them for the half that fix missed: HTML5 makes `</head>` OPTIONAL, so on a page that
+# omits it this pattern's `head` branch cannot match at all and the title walks straight back into
+# the probe text — the same false refusal, reached by a page that is perfectly legal. `</title>` is
+# mandatory in every HTML version, so the title branch holds exactly where the head branch does not.
+_SCRIPT = re.compile(r"<(script|style|head|title)\b.*?</\1\s*>", re.I | re.S)
+# A quoted attribute value may CONTAIN `>` (`<a title="a>b">`), and `<[^>]*>` stops at the first one,
+# leaving `b">` as a token no conversion contains. So the quoted spans are matched as spans; the
+# loose sweep after it is for markup the strict pattern cannot close (an unterminated quote), where
+# a leftover `<p title=` is markup residue for the same reason and stripping it is still right.
+_TAG = re.compile(r"<[^>'\"]*(?:(?:\"[^\"]*\"|'[^']*')[^>'\"]*)*>", re.S)
+_TAG_LOOSE = re.compile(r"<[^>]*>", re.S)
 _VTT_SKIP = re.compile(r"^(WEBVTT|NOTE\b|STYLE$|REGION$|\d+$|.*-->.*)")
+
+
+@dataclass(frozen=True)
+class RawProbe:
+    """One probe's reading of the source, or the NAMED reason there is none.
+
+    `text is None` is the whole point of the type: it is three different facts and they must not
+    arrive as one. `label` is what `run.json["raw_coverage_probe"]` records and what the CLI keys
+    its UNMEASURED warning on; `error` carries the probe's own failure so the operator is told
+    which piece is missing rather than left with a null.
+    """
+
+    text: str | None
+    label: str
+    error: str = ""
+
+    @property
+    def measured(self) -> bool:
+        return self.text is not None
 
 
 def _zip_text(src: Path, members: str, pattern: str) -> str:
@@ -250,6 +297,11 @@ def _xlsx_text(src: Path) -> str:
     Stated rather than hidden: this cannot catch openpyxl misreading the workbook. It catches what
     it is here for — Docling reading the workbook and then not RENDERING a sheet or a row into the
     markdown, which is the loss an operator would never see.
+
+    The import is lazy and openpyxl is not declared here — it arrives transitively through docling —
+    so a venv that has one without the other turns EVERY `.xlsx` into a non-measurement. That is now
+    recorded as `ooxml-x-failed` with the ImportError attached (see `raw_text`), because the failure
+    mode this probe exists to catch is precisely a sheet quietly not appearing.
     """
     import openpyxl
 
@@ -271,38 +323,65 @@ def _vtt_text(src: Path) -> str:
     )
 
 
-def raw_text(src: Path, spec: FormatSpec) -> str | None:
-    """An independent reading of the source, or None when no cheap faithful one exists.
-
-    None is a real answer and is carried as one — `raw_coverage: null`, probe `unavailable`. It
-    must never be rendered as 1.0: a format nobody measured and a format measured clean are
-    different states, and collapsing them is how a green gate comes to mean nothing.
-    """
-    try:
-        if spec.probe in _XML_TEXT:
-            members = r"word/document\d*\.xml" if spec.probe == "ooxml-w" else r"ppt/slides/slide\d+\.xml"
-            return _zip_text(src, members, _XML_TEXT[spec.probe])
-        if spec.probe == "ooxml-x":
-            return _xlsx_text(src)
-        if spec.probe == "html":
-            raw = src.read_text("utf-8", errors="replace")
-            return _html.unescape(_TAG.sub(" ", _SCRIPT.sub(" ", raw)))
-        if spec.probe == "vtt":
-            return _vtt_text(src)
-        if spec.probe == "text":
-            return src.read_text("utf-8", errors="replace")
-    except Exception:
-        # A probe that cannot read the file measures nothing; it does not get to REFUSE the file.
-        # The conversion's own success or failure is the verdict, and an unmeasured conversion is
-        # recorded as unmeasured.
-        return None
+def _read_probe(src: Path, spec: FormatSpec) -> str | None:
+    """The raw dispatch. None only for a probe id with no branch here — a table drift, not a read."""
+    if spec.probe in _XML_TEXT:
+        members = r"word/document\d*\.xml" if spec.probe == "ooxml-w" else r"ppt/slides/slide\d+\.xml"
+        return _zip_text(src, members, _XML_TEXT[spec.probe])
+    if spec.probe == "ooxml-x":
+        return _xlsx_text(src)
+    if spec.probe == "html":
+        raw = src.read_text("utf-8", errors="replace")
+        stripped = _TAG_LOOSE.sub(" ", _TAG.sub(" ", _SCRIPT.sub(" ", _COMMENT.sub(" ", raw))))
+        return _html.unescape(stripped)
+    if spec.probe == "vtt":
+        return _vtt_text(src)
+    if spec.probe == "text":
+        return src.read_text("utf-8", errors="replace")
     return None
 
 
-def verify_conversion(src: Path, spec: FormatSpec, md: str) -> tuple[float | None, list[str]]:
+def raw_text(src: Path, spec: FormatSpec) -> RawProbe:
+    """An independent reading of the source, or the NAMED reason there is none.
+
+    "No measurement" is carried as `raw_coverage: null` and must never be rendered as 1.0: a format
+    nobody measured and a format measured clean are different states, and collapsing them is how a
+    green gate comes to mean nothing.
+
+    The three ways to have no measurement are kept apart for the same reason one layer down. A probe
+    that RAISED used to return the same bare None as a format that has no probe, while `run.json`
+    still named the probe — so the CLI's UNMEASURED warning, which keys on `unavailable`, stayed
+    silent and a DOCX/PPTX/XLSX/HTML skipped the 0.95 gate invisibly. `_xlsx_text` imports openpyxl
+    lazily and is the sharpest case: on a venv without it EVERY `.xlsx` took that path, so the
+    sheet-drop gate was off with no distinguishable signal.
+
+    A broken probe still does not get to REFUSE the file — it is an instrument, not a gate, and the
+    conversion's own success or failure is the verdict. It gets to be LOUD about measuring nothing.
+    """
+    if spec.probe is None:
+        return RawProbe(None, UNAVAILABLE)
+    try:
+        text = _read_probe(src, spec)
+    except Exception as e:  # noqa: BLE001 — any probe fault is one named non-measurement
+        return RawProbe(None, f"{spec.probe}{FAILED}", f"{type(e).__name__}: {e}")
+    if text is None:
+        return RawProbe(None, f"{spec.probe}{FAILED}", "no probe implementation for this id")
+    if not _TOKEN.findall(text):
+        # The probe read the source and found no word in it — a `.docx` whose body text lives
+        # somewhere this probe does not look. Coverage over an empty probe reading is 1.0 by
+        # construction, which is the same false clean the non-empty gate exists to refuse.
+        return RawProbe(None, f"{spec.probe}{EMPTY}")
+    return RawProbe(text, spec.probe)
+
+
+def verify_conversion(
+    src: Path, spec: FormatSpec, md: str
+) -> tuple[float | None, list[str], RawProbe]:
     """The two gates this module owns, over an already-converted body. Raises ConversionRefused.
 
-    Returns `(raw_coverage, missing_tokens)`; coverage is None when nothing could measure it.
+    Returns `(raw_coverage, missing_tokens, probe)`; coverage is None when nothing measured it, and
+    `probe.label`/`probe.error` are then the record of WHY — carried out rather than collapsed,
+    because the caller is what turns an unmeasured conversion into a warning.
 
     Split out of `to_markdown` so it is reachable WITHOUT Docling. These two decisions are the
     reason this module exists, and a gate exercised only through a five-second torch import and a
@@ -316,18 +395,18 @@ def verify_conversion(src: Path, spec: FormatSpec, md: str) -> tuple[float | Non
             + (" An image with no legible text is the usual cause." if spec.token == "image" else "")
         )
 
-    probe_text = raw_text(src, spec)
-    if probe_text is None or not _TOKEN.findall(probe_text):
-        return None, []
+    probe = raw_text(src, spec)
+    if not probe.measured:
+        return None, [], probe
 
-    cov, missing = content_coverage(probe_text, [md])
+    cov, missing = content_coverage(probe.text, [md])
     if cov < RAW_COVERAGE_GATE:
         raise ConversionRefused(
             f"{spec.token}: {src.name} lost content in conversion — {cov} of the source's "
             f"word tokens survive into the markdown (gate {RAW_COVERAGE_GATE}), measured "
             f"against the {spec.probe} probe. Missing: {missing}"
         )
-    return cov, missing
+    return cov, missing, probe
 
 
 def to_markdown(src: Path, spec: FormatSpec, *, log=print) -> Conversion:
@@ -382,7 +461,7 @@ def to_markdown(src: Path, spec: FormatSpec, *, log=print) -> Conversion:
 
     md = result.document.export_to_markdown()
     elapsed = round(time.monotonic() - t0, 1)
-    cov, missing = verify_conversion(src, spec, md)
+    cov, missing, probe = verify_conversion(src, spec, md)
 
     pages = None
     try:
@@ -393,21 +472,26 @@ def to_markdown(src: Path, spec: FormatSpec, *, log=print) -> Conversion:
 
     from importlib.metadata import version as pkg_version
 
-    return Conversion(
-        markdown=md,
-        pages=pages,
-        extractor=f"docling {pkg_version('docling')}",
-        stats={
-            "converted_chars": len(md),
-            "converted_seconds": elapsed,
-            "docling_status": str(result.status),
-            "ocr": spec.needs_models,
-            # `null` when nothing could measure it. See raw_text: absent evidence, not a pass.
-            "raw_coverage": cov,
-            "raw_coverage_probe": spec.probe or "unavailable",
-            "raw_coverage_missing": missing,
-        },
-    )
+    stats = {
+        "converted_chars": len(md),
+        "converted_seconds": elapsed,
+        "docling_status": str(result.status),
+        "ocr": spec.needs_models,
+        # `null` when nothing could measure it. See raw_text: absent evidence, not a pass.
+        "raw_coverage": cov,
+        # The probe AS IT RAN, not as the table declares it: `ooxml-w` only when it produced a
+        # reading, `unavailable`/`…-failed`/`…-empty` otherwise. Naming the declared probe beside a
+        # null coverage is a run.json that says a gate ran when it did not.
+        "raw_coverage_probe": probe.label,
+        "raw_coverage_missing": missing,
+    }
+    # Written only when the probe actually broke — absence means nothing to explain, the same way
+    # an undeclared class is absent rather than stored as a value that reads like one.
+    if probe.error:
+        stats["raw_coverage_probe_error"] = probe.error
+
+    return Conversion(markdown=md, pages=pages, extractor=f"docling {pkg_version('docling')}",
+                      stats=stats)
 
 
 def table() -> list[tuple[str, str, str, str]]:

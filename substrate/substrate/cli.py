@@ -174,11 +174,16 @@ def _ingest_markdown_file(args: argparse.Namespace, src: Path, spec) -> int:
     """Markdown (or plain text) → canonical Document → chunks. The single-file vault path.
 
     A thin wrapper over ``markdown.ingest.ingest_markdown`` (the one shared body, used by the
-    manifest-composition path too). Standalone ingest is LENIENT on status — an absent status
-    defaults to 'active' (the existing corpus predates the field); an invalid status or a
-    superseded note with no link is still refused. The strict path is `compose` (require_status).
+    manifest-composition path too). Standalone ingest DECLARES NO SPINE AT ALL: the origin below
+    drops whatever the file said about status/doc_type/confidence/domains/doc_id before validation
+    runs, so every one of them resolves to its absence default (`active` / `reference` / `unjudged`
+    / none). The spine gates therefore have nothing to refuse here — they are not lenient, they are
+    inapplicable, and the file that reaches them is not the one that made the claim. `compose` is
+    where a declaration is believed, because there the operator wrote it into their own vault, and
+    that is the path the gates run on (`require_status`). The three axes an ingested source needs
+    are supplied afterwards by the `_meta.md` beside it — the channel the Library already uses.
 
-    Plain text rides the SAME reader, with one difference carried in a `SourceOrigin`: a `.txt`
+    Plain text rides the SAME reader, with one difference carried in the `SourceOrigin`: a `.txt`
     may have no heading at all, so the filename supplies a last-resort title. A `.md` gets no such
     fallback — a vault note that cannot name itself is refused today and that gate is not this
     change's to move.
@@ -252,6 +257,27 @@ def _ingest_converted(args: argparse.Namespace, src: Path, spec) -> int:
     except convert.ConversionRefused as e:
         print(f"\nFATAL (conversion): {e}", file=sys.stderr)
         return 3
+    # The two ways the CONVERTER, rather than the document, is what is wrong. Both exit 2 and both
+    # follow the precedent already in `convert.REFUSED`: ".odt … needs the `odfdo` package, which is
+    # not installed in this venv" is an exit-2 refusal today, so "docling itself is not installed"
+    # cannot be a 3 — a 3 says "this file is not safe to index", and nothing was read.
+    #
+    # `importlib.metadata.PackageNotFoundError` subclasses ModuleNotFoundError, so the version
+    # lookup at the end of `to_markdown` lands here too. Uncaught, either one printed a traceback
+    # out of a command whose whole contract is a legible 2-vs-3 split.
+    except ModuleNotFoundError as e:
+        print(f"\nFATAL (converter): {spec.token} needs docling, which this environment cannot "
+              f"load — {e}. The markdown and text arms need nothing installed; `--md` reads the "
+              f"file as markdown, or install the converter dependencies and retry.", file=sys.stderr)
+        return 2
+    except ValueError as e:
+        # `InputFormat(spec.docling_format)` on a docling build that does not name this format —
+        # the format table and the installed docling disagreeing, which an upgrade can cause and
+        # which is neither a bad file nor a failed gate.
+        print(f"\nFATAL (converter): this docling build cannot be asked for {spec.token} — {e}. "
+              f"The format table and the installed docling disagree; `substrate formats` lists "
+              f"what this build was verified against.", file=sys.stderr)
+        return 2
 
     origin = SourceOrigin(
         source_format=spec.token,
@@ -343,14 +369,28 @@ def _print_ingest_result(r, out: Path) -> None:
     print(f"\nwrote -> {out}")
 
     # A bare `None` on the coverage line is honest and easy to miss, and this is the ONE hole the
-    # widened surface still has: for a format with no independent reading, content Docling lost on
-    # the way into the markdown is undetectable — A18 measures markdown→chunks, so it reports 1.0
-    # over whatever survived. Measured 2026-08-04 on a four-line JPEG: RapidOCR dropped the third
-    # line entirely, and every gate stayed green. So the absence of evidence is said out loud, on
-    # stderr, rather than left as a null for someone to interpret.
-    if rstats.get("raw_coverage") is None and rstats.get("raw_coverage_probe") == "unavailable":
+    # widened surface still has: with no independent reading, content Docling lost on the way into
+    # the markdown is undetectable — A18 measures markdown→chunks, so it reports 1.0 over whatever
+    # survived. Measured 2026-08-04 on a four-line JPEG: RapidOCR dropped the third line entirely,
+    # and every gate stayed green. So the absence of evidence is said out loud, on stderr, rather
+    # than left as a null for someone to interpret.
+    #
+    # THE CONDITION IS THE NULL, not the probe's name. Keying on `unavailable` meant a DOCX/PPTX/
+    # XLSX/HTML whose probe CRASHED — recorded under the probe's own name — printed a bare `None`,
+    # skipped the 0.95 gate and exited 0 silently, which is the one shape this warning exists for.
+    # Still exit 0 and still a warning: `convert.raw_text` is explicit that a broken instrument does
+    # not get to refuse a file the conversion itself reported as whole.
+    if "raw_coverage" in rstats and rstats.get("raw_coverage") is None:
+        from substrate.extract import convert
+
+        probe = rstats.get("raw_coverage_probe", convert.UNAVAILABLE)
+        err = rstats.get("raw_coverage_probe_error")
+        why = (f"{run['source_format']} has no independent raw-text probe"
+               if probe == convert.UNAVAILABLE
+               else f"the {probe} probe measured nothing"
+                    + (f" ({err})" if err else ""))
         print(
-            f"\nWARNING: {run['source_format']} has no independent raw-text probe, so raw→markdown\n"
+            f"\nWARNING: {why}, so raw→markdown\n"
             "  coverage is UNMEASURED, not verified. A18 above only proves the converted markdown\n"
             "  reached the chunks — it cannot see content lost before that. Spot-check the body.",
             file=sys.stderr,

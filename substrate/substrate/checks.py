@@ -74,7 +74,12 @@ def document_checks(out: Path) -> list[tuple[str, str, bool, str]]:
     # artifacts and, on authored prose, count ordinary exclamation marks as hyphen residue).
     # `source_format` is the fallback for run.json files written before `ingest_arm` existed — for
     # those the two questions had the same answer, because markdown was the only markdown-arm input.
-    is_md = run.get("ingest_arm", "markdown" if run.get("source_format") == "markdown" else "") == "markdown"
+    # `or`, not a `.get` default: a run.json carrying `"ingest_arm": null` HAS the key, so the
+    # default never applied and a markdown run fell through to the PDF assertion set — A1/A1b
+    # counting ordinary exclamation marks as hyphen residue, and A18, the loss gate that arm is
+    # actually measured by, silently not emitted at all.
+    is_md = (run.get("ingest_arm")
+             or ("markdown" if run.get("source_format") == "markdown" else "")) == "markdown"
     checks: list[tuple[str, str, bool, str]] = []
 
     if not is_md:
