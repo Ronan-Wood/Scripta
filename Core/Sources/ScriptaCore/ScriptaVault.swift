@@ -68,6 +68,7 @@ public struct ScriptaVault: Equatable {
 
     public enum VaultError: LocalizedError, Equatable {
         case unnameableScope(String)
+        case nameCollidesWithExistingDirectory(String, URL)
 
         public var errorDescription: String? {
             switch self {
@@ -77,6 +78,12 @@ public struct ScriptaVault: Equatable {
                     + "workspace before recording into it. (The engine refuses the same value: "
                     + "`substrate export-transcripts` raises \"slugifies to nothing; give it a "
                     + "name\".)"
+            case .nameCollidesWithExistingDirectory(let raw, let directory):
+                return "A workspace named \"\(raw)\" would use the folder \(directory.path), which "
+                    + "already exists and is not a Scripta vault. Refusing to adopt it — this app "
+                    + "deletes a workspace by deleting its folder, so taking over a folder it did "
+                    + "not create would put whatever is already in there inside a future wipe. "
+                    + "Choose a different workspace name."
             }
         }
     }
@@ -271,6 +278,28 @@ public struct ScriptaVault: Equatable {
         // path construction cannot reintroduce it quietly.
         guard directory.standardizedFileURL != root.standardizedFileURL else {
             throw VaultError.unnameableScope(scope)
+        }
+        // A VAULT NEVER ADOPTS A DIRECTORY IT DID NOT CREATE.
+        //
+        // `slug` lowercases, APFS is case-insensitive by default, and the vaults root also holds
+        // this app's `Notes/`, `Files/` and `Entities/` directories — so a workspace named "Notes"
+        // produced `<root>/notes`, WHICH IS `<root>/Notes`. Measured on this machine: `mkdir notes`
+        // beside an existing `Notes` fails because they are one directory. The workspace name is a
+        // free-text field, so this is reachable by typing it.
+        //
+        // What followed was not a naming collision, it was data loss. `write()` would drop a
+        // manifest into the living-notes directory, `transcriptLocations` would then see it as a
+        // vault, and `WorkspaceDeleter.delete` would `removeItem` the whole thing — every note in
+        // it — while the confirmation counted calls and reported no collateral, because collateral
+        // counts the VAULT'S subdirectories and the notes were never in one.
+        //
+        // Checked as the general property rather than against a list of reserved names: any
+        // pre-existing directory is one the operator made for their own reasons, and a list would
+        // have to be kept in step with every folder this app or its user ever adds. A directory the
+        // app created is a vault and carries a manifest, so re-resolving an existing workspace
+        // still passes.
+        if FileManager.default.fileExists(atPath: directory.path), !isVault(directory) {
+            throw VaultError.nameCollidesWithExistingDirectory(scope, directory)
         }
         return try ScriptaVault(root: directory, scope: name, inherits: inherits)
     }

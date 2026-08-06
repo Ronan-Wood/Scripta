@@ -209,6 +209,50 @@ final class ScriptaVaultTests: XCTestCase {
         }
     }
 
+    /// THE COLLISION THAT WOULD HAVE DELETED THE OPERATOR'S NOTES.
+    ///
+    /// `slug` lowercases and APFS is case-insensitive by default, so a workspace named "Notes"
+    /// resolves to `<root>/notes` — WHICH IS `<root>/Notes`, the living-notes directory. Measured:
+    /// `mkdir notes` beside an existing `Notes` fails because they are one directory. The workspace
+    /// name is a free-text field, so typing it is the whole exploit.
+    ///
+    /// The loss was not the collision, it was what came after: a manifest dropped into the notes
+    /// folder makes it a vault, and `WorkspaceDeleter.delete` removes a workspace by removing its
+    /// folder — with every note in it, while the confirmation counted calls and reported no
+    /// collateral, because collateral counts the vault's own subdirectories.
+    func testAWorkspaceCannotAdoptADirectoryItDidNotCreate() throws {
+        // `Notes`/`Files`/`Entities` are created with their REAL casing, which is the point: the
+        // slug is lowercase and APFS resolves the two to one directory. The last entry is created
+        // at its slugged name, the shape any other pre-existing folder collides through.
+        for (existing, onDisk) in [("Notes", "Notes"), ("Files", "Files"), ("Entities", "Entities"),
+                                   ("Some Folder Of Mine", "some-folder-of-mine")] {
+            let directory = root.appendingPathComponent(onDisk, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try "mine".write(to: directory.appendingPathComponent("keep.md"),
+                             atomically: true, encoding: .utf8)
+
+            XCTAssertThrowsError(try ScriptaVault.vault(forScope: existing, under: root),
+                                 "\(existing) must not be adopted") { error in
+                guard case .nameCollidesWithExistingDirectory = error as? ScriptaVault.VaultError
+                else { return XCTFail("wrong error for \(existing): \(error)") }
+            }
+            // Case-insensitively too — that is the form that actually collides.
+            XCTAssertThrowsError(try ScriptaVault.vault(forScope: existing.lowercased(), under: root))
+            XCTAssertTrue(FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("keep.md").path),
+                          "the refusal must not have touched what was there")
+        }
+    }
+
+    /// Re-resolving a workspace that already has a vault still works — the directory exists, but it
+    /// carries a manifest, so it is one this app created.
+    func testAnExistingVaultIsStillResolvable() throws {
+        let first = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try first.write()
+        let again = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        XCTAssertEqual(again.root.standardizedFileURL, first.root.standardizedFileURL)
+    }
+
     /// The property that actually matters, asserted directly rather than only through its cause:
     /// no vault's root may be the folder that contains vaults.
     func testAVaultRootIsNeverTheContainingRoot() throws {
