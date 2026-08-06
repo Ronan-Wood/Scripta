@@ -586,3 +586,51 @@ final class ScriptaVaultTests: XCTestCase {
         XCTAssertTrue(text.contains("'cbre'"), "the workspace vault did not compose:\n\(text)")
     }
 }
+
+/// Vault discovery under adversarial filesystem shapes.
+final class VaultDiscoverySafetyTests: XCTestCase {
+    private var root: URL!
+
+    override func setUpWithError() throws {
+        root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("VaultDiscovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: root) }
+
+    /// A symlink to a real vault passed `isAppVault` (which resolves through `fileExists`), so the
+    /// pruner and the wipe deleted files THROUGH it inside the operator's real vault, while
+    /// `removeItem` on the link removed only the link — over-deleting where it must not, and
+    /// under-deleting where the count said it had.
+    func testASymlinkedVaultIsNotDiscovered() throws {
+        let real = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try real.write()
+
+        let elsewhere = root.appendingPathComponent("elsewhere", isDirectory: true)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        let link = elsewhere.appendingPathComponent("cbre", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real.root)
+
+        // The link resolves — so a check that follows it would call it a vault.
+        XCTAssertTrue(ScriptaVault.isAppVault(link), "precondition: the link resolves to a vault")
+        XCTAssertTrue(ScriptaVault.vaultRoots(under: elsewhere).vaults.isEmpty,
+                      "a symlink must not be discovered as a vault")
+    }
+
+    /// Only vaults this app created are discovered — every destructive caller reaches a directory
+    /// through this filter, so `isVault` here would have handed them the operator's own vaults.
+    func testForeignVaultsAreNotDiscovered() throws {
+        let mine = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try mine.write()
+
+        let theirs = root.appendingPathComponent("their-vault", isDirectory: true)
+        try FileManager.default.createDirectory(at: theirs, withIntermediateDirectories: true)
+        try "name = \"theirs\"\ninherits = []\n".write(
+            to: theirs.appendingPathComponent(ScriptaVault.manifestName),
+            atomically: true, encoding: .utf8)
+
+        let found = ScriptaVault.vaultRoots(under: root).vaults.map(\.lastPathComponent)
+        XCTAssertEqual(found, ["cbre"], "found: \(found)")
+    }
+}

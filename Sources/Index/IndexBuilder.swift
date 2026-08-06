@@ -284,16 +284,23 @@ enum IndexBuilder {
         // One registry snapshot for the whole pass: a mid-pass folder change must not split the
         // pass across two registries (old-vault names contaminating the new vault's file).
         let registry = EntityRegistry.shared
-        let (locations, discoveryFailures) =
-            ScriptaVault.transcriptLocations(under: AppSettings.outputFolder)
+        // CAPTURED ONCE, like the registry above and for the same reason this file already states:
+        // this global is switchable. Read again per-iteration, a vault switch mid-pass would let the
+        // OLD root fall to `mustExist: false`, turn its `NSFileReadNoSuchFileError` into
+        // `.files([])` instead of `.unreadable`, leave `unreadable` empty — and run the removal
+        // branch against a lower bound, stripping every row.
+        let outputFolder = AppSettings.outputFolder
+        let (locations, discoveryFailures) = ScriptaVault.transcriptLocations(under: outputFolder)
         var transcripts: [URL] = []
         var unreadable = discoveryFailures
         for location in locations {
-            // `mustExist` only for the output root — a vault whose transcripts directory is absent
-            // genuinely holds no calls yet, the same reading `Notes/` and `Files/` get.
-            let listing = mdFiles(in: location,
-                                  mustExist: location.standardizedFileURL
-                                      == AppSettings.outputFolder.standardizedFileURL)
+            // `mustExist` FOR EVERY LOCATION, not just the root. A vault only appears in `locations`
+            // because it carries a manifest this app wrote, and `ScriptaVault.write()` always
+            // creates `_sources/transcripts` — so that directory being absent means it was REMOVED,
+            // which is the "volume or grant went away" case the root is already protected against.
+            // Read as "no calls yet", a vault whose subtree lost its grant had every one of its
+            // transcripts deleted from the index.
+            let listing = mdFiles(in: location, mustExist: true)
             transcripts += listing.files
             if let failure = listing.failure { unreadable.append(failure) }
         }

@@ -7,27 +7,24 @@ struct HubView: View {
     @StateObject private var navigator = Navigator()
     @State private var expanded: Bool = AppSettings.sidebarExpanded
     @State private var confirmingWorkspaceDelete = false
-    @State private var deleteCandidateCount = 0
     /// Why a wipe was refused, when it was. Non-nil drives an alert — a privacy feature that cannot
     /// prove it covered everything says so rather than showing a confident zero.
     @State private var wipeRefusal: String?
-    /// Everything else in the vault that goes with the calls, counted so the confirmation can name
-    /// it. `other` is the whole remaining tree, not a named subdirectory — the wipe removes the
-    /// vault entire, and a disclosure narrower than the destruction is the defect it exists to fix.
-    @State private var deleteCollateral: (documents: Int, other: Int) = (0, 0)
+    /// The resolved wipe, held between the confirmation and the action so both describe one state.
+    @State private var wipePlan: WorkspaceDeleter.Plan?
 
     /// Everything the wipe removes, in the operator's terms.
     private var wipeMessage: String {
         var sentence = "This permanently deletes the transcript files for every call in "
             + "“\(model.activeGroup)”"
         var extras: [String] = []
-        if deleteCollateral.documents > 0 {
-            extras.append("\(deleteCollateral.documents) uploaded document"
-                          + (deleteCollateral.documents == 1 ? "" : "s"))
+        if (wipePlan?.documents ?? 0) > 0 {
+            let n = wipePlan?.documents ?? 0
+            extras.append("\(n) uploaded document" + (n == 1 ? "" : "s"))
         }
-        if deleteCollateral.other > 0 {
-            extras.append("\(deleteCollateral.other) other file"
-                          + (deleteCollateral.other == 1 ? "" : "s"))
+        if (wipePlan?.other ?? 0) > 0 {
+            let n = wipePlan?.other ?? 0
+            extras.append("\(n) other file" + (n == 1 ? "" : "s"))
         }
         if !extras.isEmpty {
             sentence += ", along with \(extras.joined(separator: " and ")) in this workspace's vault"
@@ -73,17 +70,19 @@ struct HubView: View {
         }
         .confirmationDialog("Delete the “\(model.activeGroup)” workspace?",
                             isPresented: $confirmingWorkspaceDelete, titleVisibility: .visible) {
-            Button("Delete \(deleteCandidateCount) call\(deleteCandidateCount == 1 ? "" : "s")", role: .destructive) {
-                let group = model.activeGroup
+            Button("Delete \(wipePlan?.calls.count ?? 0) call\((wipePlan?.calls.count ?? 0) == 1 ? "" : "s")", role: .destructive) {
+                guard let plan = wipePlan else { return }
                 Task.detached(priority: .userInitiated) {
                     do {
-                        try WorkspaceDeleter.delete(group: group)
+                        try WorkspaceDeleter.delete(plan)
                         await MainActor.run { model.activeGroup = ""; model.reloadCalls() }
                     } catch {
-                        // The set became unlistable between the count and the confirmation. Nothing
-                        // was deleted — `delete` enumerates before it removes — so this is a
-                        // refusal to report, not a partial wipe to explain.
-                        await MainActor.run { wipeRefusal = error.localizedDescription }
+                        // Either the plan could not be executed at all, or part of it survived —
+                        // `WipeError.survived` says which, and reports AFTER the rest is gone. Both
+                        // must reach the operator: a workspace they believe is wiped and is not is
+                        // the failure this whole feature exists to avoid.
+                        await MainActor.run { wipeRefusal = error.localizedDescription
+                                              model.reloadCalls() }
                     }
                 }
             }
@@ -296,9 +295,10 @@ struct HubView: View {
                     // wipe covered everything, so a number taken from a listing that failed is
                     // worse than no dialog at all — they would confirm "0 calls", see success, and
                     // hand over the laptop.
+                    // ONE resolution, held and then executed — so the tree described in the
+                    // confirmation is provably the tree that gets removed.
                     do {
-                        deleteCandidateCount = try WorkspaceDeleter.candidates(group: model.activeGroup).count
-                        deleteCollateral = WorkspaceDeleter.collateral(group: model.activeGroup)
+                        wipePlan = try WorkspaceDeleter.plan(group: model.activeGroup)
                         confirmingWorkspaceDelete = true
                     } catch {
                         wipeRefusal = error.localizedDescription

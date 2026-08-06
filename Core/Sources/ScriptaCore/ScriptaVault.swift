@@ -220,7 +220,7 @@ public struct ScriptaVault: Equatable {
         let entries: [URL]
         do {
             entries = try FileManager.default.contentsOfDirectory(
-                at: root, includingPropertiesForKeys: [.isDirectoryKey],
+                at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
                 options: [.skipsHiddenFiles])
         } catch let error as NSError where error.domain == NSCocoaErrorDomain
                     && error.code == NSFileReadNoSuchFileError {
@@ -237,7 +237,17 @@ public struct ScriptaVault: Equatable {
         // pruner would have deleted inside it. The adoption guard in `vault(forScope:)` was gated on
         // ownership; this, the path every destructive caller actually reaches the directory through,
         // was not.
-        return (entries.filter(isAppVault), [])
+        // SYMLINKS ARE SKIPPED, not followed. `isVault`/`isAppVault` resolve through
+        // `fileExists`, so a link under the vaults root pointing at a real vault passed as one —
+        // and the two sides then disagreed about what they were acting on: the pruner and the wipe
+        // deleted files THROUGH the link inside the operator's real vault, while `removeItem` on
+        // the vault root removed only the link. Over-deleting where it must not, under-deleting
+        // where the count said it had.
+        return (entries.filter { entry in
+            let isLink = (try? entry.resourceValues(forKeys: [.isSymbolicLinkKey]))?
+                .isSymbolicLink ?? false
+            return !isLink && isAppVault(entry)
+        }, [])
     }
 
     /// The workspace a transcript belongs to, derived from WHERE IT IS. `nil` when it is not inside
