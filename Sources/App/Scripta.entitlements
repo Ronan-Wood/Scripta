@@ -2,8 +2,39 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>com.apple.security.app-sandbox</key>
-	<true/>
+	<!-- NOT SANDBOXED (Doc 3 §1, ratified 2026-07-30). The App Store was dropped because the
+	     bundled MCP helper cannot ship in a MAS bundle — an embedded executable must inherit its
+	     parent's sandbox, and `scripta-mcp` exists to be spawned by an LLM client that is not its
+	     parent — and Doc 3 §2 then made the app own the substrate engine's process as well. A
+	     sandboxed app cannot spawn a subprocess outside its bundle, so `com.apple.security.app-sandbox`
+	     and the engine supervisor are mutually exclusive. SPEC.md's locked-decision row records the
+	     move and both dates.
+
+	     WHAT EACH REMAINING KEY IS NOW WORTH, since half of them were sandbox concepts:
+
+	       application-groups   KEPT, and it is the one that would have broken silently. On macOS
+	                            the group container is not a sandbox artefact: any binary signed by
+	                            this team and carrying this entitlement resolves it. `scripta-mcp`
+	                            is the proof — it has never been sandboxed and reads index.db and
+	                            mcp-state.json out of the same container today. Dropping the key
+	                            would send `SharedLocations.supportDirectory` to its legacy
+	                            Application Support fallback while the helper kept reading the group
+	                            container, and the two would silently stop sharing an index.
+	       device.audio-input   KEPT. TCC, not the sandbox — unaffected either way, and the
+	                            microphone prompt is still driven by NSMicrophoneUsageDescription.
+	       calendars            KEPT, same reason.
+	       network.client       KEPT. Outbound loopback only (the engine on 127.0.0.1:8765 and, when
+	                            the operator opts in, a local model server) — inert without the
+	                            sandbox but correct if the sandbox ever returns for a flavor.
+
+	     DROPPED: files.user-selected.read-write. It only ever meant anything under the sandbox, and
+	     the folder grant it backed is gone with it — an unsandboxed app reaches the operator's
+	     transcripts folder by PATH. The stored security-scoped bookmark does not survive the
+	     crossing (it resolves as NSCocoaErrorDomain 259 outside the sandbox that wrote it), which
+	     is why `ContainerPreferences` carries the path forward and leaves the bookmark behind.
+
+	     DROPPED: print. Nothing here reaches a printer — the one `NSPrintOperation`, in
+	     `TranscriptExporter.exportPDF`, runs with `jobDisposition = .save` and no print panel. -->
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>6CTH5M9UWZ.com.ronanwood.calltranscriber</string>
@@ -12,11 +43,7 @@
 	<true/>
 	<key>com.apple.security.personal-information.calendars</key>
 	<true/>
-	<key>com.apple.security.files.user-selected.read-write</key>
-	<true/>
 	<key>com.apple.security.network.client</key>
-	<true/>
-	<key>com.apple.security.print</key>
 	<true/>
 </dict>
 </plist>

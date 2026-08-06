@@ -132,7 +132,17 @@ struct HomeView: View {
             NoteComposer()
             HStack(alignment: .top, spacing: Space.x5) {
                 LiveTranscriptPane(title: liveTitle).frame(maxWidth: .infinity, maxHeight: .infinity)
-                RelatedCallsPanel().frame(width: 300)
+                // The vault first, then the local index. Both answer "what do I already know about
+                // this", and the vault's corpus is the larger one — calls, curated notes and
+                // uploads together — so it is the one worth reading before the eye moves on.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Space.x5) {
+                        LiveRecallPanel()
+                        RelatedCallsPanel()
+                    }
+                }
+                .frame(width: 300)
+                .scrollIndicators(.never)
             }
         }
         .padding(Space.x7)

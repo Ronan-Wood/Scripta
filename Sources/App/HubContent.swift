@@ -27,6 +27,11 @@ struct HubContent: View {
             MeetingsView()
         case .ask:
             AskView()
+        case .library:
+            // `shared`, like Ask's model, and for the same reason: the pane is rebuilt every time
+            // the sidebar reselects the section, and a `@State` model would drop a running ingest
+            // — a minutes-long subprocess — the moment someone looked at another tab.
+            SubstrateLibraryView(model: SubstrateLibraryModel.shared)
         case .knowledge:
             KnowledgeView()
         case .settings:

@@ -2,9 +2,14 @@ import Foundation
 
 /// The hub's sections — the sidebar's rows, and the top level of every `Destination`.
 enum HubSection: String, CaseIterable {
-    case home, calls, meetings, ask, knowledge, settings, docs
+    case home, calls, meetings, ask, library, knowledge, settings, docs
 
-    static let primary: [HubSection] = [.home, .calls, .meetings, .ask, .knowledge]
+    /// `library` sits directly after `ask`, and the adjacency is the point: they are the two halves
+    /// of the same relationship with the engine. Ask reads a composed scope; the Library is the only
+    /// way anything gets into one. Doc 3's open question asks whether the sidebar eventually
+    /// collapses to Ask / Library — this is not that change, but it puts the pair where that
+    /// decision can be seen.
+    static let primary: [HubSection] = [.home, .calls, .meetings, .ask, .library, .knowledge]
     static let secondary: [HubSection] = [.settings, .docs]
 
     var title: String {
@@ -13,6 +18,7 @@ enum HubSection: String, CaseIterable {
         case .calls: return "Calls"
         case .meetings: return "Meetings"
         case .ask: return "Ask"
+        case .library: return "Library"
         case .knowledge: return "Knowledge"
         case .settings: return "Settings"
         case .docs: return "Docs"
@@ -25,6 +31,7 @@ enum HubSection: String, CaseIterable {
         case .calls: return "doc.text"
         case .meetings: return "calendar"
         case .ask: return "bubble.left.and.bubble.right"
+        case .library: return "books.vertical"
         case .knowledge: return "list.bullet.rectangle"
         case .settings: return "gearshape"
         case .docs: return "book"
@@ -72,6 +79,7 @@ struct Destination: Equatable {
     }
     static let meetings = Destination(section: .meetings)
     static let ask = Destination(section: .ask)
+    static let library = Destination(section: .library)
     static let knowledge = Destination(section: .knowledge)
     static let settings = Destination(section: .settings)
     static let docs = Destination(section: .docs)

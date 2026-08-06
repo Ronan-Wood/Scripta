@@ -46,6 +46,7 @@ struct SettingsView: View {
     @State private var newTerm: String = ""
     @State private var summarizeEnabled: Bool = AppSettings.summarizeEnabled
     @State private var notesMergeEnabled: Bool = AppSettings.notesMergeEnabled
+    @State private var liveRecallEnabled: Bool = AppSettings.liveRecallEnabled
     @State private var promptForDetails: Bool = AppSettings.promptForDetails
     @State private var showInDock: Bool = AppSettings.showInDock
     @State private var appearance: AppAppearance = AppSettings.appearance
@@ -295,6 +296,20 @@ struct SettingsView: View {
             Text("Intelligence")
         } footer: {
             Text("Generates a descriptive title and short summary for each transcript, on-device, and finds any commitments or action items mentioned and who owns each. Filler words (um, uh) are always removed. Your transcript wording is never rewritten — only the title, summary, and commitments are AI-generated.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        Section {
+            Toggle("Show what your vault knows, during a call", isOn: $liveRecallEnabled)
+                .onChange(of: liveRecallEnabled) { _, v in AppSettings.liveRecallEnabled = v }
+        } header: {
+            Text("Live Recall")
+        } footer: {
+            Text("While recording, searches this workspace's vault for what you already know about "
+                 + "what is being said, and shows the passages beside the transcript. It reads and "
+                 + "quotes; it writes nothing and generates nothing. Uses the engine's fast "
+                 + "retrieval, which is quicker and ranks less well than Ask — the panel says so.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

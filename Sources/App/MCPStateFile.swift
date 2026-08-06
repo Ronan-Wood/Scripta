@@ -13,8 +13,10 @@ enum MCPStateFile {
         let state: [String: Any] = [
             "activeGroup": AppSettings.activeGroup,
             "heartbeat": Date().timeIntervalSince1970,
-            // The server can't read the sandboxed app's preferences, so the output-folder
-            // path is published here instead of the old shared prefs domain.
+            // Published here rather than read out of the app's preferences. That started as a
+            // sandbox necessity and outlived it: the beat and the folder have to move together,
+            // because a server that reads a fresh path beside a stale heartbeat is reading a
+            // workspace the privacy wall no longer vouches for.
             "outputFolderPath": AppSettings.outputFolder.path,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: state) {
