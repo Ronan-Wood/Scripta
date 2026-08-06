@@ -256,6 +256,24 @@ final class SubstrateLibraryModel: ObservableObject {
     func addDocument() {
         guard !isWorking, let document, case .known(let asked) = surface,
               let cli = SubstrateEngine.shared.serving?.cli else { return }
+        // REFUSED BEFORE THE INGEST, NOT AFTER IT. A document lands in the workspace's vault, and
+        // `ScriptaVault` refuses a workspace that slugifies to nothing — which `""`, the
+        // fresh-install default, does. Without this guard the first drop on a new machine ran a
+        // full Docling extraction (the comment below measures a one-page PDF at 36 seconds) and
+        // then died at the promote step. `exportTranscripts` already refused up front for the same
+        // reason; the upload path had no ungrouped story at all.
+        guard (try? ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder)) != nil
+        else {
+            job = .finished(Report(
+                title: "Adding \(document.lastPathComponent)",
+                steps: [Step(id: "workspace", title: "Choose a workspace", run: nil,
+                             appFailure: "A document is added to a workspace's vault, and this "
+                                 + "workspace has no usable name. Name the workspace first — "
+                                 + "nothing was extracted, so nothing was wasted.",
+                             skipped: false)],
+                scope: nil, orphaned: nil))
+            return
+        }
         let chosen = documentClass
         let typed = domains
         let markdown = forceMarkdown

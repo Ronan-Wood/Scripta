@@ -11,8 +11,10 @@ struct HubView: View {
     /// Why a wipe was refused, when it was. Non-nil drives an alert — a privacy feature that cannot
     /// prove it covered everything says so rather than showing a confident zero.
     @State private var wipeRefusal: String?
-    /// Documents and notes that go with the calls, counted so the confirmation can name them.
-    @State private var deleteCollateral: (documents: Int, notes: Int) = (0, 0)
+    /// Everything else in the vault that goes with the calls, counted so the confirmation can name
+    /// it. `other` is the whole remaining tree, not a named subdirectory — the wipe removes the
+    /// vault entire, and a disclosure narrower than the destruction is the defect it exists to fix.
+    @State private var deleteCollateral: (documents: Int, other: Int) = (0, 0)
 
     /// Everything the wipe removes, in the operator's terms.
     private var wipeMessage: String {
@@ -23,8 +25,9 @@ struct HubView: View {
             extras.append("\(deleteCollateral.documents) uploaded document"
                           + (deleteCollateral.documents == 1 ? "" : "s"))
         }
-        if deleteCollateral.notes > 0 {
-            extras.append("\(deleteCollateral.notes) note" + (deleteCollateral.notes == 1 ? "" : "s"))
+        if deleteCollateral.other > 0 {
+            extras.append("\(deleteCollateral.other) other file"
+                          + (deleteCollateral.other == 1 ? "" : "s"))
         }
         if !extras.isEmpty {
             sentence += ", along with \(extras.joined(separator: " and ")) in this workspace's vault"

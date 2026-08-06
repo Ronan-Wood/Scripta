@@ -49,7 +49,7 @@ enum WorkspaceDeleter {
 
         // The flat layout: transcripts directly in the root, selected by their own `group:`.
         found += TranscriptStore.list(in: root).filter { $0.group == group }.map(\.url)
-        if !directoryIsReadable(root) {
+        if !directoryIsReadable(root, mustExist: true) {
             failures.append("\(root.lastPathComponent) could not be listed")
         }
 
@@ -61,7 +61,7 @@ enum WorkspaceDeleter {
         if let vault = located.vault {
             let transcripts = ScriptaVault.transcripts(inVaultAt: vault)
             found += TranscriptStore.list(in: transcripts).map(\.url)
-            if !directoryIsReadable(transcripts), FileManager.default.fileExists(atPath: transcripts.path) {
+            if !directoryIsReadable(transcripts, mustExist: false) {
                 failures.append("\(vault.lastPathComponent)'s transcripts could not be listed")
             }
         }
@@ -83,24 +83,55 @@ enum WorkspaceDeleter {
     ///
     /// Counted separately rather than folded into the call count, because they are different kinds
     /// of loss and one of them the operator may not have thought of.
+    ///
+    /// **COUNTS THE WHOLE TREE, not two named subdirectories.** The first version counted the
+    /// immediate children of `10-reference/` and `02-areas/` — but `delete` removes the vault
+    /// ENTIRE, so `00-index/`, `03-references/`, `04-synthesis/`, anything non-transcript under
+    /// `_sources/`, a compose run's leftover index, and anything the operator dropped in the folder
+    /// all went unmentioned. A disclosure that is a strict subset of the destruction is the same
+    /// defect it was written to fix, just smaller. Recursive for the same reason: a `10-reference/`
+    /// holding forty sources across three directories counted as three.
     static func collateral(group: String, in root: URL = AppSettings.outputFolder)
-        -> (documents: Int, notes: Int) {
+        -> (documents: Int, other: Int) {
         guard let vault = ScriptaVault.existingVault(forScope: group, under: root).vault
         else { return (0, 0) }
+        let layout = ScriptaVault(rootOfExistingVault: vault)
         let manager = FileManager.default
-        func count(_ directory: URL) -> Int {
-            ((try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil,
-                                               options: [.skipsHiddenFiles])) ?? []).count
+
+        func files(under directory: URL) -> Set<String> {
+            guard let walker = manager.enumerator(at: directory,
+                                                  includingPropertiesForKeys: [.isRegularFileKey],
+                                                  options: [.skipsHiddenFiles]) else { return [] }
+            var out: Set<String> = []
+            for case let url as URL in walker
+            where (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
+                out.insert(url.standardizedFileURL.path)
+            }
+            return out
         }
-        return (count(ScriptaVault(rootOfExistingVault: vault).references),
-                count(ScriptaVault(rootOfExistingVault: vault).notes))
+
+        let everything = files(under: vault)
+        let documents = files(under: layout.references)
+        // Transcripts are already in the call count the operator confirms; the manifest is this
+        // app's own. Everything else is what they have not been told about yet.
+        let transcripts = files(under: layout.transcripts)
+        let manifest = layout.manifestURL.standardizedFileURL.path
+        let other = everything.subtracting(documents).subtracting(transcripts).subtracting([manifest])
+        return (documents.count, other.count)
     }
 
     /// Distinguishes "no transcripts here" from "could not look", which `TranscriptStore.list`
     /// collapses into an empty array. An absent directory is readable-and-empty, not a failure —
     /// a workspace with no vault yet is an ordinary state.
-    private static func directoryIsReadable(_ url: URL) -> Bool {
-        if !FileManager.default.fileExists(atPath: url.path) { return true }
+    /// `mustExist` mirrors `IndexBuilder.mdFiles`, and the two disagreeing was a bug: a MISSING
+    /// output root returned `true` here, so an unmounted volume or a folder that was renamed after
+    /// the sandbox flip produced zero candidates with no failure — "Delete 0 calls", confirmed,
+    /// reported successful, transcripts all still on disk. The indexer already treats that exact
+    /// directory as `mustExist: true` because "its disappearance means the volume or the grant went
+    /// away, never that the user deleted every call"; a privacy wipe needs the same reading more,
+    /// not less.
+    private static func directoryIsReadable(_ url: URL, mustExist: Bool) -> Bool {
+        if !FileManager.default.fileExists(atPath: url.path) { return !mustExist }
         return (try? FileManager.default.contentsOfDirectory(
             at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) != nil
     }
@@ -133,6 +164,12 @@ enum WorkspaceDeleter {
         // destroy global vocabulary that feeds every workspace's ASR bias. Ungrouped files still
         // delete above; only the registry/mirror halves are skipped.
         if !group.isEmpty {
+            // The binding goes with the workspace. `AppSettings.workspaceReadScopes` and
+            // `workspaceReadVaults` hold the workspace's name and the FILESYSTEM PATH of the vault
+            // it read, in plaintext preferences — for a feature whose scenario is "wipe Family
+            // before lending the laptop", that is the residue it exists to remove. It also stops a
+            // later workspace of the same name silently re-adopting a wiped one's binding.
+            WorkspaceBindings.forget(group)
             registry.purge(group: group)
             // Vault stubs (Entities/<group>/) go too, toggle or no toggle — marker-gated inside.
             EntityMirror.purge(group: group, vault: root)
