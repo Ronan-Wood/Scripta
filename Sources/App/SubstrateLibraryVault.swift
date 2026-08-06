@@ -256,6 +256,7 @@ enum SubstrateLibrary {
 
     enum LibraryError: LocalizedError {
         case artefactWithoutTitle(URL)
+        case outsideTheLibrary(URL)
 
         var errorDescription: String? {
             switch self {
@@ -263,6 +264,11 @@ enum SubstrateLibrary {
                 return "The engine's ingest at \(url.path) declares no title, so it cannot be "
                     + "promoted into the vault — the next compose would refuse the whole library "
                     + "over it."
+            case .outsideTheLibrary(let url):
+                return "\(url.lastPathComponent) is not a document in this workspace's library, so "
+                    + "it will not be removed. Only directories directly inside the vault's "
+                    + "`10-reference/` are this rail's to delete — everything else in that folder "
+                    + "is yours."
             }
         }
     }

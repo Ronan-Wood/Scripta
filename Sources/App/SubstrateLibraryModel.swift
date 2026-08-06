@@ -363,7 +363,19 @@ final class SubstrateLibraryModel: ObservableObject {
             job = .running(Running(title: title, step: "Removing it from the vault",
                                    started: Date(), done: steps))
             do {
-                try FileManager.default.removeItem(at: source)
+                // THE GUARD MOVED WITH THE DESTINATION. This recursively removes a directory, and
+                // until documents were promoted into the workspace vault it only ever operated
+                // inside `~/.substrate` — a folder this app owns outright. It now operates inside
+                // the OPERATOR'S output folder, where a wrong URL deletes their work. Constrained
+                // to the vault's own `10-reference/`, so nothing outside the directory this app
+                // writes documents into can be passed to it.
+                let vault = try ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder)
+                let references = vault.references.standardizedFileURL.path
+                let target = source.standardizedFileURL
+                guard target.deletingLastPathComponent().path == references else {
+                    throw SubstrateLibrary.LibraryError.outsideTheLibrary(source)
+                }
+                try FileManager.default.removeItem(at: target)
                 steps.append(Step(id: "delete", title: "Remove from the library vault", run: nil,
                                   appFailure: nil, skipped: false))
             } catch {
