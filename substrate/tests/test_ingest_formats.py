@@ -228,8 +228,10 @@ def test_lossy_conversion_is_refused() -> None:
     src = _pptx(_tmp() / "deck.pptx", [["Opening remarks here"], ["Second slide entirely lost"]])
     spec = convert.spec_for(src)
 
-    cov, _ = convert.verify_conversion(src, spec, "# Opening remarks here\n\nSecond slide entirely lost\n")
+    cov, _, probe = convert.verify_conversion(
+        src, spec, "# Opening remarks here\n\nSecond slide entirely lost\n")
     assert cov == 1.0
+    assert probe.label == "ooxml-p" and probe.measured
 
     try:
         convert.verify_conversion(src, spec, "# Opening remarks here\n")
@@ -246,17 +248,56 @@ def test_unmeasurable_coverage_is_null_and_never_a_pass() -> None:
     is how a green gate comes to mean nothing — the same distinction `refresh.frozen` carries."""
     src = _tmp() / "scan.png"
     src.write_bytes(b"\x89PNG\r\n\x1a\n")
-    cov, missing = convert.verify_conversion(src, convert.spec_for(src), "Some OCR text came out")
+    cov, missing, probe = convert.verify_conversion(
+        src, convert.spec_for(src), "Some OCR text came out")
     assert cov is None and missing == []
     assert convert.spec_for(src).probe is None
+    assert probe.label == convert.UNAVAILABLE and probe.error == ""
 
 
 def test_a_probe_that_cannot_read_the_file_measures_nothing_rather_than_refusing() -> None:
-    """A broken probe must not be able to refuse a file. It is an instrument, not a gate."""
+    """A broken probe must not be able to refuse a file. It is an instrument, not a gate.
+
+    And it must not be recorded as a probe that RAN, which is the other half: a crashed `ooxml-w`
+    reported under its own name is indistinguishable in run.json from one that measured clean, so
+    the file skipped the 0.95 gate with nothing on screen but a bare `None`.
+    """
     src = _tmp() / "notazip.docx"
     src.write_bytes(b"this is not a zip archive at all")
-    assert convert.raw_text(src, convert.spec_for(src)) is None
-    cov, _ = convert.verify_conversion(src, convert.spec_for(src), "Whatever docling made of it")
+    probe = convert.raw_text(src, convert.spec_for(src))
+    assert not probe.measured and probe.text is None
+    assert probe.label == "ooxml-w-failed", probe.label   # named, and NOT plain "ooxml-w"
+    assert "BadZipFile" in probe.error, probe.error       # with the fault, so it can be acted on
+    cov, _, probe2 = convert.verify_conversion(
+        src, convert.spec_for(src), "Whatever docling made of it")
+    assert cov is None and probe2.label == "ooxml-w-failed"
+
+
+def test_a_missing_probe_dependency_is_named_rather_than_swallowed() -> None:
+    """`_xlsx_text` imports openpyxl lazily, so a venv without it sent EVERY `.xlsx` down the
+    blanket-except path: the sheet-drop gate silently off, with no distinguishable signal."""
+    src = _tmp() / "book.xlsx"
+    src.write_bytes(b"PK\x03\x04 not really a workbook")
+    saved = sys.modules.get("openpyxl", "absent")
+    sys.modules["openpyxl"] = None  # CPython: a None entry makes `import openpyxl` raise ImportError
+    try:
+        probe = convert.raw_text(src, convert.spec_for(src))
+    finally:
+        if saved == "absent":
+            del sys.modules["openpyxl"]
+        else:
+            sys.modules["openpyxl"] = saved
+    assert probe.label == "ooxml-x-failed", probe.label
+    assert "openpyxl" in probe.error, probe.error  # the missing piece, not just "it failed"
+
+
+def test_a_probe_that_read_no_word_is_not_a_measurement_either() -> None:
+    """Coverage over an empty probe reading is 1.0 by construction — the same false clean the
+    non-empty gate refuses one layer up. So an empty reading is a THIRD non-measurement, named."""
+    src = _docx(_tmp() / "textless.docx", [])
+    probe = convert.raw_text(src, convert.spec_for(src))
+    assert not probe.measured and probe.label == "ooxml-w-empty", probe.label
+    cov, _, _ = convert.verify_conversion(src, convert.spec_for(src), "Body docling found somehow")
     assert cov is None
 
 
@@ -273,7 +314,7 @@ def test_ooxml_probes_read_text_nodes_only() -> None:
             '<w:r><w:instrText> HYPERLINK "https://excluded.example" </w:instrText></w:r>'
             '<w:r><w:delText>Deleted sentence</w:delText></w:r></w:p>'
         ))
-    text = convert.raw_text(src, convert.spec_for(src))
+    text = convert.raw_text(src, convert.spec_for(src)).text
     assert "Kept prose" in text
     assert "excluded" not in text and "Deleted" not in text
 
@@ -289,20 +330,54 @@ def test_html_probe_excludes_head_script_and_style() -> None:
         "<style>.x{color:red}</style><p>A rule that cannot refuse reads as absent.</p>"
         "</body></html>", "utf-8")
     spec = convert.spec_for(src)
-    text = convert.raw_text(src, spec)
+    text = convert.raw_text(src, spec).text
     assert text.count("Boundary") == 1
     assert "hidden" not in text and "color" not in text
     # ... and the correct conversion now clears the gate instead of being refused by it.
-    cov, _ = convert.verify_conversion(
+    cov, _, _ = convert.verify_conversion(
         src, spec, "# Boundary Principle\n\nA rule that cannot refuse reads as absent.\n")
     assert cov == 1.0
+
+
+def test_html_probe_excludes_the_title_when_head_is_never_closed() -> None:
+    """HTML5 makes `</head>` OPTIONAL, so the `head` branch cannot match on a page that omits it
+    and the title walks back into the probe text — the 0.9231 false refusal, reached by a page
+    that is perfectly legal. `</title>` is mandatory, which is why the title gets its own branch."""
+    src = _tmp() / "nohead.html"
+    src.write_text(
+        "<!DOCTYPE html><html><head><title>Boundary Principle</title>"
+        "<body><h1>Boundary Principle</h1>"
+        "<p>A rule that cannot refuse reads as absent.</p></body></html>", "utf-8")
+    spec = convert.spec_for(src)
+    assert convert.raw_text(src, spec).text.count("Boundary") == 1
+    cov, _, _ = convert.verify_conversion(
+        src, spec, "# Boundary Principle\n\nA rule that cannot refuse reads as absent.\n")
+    assert cov == 1.0
+
+
+def test_html_probe_leaves_no_markup_fragment_behind_a_nested_gt() -> None:
+    """`<[^>]*>` stops at the FIRST `>`, so a comment or an attribute value containing one — both
+    legal, both ordinary — left the tail of the markup in the probe as "words". `always` and `here`
+    below are markup no faithful conversion contains, and they took this page to 0.7143 against the
+    0.95 gate: the measuring instrument refusing a valid file, the failure this section has already
+    shipped once."""
+    src = _tmp() / "attrs.html"
+    src.write_text(
+        "<html><body><!-- editor: 3 > 2 always -->"
+        "<p>See <img src=\"chart.png\" alt=\"ratio a > b here\"> the ruling for detail.</p>"
+        "</body></html>", "utf-8")
+    spec = convert.spec_for(src)
+    text = convert.raw_text(src, spec).text
+    assert set(text.split()) == {"See", "the", "ruling", "for", "detail."}, text
+    cov, missing, _ = convert.verify_conversion(src, spec, "See the ruling for detail.\n")
+    assert cov == 1.0, missing
 
 
 def test_vtt_probe_counts_cue_text_and_not_timings() -> None:
     src = _tmp() / "call.vtt"
     src.write_text("WEBVTT\n\nNOTE recorded locally\n\n1\n00:00:01.000 --> 00:00:04.000\n"
                    "Ronan: widen ingestion past PDF.\n", "utf-8")
-    text = convert.raw_text(src, convert.spec_for(src))
+    text = convert.raw_text(src, convert.spec_for(src)).text
     assert "widen ingestion past PDF." in text
     assert "WEBVTT" not in text and "00:00:01.000" not in text and "NOTE" not in text
 
@@ -377,6 +452,20 @@ def test_checks_still_read_a_run_json_written_before_ingest_arm_existed() -> Non
     run["source_format"] = "markdown"
     (out / "run.json").write_text(json.dumps(run), "utf-8")
     assert "A18-md-coverage" in {cid for cid, _n, _ok, _d in document_checks(out)}
+
+
+def test_a_null_ingest_arm_falls_back_instead_of_selecting_the_pdf_set() -> None:
+    """A key PRESENT and null is not an absent key: `.get(k, default)` returns the null, so a
+    markdown run got the PDF assertion set — A1/A1b counting ordinary exclamations, and A18, the
+    gate that arm is actually measured by, not emitted at all."""
+    _, out, _ = _converted()
+    run = json.loads((out / "run.json").read_text("utf-8"))
+    run["ingest_arm"] = None
+    run["source_format"] = "markdown"
+    (out / "run.json").write_text(json.dumps(run), "utf-8")
+    ids = {cid for cid, _n, _ok, _d in document_checks(out)}
+    assert "A18-md-coverage" in ids
+    assert "A1-hyphen" not in ids and "A1b-ligature" not in ids
 
 
 def test_converted_document_runs_the_same_three_gates() -> None:
@@ -556,6 +645,69 @@ def test_a_converted_document_with_one_passage_still_ingests() -> None:
     """The gate is zero, not a threshold: a one-cell spreadsheet is a legitimate document."""
     _, _out, r = _converted("| scope | notes |\n|---|---|\n| prism | 319 |\n")
     assert r.run["chunk"]["passages"] == 1
+
+
+# ---------------------------------------------------------------- what the CLI says and returns
+
+def _captured(fn):
+    """Run `fn`, returning `(result, stderr)`. stdout is swallowed: these assert on the WARNING."""
+    import contextlib
+    import io
+
+    err = io.StringIO()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+        result = fn()
+    return result, err.getvalue()
+
+
+def test_the_unmeasured_warning_fires_for_a_broken_probe_not_just_an_absent_one() -> None:
+    """The condition is the NULL, not the probe's name. Keyed on `unavailable`, a DOCX whose probe
+    crashed printed a bare `None`, skipped the 0.95 gate and exited 0 in silence — which is the one
+    shape the warning exists for."""
+    from substrate import cli
+
+    _, out, r = _converted(stats={"raw_coverage": None, "raw_coverage_probe": "ooxml-w-failed",
+                                  "raw_coverage_probe_error": "BadZipFile: File is not a zip file"})
+    _, err = _captured(lambda: cli._print_ingest_result(r, out))
+    assert "UNMEASURED, not verified" in err
+    assert "ooxml-w-failed" in err and "BadZipFile" in err  # which probe, and what broke it
+
+    # ... and a measured conversion still says nothing, or the warning means nothing.
+    _, out2, r2 = _converted(stats={"raw_coverage": 1.0, "raw_coverage_probe": "ooxml-w"})
+    _, quiet = _captured(lambda: cli._print_ingest_result(r2, out2))
+    assert quiet == "", quiet
+
+
+def test_a_converter_that_cannot_run_exits_2_rather_than_tracebacking() -> None:
+    """`to_markdown` raises more than `ConversionRefused`: docling absent (ModuleNotFoundError, and
+    PackageNotFoundError under it) or a docling that does not name the format (ValueError). Neither
+    reached the documented 2-vs-3 split — they came out as a traceback."""
+    import argparse
+
+    from substrate import cli
+
+    root = _tmp()
+    src = root / "review.docx"
+    src.write_bytes(b"PK\x03\x04 pretend this is the real artifact")
+    args = argparse.Namespace(out=str(root / "ing"), doc_class=None)
+    spec = convert.spec_for(src)
+
+    def raiser(exc):
+        def boom(*_a, **_k):
+            raise exc
+        return boom
+
+    real = convert.to_markdown
+    try:
+        for exc, expect in ((ModuleNotFoundError("No module named 'docling'"), "docling"),
+                            (ValueError("'vtt' is not a valid InputFormat"), "InputFormat")):
+            convert.to_markdown = raiser(exc)
+            rc, err = _captured(lambda: cli._ingest_converted(args, src, spec))
+            assert rc == 2, (rc, err)          # an INPUT/environment problem, not a gate
+            assert expect in err, err
+            assert "Traceback" not in err
+    finally:
+        convert.to_markdown = real
 
 
 # ---------------------------------------------------------------- title fallback
