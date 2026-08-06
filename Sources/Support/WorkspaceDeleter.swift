@@ -27,6 +27,9 @@ enum WorkspaceDeleter {
     enum WipeError: LocalizedError {
         /// Some location could not be read, so the set of files is a lower bound.
         case incomplete([String])
+        /// The set was known, but some of it could not be removed. Reported AFTER the fact — unlike
+        /// `incomplete`, this one cannot be a refusal, because the rest is already gone.
+        case survived([String])
 
         var errorDescription: String? {
             switch self {
@@ -35,6 +38,10 @@ enum WorkspaceDeleter {
                     + "complete: \(reasons.joined(separator: "; ")). Refusing rather than deleting "
                     + "part of it and reporting success — for a privacy wipe an incomplete result "
                     + "is worse than none, because nothing afterwards would say it was incomplete."
+            case .survived(let reasons):
+                return "The wipe ran, but \(reasons.count) item(s) could not be removed and are "
+                    + "still on disk: \(reasons.joined(separator: "; ")). Everything else in this "
+                    + "workspace was deleted. Do not treat this workspace as wiped."
             }
         }
     }
@@ -47,9 +54,13 @@ enum WorkspaceDeleter {
         var failures: [String] = []
         var found: [URL] = []
 
-        // The flat layout: transcripts directly in the root, selected by their own `group:`.
-        found += TranscriptStore.list(in: root).filter { $0.group == group }.map(\.url)
-        if !directoryIsReadable(root, mustExist: true) {
+        // ONE READ PER LOCATION, and its own success is what is recorded. This used to list the
+        // directory and then probe its readability SEPARATELY: a listing that failed followed by a
+        // probe that succeeded recorded no failure at all, and the wipe offered "Delete 0 calls" —
+        // the lying wipe, reached through the gap between two reads of the same folder.
+        if let flat = TranscriptStore.listOrFail(in: root) {
+            found += flat.filter { $0.group == group }.map(\.url)
+        } else {
             failures.append("\(root.lastPathComponent) could not be listed")
         }
 
@@ -60,8 +71,13 @@ enum WorkspaceDeleter {
         failures += located.failures
         if let vault = located.vault {
             let transcripts = ScriptaVault.transcripts(inVaultAt: vault)
-            found += TranscriptStore.list(in: transcripts).map(\.url)
-            if !directoryIsReadable(transcripts, mustExist: false) {
+            // A DISCOVERED VAULT ALWAYS HAS THIS DIRECTORY — `ScriptaVault.write()` creates it — so
+            // its absence means it was removed, not that the workspace has no calls yet. Read as
+            // "empty", a vault whose subtree lost its grant produced zero candidates and zero
+            // failures for a workspace full of calls.
+            if let inVault = TranscriptStore.listOrFail(in: transcripts) {
+                found += inVault.map(\.url)
+            } else {
                 failures.append("\(vault.lastPathComponent)'s transcripts could not be listed")
             }
         }
@@ -99,9 +115,13 @@ enum WorkspaceDeleter {
         let manager = FileManager.default
 
         func files(under directory: URL) -> Set<String> {
+            // NO `.skipsHiddenFiles`. `delete` removes the tree, so a dotfile is destroyed just as
+            // surely as a visible one — `.obsidian/`, `.git/`, a compose run's hidden index — and
+            // excluding them made the disclosure a strict subset of the destruction again, one
+            // commit after that was supposed to be fixed.
             guard let walker = manager.enumerator(at: directory,
                                                   includingPropertiesForKeys: [.isRegularFileKey],
-                                                  options: [.skipsHiddenFiles]) else { return [] }
+                                                  options: []) else { return [] }
             var out: Set<String> = []
             for case let url as URL in walker
             where (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
@@ -120,21 +140,6 @@ enum WorkspaceDeleter {
         return (documents.count, other.count)
     }
 
-    /// Distinguishes "no transcripts here" from "could not look", which `TranscriptStore.list`
-    /// collapses into an empty array. An absent directory is readable-and-empty, not a failure —
-    /// a workspace with no vault yet is an ordinary state.
-    /// `mustExist` mirrors `IndexBuilder.mdFiles`, and the two disagreeing was a bug: a MISSING
-    /// output root returned `true` here, so an unmounted volume or a folder that was renamed after
-    /// the sandbox flip produced zero candidates with no failure — "Delete 0 calls", confirmed,
-    /// reported successful, transcripts all still on disk. The indexer already treats that exact
-    /// directory as `mustExist: true` because "its disappearance means the volume or the grant went
-    /// away, never that the user deleted every call"; a privacy wipe needs the same reading more,
-    /// not less.
-    private static func directoryIsReadable(_ url: URL, mustExist: Bool) -> Bool {
-        if !FileManager.default.fileExists(atPath: url.path) { return !mustExist }
-        return (try? FileManager.default.contentsOfDirectory(
-            at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) != nil
-    }
 
     @discardableResult
     static func delete(group: String) throws -> Int {
@@ -146,17 +151,27 @@ enum WorkspaceDeleter {
         // Enumerated BEFORE anything is removed, and the throw happens here — so a refusal leaves
         // the workspace untouched rather than half-wiped.
         let doomed = try candidates(group: group, in: root)
+        // COUNTED ONLY IF IT WENT. `try?` discarded the error while the count and the index removal
+        // both proceeded, so a locked or permission-denied transcript stayed on disk, vanished from
+        // the index — putting it beyond `reconcile`'s reach — and was reported to the operator as
+        // wiped. For a privacy feature that is the worst of the three outcomes.
+        var undeleted: [String] = []
         for url in doomed {
-            try? FileManager.default.removeItem(at: url)
-            IndexStore.shared?.remove(path: url.path)   // cascade: transcript row + chunks + FTS
-            deleted += 1
+            do {
+                try FileManager.default.removeItem(at: url)
+                IndexStore.shared?.remove(path: url.path)   // cascade: transcript row + chunks + FTS
+                deleted += 1
+            } catch {
+                undeleted.append("\(url.lastPathComponent): \(error.localizedDescription)")
+            }
         }
         // The workspace's vault directory goes with its contents — otherwise a wiped workspace
         // leaves a manifest naming a scope, which the engine would still compose (to nothing) and
         // which still names the workspace on disk. Only ever the vault for THIS scope, and only one
         // that was actually discovered under the root.
         if let vault = ScriptaVault.existingVault(forScope: group, under: root).vault {
-            try? FileManager.default.removeItem(at: vault)
+            do { try FileManager.default.removeItem(at: vault) }
+            catch { undeleted.append("the \(vault.lastPathComponent) vault: \(error.localizedDescription)") }
         }
         // Knowledge cascade — named workspaces only: "" is BOTH the ungrouped bucket here and the
         // registry's GLOBAL sentinel for vocabulary (terms/termVocab treat groups == [""] as
@@ -183,6 +198,11 @@ enum WorkspaceDeleter {
             // laptop-handoff time. (Bytes in main-DB free pages are a separate, parked decision.)
             store.checkpoint()
         }
+        // THROWN LAST, after the cascade, because the rest of the wipe is already done and must
+        // still complete — but the operator must not be told this workspace is clean when part of
+        // it is on disk. `incomplete` is a refusal before anything is touched; this is a report
+        // after everything else was.
+        guard undeleted.isEmpty else { throw WipeError.survived(undeleted) }
         return deleted
     }
 }

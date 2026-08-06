@@ -66,6 +66,25 @@ public enum TranscriptStore {
             .sorted { ($0.date, $0.time) > ($1.date, $1.time) }
     }
 
+    /// All app-authored transcripts directly in `folder`, or `nil` when the folder could not be
+    /// read. Non-recursive.
+    ///
+    /// For a caller that must not treat "I could not look" as "there is nothing here" — and must
+    /// not establish those as two SEPARATE reads either. `WorkspaceDeleter` called `list(in:)` and
+    /// then a second, independent readability probe: if the listing failed and the probe then
+    /// succeeded, no failure was recorded and the wipe offered "Delete 0 calls". One read, one
+    /// answer, so the thing proved is the thing acted on.
+    public static func listOrFail(in folder: URL) -> [TranscriptMeta]? {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        return entries
+            .filter { $0.pathExtension == "md" }
+            .compactMap(meta(of:))
+            .sorted { ($0.date, $0.time) > ($1.date, $1.time) }
+    }
+
     /// All app-authored transcripts directly in `folder`, newest first. Non-recursive.
     public static func list(in folder: URL) -> [TranscriptMeta] {
         guard let entries = try? FileManager.default.contentsOfDirectory(
