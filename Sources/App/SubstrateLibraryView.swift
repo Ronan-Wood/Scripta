@@ -145,10 +145,25 @@ private struct LibraryDropTarget: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .surface(over ? Ink.interactiveSubtle : Ink.layerAlt, border: Ink.borderSubtle)
         .dropDestination(for: URL.self) { urls, _ in
-            guard let file = urls.first else { return false }
+            // A DOCUMENT ON THIS MACHINE, OR THE DROP IS REFUSED. `dropDestination(for: URL.self)`
+            // takes a URL dragged out of a browser as readily as one dragged out of Finder, and
+            // `urls.first` handed `https://…` — or a dropped folder — to `ingest` as a path,
+            // spending a subprocess to be told there is no such file. That is the one refusal on
+            // this screen the engine cannot make well, because the argument never named a document.
+            guard let file = urls.first(where: isDocument) else { return false }
             model.stage(file)
             return true
         } isTargeted: { over = $0 }
+    }
+
+    /// An existing regular file. Directories are excluded too — `ingest` takes one document — and a
+    /// file this app cannot stat is one the subprocess cannot read either, since the CLI runs inside
+    /// the same sandbox.
+    private func isDocument(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        var directory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &directory)
+        return exists && !directory.boolValue
     }
 
     private func choose() {
@@ -355,7 +370,19 @@ private struct LibraryTranscriptRail: View {
                     + "retrieval withholds — a passage from mid-call can be reasoning the speaker "
                     + "abandoned ten minutes later, in the same register as the conclusion.")
             LibraryPathRow(marker: "from", path: AppSettings.outputFolder, choose: nil)
-            LibraryPathRow(marker: "into", path: model.transcriptVault, choose: chooseVault)
+            // NO DESTINATION IS SHOWN FOR A WORKSPACE THAT CANNOT HAVE ONE. The derived path is
+            // `transcripts/<slug>`, and a name with no ASCII letter or digit has no slug — so what
+            // this row used to draw was a directory the export will never write to, for a workspace
+            // the engine refuses. Naming the refusal is the only thing here that is true.
+            if SubstrateLibrary.slug(named).isEmpty {
+                LibraryNote(id: "unnameable", marker: "no destination", tone: Ink.warning,
+                            text: "A vault directory and a scope name are ASCII letters and digits, "
+                                + "and this workspace's name reduces to neither — so there is "
+                                + "nowhere for its transcripts to go and nothing to register them "
+                                + "under. The field below is where to fix it.")
+            } else {
+                LibraryPathRow(marker: "into", path: model.transcriptVault, choose: chooseVault)
+            }
             LibraryNote(
                 id: "local", marker: "local only", tone: Ink.textHelper,
                 text: "Call transcripts are the most sensitive content the app holds and every "
@@ -370,6 +397,8 @@ private struct LibraryTranscriptRail: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .surface(Ink.layer)
     }
+
+    private var named: String { model.workspace.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private func chooseVault() {
         let panel = NSOpenPanel()
@@ -441,12 +470,22 @@ private struct LibraryWorkspaceRow: View {
                 InputField(prompt: "Workspace name", text: $model.workspace, glyph: .people)
                 ActionButton(title: "Export and compose", glyph: .arrowRight, rank: .primary,
                              action: model.exportTranscripts)
-                    .disabled(model.isWorking || named.isEmpty)
+                    .disabled(model.isWorking || SubstrateLibrary.slug(named).isEmpty)
             }
             if named.isEmpty {
                 Text("The ungrouped workspace has no name, and the scope name is the wall between "
                      + "workspaces — so this one needs a name before it can have a scope.")
                     .proseText(Register.proseSm, Ink.textHelper)
+            } else if SubstrateLibrary.slug(named).isEmpty {
+                // NAMED AND UNNAMEABLE ARE DIFFERENT STATES. "研究", "———" and an emoji are all
+                // non-empty and all slugify to nothing, so the sentence above would have read as
+                // wrong to someone looking at a name they had just typed. The engine refuses this
+                // value in the same words, and so does the vault layout.
+                Text("\"\(named)\" reduces to nothing once slugified, and both the vault directory "
+                     + "and the scope name are built from that slug — the engine's own refusal is "
+                     + "\"slugifies to nothing; give it a name\". Add at least one ASCII letter or "
+                     + "digit; the calls themselves are untouched either way.")
+                    .proseText(Register.proseSm, Ink.warning)
             }
             // CORRECTED: this said the export takes every transcript in the folder, which was true
             // of the exporter that walked `rglob("*.md")` and is now false — `export_workspace`
