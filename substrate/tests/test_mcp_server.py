@@ -428,17 +428,36 @@ def test_documents_pages_small_by_default() -> None:
 
 
 def test_documents_normalises_a_malformed_domains_value() -> None:
-    """`json.loads` does not guarantee a list, and this builder emits the decoded value straight
-    onto the wire — so a scalar crossed as `"domains": 123` against a contract that says list."""
+    """Three ways the column can be wrong, one answer — and the THIRD is the one the first attempt
+    missed: the guard sat after the `json.loads` that raises, so non-JSON text still took the whole
+    listing with it while the comment claimed it had been closed."""
     from substrate.render import document_record
 
-    row = {"doc_id": "d", "title": None, "first_chunk_id": None, "passage_count": 0,
-           "vault": None, "tier": None, "document_class": None, "status": "active",
-           "doc_type": "reference", "confidence": "unjudged",
-           "domains": "123", "supersedes": "null", "superseded_by": None}
-    out = document_record(row, scope="demo")
-    assert out["domains"] == []
-    assert out["supersedes"] == []
+    def row(domains: str) -> dict:
+        return {"doc_id": "d", "title": None, "first_chunk_id": None, "passage_count": 0,
+                "vault": None, "tier": None, "document_class": None, "status": "active",
+                "doc_type": "reference", "confidence": "unjudged",
+                "domains": domains, "supersedes": "null", "superseded_by": None}
+
+    assert document_record(row("123"), scope="demo")["domains"] == []          # a scalar
+    assert document_record(row("not json at all"), scope="demo")["domains"] == []  # unparseable
+    assert document_record(row('["ops", 5]'), scope="demo")["domains"] == ["ops"]  # mixed list
+    assert document_record(row("null"), scope="demo")["supersedes"] == []
+
+
+def test_a_malformed_row_reads_the_same_in_a_browse_and_a_search() -> None:
+    """The browse builder claims "same keys and same fallbacks as `passage`". It was false for a
+    malformed `domains`: browse coerced to a list and `passage` emitted whatever `json.loads`
+    returned, so one stored `"ops"` showed three phantom domains in search and none in browse."""
+    from substrate.store.index_store import Hit, decode_string_list
+    from substrate.render import document_record, passage
+
+    hit = Hit(chunk_id="c", doc_id="d", kind="passage", text="t", path_str="", path_depth=0,
+              page_start=None, page_label_start=None, n_chars=1, score=0.0,
+              document_class="reference-frozen", version=None, title="T", prev_id=None,
+              next_id=None, domains=decode_string_list('"ops"'))
+    assert passage(hit, scope="demo")["domains"] == []
+    assert decode_string_list('"ops"') == []
 
 
 def test_documents_refuses_a_doc_type_outside_the_vocabulary() -> None:
