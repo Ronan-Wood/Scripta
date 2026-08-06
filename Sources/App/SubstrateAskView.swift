@@ -211,7 +211,9 @@ extension SubstrateEngine.Occupant {
 /// Asking the engine which corpora it has. Named, and counting: this is the one moment where a hang
 /// and a healthy wait look identical, so the sentence says what is being waited on and the counter
 /// beside it keeps moving. A bare spinner is the failure mode, not the loading state.
-private struct VaultProbe: View {
+/// Shared with `VaultBrowseView`: waiting on the engine must look identical wherever
+/// it is waited on.
+struct VaultProbe: View {
     @State private var started = Date()
 
     var body: some View {

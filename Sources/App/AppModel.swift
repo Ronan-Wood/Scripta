@@ -52,6 +52,10 @@ final class AppModel: ObservableObject {
             // Library pointing at launch-time's workspace (bc950f1).
             SubstrateAskModel.shared.adoptBinding()
             SubstrateLibraryModel.shared.adoptWorkspace()
+            // The browser is the third engine surface bound to the workspace, and the one where a
+            // missed re-read is worst: Ask showing the old scope's answer is a wrong answer, but a
+            // LIST still showing the old workspace's notes is the privacy partition leaking.
+            VaultBrowseModel.shared.adoptWorkspace()
         }
     }
 
