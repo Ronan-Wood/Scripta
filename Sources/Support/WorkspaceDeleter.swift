@@ -73,6 +73,29 @@ enum WorkspaceDeleter {
         return found.filter { seen.insert($0.standardizedFileURL.path).inserted }
     }
 
+    /// What else goes when the workspace's vault goes: uploaded documents and notes.
+    ///
+    /// THE WIPE TAKES THE WHOLE VAULT, and it should — "wipe Family before lending the laptop" that
+    /// left Family's documents on disk would be a privacy feature with a hole in it. But the
+    /// confirmation counted CALLS and said "the transcript files for every call", so widening what
+    /// is deleted without widening what is disclosed would have had the operator confirm "Delete 3
+    /// calls" and lose every document and note in that workspace too.
+    ///
+    /// Counted separately rather than folded into the call count, because they are different kinds
+    /// of loss and one of them the operator may not have thought of.
+    static func collateral(group: String, in root: URL = AppSettings.outputFolder)
+        -> (documents: Int, notes: Int) {
+        guard let vault = ScriptaVault.existingVault(forScope: group, under: root).vault
+        else { return (0, 0) }
+        let manager = FileManager.default
+        func count(_ directory: URL) -> Int {
+            ((try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil,
+                                               options: [.skipsHiddenFiles])) ?? []).count
+        }
+        return (count(ScriptaVault(rootOfExistingVault: vault).references),
+                count(ScriptaVault(rootOfExistingVault: vault).notes))
+    }
+
     /// Distinguishes "no transcripts here" from "could not look", which `TranscriptStore.list`
     /// collapses into an empty array. An absent directory is readable-and-empty, not a failure —
     /// a workspace with no vault yet is an ordinary state.

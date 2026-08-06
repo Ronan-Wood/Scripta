@@ -57,6 +57,15 @@ public struct ScriptaVault: Equatable {
         self.inherits = inherits
     }
 
+    /// A vault that is already on disk, for a caller that has its directory and only needs the
+    /// layout. Skips the name guard deliberately: the guard exists to stop a NEW vault resolving to
+    /// its own parent, and a directory discovered by `vaultRoots` has already proved it is one.
+    public init(rootOfExistingVault root: URL) {
+        self.root = root
+        self.scope = root.lastPathComponent
+        self.inherits = []
+    }
+
     public enum VaultError: LocalizedError, Equatable {
         case unnameableScope(String)
 

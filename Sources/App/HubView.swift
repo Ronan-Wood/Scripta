@@ -11,6 +11,27 @@ struct HubView: View {
     /// Why a wipe was refused, when it was. Non-nil drives an alert — a privacy feature that cannot
     /// prove it covered everything says so rather than showing a confident zero.
     @State private var wipeRefusal: String?
+    /// Documents and notes that go with the calls, counted so the confirmation can name them.
+    @State private var deleteCollateral: (documents: Int, notes: Int) = (0, 0)
+
+    /// Everything the wipe removes, in the operator's terms.
+    private var wipeMessage: String {
+        var sentence = "This permanently deletes the transcript files for every call in "
+            + "“\(model.activeGroup)”"
+        var extras: [String] = []
+        if deleteCollateral.documents > 0 {
+            extras.append("\(deleteCollateral.documents) uploaded document"
+                          + (deleteCollateral.documents == 1 ? "" : "s"))
+        }
+        if deleteCollateral.notes > 0 {
+            extras.append("\(deleteCollateral.notes) note" + (deleteCollateral.notes == 1 ? "" : "s"))
+        }
+        if !extras.isEmpty {
+            sentence += ", along with \(extras.joined(separator: " and ")) in this workspace's vault"
+        }
+        return sentence + ". It also removes people and vocabulary known only in this workspace. "
+            + "This can't be undone."
+    }
     @State private var creatingWorkspace = false
     @State private var newWorkspaceName = ""
     @State private var workspaceHovering = false
@@ -65,7 +86,11 @@ struct HubView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This permanently deletes the transcript files for every call in “\(model.activeGroup)”. It also removes people and vocabulary known only in this workspace. This can't be undone.")
+            // NAMES EVERYTHING THAT GOES. The wipe deletes the workspace's whole vault — correctly,
+            // since one that left documents behind would be a privacy feature with a hole in it —
+            // but this said only "the transcript files for every call", so the operator would have
+            // confirmed a call count and lost their uploads and notes with it.
+            Text(wipeMessage)
         }
         .alert("This workspace cannot be wiped", isPresented: .init(
             get: { wipeRefusal != nil }, set: { if !$0 { wipeRefusal = nil } })) {
@@ -270,6 +295,7 @@ struct HubView: View {
                     // hand over the laptop.
                     do {
                         deleteCandidateCount = try WorkspaceDeleter.candidates(group: model.activeGroup).count
+                        deleteCollateral = WorkspaceDeleter.collateral(group: model.activeGroup)
                         confirmingWorkspaceDelete = true
                     } catch {
                         wipeRefusal = error.localizedDescription
