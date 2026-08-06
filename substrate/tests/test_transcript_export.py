@@ -43,6 +43,7 @@ from substrate.transcript_export import (  # noqa: E402
     TRANSCRIPT_STATUS,
     ExportError,
     _identity,
+    assert_not_overlapping,
     assert_not_synced,
     doc_id_for_transcript,
     export_workspace,
@@ -452,6 +453,31 @@ def test_the_marker_that_disproved_the_class_was_being_copied_through() -> None:
     text, _ = render_note(src / "Call.md", "Call.md")
     assert f"app: {TRANSCRIPT_MARKER}" in text, text
     assert f"class: {TRANSCRIPT_CLASS}" in text, text
+
+
+def test_an_overlapping_destination_is_refused() -> None:
+    """THE PRUNE IS WHY. This module deletes every `*.md` in `<dest>/_sources/transcripts/` it did
+    not write, claiming to own that directory — and capture now writes its ONLY copy of every call
+    into exactly that relative path. Reproduced 2026-08-06 before this guard: source == dest read
+    `Call — 2026-08-06 0900.md`, wrote `call-…-d6148da9.md` beside it, and unlinked the original.
+    The audio is deleted after a successful transcript write, so that is the only copy."""
+    src, _ = _workspace({"a.md": TRANSCRIPT})
+    for source, dest in [(src, src), (src, src / "sub"), (src / "inner", src)]:
+        try:
+            assert_not_overlapping(source, dest)
+        except ExportError as e:
+            assert "overlaps" in str(e), e
+            assert "PRUNES" in str(e), e
+        else:
+            raise AssertionError(f"{dest} overlapping {source} must be refused")
+
+
+def test_a_separate_destination_is_allowed() -> None:
+    """The ordinary case still passes — the guard is about overlap, not about strictness."""
+    src, vault = _workspace({"a.md": TRANSCRIPT})
+    assert_not_overlapping(src, vault)
+    rep = export_workspace(src, vault, "default")
+    assert len(rep.notes) == 1, rep.notes
 
 
 if __name__ == "__main__":
