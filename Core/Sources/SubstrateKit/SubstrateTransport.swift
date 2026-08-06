@@ -160,6 +160,45 @@ public struct SubstrateExpandRequest: Encodable, Sendable {
     }
 }
 
+/// Browse a scope: what it HOLDS, rather than what it matched.
+///
+/// No query, because there is none — this is the whole corpus, filtered and paged. The defaults are
+/// `search`'s defaults on both exclusion axes, so a browse and a query disagree about what is in the
+/// vault only when the caller asks them to.
+public struct SubstrateDocumentsRequest: Encodable, Sendable {
+    public let scope: String
+    /// Only notes composed from this vault, by manifest name. The filter a reader uses to separate
+    /// their own notes from the tier they share with every other project.
+    public let vault: String?
+    /// Only notes doing this job. Honoured here and refused by `search`, because in retrieval it is
+    /// an unmeasured ranking decision and here it is a column.
+    public let docType: String?
+    public let includeArchived: Bool?
+    public let includeSources: Bool?
+    /// Clamped server-side; a clamp arrives back in `filters.notes`.
+    public let limit: Int?
+    public let offset: Int?
+
+    public init(scope: String, vault: String? = nil, docType: String? = nil,
+                includeArchived: Bool? = nil, includeSources: Bool? = nil,
+                limit: Int? = nil, offset: Int? = nil) {
+        self.scope = scope
+        self.vault = vault
+        self.docType = docType
+        self.includeArchived = includeArchived
+        self.includeSources = includeSources
+        self.limit = limit
+        self.offset = offset
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case scope, vault, limit, offset
+        case docType = "doc_type"
+        case includeArchived = "include_archived"
+        case includeSources = "include_sources"
+    }
+}
+
 public struct SubstrateScopeRequest: Encodable, Sendable {
     public let scope: String
     public init(scope: String) { self.scope = scope }
@@ -211,6 +250,12 @@ public actor SubstrateClient {
 
     public func expand(_ request: SubstrateExpandRequest) async -> SubstrateCall<WireExpandResult> {
         await call(tool: "expand", arguments: request)
+    }
+
+    public func documents(
+        _ request: SubstrateDocumentsRequest
+    ) async -> SubstrateCall<WireDocumentsResult> {
+        await call(tool: "documents", arguments: request)
     }
 
     /// One `tools/call`, start to finish.

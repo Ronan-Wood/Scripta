@@ -29,6 +29,13 @@ import XCTest
 //   list_scopes.frame.json  tools/call list_scopes {}
 //   expand.frame.json       tools/call expand      {"expand_ref":"scripta/scripta-doc3a-mcp-server
 //                                                   #c00002","mode":"note"}
+//   documents.frame.json    tools/call documents   {"scope":"scripta","limit":6}
+//                                                   — captured 2026-08-06, later than the rest and
+//                                                     against a moved index (v9:f6288570d73a). Said
+//                                                     rather than smoothed over: a fixture set
+//                                                     captured at two instants can disagree about
+//                                                     content, and only the SHAPE is asserted
+//                                                     across them.
 //   tool-fault.frame.json   tools/call status      {"scope":"no-such-scope"}  → isError: true
 //   rpc-error.frame.json    method "nope/nope"                                → error -32601
 //
@@ -55,11 +62,17 @@ enum GoldenFixture {
     static let status = "status.frame.json"
     static let listScopes = "list_scopes.frame.json"
     static let expand = "expand.frame.json"
+    /// `documents` — the BROWSE call, captured 2026-08-06 against the same `scripta` scope after the
+    /// tool was added (`{"scope":"scripta","limit":6}`, index_version v9:f6288570d73a). It is the
+    /// only capture where every row comes from an INHERITED vault: all six are `core-vault` at tier
+    /// 1, which the scope's own directory does not contain. That is the property the browse tool
+    /// exists for, so a fixture where it did not hold would prove the wrong thing.
+    static let documents = "documents.frame.json"
     static let toolFault = "tool-fault.frame.json"
     static let rpcError = "rpc-error.frame.json"
 
-    static let all = [search, searchIncludingSources, status, listScopes, expand, toolFault,
-                      rpcError]
+    static let all = [search, searchIncludingSources, status, listScopes, expand, documents,
+                      toolFault, rpcError]
 
     /// The captured response body.
     ///
