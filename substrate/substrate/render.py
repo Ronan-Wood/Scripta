@@ -24,8 +24,10 @@ Principle at the one seam this whole spine exists to protect — a model that ca
 
 from __future__ import annotations
 
+import json
+
 from substrate.retrieve.retriever import RetrievalResult
-from substrate.spine import STATUSES
+from substrate.spine import STATUSES, UNJUDGED_CONFIDENCE
 from substrate.store.index_store import Hit
 
 SNIPPET_CHARS = 200      # matches `query --chars`, so the two renderings cut at the same point
@@ -154,6 +156,90 @@ def passage(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS,
     out["text"] = h.text if full else None
     out["truncated"] = False if full else truncated
     return out
+
+
+def document_record(row: dict, *, scope: str | None) -> dict:
+    """One note as a BROWSER sees it: its spine, where it came from, and a handle to read it.
+
+    Deliberately NOT a `passage`. A passage is a retrieval result and carries a snippet, a score's
+    worth of context, and the structural path it was cut from; a note in a browse list has no
+    query behind it and inventing a snippet would be picking an arbitrary sentence and presenting
+    it as the note's gist. `passage_count` says how much there is instead — a number the caller can
+    read as size without it pretending to be summary.
+
+    `expand_ref` names the note's FIRST passage, so reading is `expand(ref, mode="note")` — the
+    same call a search result's ref takes, hitting the same reader, returning the same envelope
+    with the same freshness verdict. A second read path would be a second place for "the vault has
+    moved on since the index was built" to be got wrong.
+
+    It is NULL for a note with no passages, and that is the honest answer rather than a defect to
+    paper over: an empty note is in the corpus (it appears in this list, which is the point) and
+    there is nothing to expand. A caller draws it as unreadable; a fabricated ref would fail at
+    `expand` instead, one call later and further from the cause.
+    """
+    from substrate.markdown import reader
+
+    return {
+        "doc_id": row["doc_id"],
+        "title": row.get("title"),
+        "expand_ref": expand_ref(scope, row["first_chunk_id"]) if row.get("first_chunk_id") else None,
+        "passage_count": row.get("passage_count", 0),
+        # The composition provenance: WHICH vault in the chain this note came from, and the tier
+        # that vault's layout put it at. In an inheriting scope this is the difference between the
+        # operator's own note and one they share with every other project.
+        "vault": row.get("vault"),
+        "tier": row.get("tier"),
+        "source_path": row.get("source_path"),
+        "document_class": row.get("document_class") or None,
+        # The spine, same keys and same fallbacks as `passage` — a note must not read as one thing
+        # in a search result and another in a list.
+        "status": row.get("status") or "active",
+        "doc_type": row.get("doc_type") or "reference",
+        "confidence": row.get("confidence") or UNJUDGED_CONFIDENCE,
+        "domains": json.loads(row.get("domains") or "[]"),
+        "supersedes": reader.doc_id_list(json.loads(row.get("supersedes") or "[]")),
+        "superseded_by": row.get("superseded_by"),
+    }
+
+
+def documents_payload(
+    rows: list[dict], total: int, *,
+    scope: str | None,
+    statuses: frozenset[str] | None,
+    include_sources: bool,
+    doc_type: str | None = None,
+    vault: str | None = None,
+    index_version: str,
+    db: str | None = None,
+    filter_notes: tuple[str, ...] = (),
+    registry: str | None = None,
+) -> dict:
+    """The browse envelope. Same outer shape as `search_payload` — scope, db, filters,
+    index_version, refresh — because a caller that has learned to read one envelope has learned to
+    read this one, and the conditions that make an answer untrustworthy are the same conditions
+    whether or not a query produced it.
+
+    `total` and `returned` are BOTH reported. A page that happens to be shorter than the limit and
+    a corpus that is genuinely that size look identical from the list alone, and "this is
+    everything" is exactly the kind of claim this engine refuses to make by omission.
+
+    No `retrieval_mode`: nothing retrieved. Reporting an arms block here would say a stack ran when
+    a WHERE clause did, and a null `expected_mrr` attached to a browse would invite the reading
+    that the LIST is unmeasured rather than inapplicable.
+    """
+    from substrate import refresh_state
+
+    return {
+        "scope": scope,
+        "db": db,
+        "documents": [document_record(r, scope=scope) for r in rows],
+        "returned": len(rows),
+        "total": total,
+        "filters": applied_filters(statuses, include_sources=include_sources, doc_type=doc_type,
+                                   notes=filter_notes + ((f"vault={vault}",) if vault else ())),
+        "index_version": index_version,
+        "refresh": refresh_state.report(scope, registry),
+    }
 
 
 def outline_record(h: Hit, *, scope: str | None, chars: int = SNIPPET_CHARS) -> dict:
