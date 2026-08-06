@@ -297,6 +297,42 @@ TOOLS = [
         },
     },
     {
+        "name": "documents",
+        "description": (
+            "Everything a scope HOLDS, one row per note — the browse counterpart to `search`. Use "
+            "it to show a corpus rather than answer a question: there is no query and no ranking, "
+            "so nothing here is a claim about relevance.\n\n"
+            "Each row carries the same spine a passage does, plus `vault` and `tier` — which vault "
+            "in the inheritance chain the note actually came from. That is the field that "
+            "distinguishes this project's own note from one shared with every other project, and "
+            "it cannot be recovered by listing a directory: an inheriting scope composes notes "
+            "from several vaults in several places.\n\n"
+            "`expand_ref` reads the note, via `expand` with `mode=\"note\"` — the same call a "
+            "search result takes. It is null for a note with no passages, which is a real state "
+            "(an empty note is still in the corpus) rather than an error.\n\n"
+            "Defaults match `search`: archived and superseded notes are withheld, and so are "
+            "conversation-class sources. `total` counts what matched before paging, so a short "
+            "page is distinguishable from a small corpus."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string"},
+                "vault": {"type": "string",
+                          "description": "Only notes composed from this vault, by manifest name."},
+                "doc_type": {"type": "string",
+                             "description": "Only notes doing this job (spine.DOC_TYPES)."},
+                "include_archived": {"type": "boolean", "description": "Default false."},
+                "include_sources": {"type": "boolean",
+                                    "description": "Include conversation-class notes. Default "
+                                                   "false, as in `search`."},
+                "limit": {"type": "integer", "description": "Default 200, max 1000."},
+                "offset": {"type": "integer", "description": "Default 0."},
+            },
+            "required": ["scope"],
+        },
+    },
+    {
         "name": "list_scopes",
         "description": (
             "What scopes exist and what each one composes. A scope appears here only once it has "
@@ -603,8 +639,68 @@ def _tool_status(args: dict, cfg: Config) -> dict:
         store.close()
 
 
+MAX_DOCUMENTS = 1000
+DEFAULT_DOCUMENTS = 200
+
+
+def _bounded(raw: object, name: str, *, default: int, maximum: int,
+             minimum: int = 0) -> tuple[int, str | None]:
+    """A whole-number argument, bounded, plus a note when the bound bit. Same contract and same
+    strictness as `_clamp_k` — a bool is not an int here either, because `True` silently became 1
+    and returned a plausible page nobody asked for."""
+    if raw is None:
+        return default, None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ToolError(f"`{name}` must be a whole number, got {raw!r}.")
+    if raw < minimum:
+        raise ToolError(f"`{name}` must be at least {minimum}, got {raw}.")
+    if raw > maximum:
+        return maximum, f"{name} was clamped from {raw} to the server maximum of {maximum}"
+    return raw, None
+
+
+def _tool_documents(args: dict, cfg: Config) -> dict:
+    from substrate.retrieve import retriever
+    from substrate.spine import DOC_TYPES
+
+    scope = args.get("scope")
+    if not scope:
+        raise ToolError("documents requires `scope`.")
+
+    # Validated before the index is opened, like `search` does: an argument-decidable refusal must
+    # not cost a database open, and a doc_type outside the vocabulary would otherwise return an
+    # empty list — a filter that matched nothing, indistinguishable from a corpus holding nothing.
+    doc_type = args.get("doc_type")
+    if doc_type is not None and doc_type not in DOC_TYPES:
+        raise ToolError(
+            f"unknown doc_type {doc_type!r}; the vocabulary is {', '.join(sorted(DOC_TYPES))}."
+        )
+    vault = args.get("vault")
+    if vault is not None and not isinstance(vault, str):
+        raise ToolError(f"`vault` must be a string, got {vault!r}.")
+
+    limit, limit_note = _bounded(args.get("limit"), "limit",
+                                 default=DEFAULT_DOCUMENTS, maximum=MAX_DOCUMENTS, minimum=1)
+    offset, _ = _bounded(args.get("offset"), "offset", default=0, maximum=MAX_DOCUMENTS * 1000)
+    include_sources = bool(args.get("include_sources", False))
+    statuses = retriever.statuses(include_archived=bool(args.get("include_archived", False)))
+
+    entry, store = _open(scope, cfg.registry)
+    try:
+        rows, total = store.browse(statuses=statuses, include_sources=include_sources,
+                                   vault=vault, doc_type=doc_type, limit=limit, offset=offset)
+        return render.documents_payload(
+            rows, total, scope=scope, statuses=statuses, include_sources=include_sources,
+            doc_type=doc_type, vault=vault, index_version=store.index_version, db=str(entry.db),
+            filter_notes=(limit_note,) if limit_note else (), registry=cfg.registry,
+        )
+    finally:
+        store.close()
+
+
 HANDLERS = {"search": _tool_search, "expand": _tool_expand, "ingest": _tool_ingest,
-            "list_scopes": _tool_list_scopes, "status": _tool_status}
+            "list_scopes": _tool_list_scopes, "status": _tool_status,
+            "documents": _tool_documents}
 
 # The tools that WRITE. Named once because read-only has to mean the same thing to `tools/list`
 # and to `tools/call`: a tool hidden from the list but still runnable when called is not read-only,

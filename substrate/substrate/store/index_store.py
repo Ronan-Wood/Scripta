@@ -523,6 +523,68 @@ class IndexStore:
     def documents(self) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM documents ORDER BY doc_id")]
 
+    def browse(self, *, statuses: frozenset[str] | None, include_sources: bool,
+               vault: str | None = None, doc_type: str | None = None,
+               limit: int = 200, offset: int = 0) -> tuple[list[dict], int]:
+        """What a scope HOLDS, one row per note, in a stable order. The browse counterpart to
+        `search`: no query, no ranking, no relevance — the whole corpus, filtered and paged.
+
+        A DOCUMENT-LEVEL QUERY, which is why it does not reuse `_add_status_filter` and
+        `_add_class_exclusion`. Those two compile `c.`-prefixed clauses against the denormalized
+        chunk spine, which is the right table for retrieval and the wrong one here: a note with no
+        passages (an empty file, a source whose extraction produced nothing) has document rows and
+        no chunk rows, and joining through chunks to filter it would drop it from the browse
+        silently — a note present in the vault and absent from the list of what the vault contains.
+        The exclusion RULES are the same rules; only the table differs.
+
+        `doc_type` IS honoured here, unlike in `search`, and the asymmetry is real rather than an
+        inconsistency to tidy away. `search` refuses it because filtering by doc_type inside
+        retrieval is a ranking decision nobody has measured; this is a WHERE clause over a column,
+        with nothing to measure.
+
+        Returns `(rows, total)`. The total counts what MATCHED, not what was returned, so a caller
+        that pages knows there is more — a page-sized list with no count is indistinguishable from
+        the whole corpus.
+        """
+        from substrate.classes import EXCLUDED_CLASSES
+
+        where: list[str] = []
+        args: list[Any] = []
+        if statuses is not None:
+            if not statuses:
+                where.append("0")
+            else:
+                ordered = sorted(statuses)
+                where.append(f"d.status IN ({','.join('?' * len(ordered))})")
+                args.extend(ordered)
+        if not include_sources and (classes := sorted(EXCLUDED_CLASSES)):
+            where.append(f"d.document_class NOT IN ({','.join('?' * len(classes))})")
+            args.extend(classes)
+        if vault is not None:
+            where.append("d.vault = ?")
+            args.append(vault)
+        if doc_type is not None:
+            where.append("d.doc_type = ?")
+            args.append(doc_type)
+        clause = f" WHERE {' AND '.join(where)}" if where else ""
+
+        total = self.db.execute(f"SELECT COUNT(*) FROM documents d{clause}", args).fetchone()[0]
+        # COALESCE on the sort keys only. A NULL title sorts before every string in SQLite, so an
+        # untitled note would head the list of a vault it says nothing about; ordering by the
+        # doc_id it falls back to puts it where its name would have put it.
+        rows = self.db.execute(
+            "SELECT d.*, "
+            "(SELECT c.chunk_id FROM chunks c WHERE c.doc_id=d.doc_id AND c.kind='passage' "
+            " ORDER BY c.seq LIMIT 1) AS first_chunk_id, "
+            "(SELECT COUNT(*) FROM chunks c WHERE c.doc_id=d.doc_id AND c.kind='passage') "
+            " AS passage_count "
+            f"FROM documents d{clause} "
+            "ORDER BY COALESCE(d.vault, ''), COALESCE(d.title, d.doc_id), d.doc_id "
+            "LIMIT ? OFFSET ?",
+            [*args, limit, offset],
+        ).fetchall()
+        return [dict(r) for r in rows], total
+
     @property
     def index_version(self) -> str:
         """Identity of the INDEXED content — schema version + a hash over each document's indexing
