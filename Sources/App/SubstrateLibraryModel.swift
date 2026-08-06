@@ -168,7 +168,18 @@ final class SubstrateLibraryModel: ObservableObject {
     /// Surfaced by the rail on appearance and after every repair. Cheap — a directory listing and a
     /// frontmatter read per file, over one non-recursive folder.
     func refreshUntagged() {
-        untagged = TranscriptGroupRepair.untagged(in: AppSettings.outputFolder)
+        // `nil` means the folder could not be read — NOT that there is nothing to repair. Shown
+        // as an empty list, the rail would tell the operator their corpus is clean when it was
+        // never looked at, which is the state this rail exists to make visible.
+        if let found = TranscriptGroupRepair.untagged(in: AppSettings.outputFolder) {
+            untagged = found
+            repairFailure = nil
+        } else {
+            untagged = []
+            repairFailure = "Could not read \(AppSettings.outputFolder.lastPathComponent), so "
+                + "whether any transcripts need a workspace is unknown — this is not a report that "
+                + "none do."
+        }
     }
 
     /// File one untagged transcript under `workspace`. THE OPERATOR NAMES IT: nothing here infers a
@@ -277,15 +288,21 @@ final class SubstrateLibraryModel: ObservableObject {
         let chosen = documentClass
         let typed = domains
         let markdown = forceMarkdown
+        // CAPTURED WITH ITS NEIGHBOURS. `workspace` was the one input read INSIDE the task, after a
+        // multi-minute extraction — and the field stays editable while a job runs, so renaming the
+        // workspace mid-extraction landed the document in a different vault (and a different
+        // `inherits`) than the pre-flight guard validated and the rail's "It stays in X" sentence
+        // named. The other three were already captured; this one was not, and nothing said so.
+        let intoWorkspace = workspace
         task = Task { [weak self] in
             await self?.runAdd(cli: cli, file: document, surface: asked, forceMarkdown: markdown,
-                               docClass: chosen, domains: typed)
+                               docClass: chosen, domains: typed, workspace: intoWorkspace)
         }
     }
 
     private func runAdd(cli: SubstrateEngine.Command, file: URL,
                         surface asked: SubstrateCLI.IngestSurface, forceMarkdown: Bool,
-                        docClass: String?, domains: String) async {
+                        docClass: String?, domains: String, workspace: String) async {
         let title = "Adding \(file.lastPathComponent)"
         var steps: [Step] = []
 
