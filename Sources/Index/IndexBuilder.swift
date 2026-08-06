@@ -36,7 +36,18 @@ enum IndexBuilder {
             // the privacy wall until this commit.
             log.error("\(url.lastPathComponent, privacy: .public) declares group '\(meta.group, privacy: .public)' but sits in the '\(derived, privacy: .public)' vault — indexing it under the vault")
         }
-        let group = derived ?? meta.group
+        // RESOLVED BACK TO THE DISPLAY NAME. The vault directory is `slug(workspace)`, and every
+        // query site partitions on the raw `activeGroup` with an exact match — so storing the slug
+        // would index a "CBRE" call under "cbre" and hide it from search, Ask, entity pages and
+        // Related while it still appeared in the browse list, which reads frontmatter. The slug says
+        // WHICH workspace; the name is what the rest of the row is keyed by.
+        //
+        // Falling back to the slug when no known workspace matches is deliberate: a vault whose
+        // workspace has been renamed or removed from settings still has to index as something
+        // stable, and the slug is what its own directory says. That row is then reachable by
+        // selecting the workspace again, which restores the mapping.
+        let group = derived.map { AppSettings.workspaceName(forSlug: $0, preferring: meta.group) ?? $0 }
+            ?? meta.group
 
         // Strip NUL/control chars so sqlite3_bind_text (strlen-based) can't truncate the indexed text
         // at an embedded NUL — screen-context OCR of a broken glyph can emit one, the same class the

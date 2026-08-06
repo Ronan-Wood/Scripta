@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 import Carbon.HIToolbox
 
 /// Central app configuration, backed by UserDefaults. Milestone 5 adds the Settings UI
@@ -307,6 +308,31 @@ enum AppSettings {
     static var activeGroup: String {
         get { defaults.string(forKey: Keys.activeGroup) ?? "" }
         set { defaults.set(newValue, forKey: Keys.activeGroup) }
+    }
+
+    /// The workspace whose name slugifies to `slug`, in the operator's own casing — or `nil` when no
+    /// known workspace matches.
+    ///
+    /// A VAULT DIRECTORY KNOWS ONLY THE SLUG, AND THE INDEX PARTITIONS ON THE DISPLAY NAME. Doc 4 §7
+    /// derives a transcript's workspace from the vault it sits in, and that directory is
+    /// `slug(workspace)` — lowercase, hyphenated. Every query site passes `activeGroup` raw, and the
+    /// SQL is an exact match (`WHERE t."group" = ?`), so indexing a call under "cbre" while search
+    /// asks for "CBRE" makes it invisible to search, Ask, entity pages and Related while it still
+    /// appears in the browse list, which filters on frontmatter. `reconcileCalendarGroupCasing`
+    /// exists because a previous build produced this same divergence from the settings side.
+    ///
+    /// Resolved against the names the app already knows rather than by storing a second mapping:
+    /// the transcript's own `group:`, the active workspace, and the calendar routing table are the
+    /// three places a workspace name is written down.
+    static func workspaceName(forSlug slug: String, preferring declared: String = "") -> String? {
+        func matches(_ candidate: String) -> Bool {
+            !candidate.isEmpty && ScriptaVault.slug(candidate) == slug
+        }
+        // The transcript's own declaration wins when it round-trips: it is the casing that was
+        // current when the call was recorded, which is the one the rest of its row already uses.
+        if matches(declared) { return declared }
+        if matches(activeGroup) { return activeGroup }
+        return calendarGroups.values.first(where: matches)
     }
 
     /// The group captured for a new recording: a calendar's group if tied to one, else the active

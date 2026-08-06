@@ -104,11 +104,41 @@ public struct ScriptaVault: Equatable {
         root.appendingPathComponent("_sources/transcripts", isDirectory: true)
     }
 
-    /// Whether a directory is a vault: it carries a manifest. That is the only discriminator that
-    /// works, because the vaults root also holds this app's OTHER directories — `Notes/`, `Files/`,
-    /// `Entities/` — and a name-based check would have to be kept in step with all of them.
+    /// The key that marks a vault as this app's to write and to delete.
+    ///
+    /// `isVault` answers "is this a substrate vault" and that is NOT the same question as "may we
+    /// overwrite this manifest and, on a wipe, remove this whole directory". `outputFolder` is
+    /// documented as the root that HOLDS vaults, so pointing it somewhere that already contains
+    /// substrate vaults is the intended-looking configuration — and a workspace whose slug matched
+    /// one of them would have had `write()` overwrite that vault's hand-written manifest on EVERY
+    /// recording (destroying its `inherits`, `reference_domains`, `reference_pins`) long before
+    /// anyone pressed delete, at which point `WorkspaceDeleter` would remove the vault entire.
+    ///
+    /// The engine already refuses on exactly this signal and reaches the opposite conclusion from
+    /// it: `cli._refuse_destructive_clean` says "a directory holding a `.substrate.toml` IS a vault
+    /// whether or not this scope inherits it — refusing to delete it". A manifest is evidence of
+    /// value, not of ownership, and this side was reading it as the latter.
+    static let ownershipKey = "scripta_workspace_vault"
+
+    /// Whether a directory is a substrate vault at all: it carries a manifest. Read-only discovery
+    /// only — never a licence to write or delete. Use `isAppVault` for that.
     public static func isVault(_ directory: URL) -> Bool {
         FileManager.default.fileExists(atPath: directory.appendingPathComponent(manifestName).path)
+    }
+
+    /// Whether THIS APP created the vault, and may therefore rewrite its manifest or delete it.
+    ///
+    /// Parsed rather than inferred from the directory's name or position: a vault the operator made
+    /// by hand can sit anywhere, including under the vaults root, and nothing about where it is says
+    /// whose it is.
+    public static func isAppVault(_ directory: URL) -> Bool {
+        guard let manifest = try? String(
+            contentsOf: directory.appendingPathComponent(manifestName), encoding: .utf8)
+        else { return false }
+        return manifest.components(separatedBy: "\n").contains {
+            let line = $0.trimmingCharacters(in: .whitespaces)
+            return line.hasPrefix("\(ownershipKey)") && line.hasSuffix("true")
+        }
     }
 
     /// Every directory that may hold transcripts under `root`: the root itself, plus each vault
@@ -182,7 +212,9 @@ public struct ScriptaVault: Equatable {
               vaultRoot.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL,
               isVault(vaultRoot)
         else { return nil }
-        return vaultRoot.lastPathComponent
+        // Lowercased for the same reason `existingVault` compares that way: the
+        // directory's casing is the filesystem's, and callers reason in slug space.
+        return vaultRoot.lastPathComponent.lowercased()
     }
 
     /// The vault for one scope beneath `root`, if it exists on disk. `nil` and a failure are
@@ -193,7 +225,15 @@ public struct ScriptaVault: Equatable {
         let name = slug(scope)
         guard !name.isEmpty else { return (nil, []) }
         let found = vaultRoots(under: root)
-        return (found.vaults.first { $0.lastPathComponent == name }, found.failures)
+        // CASE-INSENSITIVE, because the two sides of this comparison come from different places:
+        // `name` is a lowercase slug, while `lastPathComponent` is whatever is on disk — and APFS
+        // is case-insensitive by default, so a workspace whose vault landed in a pre-existing
+        // `Notes/` or `CBRE/` is reported by `contentsOfDirectory` with THAT casing. Compared
+        // case-sensitively the lookup missed its own vault, and `WorkspaceDeleter` then found zero
+        // candidates, offered "Delete 0 calls" and reported success — the lying wipe, reached
+        // through a different door than the one 1f450a6 closed.
+        return (found.vaults.first { $0.lastPathComponent.lowercased() == name.lowercased() },
+                found.failures)
     }
 
     /// Living notes — the operator's own words about this workspace. Tier 3: project thinking, not
@@ -234,6 +274,11 @@ public struct ScriptaVault: Equatable {
             "# client asks for content by it. Renaming it here does not rename the registered scope",
             "# — `scopes.record` refuses to repoint an existing name at a different vault.",
             "name = \(Self.tomlString(scope))",
+            // OWNERSHIP, DECLARED. Scripta rewrites this manifest on every recording and deletes
+            // this directory whole when the workspace is wiped; both are only ever safe on a vault
+            // it created. Remove this line by hand and the app will leave the vault alone rather
+            // than adopt it — which is the intended escape hatch, not a way to break it.
+            "\(Self.ownershipKey) = true",
         ]
         if inherits.isEmpty {
             lines.append("inherits = []")
@@ -298,7 +343,11 @@ public struct ScriptaVault: Equatable {
         // have to be kept in step with every folder this app or its user ever adds. A directory the
         // app created is a vault and carries a manifest, so re-resolving an existing workspace
         // still passes.
-        if FileManager.default.fileExists(atPath: directory.path), !isVault(directory) {
+        // A SUBSTRATE VAULT THIS APP DID NOT CREATE IS REFUSED TOO, not just a non-vault directory.
+        // A manifest is evidence that a directory has value, not evidence of whose it is — and
+        // adopting one means overwriting its manifest on every recording and removing it entire on
+        // a wipe.
+        if FileManager.default.fileExists(atPath: directory.path), !isAppVault(directory) {
             throw VaultError.nameCollidesWithExistingDirectory(scope, directory)
         }
         return try ScriptaVault(root: directory, scope: name, inherits: inherits)

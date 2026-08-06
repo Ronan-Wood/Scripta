@@ -253,6 +253,57 @@ final class ScriptaVaultTests: XCTestCase {
         XCTAssertEqual(again.root.standardizedFileURL, first.root.standardizedFileURL)
     }
 
+    /// A MANIFEST IS EVIDENCE OF VALUE, NOT OF OWNERSHIP.
+    ///
+    /// `outputFolder` is the root that holds vaults, so pointing it at a directory that already
+    /// contains substrate vaults is the intended-looking configuration. Adopting one would have
+    /// `write()` overwrite its hand-written manifest — `inherits`, `reference_domains`,
+    /// `reference_pins` — on EVERY recording, and `WorkspaceDeleter` remove it entire on a wipe.
+    /// The engine refuses on exactly this signal for exactly this reason
+    /// (`cli._refuse_destructive_clean`); this side was reading it the other way.
+    func testAVaultThisAppDidNotCreateIsNotAdopted() throws {
+        let curated = root.appendingPathComponent("cbre", isDirectory: true)
+        try FileManager.default.createDirectory(at: curated, withIntermediateDirectories: true)
+        let handWritten = """
+        name = "cbre"
+        inherits = ["/Users/x/vaults/core-vault"]
+        reference_domains = ["work"]
+        """
+        try handWritten.write(to: curated.appendingPathComponent(ScriptaVault.manifestName),
+                              atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(ScriptaVault.isVault(curated), "it IS a substrate vault")
+        XCTAssertFalse(ScriptaVault.isAppVault(curated), "but not one this app made")
+        XCTAssertThrowsError(try ScriptaVault.vault(forScope: "CBRE", under: root))
+        // The refusal must not have touched the manifest it declined to adopt.
+        XCTAssertEqual(try String(contentsOf: curated.appendingPathComponent(ScriptaVault.manifestName),
+                                  encoding: .utf8), handWritten)
+    }
+
+    /// The app's own vaults carry the ownership key, so they stay writable and deletable.
+    func testAVaultThisAppCreatedDeclaresItsOwnership() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        XCTAssertTrue(ScriptaVault.isAppVault(vault.root))
+        XCTAssertTrue(try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .contains("\(ScriptaVault.ownershipKey) = true"))
+    }
+
+    /// APFS is case-insensitive, so a vault created as `cbre` inside a pre-existing `CBRE/` is
+    /// reported by `contentsOfDirectory` as `CBRE`. Compared case-sensitively the lookup missed its
+    /// own vault — and `WorkspaceDeleter` then found zero candidates and reported a successful
+    /// wipe, which is the lying wipe reached through a different door.
+    func testAVaultIsFoundRegardlessOfTheCasingOnDisk() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+
+        for spelling in ["CBRE", "cbre", "CbRe"] {
+            let found = ScriptaVault.existingVault(forScope: spelling, under: root)
+            XCTAssertEqual(found.vault?.standardizedFileURL, vault.root.standardizedFileURL,
+                           "not found for \(spelling)")
+        }
+    }
+
     /// The property that actually matters, asserted directly rather than only through its cause:
     /// no vault's root may be the folder that contains vaults.
     func testAVaultRootIsNeverTheContainingRoot() throws {
