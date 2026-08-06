@@ -315,10 +315,18 @@ final class SubstrateLibraryModel: ObservableObject {
         job = .running(Running(title: title, step: "Adding it to the library vault",
                                started: Date(), done: steps))
         var promoted: URL?
+        var libraryVault: ScriptaVault?
         do {
+            // THE WORKSPACE'S VAULT (Doc 4 §7, corrected): an upload is walled by default and
+            // promoted to a shared core vault deliberately, the same rule notes follow.
+            let target = try ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder,
+                                                inherits: WorkspaceBindings.binding(for: workspace)
+                                                    .inheritsVault.map { [$0] } ?? [])
             promoted = try SubstrateLibrary.promote(
                 SubstrateLibrary.Ingested(out: out, origin: file,
-                                          domains: domains.split(separator: ",").map(String.init)))
+                                          domains: domains.split(separator: ",").map(String.init)),
+                into: target)
+            libraryVault = target
             steps.append(Step(id: "promote", title: "Add to the library vault", run: nil,
                               appFailure: nil, skipped: false))
         } catch {
@@ -331,10 +339,10 @@ final class SubstrateLibraryModel: ObservableObject {
 
         // 3. COMPOSE. Without this the document is a file in a folder: present, unfindable, and
         //    indistinguishable from one that was never added.
-        job = .running(Running(title: title, step: "Composing \(SubstrateLibrary.documentsScope)",
+        job = .running(Running(title: title, step: "Composing \(libraryVault?.scope ?? "the vault")",
                                started: Date(), done: steps))
-        let composed = await compose(cli: cli, vault: SubstrateLibrary.documentsVault,
-                                     name: "library", clean: false)
+        let composed = await compose(cli: cli, vault: libraryVault?.root ?? AppSettings.outputFolder,
+                                     name: libraryVault?.scope ?? "library", clean: false)
         steps.append(Step(id: "compose", title: "Compose and register the scope", run: composed,
                           appFailure: nil, skipped: false))
         finish(title: title, steps: steps, orphaned: composed.succeeded ? nil : promoted)
@@ -366,8 +374,12 @@ final class SubstrateLibraryModel: ObservableObject {
                          skipped: true)])
             }
             job = .running(Running(title: title, step: "Recomposing", started: Date(), done: steps))
-            let composed = await compose(cli: cli, vault: SubstrateLibrary.documentsVault,
-                                         name: "library", clean: true)
+            // Recomposed against the workspace vault the document was promoted into. `--clean`
+            // because a removal must leave no ingest directory behind still answering queries.
+            let vault = try? ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder)
+            let composed = await compose(cli: cli,
+                                         vault: vault?.root ?? AppSettings.outputFolder,
+                                         name: vault?.scope ?? "library", clean: true)
             steps.append(Step(id: "compose", title: "Recompose the scope", run: composed,
                               appFailure: nil, skipped: false))
             finish(title: title, steps: steps)
