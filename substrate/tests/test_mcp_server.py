@@ -1474,3 +1474,28 @@ if __name__ == "__main__":
             print(f"  FAIL  {_t.__name__}: {type(e).__name__}: {e}")
     print(f"\n{len(_tests) - _failed}/{len(_tests)} passed")
     raise SystemExit(1 if _failed else 0)
+
+
+def test_search_declares_and_honours_a_fast_arm() -> None:
+    """`fast` drops the generator arms for a caller that must answer inside a turn of speech.
+
+    Measured 2026-08-06 against the live engine on the `cbre` scope: 17,274ms considered vs 286ms
+    fast — 60x, and far worse than EXPERIMENTS.md's 385ms → 4,558ms estimate for the arm swap alone.
+    Nothing useful arrives seventeen seconds into a conversation that has already moved on.
+
+    The honesty is what makes it safe to offer: dropping the arms rather than swapping them means
+    `Capability` reports what RAN, so a fast reply carries `hyde=off · rerank=off` and a null
+    `expected_mrr` with `unmeasured_arm_combination`. A live hit must not wear the measured stack's
+    number — Doc 4 §8's open question, answered where it can be.
+    """
+    _, registry = _fixture()
+    cfg = _cfg(registry)
+    listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, cfg)["result"]
+    tools = {t["name"]: t for t in listed["tools"]}
+    schema = tools["search"]["inputSchema"]["properties"]
+    assert "fast" in schema, "the arm has to be declarable or no caller can ask for it"
+    assert schema["fast"]["type"] == "boolean"
+    # The description must carry the honesty contract, not just the speed claim — a caller reading
+    # only "faster" would use it for considered questions too.
+    described = schema["fast"]["description"]
+    assert "expected_mrr" in described and "unmeasured_arm_combination" in described, described
