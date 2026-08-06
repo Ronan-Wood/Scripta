@@ -92,6 +92,12 @@ final class AppModel: ObservableObject {
     let meter = MicMeterModel()
     let live = LiveTranscriptModel()
 
+    /// What the workspace's vault knows about what is being said (Doc 4 §8). Owned here because it
+    /// follows the RECORDING lifecycle rather than a view's: the panel showing it is on a screen
+    /// that can be navigated away from mid-call, and a recall that stopped because somebody opened
+    /// Settings would be a feature that only works while watched.
+    let recall = LiveRecall()
+
     /// App-lifetime Ask conversation: clicking a citation (or any tab switch) swaps the hub's
     /// content view, which must not wipe the messages or the in-flight LanguageModelSession.
     let ask = AskModel()
@@ -134,6 +140,12 @@ final class AppModel: ObservableObject {
         switch recordingState {
         case .recording:
             if startedAt == nil { startedAt = Date() }
+            // Reads the live transcript through a closure rather than taking a copy: the words are
+            // still arriving, and each tick must ask what has been said BY THEN.
+            recall.start { [weak self] in
+                guard let self else { return "" }
+                return (self.live.finalized + [self.live.partial]).joined(separator: " ")
+            }
             guard clock == nil else { return }
             // .common mode: the elapsed clock must keep ticking while the status menu is open.
             let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -152,6 +164,7 @@ final class AppModel: ObservableObject {
             startedAt = nil; recordingElapsed = 0; meter.level = 0; isPaused = false; pauseStart = nil
             live.finalized = []; live.partial = ""
             recordingModeName = nil; noteCount = 0
+            recall.stop()
         }
     }
 

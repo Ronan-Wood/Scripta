@@ -46,6 +46,7 @@ enum AppSettings {
         static let sidebarExpanded = "sidebarExpanded"
         static let globalHotkey = "globalHotkey"
         static let liveTranscription = "liveTranscription"
+        static let liveRecall = "liveRecall"
         static let conversationRetentionDays = "conversationRetentionDays"
         static let recordHotkeyKeyCode = "recordHotkeyKeyCode"
         static let recordHotkeyModifiers = "recordHotkeyModifiers"
@@ -57,6 +58,14 @@ enum AppSettings {
     static var conversationRetentionDays: Int {
         get { defaults.integer(forKey: Keys.conversationRetentionDays) }
         set { defaults.set(max(0, newValue), forKey: Keys.conversationRetentionDays) }
+    }
+
+    /// Surface what the workspace's vault knows about what is being said, while the call runs
+    /// (Doc 4 §8). On by default — it reads and shows passages, generates nothing, and asks for the
+    /// engine's fast arm so a hit arrives in a few hundred milliseconds rather than seconds.
+    static var liveRecallEnabled: Bool {
+        get { defaults.object(forKey: Keys.liveRecall) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Keys.liveRecall) }
     }
 
     /// Show a live transcript (and related-calls) while recording. On by default.
