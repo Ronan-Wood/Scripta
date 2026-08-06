@@ -321,6 +321,92 @@ def test_expand_refuses_a_malformed_or_unknown_ref() -> None:
     assert _call_raw("expand", {"expand_ref": "demo/nope#c0"}, registry).get("isError")
 
 
+# ---------------------------------------------------------------- documents (browse)
+
+def test_documents_lists_the_corpus_with_its_spine_and_provenance() -> None:
+    _, registry = _fixture()
+    out = _call("documents", {"scope": "demo"}, registry)
+
+    assert out["total"] == 1 and out["returned"] == 1
+    (doc,) = out["documents"]
+    assert doc["doc_id"] == "composition"
+    assert doc["title"] == "Composition"
+    # The spine, with the same values `search` reports for the same note — a note must not read as
+    # one thing in a result and another in a list.
+    assert doc["status"] == "active"
+    assert doc["doc_type"] == "explanation"
+    assert doc["confidence"] == "proposed"
+    assert doc["document_class"] == "reference-frozen"
+    assert doc["domains"] == ["retrieval"]
+    # A LIST, as v8 made it. The scalar form could name only one of the two dead notes.
+    assert doc["supersedes"] == ["old-composition", "older-composition"]
+    # The composition provenance, which is the whole reason this is not a directory listing.
+    assert doc["vault"] == "demo-vault"
+    assert doc["tier"] == 3
+    # The envelope is the one a caller already knows how to read.
+    assert out["scope"] == "demo"
+    assert set(out) == {"scope", "db", "documents", "returned", "total", "filters",
+                        "index_version", "refresh"}
+    # No retrieval happened, so no arms block claims one did.
+    assert "retrieval_mode" not in out
+
+
+def test_documents_hands_back_a_ref_that_expand_reads() -> None:
+    """The browse list's handle is the SAME handle a search result carries. If these two read
+    paths ever diverge, the freshness verdict diverges with them."""
+    _, registry = _fixture()
+    (doc,) = _call("documents", {"scope": "demo"}, registry)["documents"]
+    assert doc["passage_count"] == 1
+    read = _call("expand", {"expand_ref": doc["expand_ref"], "mode": "note"}, registry)
+    assert read["note"]["text"].strip().startswith("# Composition")
+
+
+def test_documents_withholds_the_same_things_search_does_and_says_so() -> None:
+    _, registry = _fixture()
+    out = _call("documents", {"scope": "demo"}, registry)
+    assert out["filters"]["sources_excluded"] is True
+    assert set(out["filters"]["statuses_excluded"]) == {"archived", "superseded"}
+    # `include_archived` widens to archived and NOT to superseded — a dead note whose replacement
+    # is in the corpus stays out either way. Asserted as the engine's own rule rather than assumed
+    # to be "show everything".
+    assert _call("documents", {"scope": "demo", "include_archived": True},
+                 registry)["filters"]["statuses_excluded"] == ["superseded"]
+
+
+def test_documents_filters_by_vault_and_doc_type_and_reports_both() -> None:
+    _, registry = _fixture()
+    hit = _call("documents", {"scope": "demo", "vault": "demo-vault",
+                              "doc_type": "explanation"}, registry)
+    assert hit["total"] == 1
+    assert hit["filters"]["doc_type"] == "explanation"
+    assert "vault=demo-vault" in hit["filters"]["notes"]
+    # A filter that matches nothing returns nothing and still says what it applied — an empty list
+    # under an unreported filter is indistinguishable from an empty corpus.
+    miss = _call("documents", {"scope": "demo", "vault": "some-other-vault"}, registry)
+    assert miss["total"] == 0 and miss["documents"] == []
+    assert "vault=some-other-vault" in miss["filters"]["notes"]
+
+
+def test_documents_refuses_a_doc_type_outside_the_vocabulary() -> None:
+    """Refused, not returned empty. `doc_type="explaination"` matching zero rows would read as a
+    corpus with no explanations rather than as a typo."""
+    _, registry = _fixture()
+    assert _call_raw("documents", {"scope": "demo", "doc_type": "explaination"},
+                     registry).get("isError")
+    assert _call_raw("documents", {"scope": "demo", "limit": "10"}, registry).get("isError")
+    assert _call_raw("documents", {"scope": "demo", "limit": 0}, registry).get("isError")
+    assert _call_raw("documents", {}, registry).get("isError")
+
+
+def test_documents_paging_keeps_the_total_and_reports_a_clamp() -> None:
+    _, registry = _fixture()
+    page = _call("documents", {"scope": "demo", "limit": 1, "offset": 1}, registry)
+    # The page is empty; the corpus is not. A caller must be able to tell those apart.
+    assert page["documents"] == [] and page["returned"] == 0 and page["total"] == 1
+    clamped = _call("documents", {"scope": "demo", "limit": 99_999}, registry)
+    assert any("clamped" in n for n in clamped["filters"]["notes"])
+
+
 # ---------------------------------------------------------------- refusals
 
 def test_unknown_scope_refuses_rather_than_guessing() -> None:
@@ -356,12 +442,18 @@ def test_initialize_and_tools_list() -> None:
 
     listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, cfg)["result"]
     assert {t["name"] for t in listed["tools"]} == {"search", "expand", "ingest", "list_scopes",
-                                                    "status"}
+                                                    "status", "documents"}
     assert set(listed["tools"][0]) >= {"name", "description", "inputSchema"}
     for t in listed["tools"]:
         assert t["inputSchema"]["type"] == "object"
     # Doc 3a §4: the tool surface stays small — fewer tools, less resident schema every turn.
-    assert len(listed["tools"]) <= 5, "resist adding tools that are parameter variants"
+    #
+    # Raised 5 → 6 for `documents`, and the bar it had to clear is the one this assertion's message
+    # names. It is not a parameter variant of `search`: no query reaches it, nothing is ranked, and
+    # the answer is the corpus rather than a claim about relevance. `search(query="")` could not
+    # produce it — retrieval with an empty query is not a listing, it is a bug — and no combination
+    # of the other five returns which vault an unretrieved note composed from.
+    assert len(listed["tools"]) <= 6, "resist adding tools that are parameter variants"
 
 
 def test_notifications_get_no_reply() -> None:
