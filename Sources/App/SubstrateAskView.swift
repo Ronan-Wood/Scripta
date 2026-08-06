@@ -540,7 +540,9 @@ private struct VaultNoMatch: View {
 /// screen in order to render one true sentence, which is the exact trade the envelope exists to
 /// refuse. What it does share is the family: the same `EngineNote` line type, the same marker
 /// column, the same tones — so a refusal stacks under a scope row looking like the same system.
-private struct VaultRefusalCard: View {
+/// Shared with `LiveRecallPanel`: a refusal must read identically wherever it lands, so this is
+/// internal rather than private to this file.
+struct VaultRefusalCard: View {
     let refusal: VaultRefusal
     var scope: String? = nil
     var retryTitle: String? = nil
