@@ -250,6 +250,41 @@ def assert_not_synced(dest: Path) -> None:
         )
 
 
+def assert_not_overlapping(source: Path, dest: Path) -> None:
+    """Refuse a destination that contains, is contained by, or IS the source.
+
+    THE PRUNE IS WHY. This module deletes every `*.md` in `<dest>/_sources/transcripts/` it did not
+    write this run, on the stated basis that it owns that directory outright. That was true when the
+    app kept transcripts in a flat folder and a vault was somewhere else. It stopped being true when
+    capture began writing its only copy of every call into a vault at exactly
+    `<vault>/_sources/transcripts/` — the same relative path.
+
+    Reproduced 2026-08-06 with source == dest: the exporter read `Call — 2026-08-06 0900.md`, wrote
+    `call-2026-08-06-0900-d6148da9.md` beside it, and unlinked the original as stale. The audio is
+    deleted after a successful transcript write, so in the app that is the only copy.
+
+    Reachable rather than theoretical: the Library's destination chooser accepts any directory, and
+    under "a workspace is a vault" the obvious choice IS the workspace vault. `assert_not_synced`
+    happens to block the case where the folder is inside OneDrive, but that is a different condition
+    and not a guard on this one.
+
+    Identity-based, like `sync_root_for`: comparing resolved paths as strings misses a symlinked or
+    case-differing route to the same directory, and this is a refusal that must not be bypassable by
+    spelling.
+    """
+    src, dst = source.expanduser().resolve(), dest.expanduser().resolve()
+    src_id, dst_id = _identity(src), _identity(dst)
+    same = src_id is not None and src_id == dst_id
+    if same or src in dst.parents or dst in src.parents:
+        raise ExportError(
+            f"the destination {dest} overlaps the source {source}. Refusing: this export PRUNES "
+            f"notes it did not write from the destination's `_sources/transcripts/`, and the app "
+            f"writes its only copy of every call into exactly that path — so an overlapping export "
+            f"deletes the transcripts it was asked to export. Choose a destination outside the "
+            f"folder being exported."
+        )
+
+
 @dataclass(frozen=True)
 class ExportedNote:
     doc_id: str
@@ -485,6 +520,7 @@ def export_workspace(source_dir: Path, vault_dir: Path, workspace: str) -> Expor
     # Before anything is on disk: the destination is the one half of the privacy condition this
     # module can actually enforce.
     assert_not_synced(vault_dir)
+    assert_not_overlapping(source_dir, vault_dir)
 
     scope = scope_name(workspace)
     notes_dir = vault_dir / Path(*NOTE_SUBDIR)
