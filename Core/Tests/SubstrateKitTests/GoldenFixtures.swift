@@ -5,8 +5,17 @@ import XCTest
 //
 // PROVENANCE. Every file in `Fixtures/` is the byte-for-byte HTTP response body of a live
 // `substrate-mcp --http 127.0.0.1:8765`, RE-CAPTURED 2026-08-03 against the operator's real composed
-// scopes (`scripta`: 57 documents, 527 passages, index_version v9:2bc0b76971ad) after
-// `document_class` gained its absence value. Nothing was hand-written, reformatted or trimmed.
+// scopes. Nothing was hand-written, reformatted or trimmed.
+//
+// THE THREE FRAMES CARRYING `filters` WERE RE-CAPTURED 2026-08-07 (index_version v9:6bdb6f801987)
+// when `applied_filters` gained the `vaults` axis — `search`, `search-sources` and `documents`.
+// Re-captured rather than edited, because a hand-patched key would break the one property these
+// files have: they are what the engine actually sent.
+//
+// The `scripta` corpus MOVED between the two captures (this repo's own decision notes are in it and
+// were edited all session), so the top hit changed with it. That is why the content assertions moved
+// too — and the new top hit is the better fixture: it carries a NON-EMPTY `supersedes`, which the
+// old one did not exercise at all.
 //
 // WHAT MOVED IN THIS CAPTURE, and it is the whole reason for it: the passages that used to say
 // `document_class: "reference-frozen"` now say `"unclassified"`. They never declared a class — the

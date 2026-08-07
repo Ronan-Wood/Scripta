@@ -379,12 +379,13 @@ def test_documents_filters_by_vault_and_doc_type_and_reports_both() -> None:
                               "doc_type": "explanation"}, registry)
     assert hit["total"] == 1
     assert hit["filters"]["doc_type"] == "explanation"
-    assert "vault=demo-vault" in hit["filters"]["notes"]
+    # On its own AXIS now, not as a free-text note — a structured field is what a caller can act on.
+    assert hit["filters"]["vaults"] == ["demo-vault"]
     # A filter that matches nothing returns nothing and still says what it applied — an empty list
     # under an unreported filter is indistinguishable from an empty corpus.
     miss = _call("documents", {"scope": "demo", "vault": "some-other-vault"}, registry)
     assert miss["total"] == 0 and miss["documents"] == []
-    assert "vault=some-other-vault" in miss["filters"]["notes"]
+    assert miss["filters"]["vaults"] == ["some-other-vault"]
 
 
 def test_documents_refuses_a_vault_name_that_names_no_vault() -> None:
@@ -397,7 +398,7 @@ def test_documents_refuses_a_vault_name_that_names_no_vault() -> None:
     # A name that IS a vault, just not one here, still answers — and still reports the filter.
     miss = _call("documents", {"scope": "demo", "vault": "elsewhere"}, registry)
     assert miss["total"] == 0
-    assert "vault=elsewhere" in miss["filters"]["notes"]
+    assert miss["filters"]["vaults"] == ["elsewhere"]
 
 
 def test_documents_reports_a_clamped_offset_rather_than_rewriting_it_silently() -> None:
@@ -479,6 +480,47 @@ def test_documents_paging_keeps_the_total_and_reports_a_clamp() -> None:
     assert page["documents"] == [] and page["returned"] == 0 and page["total"] == 1
     clamped = _call("documents", {"scope": "demo", "limit": 99_999}, registry)
     assert any("clamped" in n for n in clamped["filters"]["notes"])
+
+
+# ---------------------------------------------------------------- the vault axis
+
+def test_search_can_ask_one_tier_of_an_inheriting_scope() -> None:
+    """A scope INHERITS, so "what do my notes say" and "what did the shared reference layer say"
+    are the same scope asked for different bodies of it. Before this the only way to separate them
+    was to compose two scopes and lose the joint query."""
+    _, registry = _fixture()
+    hit = _call("search", {"scope": "demo", "query": "composition",
+                           "vaults": ["demo-vault"]}, registry)
+    assert hit["passages"], "the fixture's only note is in demo-vault"
+    assert hit["filters"]["vaults"] == ["demo-vault"]
+
+    # A vault the scope does not compose returns nothing AND says which filter did it — an empty
+    # result under an unreported filter is indistinguishable from an empty corpus.
+    miss = _call("search", {"scope": "demo", "query": "composition",
+                            "vaults": ["core-vault"]}, registry)
+    assert miss["passages"] == []
+    assert miss["filters"]["vaults"] == ["core-vault"]
+
+
+def test_an_unfiltered_search_reports_the_vault_axis_as_absent_not_missing() -> None:
+    """`null`, and the key is always there. A reader who cannot see that every tier answered reads
+    a narrowed corpus as the whole one."""
+    _, registry = _fixture()
+    assert _call("search", {"scope": "demo", "query": "composition"},
+                 registry)["filters"]["vaults"] is None
+
+
+def test_an_empty_vault_list_refuses() -> None:
+    """`[]` from a UI that built the list from zero selected chips means "none of them", which the
+    store honours literally by returning nothing. Refusing beats silently widening to the whole
+    corpus OR answering nothing without explanation."""
+    _, registry = _fixture()
+    assert _call_raw("search", {"scope": "demo", "query": "x", "vaults": []},
+                     registry).get("isError")
+    assert _call_raw("search", {"scope": "demo", "query": "x", "vaults": [""]},
+                     registry).get("isError")
+    assert _call_raw("search", {"scope": "demo", "query": "x", "vaults": "not-a-list"},
+                     registry).get("isError") is None, "a bare string is accepted as one vault"
 
 
 # ---------------------------------------------------------------- the guard, through the server

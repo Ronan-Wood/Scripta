@@ -339,6 +339,15 @@ TOOLS = [
                 "doc_type": {"type": "string",
                              "description": "Only notes doing this job (spine.DOC_TYPES)."},
                 "include_archived": {"type": "boolean", "description": "Default false."},
+                "vaults": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Only passages composed from these vaults, by manifest name. "
+                                   "Omit for every vault in the chain. A scope INHERITS — a "
+                                   "project vault plus the shared reference tier — so this is how "
+                                   "you ask one body of it: this project's own notes, or the calls "
+                                   "recorded into it, without the shared layer answering too. "
+                                   "`status` reports `by_vault` if you need the names.",
+                },
                 "include_sources": {"type": "boolean",
                                     "description": "Include conversation-class notes. Default "
                                                    "false, as in `search`."},
@@ -385,6 +394,29 @@ TOOLS = [
 ]
 
 
+def _vault_set(raw: object) -> frozenset[str] | None:
+    """A `vaults` argument as a set, or None for every vault the scope composes.
+
+    REFUSES AN EMPTY LIST rather than reading it as "no filter". `[]` from a caller that built the
+    list from zero selected chips means "none of them", and the store honours that literally by
+    returning nothing — which is correct and almost never what was meant. Saying so beats either
+    silently widening to the whole corpus or answering nothing without explanation.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
+        raise ToolError(f"`vaults` must be a list of vault names, got {raw!r}.")
+    named = {v.strip() for v in raw if v.strip()}
+    if not named:
+        raise ToolError(
+            "`vaults` names no vault. Omit it to search every vault the scope composes; an empty "
+            "list would narrow the corpus to nothing."
+        )
+    return frozenset(named)
+
+
 def _tool_search(args: dict, cfg: Config) -> dict:
     from substrate.retrieve import retriever
 
@@ -408,6 +440,7 @@ def _tool_search(args: dict, cfg: Config) -> dict:
     k, clamp_note = _clamp_k(args.get("k"))
     include_sources = bool(args.get("include_sources", False))
     statuses = retriever.statuses(include_archived=bool(args.get("include_archived", False)))
+    vaults = _vault_set(args.get("vaults"))
 
     # `fast`: THE EMBEDDER ONLY, for a caller that must answer inside a turn of speech.
     #
@@ -427,14 +460,14 @@ def _tool_search(args: dict, cfg: Config) -> dict:
     entry, store = _open(scope, cfg.registry)
     try:
         result = retriever.retrieve(
-            store, query, k=k, statuses=statuses,
+            store, query, k=k, statuses=statuses, vaults=vaults,
             include_sources=include_sources, with_outlines=render.OUTLINE_RECORDS,
             embedder=cfg.stack.embedder,
             expander=None if fast else cfg.stack.expander,
             reranker=None if fast else cfg.stack.reranker,
         )
         return render.search_payload(
-            result, scope=scope, query=query, statuses=statuses,
+            result, scope=scope, query=query, statuses=statuses, vaults=vaults,
             include_sources=include_sources, unavailable=cfg.stack.unavailable,
             wiring=cfg.stack.wiring,
             db=str(entry.db), filter_notes=(clamp_note,) if clamp_note else (),

@@ -391,17 +391,24 @@ public struct WireAppliedFilters: Codable, Equatable, Sendable {
     public let docType: String?
     /// What KIND of artifact (`classes.POLICIES`): reference-frozen, conversation.
     public let documentClass: String?
+    /// WHICH TIERS OF THE COMPOSED CHAIN ANSWERED. `null` is every vault the scope composes; a list
+    /// is the narrowing the caller asked for. A scope INHERITS — a project vault plus a shared
+    /// reference tier — so a reader who cannot see that only one tier answered reads a partial
+    /// corpus as the whole one.
+    public let vaults: [String]?
     /// Anything else that narrowed this result set — a clamped `k`, today. Always present, empty
     /// when there is nothing to say.
     public let notes: [String]
 
     public init(statusesIncluded: [String], statusesExcluded: [String], sourcesExcluded: Bool,
-                docType: String?, documentClass: String?, notes: [String]) {
+                docType: String?, documentClass: String?, vaults: [String]? = nil,
+                notes: [String]) {
         self.statusesIncluded = statusesIncluded
         self.statusesExcluded = statusesExcluded
         self.sourcesExcluded = sourcesExcluded
         self.docType = docType
         self.documentClass = documentClass
+        self.vaults = vaults
         self.notes = notes
     }
 
@@ -411,7 +418,7 @@ public struct WireAppliedFilters: Codable, Equatable, Sendable {
         case sourcesExcluded = "sources_excluded"
         case docType = "doc_type"
         case documentClass = "document_class"
-        case notes
+        case vaults, notes
     }
 
     public init(from decoder: Decoder) throws {
@@ -421,6 +428,7 @@ public struct WireAppliedFilters: Codable, Equatable, Sendable {
         sourcesExcluded = try c.decode(Bool.self, forKey: .sourcesExcluded)
         docType = try c.decodeIfPresent(String.self, forKey: .docType)
         documentClass = try c.decodeIfPresent(String.self, forKey: .documentClass)
+        vaults = try c.decodeIfPresent([String].self, forKey: .vaults)
         notes = try c.decode([String].self, forKey: .notes)
     }
 
@@ -431,6 +439,7 @@ public struct WireAppliedFilters: Codable, Equatable, Sendable {
         try c.encode(sourcesExcluded, forKey: .sourcesExcluded)
         try c.encodeExplicitNull(docType, forKey: .docType)
         try c.encodeExplicitNull(documentClass, forKey: .documentClass)
+        try c.encodeExplicitNull(vaults, forKey: .vaults)
         try c.encode(notes, forKey: .notes)
     }
 }

@@ -15,16 +15,16 @@ final class MappingTests: XCTestCase {
         let wire = try XCTUnwrap(try liveSearch().passages.first)
         let passage = try wire.mapped()
 
-        XCTAssertEqual(passage.id, "scripta/scripta-doc3a-mcp-server#c00002")
+        XCTAssertEqual(passage.id, "scripta/scripta-doc3-ui#c00005")
         XCTAssertEqual(passage.status, .active)
-        XCTAssertEqual(passage.docType, .reference)
+        XCTAssertEqual(passage.docType, .decision)
         XCTAssertEqual(passage.confidence, .stated)
         XCTAssertEqual(passage.documentClass, .unclassified,
                        "the class comes off the wire now; nobody supplies it — and this note "
                        + "declares none, which the engine says as `unclassified` rather than "
                        + "defaulting to reference-frozen the way it used to")
         XCTAssertEqual(passage.vault, "scripta-vault")
-        XCTAssertEqual(passage.supersedes, [])
+        XCTAssertEqual(passage.supersedes, ["scripta-workspaces-rework"])
         XCTAssertEqual(passage.withheldAs, [],
                        "an undeclared class is default-corpus content: absence of a label is not "
                        + "evidence about the note, so nothing here is withheld")

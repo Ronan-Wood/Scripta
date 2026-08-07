@@ -245,8 +245,12 @@ def documents_payload(
         "documents": [document_record(r, scope=scope) for r in rows],
         "returned": len(rows),
         "total": total,
+        # The vault narrowing is reported on its OWN AXIS now, not as a free-text note. It was a
+        # note because `applied_filters` had nowhere to put it; it does now, and a structured field
+        # is what a caller can act on.
         "filters": applied_filters(statuses, include_sources=include_sources, doc_type=doc_type,
-                                   notes=filter_notes + ((f"vault={vault}",) if vault else ())),
+                                   vaults=None if vault is None else frozenset({vault}),
+                                   notes=filter_notes),
         "index_version": index_version,
         "refresh": refresh_state.report(scope, registry),
     }
@@ -371,7 +375,8 @@ def engine_health(wiring: dict[str, str] | None, unavailable: tuple[str, ...] = 
 
 def applied_filters(
     statuses: frozenset[str] | None, *, include_sources: bool, doc_type: str | None = None,
-    document_class: str | None = None, notes: tuple[str, ...] = (),
+    document_class: str | None = None, vaults: frozenset[str] | None = None,
+    notes: tuple[str, ...] = (),
 ) -> dict:
     """What this result set left out, said out loud.
 
@@ -409,6 +414,11 @@ def applied_filters(
         "sources_excluded": not (include_sources or document_class in EXCLUDED_CLASSES),
         "doc_type": doc_type,
         "document_class": document_class,
+        # WHICH TIERS OF THE COMPOSED CHAIN ANSWERED. `null` is every vault the scope composes —
+        # the default — and a list is the narrowing the caller asked for. Emitted unconditionally
+        # like every other axis: a reader who does not know the answer came from one tier of an
+        # inheriting scope reads a partial corpus as the whole one.
+        "vaults": None if vaults is None else sorted(vaults),
         # Anything else that narrowed this result set — a clamped `k`, today. ALWAYS present, and
         # empty when there is nothing to say: an adapter that injected this key only when it had
         # something to report made the envelope's shape depend on the request, which is the same
@@ -426,6 +436,7 @@ def search_payload(
     include_sources: bool,
     doc_type: str | None = None,
     document_class: str | None = None,
+    vaults: frozenset[str] | None = None,
     chars: int = SNIPPET_CHARS,
     unavailable: tuple[str, ...] = (),
     wiring: dict[str, str] | None = None,
@@ -485,7 +496,8 @@ def search_payload(
         "outline_records": [outline_record(h, scope=scope, chars=chars) for h in result.outlines],
         "retrieval_mode": retrieval_mode(result, unavailable=unavailable, wiring=wiring),
         "filters": applied_filters(statuses, include_sources=include_sources, doc_type=doc_type,
-                                   document_class=document_class, notes=filter_notes),
+                                   document_class=document_class, vaults=vaults,
+                                   notes=filter_notes),
         "index_version": result.index_version,
         "refresh": refresh_state.report(scope, registry),
     }
