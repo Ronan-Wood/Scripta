@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 import ScriptaShared
 
 /// Bridges the app's active workspace to the bundled MCP server. The server is spawned by the LLM
@@ -12,6 +13,12 @@ enum MCPStateFile {
     static func write() {
         let state: [String: Any] = [
             "activeGroup": AppSettings.activeGroup,
+            // THE SLUG, BESIDE THE DISPLAY NAME. A scope is named by `slug(workspace)` — "CBRE"
+            // composes as `cbre` — and the engine's guard compares against the SCOPE it was asked
+            // for. Publishing only the display name would have made the engine slugify, which is
+            // this app's rule living in the engine; publishing both keeps the rule here and leaves
+            // the guard comparing two strings.
+            "activeScope": ScriptaVault.slug(AppSettings.activeGroup),
             "heartbeat": Date().timeIntervalSince1970,
             // Published here rather than read out of the app's preferences. That started as a
             // sandbox necessity and outlived it: the beat and the folder have to move together,
