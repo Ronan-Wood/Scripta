@@ -481,6 +481,90 @@ def test_documents_paging_keeps_the_total_and_reports_a_clamp() -> None:
     assert any("clamped" in n for n in clamped["filters"]["notes"])
 
 
+# ---------------------------------------------------------------- the guard, through the server
+
+def _guard_fixture(state: dict | None) -> tuple[Path, Path]:
+    """The standard fixture, with its vault declaring a guard. `state=None` writes no state file."""
+    import json as _json
+
+    root, registry = _fixture()
+    vault = root / "demo-vault"
+    manifest = vault / ".substrate.toml"
+    state_path = root / "mcp-state.json"
+    manifest.write_text(
+        f'name = "demo"\ninherits = []\nguard_state = "{state_path}"\n', encoding="utf-8")
+    if state is not None:
+        state_path.write_text(_json.dumps(state), encoding="utf-8")
+    return root, registry
+
+
+def test_every_scope_taking_tool_is_behind_the_guard() -> None:
+    """THE POINT OF PUTTING IT IN `_open`. A wall each tool remembers to call is a wall the next
+    tool forgets — which is exactly how the app's own server would have lost it. Asserted over the
+    whole surface rather than over `search` alone."""
+    import time as _time
+
+    _, registry = _guard_fixture(None)   # guarded, and nothing vouching
+    for tool, args in (
+        ("search", {"scope": "demo", "query": "composition"}),
+        ("documents", {"scope": "demo"}),
+        ("status", {"scope": "demo"}),
+        ("expand", {"expand_ref": "demo/composition#c00000"}),
+    ):
+        result = _call_raw(tool, args, registry)
+        assert result.get("isError"), f"{tool} answered from a guarded scope with nothing vouching"
+        assert "guarded" in result["content"][0]["text"], tool
+
+    # And with a fresh beat naming it, the same four answer normally.
+    root, registry = _guard_fixture({"heartbeat": _time.time(), "activeScope": "demo"})
+    assert _call("search", {"scope": "demo", "query": "composition"}, registry)["passages"]
+    assert _call("documents", {"scope": "demo"}, registry)["total"] == 1
+    assert _call("status", {"scope": "demo"}, registry)["scope"] == "demo"
+    assert _call("expand", {"expand_ref": "demo/composition#c00000"}, registry)["passage"]
+
+
+def test_the_guard_refuses_a_scope_the_app_is_not_vouching_for() -> None:
+    import time as _time
+
+    _, registry = _guard_fixture({"heartbeat": _time.time(), "activeScope": "something-else"})
+    result = _call_raw("search", {"scope": "demo", "query": "composition"}, registry)
+    assert result.get("isError")
+    assert "something-else" in result["content"][0]["text"]
+
+
+def test_a_guarded_refusal_does_not_read_as_a_broken_index() -> None:
+    """The two states must not be confused: `status` exists to say whether an index can be trusted,
+    and "withheld on purpose" is not "empty" or "schema mismatch"."""
+    _, registry = _guard_fixture(None)
+    text = _call_raw("status", {"scope": "demo"}, registry)["content"][0]["text"]
+    assert "Nothing is wrong with the index" in text
+    assert "compose" not in text.lower(), "a guarded refusal must not send the operator to recompose"
+
+
+def test_ingest_is_behind_the_guard_too() -> None:
+    """The WRITE tool most of all: a model that cannot read a guarded workspace must not be able to
+    write into one either.
+
+    ASSERTS THE REFUSAL IS THE GUARD'S. The first version of this test asserted only `isError` and
+    passed while `ingest` was NOT guarded at all — it resolves the scope itself rather than going
+    through `_open`, so the chokepoint covering every read missed it, and an unrelated argument
+    refusal made the test green. A wall test that any refusal satisfies tests nothing."""
+    import time as _time
+
+    _, registry = _guard_fixture(None)
+    result = _call_raw("ingest", {"scope": "demo", "content": "B" * 300, "title": "T",
+                                  "doc_type": "reference"}, registry)
+    assert result.get("isError")
+    assert "guarded" in result["content"][0]["text"], result["content"][0]["text"][:200]
+
+    # And a valid request DOES get past the guard when the app vouches — so the assertion above is
+    # about the guard and not about the arguments.
+    _, registry = _guard_fixture({"heartbeat": _time.time(), "activeScope": "demo"})
+    planned = _call_raw("ingest", {"scope": "demo", "content": "B" * 300, "title": "T",
+                                   "doc_type": "reference"}, registry)
+    assert "guarded" not in planned["content"][0]["text"]
+
+
 # ---------------------------------------------------------------- refusals
 
 def test_unknown_scope_refuses_rather_than_guessing() -> None:

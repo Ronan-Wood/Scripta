@@ -49,7 +49,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from substrate import introspect, net, notes, render, scopes, stack
+from substrate import guard, introspect, net, notes, render, scopes, stack
 from substrate.store import schema
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -103,6 +103,16 @@ def _open(name: str, registry: str | None, *, refuse_empty: bool = True):
     try:
         entry = scopes.resolve(name, registry)
     except scopes.ScopeError as e:
+        raise ToolError(str(e)) from e
+
+    # THE GUARD, BEFORE THE INDEX IS OPENED. A vault may nominate a state file that has to vouch for
+    # it (`guard.py`), and this is the one chokepoint every scope-taking tool passes through — so
+    # the wall cannot be forgotten by a tool added later, which is exactly how the app's own server
+    # would have lost it. Checked before the open so a refused scope costs no file handle and, more
+    # importantly, so a guarded scope and a broken index are never confused for one another.
+    try:
+        guard.check(Path(entry.vault), name)
+    except guard.GuardError as e:
         raise ToolError(str(e)) from e
 
     # migrate=False: every tool on this server READS. A write-open drops and rebuilds an
@@ -571,6 +581,15 @@ def _tool_ingest(args: dict, cfg: Config) -> dict:
     try:
         entry = scopes.resolve(name, cfg.registry)
     except scopes.ScopeError as e:
+        raise ToolError(str(e)) from e
+
+    # THE GUARD, HERE TOO. `ingest` resolves the scope itself rather than going through `_open` —
+    # it needs the vault, not the index — so the chokepoint that covers every READ does not cover
+    # this. A model that cannot read a guarded workspace must not be able to write into one either,
+    # and this is the tool where getting it wrong leaves a note behind rather than an answer.
+    try:
+        guard.check(Path(entry.vault), name)
+    except guard.GuardError as e:
         raise ToolError(str(e)) from e
 
     if source_path:

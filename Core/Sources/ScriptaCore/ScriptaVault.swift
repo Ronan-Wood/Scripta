@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaShared
 
 /// A workspace, as a substrate vault on disk.
 ///
@@ -135,6 +136,10 @@ public struct ScriptaVault: Equatable {
     /// it: `cli._refuse_destructive_clean` says "a directory holding a `.substrate.toml` IS a vault
     /// whether or not this scope inherits it — refusing to delete it". A manifest is evidence of
     /// value, not of ownership, and this side was reading it as the latter.
+    /// The manifest key naming the file that must vouch for this vault before the engine will
+    /// answer from it. Generic on the engine's side (`guard.py`); Scripta's state file on ours.
+    static let guardKey = "guard_state"
+
     static let ownershipKey = "scripta_workspace_vault"
 
     /// Whether a directory is a substrate vault at all: it carries a manifest. Read-only discovery
@@ -358,6 +363,17 @@ public struct ScriptaVault: Equatable {
             // and `WorkspaceDeleter` takes every transcript in a vault with no `group:` filter — so
             // wiping one would delete the other's calls.
             "\(Self.workspaceKey) = \(Self.tomlString(workspace))",
+            // THE PRIVACY WALL, DECLARED WHERE THE ENGINE CAN SEE IT. A workspace vault holds call
+            // transcripts, and before §7 the app's own MCP server was what kept a model out of them
+            // — it refused unless Scripta was running and this workspace was the active one. Moving
+            // the calls into a vault the engine composes made them reachable by any local process,
+            // because the wall lived in the server being retired rather than in the corpus.
+            //
+            // `guard.py` reads this key and refuses the scope unless the file below reports a fresh
+            // heartbeat naming this scope. The engine learns nothing about Scripta: it enforces a
+            // shape a vault asked for. An operator who removes this line gets an unguarded vault,
+            // which is a choice they can make and not one that happens by accident.
+            "\(Self.guardKey) = \(Self.tomlString(SharedLocations.mcpState.path))",
         ]
         if inherits.isEmpty {
             lines.append("inherits = []")
