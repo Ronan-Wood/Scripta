@@ -459,9 +459,76 @@ private struct VaultResultView: View {
             EngineBar(envelope: result.envelope) { Task { await model.listScopes() } }
             ExclusionBar(filter: result.filter, toggle: model.include)
             if let klass = model.refusedInclusion { VaultInclusionRefusal(klass: klass) }
+            VaultTierRow(model: model, answered: result.filter)
             VaultPassages(result: result)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// WHICH TIER OF THE SCOPE ANSWERED, and the control that narrows it.
+///
+/// A scope INHERITS — this workspace's own vault, the operator's curated project vault, the shared
+/// reference tier — and until now a reader could not tell which of them a passage came from without
+/// reading every citation, nor ask only one. "What did we actually say on the calls" and "what do
+/// my notes say" are the same scope asked for different bodies of it.
+///
+/// DRAWN EVEN WHEN THE CHAIN IS ONE VAULT, because the row is also the disclosure: it is where a
+/// reader learns the corpus HAS tiers. Hiding it until there are two makes the axis invisible on
+/// exactly the scopes where someone is learning what a scope is.
+private struct VaultTierRow: View {
+    @ObservedObject var model: SubstrateAskModel
+    /// What the engine says it applied. Read alongside the selection rather than instead of it: the
+    /// two disagreeing — a guard withholding a vault the reader did not deselect — is the thing
+    /// worth seeing, and `filters.notes` carries the sentence for it.
+    let answered: ExclusionFilter
+
+    var body: some View {
+        let chain = model.vaultChain
+        if !chain.isEmpty {
+            VStack(alignment: .leading, spacing: Gap.s6) {
+                HStack(spacing: Gap.s6) {
+                    Text("tiers").typeface(Register.monoMicro, Ink.textHelper)
+                    VaultTierChip(title: "all", selected: model.selectedVaults.isEmpty) {
+                        model.clearVaultFilter()
+                    }
+                    ForEach(chain, id: \.self) { vault in
+                        VaultTierChip(title: vault,
+                                      selected: model.selectedVaults.contains(vault)) {
+                            model.toggleVault(vault)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                if !answered.notes.isEmpty {
+                    // The engine's own words for anything that narrowed this result beyond the
+                    // chips — a clamped `k`, or a guarded vault that went dark on its own.
+                    ForEach(answered.notes, id: \.self) { note in
+                        Text(note).typeface(Register.micro, Ink.textHelper)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct VaultTierChip: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title).typeface(Register.monoMicro, selected ? Ink.textPrimary : Ink.textHelper)
+        }
+        .buttonStyle(.plain)
+        .controlBox(Density.pill, horizontal: Gap.s8, vertical: Gap.s2)
+        .surface(selected ? Ink.layerSelected : Ink.layer,
+                 radius: Corner.control,
+                 border: selected ? Ink.interactive : Ink.borderSubtle,
+                 width: Elevation.hairline)
     }
 }
 
