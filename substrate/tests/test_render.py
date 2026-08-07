@@ -51,7 +51,7 @@ MODE_KEYS = {"embedder", "embedder_state", "hyde", "reranker", "expected_mrr", "
 # `unavailable` was the only carrier of.
 HEALTH_KEYS = {"known", "state", "arms", "note"}
 FILTER_KEYS = {"statuses_included", "statuses_excluded", "sources_excluded", "doc_type",
-               "document_class", "notes"}
+               "document_class", "vaults", "notes"}
 
 LONG = ("A proposed design that was never built. " * 40).strip()
 

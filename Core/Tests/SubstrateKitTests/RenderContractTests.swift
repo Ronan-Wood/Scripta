@@ -127,7 +127,7 @@ final class RenderContractTests: XCTestCase {
     func testAppliedFiltersKeysMatchTheDecoder() throws {
         XCTAssertEqual(try render().payload(of: "applied_filters").keys(), [
             "statuses_included", "statuses_excluded", "sources_excluded",
-            "doc_type", "document_class", "notes",
+            "doc_type", "document_class", "vaults", "notes",
         ])
     }
 

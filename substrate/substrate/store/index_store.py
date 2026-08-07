@@ -178,6 +178,33 @@ def _add_class_exclusion(where: list[str], args: list[Any], *, include_sources: 
     args.extend(ordered)
 
 
+def _add_vault_filter(where: list[str], args: list[Any], vaults: frozenset[str] | None) -> None:
+    """Restrict to passages composed from these vaults. None means no filter.
+
+    A THIRD AXIS, and deliberately not folded into the other two. Status says whether a note is
+    live; class says what kind of artifact it is; VAULT says which tier of the composed chain it
+    came from — the operator's own project notes, the calls this app recorded, or the reference
+    layer shared with every project. A reader asking "what did we say on the calls" and a reader
+    asking "what do my notes say" are asking the same scope for different bodies of it, and before
+    this the only way to separate them was to compose two scopes and lose the joint query.
+
+    `d.vault`, not a chunk column: composition provenance is document-level, and every query that
+    reaches here already joins `documents` for the spine.
+
+    An EMPTY set compiles to a literal false, exactly as `_add_status_filter` does. "Include none of
+    the vaults" is a real request — a caller narrowing to a vault the scope does not compose — and
+    answering it with the whole corpus would be the silent-widening failure that guard refuses.
+    """
+    if vaults is None:
+        return
+    if not vaults:
+        where.append("0")
+        return
+    ordered = sorted(vaults)
+    where.append(f"d.vault IN ({','.join('?' * len(ordered))})")
+    args.extend(ordered)
+
+
 def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
     return Hit(
         chunk_id=r["chunk_id"],
@@ -436,6 +463,7 @@ class IndexStore:
         path_prefix: str | None = None,
         statuses: frozenset[str] | None = None,
         include_sources: bool = False,
+        vaults: frozenset[str] | None = None,
     ) -> list[Hit]:
         """Lexical search, precision-first with a recall TOP-UP.
 
@@ -453,7 +481,7 @@ class IndexStore:
         kw = dict(
             kind=kind, document_class=document_class, doc_id=doc_id,
             min_path_depth=min_path_depth, path_prefix=path_prefix, statuses=statuses,
-            include_sources=include_sources,
+            include_sources=include_sources, vaults=vaults,
         )
         seen: set[str] = set()
         out: list[Hit] = []
@@ -489,6 +517,7 @@ class IndexStore:
         _add_class_exclusion(where, args,
                              include_sources=kw.get("include_sources", False)
                              or kw.get("document_class") is not None)
+        _add_vault_filter(where, args, kw.get("vaults"))
         args.append(kw.get("k", 10))
 
         sql = (
@@ -979,6 +1008,7 @@ class IndexStore:
         document_class: str | None = None,
         statuses: frozenset[str] | None = None,
         include_sources: bool = False,
+        vaults: frozenset[str] | None = None,
     ) -> list[Hit]:
         """Brute-force cosine. Vectors are L2-normalized, so a dot product IS cosine.
 
@@ -1001,6 +1031,10 @@ class IndexStore:
         _add_status_filter(where, args, statuses)
         _add_class_exclusion(where, args,
                              include_sources=include_sources or document_class is not None)
+        # THE VECTOR ARM TOO, for the reason `statuses` is here: a vault the lexical arm excluded
+        # would otherwise walk back in through cosine, and a filter that holds on one arm and not
+        # the other is a filter that holds until the stack is wired.
+        _add_vault_filter(where, args, vaults)
 
         rows = self.db.execute(
             "SELECT c.*, d.title AS title, d.supersedes AS d_supersedes, "

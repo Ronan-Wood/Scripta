@@ -83,11 +83,11 @@ final class WireDecodingTests: XCTestCase {
             .decode(WireSearchResult.self, from: try GoldenFixture.payload(GoldenFixture.search))
 
         XCTAssertEqual(result.scope, "scripta")
-        XCTAssertEqual(result.indexVersion, "v9:2bc0b76971ad")
+        XCTAssertEqual(result.indexVersion, "v9:6bdb6f801987")
         XCTAssertFalse(result.passages.isEmpty)
 
         let first = try XCTUnwrap(result.passages.first)
-        XCTAssertEqual(first.expandRef, "scripta/scripta-doc3a-mcp-server#c00002")
+        XCTAssertEqual(first.expandRef, "scripta/scripta-doc3-ui#c00005")
         XCTAssertEqual(first.status, "active")
         XCTAssertEqual(first.confidence, "stated")
         XCTAssertEqual(first.documentClass, "unclassified",
@@ -95,7 +95,11 @@ final class WireDecodingTests: XCTestCase {
                        + "to `.unreported` without anything else failing. `unclassified` is what "
                        + "an undeclared note sends; it read `reference-frozen` here until the "
                        + "engine stopped inventing that for the ~88% that declare nothing")
-        XCTAssertEqual(first.supersedes, [], "supersedes is a LIST since v8, empty not null")
+        // A NON-EMPTY list, which the previous capture did not exercise: the top hit is now a
+        // note that replaced one. `[]` and `["x"]` decode through the same path, but only this
+        // shape proves the LIST half of v8 rather than the null-vs-empty half.
+        XCTAssertEqual(first.supersedes, ["scripta-workspaces-rework"],
+                       "supersedes is a LIST since v8 — one note can replace several")
         XCTAssertNil(first.text, "`text` is null on a search result, never absent")
         XCTAssertTrue(first.truncated)
         XCTAssertNil(first.kind, "a passage has no `kind`; only an outline record does")
