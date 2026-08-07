@@ -526,85 +526,126 @@ def test_an_empty_vault_list_refuses() -> None:
 # ---------------------------------------------------------------- the guard, through the server
 
 def _guard_fixture(state: dict | None) -> tuple[Path, Path]:
-    """The standard fixture, with its vault declaring a guard. `state=None` writes no state file."""
+    """A guarded scope holding TWO notes: one the guarded vault contributed, one it INHERITS.
+
+    THE SECOND NOTE IS THE WHOLE TEST. A guard that shuts the scope and a guard that withholds one
+    vault are indistinguishable on a corpus with only one vault in it — which is what the first
+    version of this fixture had, so it could not have caught the scope-wide refusal it was written
+    to replace. `demo` is the scope AND the guarded vault's own name (compose registers a scope as
+    its project vault's manifest `name`, and records that name on the notes it contributed).
+    """
+    import hashlib
     import json as _json
 
-    root, registry = _fixture()
+    root = _tmpdir()
     vault = root / "demo-vault"
-    manifest = vault / ".substrate.toml"
+    vault.mkdir()
     state_path = root / "mcp-state.json"
-    manifest.write_text(
+    (vault / ".substrate.toml").write_text(
         f'name = "demo"\ninherits = []\nguard_state = "{state_path}"\n', encoding="utf-8")
     if state is not None:
         state_path.write_text(_json.dumps(state), encoding="utf-8")
+
+    db = root / "demo.db"
+    with IndexStore(str(db)) as s:
+        for doc_id, owning_vault, text in (
+            ("mine", "demo", _LONG),                 # the guarded vault's own
+            ("inherited", "core-vault", _LONG),      # a tier it composes from
+        ):
+            note = vault / f"{doc_id}.md"
+            note.write_text(f"# {doc_id}\n\n{text}\n", encoding="utf-8")
+            derived = root / "demo-index" / doc_id
+            derived.mkdir(parents=True)
+            (derived / "document.md").write_text(f"{text}\n", encoding="utf-8")
+            doc = Document(doc_id=doc_id, source_path=str(note),
+                           source_sha256=hashlib.sha256(note.read_bytes()).hexdigest(),
+                           source_pages=1, document_class="reference-frozen", title=doc_id,
+                           status="active", doc_type="explanation", confidence="stated",
+                           vault=owning_vault, tier=3, domains=["retrieval"], supersedes=[])
+            ch = Chunk(chunk_id=f"{doc_id}#c00000", doc_id=doc_id, kind="passage", text=text,
+                       path=[doc_id], level=1, n_chars=len(text),
+                       document_class="reference-frozen")
+            s.upsert(doc, [ch], markdown_path=str(derived / "document.md"), markdown_mtime=0.0,
+                     markdown_sha256="d" * 64)
+
+    registry = root / "scopes.toml"
+    scopes.record("demo", vault=vault, db=db, index_root=root, registry=registry)
     return root, registry
 
 
-def test_every_scope_taking_tool_is_behind_the_guard() -> None:
-    """THE POINT OF PUTTING IT IN `_open`. A wall each tool remembers to call is a wall the next
-    tool forgets — which is exactly how the app's own server would have lost it. Asserted over the
-    whole surface rather than over `search` alone."""
+def _vaults_of(passages: list[dict]) -> set[str]:
+    return {p["vault"] for p in passages}
+
+
+def test_the_guard_withholds_its_own_vault_and_not_what_the_scope_inherits() -> None:
+    """THE CORRECTION THAT MATTERS. Refusing the whole scope was measured too blunt — 69 curated
+    notes held back to protect zero calls — so the guarded vault goes dark and its inherited tiers
+    keep answering."""
+    _, registry = _guard_fixture(None)   # guarded, nothing vouching
+
+    hit = _call("search", {"scope": "demo", "query": "composition"}, registry)
+    assert _vaults_of(hit["passages"]) == {"core-vault"}, "the inherited tier must still answer"
+    assert any("not reporting" in n for n in hit["filters"]["notes"]), hit["filters"]["notes"]
+
+    browsed = _call("documents", {"scope": "demo"}, registry)
+    assert _vaults_of(browsed["documents"]) == {"core-vault"}
+    assert browsed["total"] == 1, "the withheld note is not counted as present either"
+    assert any("not reporting" in n for n in browsed["filters"]["notes"])
+
+
+def test_a_fresh_beat_returns_the_guarded_vaults_own_notes() -> None:
     import time as _time
 
-    _, registry = _guard_fixture(None)   # guarded, and nothing vouching
-    for tool, args in (
-        ("search", {"scope": "demo", "query": "composition"}),
-        ("documents", {"scope": "demo"}),
-        ("status", {"scope": "demo"}),
-        ("expand", {"expand_ref": "demo/composition#c00000"}),
-    ):
-        result = _call_raw(tool, args, registry)
-        assert result.get("isError"), f"{tool} answered from a guarded scope with nothing vouching"
-        assert "guarded" in result["content"][0]["text"], tool
-
-    # And with a fresh beat naming it, the same four answer normally.
-    root, registry = _guard_fixture({"heartbeat": _time.time(), "activeScope": "demo"})
-    assert _call("search", {"scope": "demo", "query": "composition"}, registry)["passages"]
-    assert _call("documents", {"scope": "demo"}, registry)["total"] == 1
-    assert _call("status", {"scope": "demo"}, registry)["scope"] == "demo"
-    assert _call("expand", {"expand_ref": "demo/composition#c00000"}, registry)["passage"]
+    _, registry = _guard_fixture({"heartbeat": _time.time(), "activeScope": "demo"})
+    hit = _call("search", {"scope": "demo", "query": "composition"}, registry)
+    assert _vaults_of(hit["passages"]) == {"demo", "core-vault"}
+    assert hit["filters"]["notes"] == [], "a satisfied guard says nothing"
 
 
-def test_the_guard_refuses_a_scope_the_app_is_not_vouching_for() -> None:
+def test_the_guard_withholds_when_the_app_vouches_for_another_workspace() -> None:
     import time as _time
 
     _, registry = _guard_fixture({"heartbeat": _time.time(), "activeScope": "something-else"})
-    result = _call_raw("search", {"scope": "demo", "query": "composition"}, registry)
-    assert result.get("isError")
-    assert "something-else" in result["content"][0]["text"]
+    hit = _call("search", {"scope": "demo", "query": "composition"}, registry)
+    assert _vaults_of(hit["passages"]) == {"core-vault"}
+    assert any("something-else" in n for n in hit["filters"]["notes"])
 
 
-def test_a_guarded_refusal_does_not_read_as_a_broken_index() -> None:
-    """The two states must not be confused: `status` exists to say whether an index can be trusted,
-    and "withheld on purpose" is not "empty" or "schema mismatch"."""
+def test_nothing_withheld_by_the_guard_is_silent() -> None:
+    """The rule this whole engine is organised around, applied to the one exclusion a READER did not
+    ask for. A vault vanishing with no note is content the caller concludes does not exist."""
     _, registry = _guard_fixture(None)
-    text = _call_raw("status", {"scope": "demo"}, registry)["content"][0]["text"]
-    assert "Nothing is wrong with the index" in text
-    assert "compose" not in text.lower(), "a guarded refusal must not send the operator to recompose"
+    for tool, args in (("search", {"scope": "demo", "query": "composition"}),
+                       ("documents", {"scope": "demo"})):
+        assert _call(tool, args, registry)["filters"]["notes"], tool
 
 
-def test_ingest_is_behind_the_guard_too() -> None:
-    """The WRITE tool most of all: a model that cannot read a guarded workspace must not be able to
-    write into one either.
+def test_a_guarded_withholding_does_not_read_as_a_broken_index() -> None:
+    """`status` exists to say whether an index can be trusted, and "withheld on purpose" is not
+    "empty" or "schema mismatch"."""
+    _, registry = _guard_fixture(None)
+    assert _call("status", {"scope": "demo"}, registry)["scope"] == "demo"
 
-    ASSERTS THE REFUSAL IS THE GUARD'S. The first version of this test asserted only `isError` and
-    passed while `ingest` was NOT guarded at all — it resolves the scope itself rather than going
-    through `_open`, so the chokepoint covering every read missed it, and an unrelated argument
-    refusal made the test green. A wall test that any refusal satisfies tests nothing."""
+
+def test_ingest_refuses_outright_rather_than_withholding() -> None:
+    """The WRITE tool is the one place withholding makes no sense: a note goes into THIS vault or
+    nowhere, so there is no unguarded part of it to write to.
+
+    ASSERTS THE REFUSAL IS THE GUARD'S. An earlier version asserted only `isError` and passed while
+    `ingest` was not guarded at all — it resolves the scope itself rather than through `_open`, so
+    an unrelated argument refusal made it green. A wall test any refusal satisfies tests nothing."""
     import time as _time
 
     _, registry = _guard_fixture(None)
     result = _call_raw("ingest", {"scope": "demo", "content": "B" * 300, "title": "T",
                                   "doc_type": "reference"}, registry)
     assert result.get("isError")
-    assert "guarded" in result["content"][0]["text"], result["content"][0]["text"][:200]
+    assert "refused entirely" in result["content"][0]["text"], result["content"][0]["text"][:200]
 
-    # And a valid request DOES get past the guard when the app vouches — so the assertion above is
-    # about the guard and not about the arguments.
     _, registry = _guard_fixture({"heartbeat": _time.time(), "activeScope": "demo"})
     planned = _call_raw("ingest", {"scope": "demo", "content": "B" * 300, "title": "T",
                                    "doc_type": "reference"}, registry)
-    assert "guarded" not in planned["content"][0]["text"]
+    assert "refused entirely" not in planned["content"][0]["text"]
 
 
 # ---------------------------------------------------------------- refusals

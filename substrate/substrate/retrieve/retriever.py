@@ -293,6 +293,7 @@ def _retrieve(
     doc_id: str | None = None,
     document_class: str | None = None,
     vaults: frozenset[str] | None = None,
+    withheld_vaults: frozenset[str] | None = None,
     statuses: frozenset[str] | None = DEFAULT_STATUSES,
     include_sources: bool = False,
     route: bool = False,
@@ -354,7 +355,7 @@ def _retrieve(
             pass
 
     direct = store.search(
-        query, k=k * 3, kind="passage", doc_id=doc_id, document_class=document_class, vaults=vaults,
+        query, k=k * 3, kind="passage", doc_id=doc_id, document_class=document_class, vaults=vaults, withheld_vaults=withheld_vaults,
         statuses=statuses, include_sources=include_sources,
     )
     trace.direct = len(direct)
@@ -375,7 +376,7 @@ def _retrieve(
                     embedder.embed_query(variant),
                     getattr(embedder, "key", embedder.model),
                     k=k * 2, kind="passage", doc_id=doc_id, document_class=document_class,
-                    vaults=vaults,
+                    vaults=vaults, withheld_vaults=withheld_vaults,
                     statuses=statuses, include_sources=include_sources,
                 )
                 if vv:
@@ -426,7 +427,7 @@ def _retrieve(
                 vhits = store.vector_search(
                     qv, getattr(embedder, 'key', embedder.model), k=k * 3, kind="passage",
                     doc_id=doc_id, document_class=document_class, statuses=statuses,
-                    include_sources=include_sources, vaults=vaults,
+                    include_sources=include_sources, vaults=vaults, withheld_vaults=withheld_vaults,
                 )
                 trace.vector = len(vhits)
                 if vhits:
@@ -439,7 +440,7 @@ def _retrieve(
         outlines = store.search(
             query, k=OUTLINE_ROUTES, kind="outline", doc_id=doc_id,
             document_class=document_class, statuses=statuses, include_sources=include_sources,
-            vaults=vaults,
+            vaults=vaults, withheld_vaults=withheld_vaults,
         )
         for o in outlines:
             if not o.path_str:
@@ -573,6 +574,7 @@ def retrieve(
     doc_id: str | None = None,
     document_class: str | None = None,
     vaults: frozenset[str] | None = None,
+    withheld_vaults: frozenset[str] | None = None,
     statuses: frozenset[str] | None = DEFAULT_STATUSES,
     include_sources: bool = False,
     route: bool = False,
@@ -606,7 +608,7 @@ def retrieve(
 
     hits, trace = _retrieve(
         store, query, k=k, doc_id=doc_id, document_class=document_class, statuses=statuses,
-        vaults=vaults,
+        vaults=vaults, withheld_vaults=withheld_vaults,
                     include_sources=include_sources,
         route=route, expand=expand, embedder=embedder, expander=expander, multiquery=multiquery,
         reranker=reranker,
@@ -624,7 +626,7 @@ def retrieve(
         outlines = store.search(
             query, k=with_outlines, kind="outline", doc_id=doc_id,
             document_class=document_class, statuses=statuses, include_sources=include_sources,
-            vaults=vaults,
+            vaults=vaults, withheld_vaults=withheld_vaults,
         )
 
     return RetrievalResult(

@@ -108,12 +108,12 @@ def _open(name: str, registry: str | None, *, refuse_empty: bool = True):
     # THE GUARD, BEFORE THE INDEX IS OPENED. A vault may nominate a state file that has to vouch for
     # it (`guard.py`), and this is the one chokepoint every scope-taking tool passes through — so
     # the wall cannot be forgotten by a tool added later, which is exactly how the app's own server
-    # would have lost it. Checked before the open so a refused scope costs no file handle and, more
-    # importantly, so a guarded scope and a broken index are never confused for one another.
-    try:
-        guard.check(Path(entry.vault), name)
-    except guard.GuardError as e:
-        raise ToolError(str(e)) from e
+    # would have lost it.
+    #
+    # It WITHHOLDS rather than refuses, and the verdict travels back to the caller instead of being
+    # raised here: the guarded vault's own notes are held back and everything the scope INHERITS
+    # still answers. Refusing the scope took 69 curated notes hostage to protect zero calls.
+    verdict = guard.check(Path(entry.vault), name)
 
     # migrate=False: every tool on this server READS. A write-open drops and rebuilds an
     # old-schema index, so a search would have destroyed the index it was asked about and then
@@ -138,7 +138,7 @@ def _open(name: str, registry: str | None, *, refuse_empty: bool = True):
                 f"querying it; answering from an empty index is indistinguishable from a genuine "
                 f"no-match. (`status` still reports on it.)"
             )
-    return entry, store
+    return entry, store, verdict
 
 
 def _clamp_k(raw: object) -> tuple[int, str | None]:
@@ -457,10 +457,11 @@ def _tool_search(args: dict, cfg: Config) -> dict:
     # place that can answer it.
     fast = bool(args.get("fast", False))
 
-    entry, store = _open(scope, cfg.registry)
+    entry, store, verdict = _open(scope, cfg.registry)
     try:
         result = retriever.retrieve(
             store, query, k=k, statuses=statuses, vaults=vaults,
+            withheld_vaults=verdict.withhold,
             include_sources=include_sources, with_outlines=render.OUTLINE_RECORDS,
             embedder=cfg.stack.embedder,
             expander=None if fast else cfg.stack.expander,
@@ -470,7 +471,8 @@ def _tool_search(args: dict, cfg: Config) -> dict:
             result, scope=scope, query=query, statuses=statuses, vaults=vaults,
             include_sources=include_sources, unavailable=cfg.stack.unavailable,
             wiring=cfg.stack.wiring,
-            db=str(entry.db), filter_notes=(clamp_note,) if clamp_note else (),
+            db=str(entry.db),
+            filter_notes=tuple(n for n in (clamp_note, verdict.reason) if n),
             registry=cfg.registry,
         )
     finally:
@@ -490,7 +492,7 @@ def _tool_expand(args: dict, cfg: Config) -> dict:
     except render.RefError as e:
         raise ToolError(str(e)) from e
 
-    entry, store = _open(scope, cfg.registry)
+    entry, store, verdict = _open(scope, cfg.registry)
     try:
         hit = store.chunk(chunk_id)
         if hit is None:
@@ -620,10 +622,13 @@ def _tool_ingest(args: dict, cfg: Config) -> dict:
     # it needs the vault, not the index — so the chokepoint that covers every READ does not cover
     # this. A model that cannot read a guarded workspace must not be able to write into one either,
     # and this is the tool where getting it wrong leaves a note behind rather than an answer.
-    try:
-        guard.check(Path(entry.vault), name)
-    except guard.GuardError as e:
-        raise ToolError(str(e)) from e
+    # REFUSES OUTRIGHT, unlike the read tools. They withhold a vault and answer from the rest; there
+    # is no "write into the rest" — a note goes into THIS vault or nowhere, and writing into one
+    # nothing is vouching for is the case the guard exists for.
+    ingest_verdict = guard.check(Path(entry.vault), name)
+    if not ingest_verdict.vouched:
+        raise ToolError(f"{ingest_verdict.reason} A write into this vault is refused entirely — "
+                        f"unlike a read, there is no unguarded part of it to write to.")
 
     if source_path:
         src = Path(source_path).expanduser()
@@ -690,7 +695,7 @@ def _tool_status(args: dict, cfg: Config) -> dict:
     name = args.get("scope")
     if not name:
         raise ToolError("status requires `scope`.")
-    entry, store = _open(name, cfg.registry, refuse_empty=False)
+    entry, store, verdict = _open(name, cfg.registry, refuse_empty=False)
     try:
         return introspect.status_payload(store, entry, stack=cfg.stack, registry=cfg.registry)
     finally:
@@ -765,14 +770,16 @@ def _tool_documents(args: dict, cfg: Config) -> dict:
     include_sources = bool(args.get("include_sources", False))
     statuses = retriever.statuses(include_archived=bool(args.get("include_archived", False)))
 
-    entry, store = _open(scope, cfg.registry)
+    entry, store, verdict = _open(scope, cfg.registry)
     try:
         rows, total = store.browse(statuses=statuses, include_sources=include_sources,
-                                   vault=vault, doc_type=doc_type, limit=limit, offset=offset)
+                                   vault=vault, doc_type=doc_type,
+                                   withheld_vaults=verdict.withhold,
+                                   limit=limit, offset=offset)
         return render.documents_payload(
             rows, total, scope=scope, statuses=statuses, include_sources=include_sources,
             doc_type=doc_type, vault=vault, index_version=store.index_version, db=str(entry.db),
-            filter_notes=tuple(n for n in (limit_note, offset_note) if n),
+            filter_notes=tuple(n for n in (limit_note, offset_note, verdict.reason) if n),
             registry=cfg.registry,
         )
     finally:
