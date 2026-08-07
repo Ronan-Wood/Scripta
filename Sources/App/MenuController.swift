@@ -521,6 +521,18 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
                     Task.detached(priority: .utility) { IndexBuilder.index(url, into: store) }
                 }
                 AppModel.shared.reloadCalls()
+                // AND INTO THE SCOPE, or the call is written and unanswerable. Capture puts it in
+                // the workspace's vault (§7); nothing composes that vault, so until this ran the
+                // engine could not see the call at all — Ask, the Vault tab and live recall would
+                // all report a corpus that did not contain the conversation the operator had just
+                // finished. The gap was up to fifteen minutes wide, closing only when the
+                // background refresh agent next came round.
+                //
+                // Fire-and-forget on purpose: composing is the engine's subprocess and takes
+                // seconds, the transcript is already safely on disk, and a failure here costs
+                // freshness rather than content. The Library rail composes the same vault by hand
+                // and reports properly when the operator is watching.
+                SubstrateLibraryModel.shared.composeAfterRecording()
                 // Hands-off finish: the notification's Reveal action (and the reader's Reveal
                 // button) are the ways into Finder — no window steals focus after a call.
                 NotificationManager.shared.notifyTranscriptReady(url: transcriptURL)

@@ -137,8 +137,12 @@ final class SubstrateLibraryModel: ObservableObject {
 
     /// Where this workspace's transcripts go. Derived, so it cannot disagree with the scope name
     /// that `runExport` builds from the same `workspace`.
-    var transcriptVault: URL {
-        vaultOverride ?? SubstrateLibrary.transcriptVault(workspace: workspace)
+    /// Where this workspace's calls actually live. THE REAL ONE — this returned
+    /// `SubstrateLibrary.transcriptVault`, a local non-synced path the export step used to fill and
+    /// capture stopped writing to at §7, so the Library screen named a directory the operator would
+    /// have found empty while every call landed somewhere else.
+    var transcriptVault: URL? {
+        vaultOverride ?? WorkspaceBindings.binding(for: workspace).transcriptVault
     }
 
     func chooseVault(_ url: URL) { vaultOverride = url }
@@ -568,6 +572,32 @@ final class SubstrateLibraryModel: ObservableObject {
         }
         task = Task { [weak self] in
             await self?.runCompose(cli: cli, vault: vault, workspace: name)
+        }
+    }
+
+    /// Compose the active workspace's vault after a call lands in it, without taking over the
+    /// Library's job strip.
+    ///
+    /// QUIET BY DESIGN. `composeWorkspace` drives the visible rail and refuses when another job is
+    /// running, which is right for a button and wrong here: a recording finishing must not depend on
+    /// whether the operator happens to be uploading a document, and it must not replace a report
+    /// they are reading. This runs its own task, writes no `job`, and is skipped rather than queued
+    /// when the rail is busy — the refresh agent still comes round, so the cost of skipping is
+    /// freshness, not content.
+    func composeAfterRecording() {
+        let name = AppSettings.activeGroup.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scope = name.isEmpty ? ScriptaVault.defaultScope : name
+        guard !isWorking, !SubstrateLibrary.slug(scope).isEmpty,
+              let cli = SubstrateEngine.shared.serving?.cli,
+              let vault = ScriptaVault.existingVault(forScope: scope,
+                                                     under: AppSettings.outputFolder).vault
+        else { return }
+        Task { [weak self] in
+            _ = await self?.compose(cli: cli, vault: vault,
+                                    name: SubstrateLibrary.slug(scope), clean: true)
+            // The roster now reports a scope whose index moved, and the tier chips are drawn from
+            // it — re-listed so a call recorded seconds ago is askable without a relaunch.
+            await SubstrateScopes.shared.listScopes()
         }
     }
 

@@ -80,7 +80,20 @@ final class SubstrateAskModel: ObservableObject {
     /// the last answer because it is the REQUEST; `Result.filter` is what the engine did with it,
     /// and the two disagreeing is a thing the reader is entitled to see.
     @Published private(set) var includeArchived = false
-    @Published private(set) var includeSources = false
+
+    /// ON BY DEFAULT IN THIS APP, and the default is the whole argument.
+    ///
+    /// The engine withholds `conversation`-class notes from default retrieval because a passage cut
+    /// out of a transcript misrepresents it — confidence varies WITHIN a conversation, and a
+    /// mid-call sentence may be reasoning the speaker abandoned ten minutes later. That is right for
+    /// a shared corpus of curated notes, and it is exactly wrong here: Scripta records calls, its
+    /// calls ARE conversation-class, and a reader asking this app about a call they just had was
+    /// getting the engine's polite silence about the one document they meant.
+    ///
+    /// The withholding is not lost, only re-defaulted: the exclusion bar still reports that sources
+    /// are included and still toggles them off, so a reader who wants the curated layer alone can
+    /// have it — and knows they asked.
+    @Published private(set) var includeSources = true
 
     /// The class the reader last asked for that the engine has no argument for. Never silent: see
     /// `include(_:)`.
