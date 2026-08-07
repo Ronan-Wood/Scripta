@@ -86,6 +86,39 @@ final class SubstrateAskModel: ObservableObject {
     /// `include(_:)`.
     @Published private(set) var refusedInclusion: RetrievalClass?
 
+    /// Which tiers of the composed chain to ask. EMPTY MEANS ALL, and that is the only encoding
+    /// that behaves: a scope inherits, the set of vaults is discovered from the roster rather than
+    /// chosen here, and a reader who has selected nothing means "do not narrow" — not "return
+    /// nothing", which is what an empty list would tell the engine and what the engine refuses.
+    @Published private(set) var selectedVaults: Set<String> = []
+
+    /// The scope's composed chain, newest tier last, as the engine resolved it. Read off the roster
+    /// rather than derived from an answer's passages: the answer only names vaults that MATCHED, so
+    /// a chip row built from it would lose a tier the moment it stopped being relevant — and the
+    /// reader would not know it had ever been askable.
+    var vaultChain: [String] {
+        guard let scope, case .listed(let rows) = SubstrateScopes.shared.roster,
+              let row = rows.first(where: { $0.scope == scope }) else { return [] }
+        return row.sources ?? []
+    }
+
+    /// Narrow to one tier, or widen back. A second tap on the only selected chip clears the filter,
+    /// which is what makes "all" reachable without a separate control.
+    func toggleVault(_ vault: String) {
+        if selectedVaults.contains(vault) {
+            selectedVaults.remove(vault)
+        } else {
+            selectedVaults.insert(vault)
+        }
+        rerun()
+    }
+
+    func clearVaultFilter() {
+        guard !selectedVaults.isEmpty else { return }
+        selectedVaults.removeAll()
+        rerun()
+    }
+
     /// `k`. Deliberately modest — the passage list is read, not scrolled past — and well under the
     /// server's own maximum of 50, so a clamp note in `filters.notes` means something went wrong
     /// here rather than that the reader asked for a lot.
@@ -135,6 +168,10 @@ final class SubstrateAskModel: ObservableObject {
         workspace = bound.workspace
         scope = bound.readsScope
         refusedInclusion = nil
+        // A NEW SCOPE HAS A NEW CHAIN. Carrying a selection naming the old scope's vaults would ask
+        // for tiers this one does not compose — which the engine answers with nothing, correctly,
+        // and the reader would read as an empty corpus.
+        selectedVaults.removeAll()
         answer = .idle
         running = nil
         task?.cancel()
@@ -223,7 +260,12 @@ final class SubstrateAskModel: ObservableObject {
                                              query: query,
                                              k: Self.passageCount,
                                              includeArchived: includeArchived,
-                                             includeSources: includeSources)
+                                             includeSources: includeSources,
+                                             // `nil`, never `[]` — the engine refuses an empty
+                                             // list rather than widening, and "nothing selected"
+                                             // means every vault here.
+                                             vaults: selectedVaults.isEmpty
+                                                 ? nil : selectedVaults.sorted())
         let call = await client.search(request)
         guard token == epoch, !Task.isCancelled else { return }
         running = nil

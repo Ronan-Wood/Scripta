@@ -125,19 +125,28 @@ public struct SubstrateSearchRequest: Encodable, Sendable {
     /// leave this off.
     public let fast: Bool?
 
+    /// Only these vaults of the scope's composed chain. `nil` is every one of them.
+    ///
+    /// A scope INHERITS — a project vault plus the tiers above it — so this is how a reader asks
+    /// one body of it: this workspace's own calls, or its curated notes, without the shared
+    /// reference layer answering too. An EMPTY set is refused by the engine rather than widened,
+    /// so callers pass `nil` for "everything" and never `[]`.
+    public let vaults: [String]?
+
     public init(scope: String, query: String, k: Int? = nil,
                 includeArchived: Bool? = nil, includeSources: Bool? = nil,
-                fast: Bool? = nil) {
+                vaults: [String]? = nil, fast: Bool? = nil) {
         self.scope = scope
         self.query = query
         self.k = k
         self.includeArchived = includeArchived
         self.includeSources = includeSources
+        self.vaults = vaults
         self.fast = fast
     }
 
     enum CodingKeys: String, CodingKey {
-        case scope, query, k, fast
+        case scope, query, k, fast, vaults
         case includeArchived = "include_archived"
         case includeSources = "include_sources"
     }
