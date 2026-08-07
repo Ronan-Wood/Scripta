@@ -1,21 +1,24 @@
 import Foundation
 import ScriptaShared
 
-/// Finds app-authored transcripts that belong to no workspace, and assigns them one.
+/// Finds app-authored transcripts that belong to no workspace, assigns them one, and files them
+/// into that workspace's vault.
 ///
-/// THE ENGINE REFUSES AND NAMES THE REMEDY; THIS IS THE REMEDY. `transcript_export.export_workspace`
-/// aborts the WHOLE export when any transcript carries no `group:` — deliberately, because filing an
-/// untagged call under the workspace being exported asserts a claim nothing on disk supports, and
-/// dropping it leaves a call in no scope at all. Its message ends "add `group: "<workspace>"` to
-/// each transcript's frontmatter", and until now the only way to do that was to hand-edit YAML.
+/// TWO HALVES, AND BOTH ARE REQUIRED. `assign` writes `group:` into the frontmatter; `file` moves
+/// the transcript into the vault the workspace composes from. Either alone leaves the call in a
+/// state that looks repaired and is not — carrying a workspace it is not stored under, or stored
+/// somewhere it does not claim.
 ///
-/// So one missing field could block every downstream corpus permanently, and the app — which owns
-/// the folder grant and knows the workspaces — offered nothing. The refusal is right. Having no way
-/// to act on it is not.
+/// WHY A CALL IS EVER UNFILED. Capture writes into the vault (Doc 4 §7), and falls back to the flat
+/// output folder in exactly two cases it cannot design away: an unnamed workspace has nothing to
+/// build a vault from, and a vault that could not be prepared must not cost the recording — the
+/// transcript is the only artefact that cannot be recreated. Both leave a readable call that is in
+/// no vault, therefore in no scope, therefore unanswerable. This is what ends that state.
 ///
-/// **This assigns; it does not guess.** Nothing here infers a workspace from a filename, a date or
-/// the active selection. The caller supplies the name because the operator is the only one who
-/// knows it — which is the same reason the exporter refuses in the first place.
+/// **It assigns; it does not guess.** Nothing here infers a workspace from a filename, a date or the
+/// active selection. The caller supplies the name because the operator is the only one who knows
+/// it — and a wrong guess would file a call into a corpus it does not belong to, which is the
+/// privacy partition being decided by a heuristic.
 public enum TranscriptGroupRepair {
 
     /// One transcript with no workspace, and what a chooser needs to show about it.
@@ -106,18 +109,59 @@ public enum TranscriptGroupRepair {
         try result.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// File a repaired transcript into its workspace's vault — the MOVE, which stamping `group:`
+    /// alone never did.
+    ///
+    /// THIS IS THE HALF THE EXPORTER USED TO BE. Capture writes into the vault (Doc 4 §7), but it
+    /// falls back to the flat output folder in two cases it cannot avoid: an ungrouped workspace has
+    /// no name to build a vault from, and a vault that could not be prepared must not cost the call.
+    /// Both leave a transcript that is readable — every reader covers the flat location — and in no
+    /// vault, so in no scope, so unanswerable. `assign` gave it a workspace and left it exactly
+    /// where it was; `substrate export-transcripts` was the only thing that ever moved it, and that
+    /// is gone.
+    ///
+    /// Returns the new location, or the old one when the transcript is already inside a vault. A
+    /// no-op is the common case: repairing a call that capture already filed correctly.
+    @discardableResult
+    public static func file(_ url: URL, into workspace: String, under root: URL,
+                            inherits: [URL] = []) throws -> URL {
+        // Already in a vault's transcript directory — nothing to move, and moving it would be this
+        // function inventing a second opinion about where capture put it.
+        if ScriptaVault.scope(forTranscriptAt: url, under: root) != nil { return url }
+
+        let vault = try ScriptaVault.vault(forScope: workspace, under: root, inherits: inherits)
+        try vault.write()
+        let destination = vault.transcripts.appendingPathComponent(url.lastPathComponent)
+
+        // REFUSED RATHER THAN OVERWRITTEN. Two calls can share a filename across locations, and the
+        // transcript is the one artefact that cannot be recreated — the audio is deleted after a
+        // successful write. `moveItem` would throw here anyway; this says why first.
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw RepairError.destinationOccupied(destination)
+        }
+        try FileManager.default.createDirectory(at: vault.transcripts,
+                                                withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: url, to: destination)
+        return destination
+    }
+
     public enum RepairError: LocalizedError {
         case emptyWorkspace
         case notATranscript(URL)
+        case destinationOccupied(URL)
 
         public var errorDescription: String? {
             switch self {
             case .emptyWorkspace:
-                return "A workspace name is required. The ungrouped workspace has no name, and "
-                    + "`substrate export-transcripts` refuses a workspace whose name slugifies to "
-                    + "nothing — so an untagged call cannot be repaired by filing it as ungrouped."
+                return "A workspace name is required. The ungrouped workspace has no name, and a "
+                    + "vault is named after its workspace — so an untagged call cannot be repaired "
+                    + "by filing it as ungrouped."
             case .notATranscript(let url):
                 return "\(url.lastPathComponent) is not a Scripta transcript."
+            case .destinationOccupied(let url):
+                return "\(url.lastPathComponent) already exists in that workspace's vault. The "
+                    + "call was left where it is rather than overwriting it — a transcript is the "
+                    + "one thing here that cannot be recreated."
             }
         }
     }
@@ -125,8 +169,8 @@ public enum TranscriptGroupRepair {
     // MARK: - Frontmatter reads
 
     /// The declared `group:`, or nil when the key is absent. An EMPTY string is a present-but-empty
-    /// key, which the exporter treats identically to absence — both are returned as untagged above,
-    /// and the distinction is preserved here only so this function means what its name says.
+    /// key, which is treated identically to absence — both are returned as untagged above, and the
+    /// distinction is preserved here only so this function means what its name says.
     private static func group(in frontmatter: String) -> String? { value("group", in: frontmatter) }
 
     private static func value(_ key: String, in frontmatter: String) -> String? {

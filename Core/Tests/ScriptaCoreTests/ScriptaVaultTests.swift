@@ -373,7 +373,7 @@ final class ScriptaVaultTests: XCTestCase {
     }
 
     /// The engine refuses the same value for the same reason, so the two sides agree about what a
-    /// nameable workspace is. `transcript_export.scope_name` raises "slugifies to nothing; give it
+    /// nameable workspace is. the engine raises "slugifies to nothing; give it
     /// a name" — this message names that kinship so a reader hitting one finds the other.
     func testTheRefusalNamesTheRemedyAndTheEnginesAgreement() {
         let message = ScriptaVault.VaultError.unnameableScope("").errorDescription ?? ""

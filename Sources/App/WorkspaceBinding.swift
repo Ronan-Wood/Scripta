@@ -35,7 +35,7 @@ struct WorkspaceBinding: Equatable {
     /// list first, and its silence about a topic read as a fact about that workspace.
     let readsScope: String?
 
-    /// `scripta-<slug>` — `transcript_export.scope_name`, which is what the ENGINE writes into the
+    /// `scripta-<slug>` — the legacy transcript-scope name, which is what the ENGINE wrote into the
     /// manifest it composes. Derived rather than stored so it cannot drift from the vault path
     /// below; the two coming apart is the bug fixed in `SubstrateLibraryModel` (bc950f1).
     ///

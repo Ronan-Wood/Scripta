@@ -216,7 +216,7 @@ final class RecordingSession {
         // active whenever the machine next starts, which is a claim about the operator's data that
         // nothing supports. The value IS known here; it just was not persisted, which is how the
         // two untagged transcripts on this machine came to exist. A transcript with no group
-        // refuses the WHOLE workspace export (`transcript_export.export_workspace`), so losing it
+        // leaves the call in no vault and therefore in no scope, so losing it
         // is not a missing label — it is a corpus that can never be built.
         Self.writeGroupMarker(group, in: sessionDir)
         self.extraVocab = extraVocab

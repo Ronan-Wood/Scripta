@@ -90,7 +90,7 @@ public enum TranscriptWriter {
         // The privacy/workspace partition. Absent/empty = ungrouped. Captured at record time.
         if !group.isEmpty { yaml += "group: \"\(sanitizeScalar(group))\"\n" }
         // The spine, so the file is a self-describing note rather than one that only becomes a note
-        // after `transcript_export` synthesises four values it could have read. See `TranscriptSpine`
+        // rather than leaving four values for something downstream to synthesise. See `TranscriptSpine`
         // for why each is what it is, and why the exporter still authors its own for now.
         yaml += "status: \(TranscriptSpine.status)\n"
         yaml += "doc_type: \(TranscriptSpine.docType)\n"

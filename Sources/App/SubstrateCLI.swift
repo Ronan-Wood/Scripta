@@ -37,7 +37,7 @@ struct SubstrateRun: Sendable {
 
     /// Everything the process said, in the order a terminal would have shown it. Kept as one block
     /// because splitting the streams in the UI puts a warning that arrived DURING a successful run
-    /// somewhere the reader is not looking — `export-transcripts` writes its synced-source warning
+    /// somewhere the reader is not looking — `compose` writes its warnings
     /// to stderr and still exits 0.
     var transcript: String {
         [stdout, stderr]
