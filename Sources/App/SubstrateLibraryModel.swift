@@ -573,15 +573,32 @@ final class SubstrateLibraryModel: ObservableObject {
 
     private func runCompose(cli: SubstrateEngine.Command, vault: URL, workspace: String) async {
         let title = "Composing \(workspace)"
+        let name = SubstrateLibrary.slug(workspace)
         // `--clean`, because a call deleted in the app must stop answering. The vault holds only
         // what capture put there, so a stale ingest directory is the one way a deleted call comes
         // back — and `assert_composed` would refuse the next compose over it anyway, after the
         // operator had already deleted it for a reason.
-        let composed = await compose(cli: cli, vault: vault,
-                                     name: SubstrateLibrary.slug(workspace), clean: true)
+        let composed = await compose(cli: cli, vault: vault, name: name, clean: true)
         finish(title: title,
                steps: [Step(id: "compose", title: "Compose and register the scope", run: composed,
                             appFailure: nil, skipped: false)])
+    }
+
+    /// Where a scope's index ALREADY lives, when it is already registered.
+    ///
+    /// A COMPOSE MUST NOT MOVE AN INDEX. `scopes.record` refuses to repoint a name at a different
+    /// VAULT and permits a different db, so composing with this app's own default silently
+    /// relocated an existing scope's database — and the refresh agent does not read the registry.
+    /// It recomposes `$DATA/<scope>.db` on its own schedule, so after a move the agent maintains a
+    /// file nothing resolves to and every query answers from an index that has quietly stopped
+    /// being refreshed. Nothing reports that: the scope still answers, with content ageing out.
+    ///
+    /// Reproduced on the operator's `cbre` 2026-08-07 and restored the same way — recompose at the
+    /// path the roster names.
+    private static func registeredDatabase(named scope: String) -> URL? {
+        guard case .listed(let rows) = SubstrateScopes.shared.roster,
+              let row = rows.first(where: { $0.scope == scope }), !row.db.isEmpty else { return nil }
+        return URL(fileURLWithPath: row.db)
     }
 
     // MARK: - Compose
@@ -595,11 +612,25 @@ final class SubstrateLibraryModel: ObservableObject {
     /// flag's own help says to keep off cloud-sync.
     private func compose(cli: SubstrateEngine.Command, vault: URL, name: String,
                          clean: Bool) async -> SubstrateRun {
-        let root = SubstrateLibrary.root.appendingPathComponent("index", isDirectory: true)
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        // AN ALREADY-REGISTERED SCOPE KEEPS ITS OWN LOCATION, and the lookup is HERE rather than at
+        // each call site so no caller can forget it. All three compose the workspace's own scope
+        // now — the transcript rail and both document paths — so all three could move it.
+        let database: URL
+        let indexRoot: URL
+        if let existingDatabase = Self.registeredDatabase(named: name) {
+            database = existingDatabase
+            indexRoot = existingDatabase.deletingLastPathComponent()
+                .appendingPathComponent("\(name)-index", isDirectory: true)
+        } else {
+            let root = SubstrateLibrary.root.appendingPathComponent("index", isDirectory: true)
+            database = root.appendingPathComponent("\(name).db")
+            indexRoot = root.appendingPathComponent(name, isDirectory: true)
+        }
+        try? FileManager.default.createDirectory(at: database.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
         var arguments = ["compose", vault.path,
-                         "--index-root", root.appendingPathComponent(name, isDirectory: true).path,
-                         "--db", root.appendingPathComponent("\(name).db").path]
+                         "--index-root", indexRoot.path,
+                         "--db", database.path]
         if clean { arguments.append("--clean") }
         return await SubstrateCLI.run(cli, arguments)
     }
