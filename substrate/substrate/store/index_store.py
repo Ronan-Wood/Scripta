@@ -205,6 +205,25 @@ def _add_vault_filter(where: list[str], args: list[Any], vaults: frozenset[str] 
     args.extend(ordered)
 
 
+def _add_vault_exclusion(where: list[str], args: list[Any], excluded: frozenset[str] | None) -> None:
+    """Withhold passages composed from these vaults. Empty or None means withhold nothing.
+
+    SEPARATE FROM THE INCLUDE FILTER, and both can apply at once. The include list is what the
+    CALLER asked for; this is what the corpus refuses to hand over regardless — a guarded vault
+    whose application is not vouching for it. A caller narrowing to exactly the guarded vault gets
+    nothing and is told why, which is the correct answer to "show me the thing you may not show me".
+
+    `d.vault IS NULL OR ...`: a row with no recorded provenance cannot be proven to be the guarded
+    vault's, and withholding every unattributed note because one vault is guarded would take the
+    corpus down. The guard protects a NAMED vault.
+    """
+    if not excluded:
+        return
+    ordered = sorted(excluded)
+    where.append(f"(d.vault IS NULL OR d.vault NOT IN ({','.join('?' * len(ordered))}))")
+    args.extend(ordered)
+
+
 def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
     return Hit(
         chunk_id=r["chunk_id"],
@@ -464,6 +483,7 @@ class IndexStore:
         statuses: frozenset[str] | None = None,
         include_sources: bool = False,
         vaults: frozenset[str] | None = None,
+        withheld_vaults: frozenset[str] | None = None,
     ) -> list[Hit]:
         """Lexical search, precision-first with a recall TOP-UP.
 
@@ -481,7 +501,7 @@ class IndexStore:
         kw = dict(
             kind=kind, document_class=document_class, doc_id=doc_id,
             min_path_depth=min_path_depth, path_prefix=path_prefix, statuses=statuses,
-            include_sources=include_sources, vaults=vaults,
+            include_sources=include_sources, vaults=vaults, withheld_vaults=withheld_vaults,
         )
         seen: set[str] = set()
         out: list[Hit] = []
@@ -518,6 +538,7 @@ class IndexStore:
                              include_sources=kw.get("include_sources", False)
                              or kw.get("document_class") is not None)
         _add_vault_filter(where, args, kw.get("vaults"))
+        _add_vault_exclusion(where, args, kw.get("withheld_vaults"))
         args.append(kw.get("k", 10))
 
         sql = (
@@ -578,6 +599,7 @@ class IndexStore:
 
     def browse(self, *, statuses: frozenset[str] | None, include_sources: bool,
                vault: str | None = None, doc_type: str | None = None,
+               withheld_vaults: frozenset[str] | None = None,
                limit: int = 25, offset: int = 0) -> tuple[list[dict], int]:
         """What a scope HOLDS, one row per note, in a stable order. The browse counterpart to
         `search`: no query, no ranking, no relevance — the whole corpus, filtered and paged.
@@ -619,6 +641,7 @@ class IndexStore:
         if doc_type is not None:
             where.append("d.doc_type = ?")
             args.append(doc_type)
+        _add_vault_exclusion(where, args, withheld_vaults)
         clause = f" WHERE {' AND '.join(where)}" if where else ""
 
         # ONE STATEMENT, ONE SNAPSHOT. `COUNT(*) OVER ()` rather than a separate `SELECT COUNT(*)`:
@@ -1009,6 +1032,7 @@ class IndexStore:
         statuses: frozenset[str] | None = None,
         include_sources: bool = False,
         vaults: frozenset[str] | None = None,
+        withheld_vaults: frozenset[str] | None = None,
     ) -> list[Hit]:
         """Brute-force cosine. Vectors are L2-normalized, so a dot product IS cosine.
 
@@ -1035,6 +1059,7 @@ class IndexStore:
         # would otherwise walk back in through cosine, and a filter that holds on one arm and not
         # the other is a filter that holds until the stack is wired.
         _add_vault_filter(where, args, vaults)
+        _add_vault_exclusion(where, args, withheld_vaults)
 
         rows = self.db.execute(
             "SELECT c.*, d.title AS title, d.supersedes AS d_supersedes, "
