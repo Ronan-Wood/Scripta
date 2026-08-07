@@ -1,6 +1,17 @@
 import Foundation
+import ScriptaCore
 
-/// What a workspace binds to: one vault scope it READS, one transcript scope it WRITES.
+/// What a workspace binds to.
+///
+/// ONE CONCRETE VAULT IS THE HOME; THE REST ARE CONTEXT. Calls are written into this workspace's own
+/// vault and nowhere else — that directory is the source. Everything else the scope answers from is
+/// pulled in through the manifest's `inherits`, read-only, for context. Operator, 2026-08-07: "when
+/// a call gets recorded there should be a concrete vault it goes to and that is the source, the
+/// others are just to pull context from."
+///
+/// That was already the shape on disk after §7 and the app did not say so: the destination shown in
+/// the Library was the retired local export path, `writesScope` described a split that no longer
+/// exists, and nothing populated `inherits`, so no context was ever pulled.
 ///
 /// Doc 3 §7: "a workspace declares one vault scope it reads, one transcript scope it writes, and
 /// the calendars that route into it. It stops being a container that holds calls."
@@ -35,23 +46,18 @@ struct WorkspaceBinding: Equatable {
     /// list first, and its silence about a topic read as a fact about that workspace.
     let readsScope: String?
 
-    /// `scripta-<slug>` — the legacy transcript-scope name, which is what the ENGINE wrote into the
-    /// manifest it composes. Derived rather than stored so it cannot drift from the vault path
-    /// below; the two coming apart is the bug fixed in `SubstrateLibraryModel` (bc950f1).
+    /// Where this workspace's calls are written — the ONE concrete vault that is their home.
     ///
-    /// A PREDICTION UNTIL AN EXPORT HAS RUN. `scopes.record` refuses to repoint an existing name at
-    /// a different vault, so the registered name is the engine's answer and not this app's to
-    /// assert. Callers that need the REGISTERED name read it off the engine; this is what to show
-    /// before one exists.
-    var writesScope: String? {
-        let slug = SubstrateLibrary.slug(workspace)
-        return slug.isEmpty ? nil : "scripta-\(slug)"
+    /// It used to point at a local, non-synced tree that an export step filled. Capture writes here
+    /// directly now (§7), and the two had come apart: the Library screen advertised the old path
+    /// while every call went to the new one, which is a surface naming the wrong place to look for
+    /// the most important file the app produces.
+    ///
+    /// `nil` for a workspace that cannot name a vault, which is the same case `readsScope` has no
+    /// default for.
+    var transcriptVault: URL? {
+        try? ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder).transcripts
     }
-
-    /// Where this workspace's exported transcripts live. Local and non-synced by construction, and
-    /// the engine's `assert_not_synced` refuses the destination before writing a byte if it ever
-    /// stops being.
-    var transcriptVault: URL { SubstrateLibrary.transcriptVault(workspace: workspace) }
 
     /// The vault directory of the bound scope, for the workspace vault's `inherits` (Doc 4 §8).
     ///

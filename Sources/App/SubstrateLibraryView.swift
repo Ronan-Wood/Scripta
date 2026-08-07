@@ -380,16 +380,14 @@ private struct LibraryTranscriptRail: View {
                                 + "and this workspace's name reduces to neither — so there is "
                                 + "nowhere for its transcripts to go and nothing to register them "
                                 + "under. The field below is where to fix it.")
-            } else {
-                LibraryPathRow(marker: "into", path: model.transcriptVault, choose: chooseVault)
+            } else if let destination = model.transcriptVault {
+                LibraryPathRow(marker: "into", path: destination, choose: chooseVault)
             }
             LibraryNote(
-                id: "local", marker: "local only", tone: Ink.textHelper,
-                text: "Call transcripts are the most sensitive content the app holds and every "
-                    + "other scope points into OneDrive, so this vault defaults under "
-                    + "~/.substrate — a plain dotfolder, not a File Provider root. The engine "
-                    + "refuses a synced destination by inode before it writes anything, so a "
-                    + "folder you choose is checked rather than trusted.")
+                id: "local", marker: "the source", tone: Ink.textHelper,
+                text: "This one vault is where every call in this workspace is written — it is the "
+                    + "source. Everything else the workspace answers from is pulled in for context "
+                    + "through the vaults it inherits, and never written to.")
             LibraryUntaggedRow(model: model)
             LibraryWorkspaceRow(model: model)
         }
