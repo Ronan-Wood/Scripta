@@ -493,16 +493,16 @@ final class RecordingSession {
     /// The convert → transcribe → merge → enrich → write pipeline, shared by `stop()` and the
     /// launch-time orphan recovery. Not main-actor bound; call from a detached task. `extraTags`
     /// lets recovery mark a call as recovered.
-    /// Where a call is written: its workspace's vault, or the flat output folder when there is no
-    /// workspace to name one (Doc 4 §7).
+    /// Where a call is written: its workspace's vault, or the `default` vault when no workspace has
+    /// been named (Doc 4 §7).
     ///
-    /// THE UNGROUPED CASE STAYS FLAT, DELIBERATELY, and it is the migration path rather than a
-    /// permanent shape. `ScriptaVault` refuses a scope that slugifies to nothing — a vault always
-    /// has a name — and `AppSettings.activeGroup` is `""` on a fresh install, so the alternatives
-    /// were to invent a name on the operator's behalf or to refuse to record. Inventing one is the
-    /// claim `export_workspace` refuses to make; refusing to record loses the call. Writing flat
-    /// loses nothing: `TranscriptStore.list(under:)` and `IndexBuilder.reconcile` both read that
-    /// location, so an ungrouped call stays fully visible and can be filed later.
+    /// THE UNGROUPED CASE NOW HAS A VAULT. It used to stay flat, which lost nothing READABLE — every
+    /// reader covers that location — but left the call in no vault, so in no scope, so unanswerable
+    /// by the engine. On a fresh install that is every call the operator records before they think
+    /// to name a workspace, which is the worst possible set to make unanswerable.
+    ///
+    /// `default` is a name rather than a guess at intent, and the call moves out with
+    /// `TranscriptGroupRepair.file` once the operator decides where it belongs.
     ///
     /// A FAILURE TO PREPARE THE VAULT FALLS BACK rather than failing the recording. The transcript
     /// is the only artefact that cannot be recreated — the audio is deleted after a successful
@@ -516,8 +516,14 @@ final class RecordingSession {
         // no binding yet: the vault is still written, and still correct, just holding only calls.
         let inherits = WorkspaceBindings.binding(for: group).inheritsVault.map { [$0] } ?? []
         let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Recording")
+        // AN UNNAMED WORKSPACE GETS THE DEFAULT VAULT; A NAMED-BUT-UNNAMEABLE ONE DOES NOT. "" is
+        // the fresh-install state and means no choice was made, so filing under `default`
+        // contradicts nothing. "———" is a name the operator TYPED, and quietly filing its calls
+        // into the default corpus would mix two partitions on their behalf — that one still falls
+        // through to the error path below, which says so.
+        let scope = group.isEmpty ? ScriptaVault.defaultScope : group
         do {
-            let vault = try ScriptaVault.vault(forScope: group, under: root, inherits: inherits)
+            let vault = try ScriptaVault.vault(forScope: scope, under: root, inherits: inherits)
             try vault.write()
             return vault.transcripts
         } catch {

@@ -136,6 +136,20 @@ public struct ScriptaVault: Equatable {
     /// it: `cli._refuse_destructive_clean` says "a directory holding a `.substrate.toml` IS a vault
     /// whether or not this scope inherits it — refusing to delete it". A manifest is evidence of
     /// value, not of ownership, and this side was reading it as the latter.
+    /// Where a call goes when its workspace names nothing.
+    ///
+    /// THE FRESH-INSTALL PATH, and it used to be the flat output folder. `AppSettings.activeGroup`
+    /// is `""` until the operator names a workspace, a vault must have a name, and the alternatives
+    /// were to invent one, refuse to record, or write flat. Writing flat lost nothing readable — every
+    /// reader covers that location — but it left the call in NO VAULT, therefore in no scope,
+    /// therefore unanswerable by the engine that is supposed to be the product.
+    ///
+    /// `default` is a name, not an invention of the operator's intent: it says "no workspace was
+    /// chosen" in the one place that has to hold a name, and a call filed here is as queryable as
+    /// any other. `TranscriptGroupRepair.file` moves it out when the operator decides where it
+    /// belongs.
+    public static let defaultScope = "default"
+
     /// The manifest key naming the file that must vouch for this vault before the engine will
     /// answer from it. Generic on the engine's side (`guard.py`); Scripta's state file on ours.
     static let guardKey = "guard_state"
