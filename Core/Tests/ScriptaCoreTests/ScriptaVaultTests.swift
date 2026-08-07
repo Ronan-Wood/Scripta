@@ -633,4 +633,30 @@ final class VaultDiscoverySafetyTests: XCTestCase {
         let found = ScriptaVault.vaultRoots(under: root).vaults.map(\.lastPathComponent)
         XCTAssertEqual(found, ["cbre"], "found: \(found)")
     }
+
+    // MARK: - The default vault (Doc 4 §7's ungrouped case)
+
+    func testTheDefaultScopeNamesAVaultLikeAnyOther() throws {
+        let vault = try ScriptaVault.vault(forScope: ScriptaVault.defaultScope, under: root)
+        try vault.write()
+
+        // It is a real, composable vault — not a special case the engine has to know about.
+        XCTAssertTrue(ScriptaVault.isVault(vault.root), "compose needs a manifest to read")
+        XCTAssertTrue(ScriptaVault.isAppVault(vault.root), "and the app must own what it writes")
+        XCTAssertEqual(vault.scope, "default")
+        // A transcript written here resolves back to the default scope by LOCATION, which is what
+        // §7 made authoritative.
+        let call = vault.transcripts.appendingPathComponent("call.md")
+        XCTAssertEqual(ScriptaVault.scope(forTranscriptAt: call, under: root),
+                       ScriptaVault.defaultScope)
+    }
+
+    /// The distinction the recording path draws: `""` is "no choice was made" and gets the default
+    /// vault; a name the operator TYPED that slugifies to nothing is still refused, because filing
+    /// its calls into the default corpus would merge two partitions on their behalf.
+    func testAnUnnameableTypedWorkspaceIsStillRefused() throws {
+        XCTAssertThrowsError(try ScriptaVault.vault(forScope: "———", under: root))
+        XCTAssertThrowsError(try ScriptaVault.vault(forScope: "", under: root))
+    }
+
 }

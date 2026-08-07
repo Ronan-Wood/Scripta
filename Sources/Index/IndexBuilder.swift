@@ -46,8 +46,16 @@ enum IndexBuilder {
         // workspace has been renamed or removed from settings still has to index as something
         // stable, and the slug is what its own directory says. That row is then reachable by
         // selecting the workspace again, which restores the mapping.
-        let group = derived.map { AppSettings.workspaceName(forSlug: $0, preferring: meta.group) ?? $0 }
-            ?? meta.group
+        // THE DEFAULT VAULT IS THE UNGROUPED PARTITION, and must keep indexing as one. A call
+        // recorded before any workspace is named now lands in a vault called `default` so the
+        // ENGINE can compose it — but every in-app query partitions on `AppSettings.activeGroup`,
+        // which is `""` until the operator names something. Deriving "default" as the display group
+        // would file those calls under a workspace the switcher has no entry for, and they would
+        // vanish from Calls, search and the entity pages while sitting visibly on disk.
+        let group = derived.map { slug -> String in
+            guard slug != ScriptaVault.defaultScope else { return meta.group }
+            return AppSettings.workspaceName(forSlug: slug, preferring: meta.group) ?? slug
+        } ?? meta.group
 
         // Strip NUL/control chars so sqlite3_bind_text (strlen-based) can't truncate the indexed text
         // at an embedded NUL — screen-context OCR of a broken glyph can emit one, the same class the
