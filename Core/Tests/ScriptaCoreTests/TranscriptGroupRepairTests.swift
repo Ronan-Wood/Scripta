@@ -2,8 +2,15 @@ import XCTest
 @testable import ScriptaCore
 @testable import ScriptaShared
 
-/// The remedy for the engine's refusal. `transcript_export.export_workspace` aborts the WHOLE
-/// export over one untagged transcript and names the fix; these assert the app can apply it.
+/// Filing a call that capture could not file itself — the two-part remedy for the two cases where
+/// capture falls back to the flat output folder (an unnamed workspace, and a vault that could not
+/// be prepared). `assign` gives it a workspace; `file` MOVES it into that workspace's vault.
+///
+/// The move is new, and it is what the exporter used to be. `substrate export-transcripts` was
+/// deleted with Doc 4 §7 — capture writes into the vault, so nothing exports into one — and it was
+/// the only thing that ever relocated a flat transcript. Without this, a repaired call carried the
+/// right workspace and sat in no vault, therefore in no scope: visible in the app and unreachable
+/// by every query.
 final class TranscriptGroupRepairTests: XCTestCase {
     private var dir: URL!
 
@@ -149,6 +156,59 @@ final class TranscriptGroupRepairTests: XCTestCase {
 
     /// `scope_name("")` raises in the engine — a workspace that slugifies to nothing names no scope
     /// — so "file it as ungrouped" is not a repair, it is the same refusal one step later.
+    // MARK: - Filing into the vault
+
+    func testFilingMovesAFlatTranscriptIntoItsWorkspaceVault() throws {
+        let url = try write("call.md", transcript(title: "Budget", group: nil))
+        try TranscriptGroupRepair.assign("CBRE", to: url)
+
+        let moved = try TranscriptGroupRepair.file(url, into: "CBRE", under: dir)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
+                       "the flat copy must be gone — two copies of one call is worse than none")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: moved.path))
+        // In the VAULT's transcript directory, which is what puts it in a scope.
+        XCTAssertEqual(moved.deletingLastPathComponent().lastPathComponent, "transcripts")
+        XCTAssertEqual(ScriptaVault.scope(forTranscriptAt: moved, under: dir), "cbre")
+        // And the vault it landed in declares itself, or nothing would compose it.
+        XCTAssertTrue(ScriptaVault.isAppVault(dir.appendingPathComponent("cbre")))
+        // The content survived the move intact.
+        let text = try String(contentsOf: moved, encoding: .utf8)
+        XCTAssertTrue(text.contains("group: \"CBRE\""))
+    }
+
+    func testFilingACallAlreadyInAVaultIsANoOp() throws {
+        let url = try write("call.md", transcript(title: "Budget", group: "CBRE"))
+        let moved = try TranscriptGroupRepair.file(url, into: "CBRE", under: dir)
+        let again = try TranscriptGroupRepair.file(moved, into: "CBRE", under: dir)
+
+        XCTAssertEqual(again, moved, "a second filing must not move a call that is already filed")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: moved.path))
+    }
+
+    /// A transcript is the ONE artefact that cannot be recreated — the audio is deleted after a
+    /// successful write — so a name collision refuses rather than overwrites.
+    func testFilingRefusesRatherThanOverwritingACallOfTheSameName() throws {
+        let first = try write("call.md", transcript(title: "One", group: "CBRE"))
+        try TranscriptGroupRepair.file(first, into: "CBRE", under: dir)
+
+        let second = try write("call.md", transcript(title: "Two", group: "CBRE"))
+        XCTAssertThrowsError(try TranscriptGroupRepair.file(second, into: "CBRE", under: dir)) {
+            guard case TranscriptGroupRepair.RepairError.destinationOccupied = $0 else {
+                return XCTFail("expected destinationOccupied, got \($0)")
+            }
+        }
+        // The one it refused to move is still where it was, unread and unlost.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
+        XCTAssertTrue(try String(contentsOf: second, encoding: .utf8).contains("\"Two\""))
+    }
+
+    func testFilingRefusesAWorkspaceThatCannotNameAVault() throws {
+        let url = try write("call.md", transcript(title: "Budget", group: nil))
+        XCTAssertThrowsError(try TranscriptGroupRepair.file(url, into: "———", under: dir))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
+
     func testAnEmptyWorkspaceIsRefused() throws {
         let url = try write("untagged.md", transcript(title: "Recovered", group: nil))
         XCTAssertThrowsError(try TranscriptGroupRepair.assign("   ", to: url))

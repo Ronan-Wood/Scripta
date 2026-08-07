@@ -53,7 +53,7 @@ public struct ScriptaVault: Equatable {
     /// root of the operator's folder, and §7's "delete the vault directory" would resolve to
     /// `removeItem(at: outputFolder)`.
     ///
-    /// The engine refuses the same thing for the same reason — `transcript_export.scope_name` raises
+    /// The engine refuses the same thing for the same reason — an unslugifiable name raises
     /// "workspace {!r} slugifies to nothing; give it a name" — and this side simply did not. Throwing
     /// rather than returning an optional so the reason travels with the refusal, and validating in
     /// `init` rather than in the factory so there is no second way to build the bad value.
@@ -88,7 +88,7 @@ public struct ScriptaVault: Equatable {
                 return "A workspace named \(raw.isEmpty ? "\"\"" : "\"\(raw)\"") has no usable "
                     + "directory or scope name — it reduces to nothing once slugified. Name the "
                     + "workspace before recording into it. (The engine refuses the same value: "
-                    + "`substrate export-transcripts` raises \"slugifies to nothing; give it a "
+                    + "the engine raises \"slugifies to nothing; give it a "
                     + "name\".)"
             case .nameCollidesWithExistingDirectory(let raw, let directory):
                 return "A workspace named \"\(raw)\" would use the folder \(directory.path), which "
@@ -108,7 +108,7 @@ public struct ScriptaVault: Equatable {
     // MARK: - Where things go
 
     /// Calls. `_sources/` is where every conversation-class note in the operator's vaults already
-    /// lives, and `transcript_export` writes to the same place — so a transcript written here is
+    /// lives, and the engine composes from the same place — so a transcript written here is
     /// byte-for-byte where the exporter would have put it, which is what lets the exporter be
     /// deleted rather than merely bypassed.
     public var transcripts: URL { Self.transcripts(inVaultAt: root) }
@@ -316,7 +316,7 @@ public struct ScriptaVault: Equatable {
 
     /// Write the manifest, creating the vault's directories.
     ///
-    /// REGENERATED IN PLACE on every call, not written once. `transcript_export.write_manifest` and
+    /// REGENERATED IN PLACE on every call, not written once. This writer and
     /// `SubstrateLibraryVault.writeManifest` both do the same, for the reason the latter states: a
     /// manifest that exists only because an earlier version happened to write it is a vault that
     /// stops composing after a hand-clean of the folder, with nothing saying why.
@@ -447,7 +447,7 @@ public struct ScriptaVault: Equatable {
     }
 
     /// Lowercase ASCII slug — the shape a scope name and a directory name can both be, so the two
-    /// cannot disagree. Matches `transcript_export._slug`, which is what the engine's own scope
+    /// cannot disagree. Matches the engine's own slug rule, which is what its scope
     /// names are built with.
     public static func slug(_ text: String, limit: Int = 48) -> String {
         var out = ""

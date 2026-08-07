@@ -5,7 +5,7 @@ import SubstrateKit
 /// The Library: bringing something into the engine, all the way to queryable.
 ///
 /// THE WHOLE CHAIN RUNS IN THE APP. `ingest` writes an extraction, not an index — the engine is
-/// explicit that composing and registering are separate acts, and its own `export-transcripts`
+/// explicit that composing and registering are separate acts, and its own compose
 /// stops after writing the vault and prints the two commands. That is right for a CLI and wrong for
 /// this surface: a Library that hands the operator a terminal command to finish what they started
 /// has not shipped the feature, and Doc 3 §5 is emphatic that a note which exists and cannot be
@@ -13,7 +13,7 @@ import SubstrateKit
 /// registered and answering before the surface says it is done.
 ///
 /// PERFORMING THE WORK IS NOT HIDING IT. Every step reports the command it ran and everything the
-/// process said, success included — `export-transcripts` exits 0 and warns on stderr when the
+/// process said, success included — `compose` exits 0 and warns on stderr when the
 /// SOURCE transcripts are in a synced tree, so a surface that showed stderr only on failure would
 /// swallow the one warning it exists to carry. A job that fails stops at the step that failed, and
 /// the steps after it are drawn as not attempted rather than as passed.
@@ -118,7 +118,7 @@ final class SubstrateLibraryModel: ObservableObject {
     /// CBRE's index and registered the new name against that path.
     ///
     /// That is the wall Doc 3 §4 calls the privacy boundary between workspaces, reopened on this
-    /// side after `transcript_export` closed it on the engine's — and it is the same shape as the
+    /// side after the engine closed it on its own — and it is the same shape as the
     /// bug there: A NAME AND A LOCATION THAT MUST AGREE, HELD AS TWO INDEPENDENT VALUES. Deriving
     /// one from the other is what makes them unable to come apart, rather than a rule someone has
     /// to remember at each of the two call sites.
@@ -207,10 +207,21 @@ final class SubstrateLibraryModel: ObservableObject {
         var failure: String?
         do {
             try TranscriptGroupRepair.assign(name, to: transcript.url)
+            // AND THEN IT MOVES. Stamping `group:` alone left the call in the flat output folder,
+            // in no vault, therefore in no scope — visible in the app and unreachable by any query,
+            // which is the state a repair is supposed to END. `substrate export-transcripts` used
+            // to be the thing that moved it and no longer exists.
+            let inherits = WorkspaceBindings.binding(for: name).inheritsVault.map { [$0] } ?? []
+            let filed = try TranscriptGroupRepair.file(transcript.url, into: name,
+                                                       under: AppSettings.outputFolder,
+                                                       inherits: inherits)
             // The local index partitions on `group` too, so a repair that only touched the file
-            // would leave the call filed one way on disk and another in every in-app surface.
+            // would leave the call filed one way on disk and another in every in-app surface. The
+            // index is pointed at the NEW location; indexing the old path would write a row naming
+            // a file that is no longer there.
             if let store = IndexStore.shared {
-                IndexBuilder.index(transcript.url, into: store)
+                if filed != transcript.url { store.remove(path: transcript.url.path) }
+                IndexBuilder.index(filed, into: store)
             } else {
                 // AND A MISSING STORE IS THAT DIVERGENCE, NOT AN EXEMPTION FROM IT. `IndexStore` is
                 // `try? IndexStore()`, so nil means the database would not open; skipping quietly
@@ -218,10 +229,10 @@ final class SubstrateLibraryModel: ObservableObject {
                 // call the old way, with nothing to re-index it until the transcript changes on
                 // disk again. Reported as a partial repair rather than as a failure, because the
                 // half that the export and the engine read did land.
-                failure = "\(transcript.title) now carries the workspace on disk, but the local "
-                    + "index would not open — so Calls, search and Ask still file it the old way "
-                    + "until you Rebuild Index in Settings. The export reads the file, not the "
-                    + "index, so it is no longer blocked."
+                failure = "\(transcript.title) has been filed into \(name)'s vault on disk, but "
+                    + "the local index would not open — so Calls and search still file it the old "
+                    + "way until you Rebuild Index in Settings. The vault holds the file itself, "
+                    + "so composing that workspace will pick it up regardless."
             }
         } catch {
             failure = error.localizedDescription
@@ -309,7 +320,7 @@ final class SubstrateLibraryModel: ObservableObject {
         // `ScriptaVault` refuses a workspace that slugifies to nothing — which `""`, the
         // fresh-install default, does. Without this guard the first drop on a new machine ran a
         // full Docling extraction (the comment below measures a one-page PDF at 36 seconds) and
-        // then died at the promote step. `exportTranscripts` already refused up front for the same
+        // then died at the promote step. `composeWorkspace` already refuses up front for the same
         // reason; the upload path had no ungrouped story at all.
         guard (try? ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder)) != nil
         else {
@@ -499,74 +510,78 @@ final class SubstrateLibraryModel: ObservableObject {
     /// measured on this machine as the same inode as its iCloud path. A second, weaker copy of that
     /// rule in Swift would disagree with the one that decides, and the refusal arrives before a
     /// single byte is written.
-    func exportTranscripts() {
+    /// Make this workspace's vault answerable: compose it and register its scope.
+    ///
+    /// THERE IS NOTHING TO EXPORT ANY MORE. This rail used to run `substrate export-transcripts`,
+    /// which rendered the flat output folder's transcripts into a vault — and Doc 4 §7 removed the
+    /// premise by having capture write into the vault directly. The exporter is gone; what is left
+    /// is the half that was always doing the real work.
+    ///
+    /// It had also stopped being able to run at all. The vault now lives under the operator's own
+    /// output folder, so `assert_not_overlapping` refused the destination for containing the
+    /// source, and `assert_not_synced` refused it for being in OneDrive — a rule §7 explicitly
+    /// withdrew (location is the operator's). The button could produce nothing but a refusal
+    /// arguing from a retired decision.
+    func composeWorkspace() {
         guard !isWorking, let cli = SubstrateEngine.shared.serving?.cli else { return }
         let name = workspace.trimmingCharacters(in: .whitespacesAndNewlines)
         // SLUGIFIABLE, NOT MERELY NON-EMPTY. A name carrying no ASCII letter or digit — "研究",
         // "———", an emoji — passes a non-empty test and slugifies to nothing, and every other holder
-        // of this value already refuses it: `scope_name` raises "slugifies to nothing; give it a
-        // name", `ScriptaVault.init` throws `unnameableScope`, `TranscriptGroupRepair.assign`
-        // refuses the repair. This rail carried on, deriving one shared vault directory for every
-        // such workspace and the scope name `transcript-` for all of them. The engine refuses before
-        // it writes a byte, so the collision was never reached — what WAS reached is a destination
-        // on screen naming a directory those workspaces would have shared, and a refusal that cost a
-        // subprocess to arrive. Refused here for the reason `addDocument` states: nothing is spent.
+        // of this value already refuses it: `ScriptaVault.init` throws `unnameableScope`,
+        // `TranscriptGroupRepair.assign` refuses the repair. Refused here for the reason
+        // `addDocument` states: nothing is spent.
         guard !SubstrateLibrary.slug(name).isEmpty else {
             job = .finished(Report(
-                title: "Exporting \(name.isEmpty ? "transcripts" : name)",
+                title: "Composing \(name.isEmpty ? "this workspace" : name)",
                 steps: [Step(id: "workspace", title: "Name the workspace", run: nil,
-                             appFailure: "A workspace's transcripts are exported into a vault named "
-                                 + "after it and composed under a scope named after it, and "
+                             appFailure: "A workspace's calls live in a vault named after it and "
+                                 + "compose under a scope named after it, and "
                                  + "\(name.isEmpty ? "an unnamed workspace" : "\"\(name)\"") "
                                  + "reduces to nothing that can name either — the engine and the "
                                  + "vault layout both take ASCII letters and digits only. Give the "
-                                 + "workspace a name containing at least one; nothing was exported.",
+                                 + "workspace a name with at least one ASCII letter or digit; the "
+                                 + "calls themselves are untouched either way.",
+                             skipped: false)],
+                // Nothing composed, so nothing registered — and no document was left anywhere.
+                scope: nil, orphaned: nil))
+            return
+        }
+
+        // The vault is READ, not created. Capture writes it, and a rail that constructed one here
+        // would be a second author for the layout — the shape §7 spent the whole migration removing.
+        let root = AppSettings.outputFolder
+        let (existing, failures) = ScriptaVault.existingVault(forScope: name, under: root)
+        guard let vault = existing else {
+            job = .finished(Report(
+                title: "Composing \(name)",
+                steps: [Step(id: "vault", title: "Find the workspace's vault", run: nil,
+                             appFailure: "There is no vault for \"\(name)\" under \(root.path) "
+                                 + "yet. One is written the first time a call is recorded into "
+                                 + "this workspace, so record a call — or switch to the workspace "
+                                 + "whose vault you meant."
+                                 + (failures.isEmpty ? ""
+                                    : "\n\nSome directories could not be read: "
+                                      + failures.joined(separator: "; ")),
                              skipped: false)],
                 scope: nil, orphaned: nil))
             return
         }
-        let destination = transcriptVault
-        let source = AppSettings.outputFolder
         task = Task { [weak self] in
-            await self?.runExport(cli: cli, source: source, vault: destination, workspace: name)
+            await self?.runCompose(cli: cli, vault: vault, workspace: name)
         }
     }
 
-    private func runExport(cli: SubstrateEngine.Command, source: URL, vault: URL,
-                           workspace: String) async {
-        let title = "Exporting \(workspace) transcripts"
-        var steps: [Step] = []
-
-        job = .running(Running(title: title, step: "Writing the transcript vault", started: Date(),
-                               done: steps))
-        let exported = await SubstrateCLI.run(cli, ["export-transcripts", source.path, vault.path,
-                                                   "--workspace", workspace])
-        steps.append(Step(id: "export", title: "Write the transcript vault", run: exported,
-                          appFailure: nil, skipped: false))
-        // A STOP BETWEEN THE TWO IS HONOURED, for the reason `remove` states about its own: the
-        // compose below is `--clean`, and starting one inside a cancelled task means killing it
-        // mid-wipe. The export itself already wrote the vault, so the next run recomposes it.
-        guard exported.succeeded, !Task.isCancelled else {
-            return finish(title: title, steps: steps + [
-                Step(id: "compose", title: "Compose and register the scope", run: nil,
-                     appFailure: nil, skipped: true)])
-        }
-
-        job = .running(Running(title: title, step: "Composing the transcript scope",
-                               started: Date(), done: steps))
-        // `--clean` because the exporter PRUNES: a transcript deleted in the app leaves no note
-        // behind in the vault, and without this its ingest directory would keep answering.
-        // NAMESPACED, so a workspace called "Library" cannot land its index on the document
-        // library's. The two would otherwise share `index/library.db`, and compose writes the
-        // database BEFORE it registers — so the collision would overwrite one corpus's index and
-        // only then fail at registration, where `scopes.record` refuses to repoint a name at a
-        // different vault. The refusal is right; arriving after the damage is not.
+    private func runCompose(cli: SubstrateEngine.Command, vault: URL, workspace: String) async {
+        let title = "Composing \(workspace)"
+        // `--clean`, because a call deleted in the app must stop answering. The vault holds only
+        // what capture put there, so a stale ingest directory is the one way a deleted call comes
+        // back — and `assert_composed` would refuse the next compose over it anyway, after the
+        // operator had already deleted it for a reason.
         let composed = await compose(cli: cli, vault: vault,
-                                     name: "transcript-" + SubstrateLibrary.slug(workspace),
-                                     clean: true)
-        steps.append(Step(id: "compose", title: "Compose and register the scope", run: composed,
-                          appFailure: nil, skipped: false))
-        finish(title: title, steps: steps)
+                                     name: SubstrateLibrary.slug(workspace), clean: true)
+        finish(title: title,
+               steps: [Step(id: "compose", title: "Compose and register the scope", run: composed,
+                            appFailure: nil, skipped: false)])
     }
 
     // MARK: - Compose

@@ -16,7 +16,7 @@ import UniformTypeIdentifiers
 // Nothing here tells the operator to go and run a command.
 //
 // AND EVERYTHING IT DOES, IT SHOWS. Every step names the command it ran and reproduces what the
-// process said, on success as well as on failure — `export-transcripts` exits 0 and warns on
+// process said, on success as well as on failure — `compose` exits 0 and warns on
 // stderr when the SOURCE transcripts are already in a cloud-synced tree, which is the single most
 // important sentence this surface can carry and would be invisible under "show errors only".
 
@@ -468,8 +468,8 @@ private struct LibraryWorkspaceRow: View {
         VStack(alignment: .leading, spacing: Gap.s4) {
             HStack(spacing: Gap.s8) {
                 InputField(prompt: "Workspace name", text: $model.workspace, glyph: .people)
-                ActionButton(title: "Export and compose", glyph: .arrowRight, rank: .primary,
-                             action: model.exportTranscripts)
+                ActionButton(title: "Compose and register", glyph: .arrowRight, rank: .primary,
+                             action: model.composeWorkspace)
                     .disabled(model.isWorking || SubstrateLibrary.slug(named).isEmpty)
             }
             if named.isEmpty {
@@ -487,15 +487,14 @@ private struct LibraryWorkspaceRow: View {
                      + "digit; the calls themselves are untouched either way.")
                     .proseText(Register.proseSm, Ink.warning)
             }
-            // CORRECTED: this said the export takes every transcript in the folder, which was true
-            // of the exporter that walked `rglob("*.md")` and is now false — `export_workspace`
-            // selects on each transcript's own `group:`, compared as a slug so it agrees with the
-            // scope name. Leaving the old sentence up would describe the privacy hole that was
-            // closed as though it were still the behaviour.
-            Text("One folder holds every workspace's calls, so the engine selects on each "
-                 + "transcript's own workspace — \(named.isEmpty ? "this one" : named)'s are "
-                 + "exported and the rest are left in place. It names the scope it registered when "
-                 + "it is done.")
+            // REWRITTEN with the exporter. This described a selection step — "the engine selects on
+            // each transcript's own workspace, the rest are left in place" — that no longer happens
+            // anywhere: each workspace has its own vault directory, so there is nothing to select
+            // FROM. Describing a privacy filter that has been replaced by a partition would be the
+            // more flattering sentence and the less true one.
+            Text("\(named.isEmpty ? "This workspace" : named)'s calls already live in their own "
+                 + "vault — recording puts them there. This composes that vault into a scope so "
+                 + "Ask and the Vault tab can read it, and names the scope when it is done.")
                 .proseText(Register.proseSm, Ink.textHelper)
         }
     }
@@ -726,7 +725,7 @@ private struct LibraryOrphanRow: View {
 /// One step: what it was, whether it happened, the command, and everything the process said.
 ///
 /// The transcript is shown for a step that SUCCEEDED as well as one that failed, and that is not
-/// verbosity. `export-transcripts` exits 0 and writes a warning to stderr when the source
+/// verbosity. `compose` exits 0 and writes a warning to stderr when the source
 /// transcripts are already inside a cloud-synced tree — the export is local and the originals are
 /// not, so Doc 3 §4's condition is half met. Under "errors only" that sentence never appears.
 private struct LibraryStepRow: View {

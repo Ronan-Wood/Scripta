@@ -2,77 +2,103 @@ import XCTest
 @testable import ScriptaCore
 @testable import ScriptaShared
 
-/// The spine is declared TWICE — by `TranscriptSpine` at capture and by `transcript_export.py` at
-/// export — and this is what stops the two meaning different things.
+/// The spine is declared ONCE now — by `TranscriptSpine` at capture — so there is nothing left to
+/// be parity WITH. What replaced the parity check is stronger: every value it declares is checked
+/// against the engine's own VOCABULARY, not against a second copy of the decision.
 ///
-/// Keeping both is deliberate (see `TranscriptSpine`): `_RESERVED_KEYS` drops a source spine value
-/// so the app can never supply one the exporter believes it decided, which is a guard worth having
-/// while an exporter exists. The cost of that guard is exactly this — two statements of one fact —
-/// and the only honest way to pay it is a gate that fails when they diverge.
+/// The old gate compared Scripta's four values to `transcript_export.py`'s. That file is gone
+/// (Doc 4 §7: capture writes into the vault, so nothing exports into one), and with it the second
+/// author. But the risk it covered did not go anywhere: a transcript declaring a word the engine
+/// has no case for is refused at compose, after the call has been recorded and written. Comparing
+/// against `spine.py` and `classes.py` catches that at build time and would have caught it before
+/// too — the exporter agreeing with the app said nothing about either agreeing with the engine.
 ///
 /// Same trade as `PythonPayloadSource`, with the same stated cost: this couples to the SHAPE of the
-/// Python declaration, not just its value. Rewrite those constants as anything other than a
-/// top-level `NAME = "value"` and the parser stops finding them — which fails loudly, where a stale
-/// hand-copied duplicate would not have.
+/// Python declaration. Rewrite these as anything other than a top-level `NAME: type = frozenset(…)`
+/// or a `POLICIES` dict of quoted keys and the parser stops finding them — which fails loudly,
+/// where a stale hand-copied duplicate would not have.
 final class TranscriptSpineParityTests: XCTestCase {
 
     /// `#filePath`, not the working directory: `swift test` and Xcode disagree about cwd, and a gate
     /// that silently finds no file is worse than one that cannot run.
-    private func exporterSource() throws -> String {
+    private func engineSource(_ relative: String) throws -> String {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // ScriptaCoreTests
             .deletingLastPathComponent()   // Tests
             .deletingLastPathComponent()   // Core
             .deletingLastPathComponent()   // repository root
-        let url = root.appendingPathComponent("substrate/substrate/transcript_export.py")
+        let url = root.appendingPathComponent(relative)
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw XCTSkip("engine source not present at \(url.path)")
         }
         return try String(contentsOf: url, encoding: .utf8)
     }
 
-    /// A top-level `NAME = "value"`, ignoring the comment blocks that carry each one's argument.
-    private func constant(_ name: String, in source: String) -> String? {
-        for line in source.components(separatedBy: "\n") {
-            guard line.hasPrefix("\(name) ") || line.hasPrefix("\(name)=") else { continue }
-            guard let equals = line.firstIndex(of: "=") else { continue }
-            let value = line[line.index(after: equals)...]
-                .trimmingCharacters(in: .whitespaces)
-            guard value.count >= 2, value.first == "\"", value.last == "\"" else { continue }
-            return String(value.dropFirst().dropLast())
+    /// The quoted strings of a top-level `NAME: type = frozenset({...})`, which is how `spine.py`
+    /// declares each vocabulary. Returns nil when the declaration cannot be found or parsed, so a
+    /// reformat fails the gate rather than passing it empty.
+    private func frozenset(_ name: String, in source: String) -> Set<String>? {
+        let lines = source.components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: {
+            $0.hasPrefix("\(name):") || $0.hasPrefix("\(name) =")
+        }) else { return nil }
+        // The declaration may wrap; take lines until the braces balance.
+        var text = "", depth = 0, seen = false
+        for line in lines[start...] {
+            text += line
+            depth += line.filter { $0 == "{" || $0 == "(" }.count
+            depth -= line.filter { $0 == "}" || $0 == ")" }.count
+            if line.contains("{") || line.contains("(") { seen = true }
+            if seen, depth <= 0 { break }
         }
-        return nil
+        let quoted = text.split(separator: "\"").enumerated()
+            .filter { $0.offset % 2 == 1 }.map { String($0.element) }
+        return quoted.isEmpty ? nil : Set(quoted)
     }
 
-    func testSwiftSpineMatchesTheExporters() throws {
-        let source = try exporterSource()
-        let pairs: [(swift: String, python: String, label: String)] = [
-            (TranscriptSpine.status, "TRANSCRIPT_STATUS", "status"),
-            (TranscriptSpine.docType, "TRANSCRIPT_DOC_TYPE", "doc_type"),
-            (TranscriptSpine.confidence, "TRANSCRIPT_CONFIDENCE", "confidence"),
-            (TranscriptSpine.documentClass, "TRANSCRIPT_CLASS", "class"),
-        ]
-        for pair in pairs {
-            guard let engine = constant(pair.python, in: source) else {
-                return XCTFail("\(pair.python) not found in transcript_export.py — the parser could "
-                               + "not read the declaration, which is a gate failure, not a pass")
-            }
-            XCTAssertEqual(pair.swift, engine,
-                           "\(pair.label): capture writes '\(pair.swift)', the exporter authors "
-                           + "'\(engine)'. One of them is now lying about every transcript.")
+    /// THE CHECK THAT REPLACED THE PARITY CHECK. Each value capture stamps must be a word the engine
+    /// will accept — otherwise the refusal arrives at compose, after the call has been recorded.
+    func testTheDeclaredSpineIsEngineVocabulary() throws {
+        let spine = try engineSource("substrate/substrate/spine.py")
+
+        guard let statuses = frozenset("STATUSES", in: spine),
+              let included = frozenset("INCLUDED_STATUSES", in: spine),
+              let docTypes = frozenset("DOC_TYPES", in: spine),
+              let confidences = frozenset("CONFIDENCES", in: spine) else {
+            return XCTFail("could not parse the vocabularies out of spine.py — that is a gate "
+                           + "failure, not a pass")
         }
+
+        XCTAssertTrue(statuses.contains(TranscriptSpine.status),
+                      "capture stamps status '\(TranscriptSpine.status)', which is not in the "
+                      + "engine's \(statuses.sorted()) — every call would be refused at compose")
+        // AND it must be a status default retrieval SEARCHES. A transcript filed as `archived`
+        // would compose cleanly and never answer, which is the failure that looks like an empty
+        // vault rather than like a bug.
+        XCTAssertTrue(included.contains(TranscriptSpine.status),
+                      "status '\(TranscriptSpine.status)' is legal but outside default retrieval "
+                      + "\(included.sorted()) — calls would index and never be found")
+        XCTAssertTrue(docTypes.contains(TranscriptSpine.docType),
+                      "doc_type '\(TranscriptSpine.docType)' is not in \(docTypes.sorted())")
+        // `unstated` is declarable but is not in CONFIDENCES (the judged set), so it is checked
+        // against the token spine.py names for it rather than against that set.
+        XCTAssertTrue(confidences.contains(TranscriptSpine.confidence)
+                      || spine.contains("UNSTATED_CONFIDENCE = \"\(TranscriptSpine.confidence)\""),
+                      "confidence '\(TranscriptSpine.confidence)' is neither a judged confidence "
+                      + "\(confidences.sorted()) nor the engine's declared no-claim token")
     }
 
-    /// The owner marker is the same fact in a third place — the engine gained it when the export
-    /// learned that three of Scripta's four `app:` markers are not transcripts.
-    func testOwnerMarkerMatchesTheExporters() throws {
-        let source = try exporterSource()
-        guard let engine = constant("TRANSCRIPT_MARKER", in: source) else {
-            return XCTFail("TRANSCRIPT_MARKER not found in transcript_export.py")
-        }
-        XCTAssertEqual(OwnerMarker.value, engine,
-                       "the app marks transcripts '\(OwnerMarker.value)' and the exporter selects "
-                       + "on '\(engine)' — no transcript would ever be exported")
+    /// The class is a different axis and lives in a different file. `conversation` is the one the
+    /// engine WITHHOLDS from default retrieval, which is the whole reason capture declares it.
+    func testTheDeclaredClassIsAnEngineClassAndIsWithheld() throws {
+        let classes = try engineSource("substrate/substrate/classes.py")
+        XCTAssertTrue(classes.contains("\"\(TranscriptSpine.documentClass)\": ClassPolicy("),
+                      "class '\(TranscriptSpine.documentClass)' is not a key of classes.POLICIES")
+        XCTAssertTrue(classes.contains("EXCLUDED_CLASSES")
+                      && classes.range(of: "EXCLUDED_CLASSES")
+                          .map { classes[$0.lowerBound...].contains(TranscriptSpine.documentClass) } == true,
+                      "class '\(TranscriptSpine.documentClass)' is no longer withheld by default — "
+                      + "call passages would arrive uninvited in every query")
     }
 
     // MARK: - What actually reaches the file

@@ -7,11 +7,15 @@ import ScriptaCore
 /// THE OPERATOR'S VAULTS ARE READ-ONLY TO THIS APP, and that is a boundary rather than a caution.
 /// `prism`, `research`, `core-vault` and the rest live in OneDrive, are curated by hand, and are
 /// composed from a manifest the app did not write. Scripta reads them through the engine and puts
-/// nothing into them. What it owns is a separate corpus at a LOCAL, NON-SYNCED path, which is also
-/// what Doc 3 §4 requires of the transcript half of it — and which the engine ENFORCES rather than
-/// trusting: `transcript_export.assert_not_synced` refuses a destination inside any File Provider
-/// root before it writes a byte, so a destination that drifts into a synced folder later fails
-/// loudly instead of quietly uploading call transcripts.
+/// nothing into them. What it owns is a separate corpus at a LOCAL, NON-SYNCED path.
+///
+/// THAT RULE NOW COVERS THE INDEX, NOT THE TRANSCRIPTS, and the distinction matters because the
+/// two used to share one justification. Doc 3 §4 required call transcripts to sit off cloud sync
+/// and the engine enforced it (`assert_not_synced` refused a synced destination before writing a
+/// byte); Doc 4 §7 withdrew both — location is the operator's, and their calls live in vaults
+/// wherever they keep them. What survives is the narrower and still-correct half: an INDEX is a
+/// disposable derived artifact, rebuilt by every compose and large, and a sync client copying it
+/// is pure waste. It is kept local because it should be, not because anything refuses it.
 ///
 /// `~/.substrate` is the right home for both. It is where substrate already keeps its machine-local
 /// state — the scope registry, the refresh record, the pinned engine — it is a plain dotfolder in
@@ -71,9 +75,9 @@ enum SubstrateLibrary {
     /// A NAME WITH NO SLUG STILL GETS ITS OWN DIRECTORY. The fallback was the literal `unnamed`, so
     /// every workspace whose name carries no ASCII letter or digit — "研究", "———", an emoji — named
     /// one shared vault, which is the privacy wall failing open on the exact input the rest of the
-    /// system refuses (`transcript_export.scope_name` raises "slugifies to nothing; give it a name",
+    /// system refuses (`ScriptaVault.init` throws `unnameableScope`,
     /// `ScriptaVault` throws `unnameableScope`). Callers refuse such a workspace before they get
-    /// here — `SubstrateLibraryModel.exportTranscripts` does, in its own words — and this makes the
+    /// here — `SubstrateLibraryModel.composeWorkspace` does, in its own words — and this makes the
     /// path harmless rather than merely unreached, since a returned `URL?` cannot be given while
     /// `WorkspaceBinding.transcriptVault` is declared non-optional.
     static func transcriptVault(workspace: String) -> URL {
@@ -86,7 +90,7 @@ enum SubstrateLibrary {
 
     /// The domain every library document carries.
     ///
-    /// A FLOOR, for the reason `transcript_export` states about its own: `domains` is what
+    /// A FLOOR, for the reason the transcript corpus applies to its own: `domains` is what
     /// retrieval filters on, and NOTHING IN THE ENGINE REFUSES a note that declares none — unlike
     /// status, doc_type and confidence, which are gated. So a document whose operator-supplied
     /// domains were empty or unslugifiable would land silently unfilterable under a fully green
@@ -182,7 +186,7 @@ enum SubstrateLibrary {
     /// EVERY PART OF THE NAME IS THE KEY. Keyed on the ORIGIN PATH, not on the content: re-ingesting
     /// an edited file has to land on the same source directory and replace it, rather than mint a
     /// second one that answers queries beside the first. This is the argument
-    /// `transcript_export.doc_id_for_transcript` makes about its own key, and it holds here for the
+    /// a path-derived doc_id makes about its own key, and it holds here for the
     /// same reason.
     ///
     /// The readable half used to be `slug(title)`, and `title` is the ENGINE'S — the document's own
@@ -296,7 +300,7 @@ enum SubstrateLibrary {
     // MARK: - Shapes the engine's parsers accept
 
     /// Lowercase ASCII slug — the shape `markdown/reader._DOMAIN` admits, and the one
-    /// `transcript_export._slug` produces. A domain that does not match is DROPPED SILENTLY by the
+    /// `ScriptaVault.slug` produces. A domain that does not match is DROPPED SILENTLY by the
     /// engine's list parser, so anything the operator types is put into this shape before it is
     /// written rather than discovered missing at query time.
     static func slug(_ text: String, limit: Int = 48) -> String {
@@ -317,7 +321,7 @@ enum SubstrateLibrary {
     }
 
     /// A frontmatter scalar the engine's own parser reads back unchanged — the rules
-    /// `transcript_export._scalar` states: quote a value containing a colon (nothing else marks
+    /// the engine's own frontmatter reader requires: quote a value containing a colon (nothing else marks
     /// where the value begins), leave one that already contains a quote alone (the parser does no
     /// unescaping), and never emit a control byte, because a frontmatter line with no colon stops
     /// the block being treated as frontmatter AT ALL and turns the whole spine into body text.
