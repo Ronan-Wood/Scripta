@@ -27,6 +27,7 @@ enum AppSettings {
         static let activeGroup = "activeGroup"
         static let workspaceReadScopes = "workspaceReadScopes"
         static let workspaceReadVaults = "workspaceReadVaults"
+        static let workspaceContextVaults = "workspaceContextVaults"
         static let summarizeEnabled = "summarizeEnabled"
         static let notesMergeEnabled = "notesMergeEnabled"
         static let promptForDetails = "promptForDetails"
@@ -306,6 +307,19 @@ enum AppSettings {
     static var workspaceReadVaults: [String: String] {
         get { (defaults.dictionary(forKey: Keys.workspaceReadVaults) as? [String: String]) ?? [:] }
         set { defaults.set(newValue, forKey: Keys.workspaceReadVaults) }
+    }
+
+    /// The vaults a workspace pulls CONTEXT from — its manifest's `inherits`, chosen by the
+    /// operator.
+    ///
+    /// PLURAL, and separate from `workspaceReadVaults` above, which holds the single vault a bound
+    /// scope resolved to. Operator, 2026-08-07: "when a call gets recorded there should be a
+    /// concrete vault it goes to and that is the source, the others are just to pull context from."
+    /// One home for the calls; any number of read-only tiers behind it. A single-valued setting
+    /// could not express the second half.
+    static var workspaceContextVaults: [String: [String]] {
+        get { (defaults.dictionary(forKey: Keys.workspaceContextVaults) as? [String: [String]]) ?? [:] }
+        set { defaults.set(newValue, forKey: Keys.workspaceContextVaults) }
     }
 
     /// The workspace the user is currently in. Retrieval is hard-scoped to it (secure by default) —

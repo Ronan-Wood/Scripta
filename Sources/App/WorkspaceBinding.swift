@@ -38,12 +38,22 @@ struct WorkspaceBinding: Equatable {
     /// The app's own partition: the `group:` written into transcript frontmatter at record time.
     let workspace: String
 
-    /// The vault scope this workspace reads, or `nil` when the operator has not bound one.
+    /// The scope this workspace reads.
     ///
-    /// OPTIONAL BECAUSE UNBOUND IS A REAL STATE, not a gap to fill with a default. Ask used to take
-    /// "the first scope with an index", which made "which corpus am I asking" a question about
-    /// roster order — so a workspace called Personal read whichever vault the engine happened to
-    /// list first, and its silence about a topic read as a fact about that workspace.
+    /// ITS OWN VAULT, BY DEFAULT — which is what §7 changed. A workspace IS a vault now: capture
+    /// writes every call into `<output>/<slug>/`, that directory carries a manifest naming the
+    /// scope, and composing it yields this workspace's calls plus whatever it inherits. So "which
+    /// scope does this workspace read" has an obvious answer the app was making the operator supply
+    /// by hand — and until they did, every vault surface reported itself unbound while the calls
+    /// sat composable on disk.
+    ///
+    /// It stays OPTIONAL for the one case with no answer: a workspace whose name slugifies to
+    /// nothing cannot name a vault. Ask used to take "the first scope with an index", which made
+    /// "which corpus am I asking" a question about roster order — that is what this must never do,
+    /// and defaulting to the workspace's OWN vault is the opposite of it.
+    ///
+    /// An explicit binding still wins: pointing a workspace at a different scope is a real thing to
+    /// want, and the stored value is what expresses it.
     let readsScope: String?
 
     /// Where this workspace's calls are written — the ONE concrete vault that is their home.
@@ -66,6 +76,20 @@ struct WorkspaceBinding: Equatable {
     /// notes and collide with the registered scope of the same name, which `scopes.record` refuses.
     /// The collision is what surfaced this: a workspace vault takes the scope's NAME, so it must
     /// also take on what that scope was composing.
+    /// Every vault this workspace pulls context from, for the manifest's `inherits`.
+    ///
+    /// THE OPERATOR'S CHOICE FIRST, the bound scope's vault as the fallback. Before Settings could
+    /// express this, the only way a workspace inherited anything was as a side effect of picking a
+    /// scope in Ask — which bound exactly one, and left the operator hand-editing TOML to add a
+    /// second.
+    var contextVaults: [URL] {
+        let chosen = AppSettings.workspaceContextVaults[workspace] ?? []
+        if !chosen.isEmpty {
+            return chosen.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        }
+        return inheritsVault.map { [$0] } ?? []
+    }
+
     var inheritsVault: URL? {
         AppSettings.workspaceReadVaults[workspace]
             .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
@@ -78,12 +102,16 @@ struct WorkspaceBinding: Equatable {
 /// `AppSettings` beside `calendarGroups`, which is already the sole authority on which workspace an
 /// artefact belongs to.
 enum WorkspaceBindings {
-    /// The binding for one workspace, bound or not.
+    /// The binding for one workspace.
+    ///
+    /// STORED FIRST, OWN VAULT SECOND. An explicit binding is the operator pointing this workspace
+    /// somewhere deliberate; the default is the vault its own calls are written into, which is the
+    /// answer whenever they have not said otherwise.
     static func binding(for workspace: String) -> WorkspaceBinding {
-        WorkspaceBinding(workspace: workspace,
-                         readsScope: AppSettings.workspaceReadScopes[workspace].flatMap {
-                             $0.isEmpty ? nil : $0
-                         })
+        let stored = AppSettings.workspaceReadScopes[workspace].flatMap { $0.isEmpty ? nil : $0 }
+        let own = ScriptaVault.slug(workspace)
+        return WorkspaceBinding(workspace: workspace,
+                                readsScope: stored ?? (own.isEmpty ? nil : own))
     }
 
     /// The active workspace's binding — what Ask is asking.

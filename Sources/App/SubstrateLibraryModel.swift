@@ -215,7 +215,7 @@ final class SubstrateLibraryModel: ObservableObject {
             // in no vault, therefore in no scope — visible in the app and unreachable by any query,
             // which is the state a repair is supposed to END. `substrate export-transcripts` used
             // to be the thing that moved it and no longer exists.
-            let inherits = WorkspaceBindings.binding(for: name).inheritsVault.map { [$0] } ?? []
+            let inherits = WorkspaceBindings.binding(for: name).contextVaults
             let filed = try TranscriptGroupRepair.file(transcript.url, into: name,
                                                        under: AppSettings.outputFolder,
                                                        inherits: inherits)
@@ -417,7 +417,7 @@ final class SubstrateLibraryModel: ObservableObject {
             // promoted to a shared core vault deliberately, the same rule notes follow.
             let target = try ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder,
                                                 inherits: WorkspaceBindings.binding(for: workspace)
-                                                    .inheritsVault.map { [$0] } ?? [])
+                                                    .contextVaults)
             promoted = try SubstrateLibrary.promote(
                 SubstrateLibrary.Ingested(out: out, origin: file,
                                           domains: domains.split(separator: ",").map(String.init)),

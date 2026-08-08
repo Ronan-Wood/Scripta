@@ -77,6 +77,32 @@ private struct VaultBrowseConsole: View {
     }
 }
 
+/// WHICH CORPUS IS ON SCREEN, and every other one that could be. Ask has had this since it was
+/// written; the browser had a workspace and no way off it, so a reader with six composed scopes
+/// could see exactly one of them in the surface built for looking at scopes.
+private struct VaultScopePicker: View {
+    @ObservedObject var model: VaultBrowseModel
+    @ObservedObject private var scopes = SubstrateScopes.shared
+
+    var body: some View {
+        if case .listed(let rows) = scopes.roster, rows.count > 1 {
+            HStack(spacing: Gap.s6) {
+                Text("scope").typeface(Register.monoMicro, Ink.textHelper)
+                VaultChip(title: "this workspace", selected: model.scopeOverride == nil) {
+                    model.look(at: nil)
+                }
+                ForEach(rows.filter(\.indexPresent), id: \.scope) { row in
+                    VaultChip(title: row.scope, selected: model.scopeOverride == row.scope) {
+                        model.look(at: row.scope)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 /// Asked for and abandoned — a reload cancelled by navigating away with nothing already on screen.
 /// It draws a CONTROL rather than a spinner: nothing is going to resolve this on its own, and a
 /// dead end that looks like progress is the failure the whole state machine is arranged to avoid.
@@ -133,6 +159,7 @@ private struct VaultBrowseListing: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Gap.s16) {
+                VaultScopePicker(model: model)
                 header
                 if let note = frozenNote { VaultScopeNote(note: note) }
                 VaultFilterRow(listing: listing, model: model)

@@ -40,6 +40,29 @@ final class VaultBrowseModel: ObservableObject {
 
     @Published var lens: Lens = .workspace
 
+    /// A scope the reader chose instead of this workspace's own. `nil` follows the workspace.
+    ///
+    /// ASK HAS ALWAYS HAD THIS AND THE BROWSER DID NOT, which is why the operator could not see
+    /// `prism` here at all: every other corpus was one chip away in Ask and unreachable in the one
+    /// surface whose entire job is looking at a corpus. Held on the model rather than the view for
+    /// the reason `lens` is — `HubContent` rebuilds this pane on every sidebar reselect.
+    @Published private(set) var scopeOverride: String?
+
+    /// Look at a different scope, or `nil` to follow the workspace again.
+    func look(at scope: String?) {
+        guard scope != scopeOverride else { return }
+        scopeOverride = scope
+        generation &+= 1
+        vaultFilter = nil
+        refusedInclusion = nil
+        loadedScope = scope ?? WorkspaceBindings.active.readsScope
+        state = .unasked
+        reloadToken &+= 1
+    }
+
+    /// The scope this pane is showing: the chosen one, else the workspace's own.
+    var activeScope: String? { scopeOverride ?? WorkspaceBindings.active.readsScope }
+
     enum State {
         /// Nothing asked yet — the pane has not been opened, or the workspace just changed. Draws as
         /// a spinner, because a load is always about to follow it.
@@ -173,6 +196,10 @@ final class VaultBrowseModel: ObservableObject {
     /// partition leaking, not a stale view, and it is what `SubstrateAskModel.adoptBinding` spends
     /// its `epoch` on.
     func adoptWorkspace() {
+        // A CHOSEN SCOPE SURVIVES A WORKSPACE SWITCH — it was chosen, not inherited. The privacy
+        // partition is unaffected: the reader picked this corpus by name from the roster, which is
+        // what Ask's chips have always allowed.
+        guard scopeOverride == nil else { return }
         let scope = WorkspaceBindings.active.readsScope
         guard scope != loadedScope else { return }
         generation &+= 1
@@ -191,7 +218,7 @@ final class VaultBrowseModel: ObservableObject {
     }
 
     func load() async {
-        guard let scope = WorkspaceBindings.active.readsScope else {
+        guard let scope = activeScope else {
             // Invalidated here too: a workspace can lose its binding while a request is in flight,
             // and that reply must not land on a screen that now says there is no vault.
             generation &+= 1
