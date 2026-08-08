@@ -177,6 +177,13 @@ class CrossEncoderReranker:
     #                        candidate produced a yes/no verdict). This is what the eval reads.
     # abstentions is PER-CANDIDATE (one unparseable verdict), not per-query.
     budget_s: float = BUDGET
+
+    #: How many pool candidates are scored at once. Four rather than the whole pool: the local
+    #: daemon serves one model and a burst of twenty is rude to it and to anything else on the
+    #: machine, while the first few workers already collapse most of the wall clock. Raise it if
+    #: the daemon is configured for more parallelism (`OLLAMA_NUM_PARALLEL`); the RESULT does not
+    #: change either way, only how long it takes to arrive.
+    concurrency: int = 4
     transport_failures: int = field(default=0, init=False)
     abstentions: int = field(default=0, init=False)
     fallback_queries: int = field(default=0, init=False)
@@ -258,33 +265,67 @@ class CrossEncoderReranker:
         # document), so pool-level keying threw away all 20 whenever any candidate entered or
         # left the top 20 — which is every embedder change, making the five-embedder sweep
         # share almost no cache hits despite heavily overlapping candidate sets.
-        scores: list[float] = []
         deadline = time.monotonic() + self.budget_s
-        for h in pool:
-            # Checked BEFORE each call, so the budget bounds the call we are about to start rather
-            # than noticing afterwards. Partial scores are deliberately discarded: ranking on a
-            # prefix of the pool would promote whatever happened to be scored first, which is a
-            # ranking artefact of how long the daemon took, not a relevance judgement. Fail open
-            # to fused order and RECORD it, the same shape as the transport failure below — a
-            # slow arm and a dead one both have to reach the caller as a degradation.
-            if time.monotonic() >= deadline:
-                self.budget_exhaustions += 1
-                self.fallback_queries += 1
-                return hits, False
-            # Keyed on the CONTENT scored, not chunk_id: a re-chunk that reuses an id but
-            # changes the text would otherwise serve the old verdict forever. A score is a pure
-            # function of (query, this document's text).
-            ckey = query + "\x00" + hashlib.sha256(h.text.encode()).hexdigest()[:16]
+
+        # CACHE FIRST, SERIALLY. A hit costs nothing and must not occupy a worker; resolving them
+        # up front also means the concurrent stage below is exactly the set of real model calls.
+        scored: list[float | None] = [None] * len(pool)
+        keys = [query + "\x00" + hashlib.sha256(h.text.encode()).hexdigest()[:16] for h in pool]
+        pending: list[int] = []
+        for i, h in enumerate(pool):
             if self.cache is not None:
-                cached = self.cache.get_expansion(ckey, self.cache_key)
+                cached = self.cache.get_expansion(keys[i], self.cache_key)
                 if cached is not None:
                     try:
-                        scores.append(float(cached))
+                        scored[i] = float(cached)
                         continue
                     except ValueError:
                         pass
+            pending.append(i)
 
-            s = self._score(query, h.text)
+        # CONCURRENT, AND THE RANKING IS UNCHANGED BY IT. A pointwise score is a function of
+        # (query, ONE document) — which is why the cache above is keyed per pair — so the pool's
+        # scores are independent and the order they are computed in cannot affect any of them.
+        # Results land BY INDEX, never by completion order, so the sort at the bottom sees exactly
+        # what the serial loop produced.
+        #
+        # THIS IS WHERE ASK'S 17 SECONDS WENT. Measured 2026-08-06 on the operator's `cbre` scope:
+        # 17,274ms with the generator arms against 286ms without. A pool of 20 scored one 7B
+        # generation at a time is ~16s of that; HyDE is one generation and the rest. Serial was
+        # never a requirement, only what the first implementation did.
+        if pending:
+            from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.budget_exhaustions += 1
+                self.fallback_queries += 1
+                return hits, False
+            with ThreadPoolExecutor(max_workers=min(self.concurrency, len(pending))) as pool_ex:
+                futures = {pool_ex.submit(self._score, query, pool[i].text): i for i in pending}
+                done, not_done = wait(futures, timeout=remaining, return_when=FIRST_EXCEPTION)
+                if not_done:
+                    # THE BUDGET BOUNDS THE QUERY, not each call. Partial scores are discarded for
+                    # the reason the serial version discarded them: ranking on whichever candidates
+                    # happened to finish first is an artefact of daemon scheduling, not relevance.
+                    for f in not_done:
+                        f.cancel()
+                    self.budget_exhaustions += 1
+                    self.fallback_queries += 1
+                    return hits, False
+                for future, i in futures.items():
+                    try:
+                        scored[i] = future.result()
+                    except Exception:
+                        scored[i] = None
+
+        scores: list[float] = []
+        for i, h in enumerate(pool):
+            # Keyed on the CONTENT scored, not chunk_id: a re-chunk that reuses an id but
+            # changes the text would otherwise serve the old verdict forever. A score is a pure
+            # function of (query, this document's text).
+            ckey = keys[i]
+            s = scored[i]
             if s is None:
                 self.transport_failures += 1
                 self.fallback_queries += 1
