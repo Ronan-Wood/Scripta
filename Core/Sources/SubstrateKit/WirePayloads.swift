@@ -670,6 +670,51 @@ public struct WireDocumentsResult: Codable, Equatable, Sendable {
 
 // MARK: - drift
 
+/// One entity the index resolved, and how many notes name it. `introspect.status_payload`.
+///
+/// A CACHE, not a record. The rules behind it — who is one person, which surfaces resolve to them —
+/// live in a file the vault declares, and the engine re-derives this on every compose. An empty
+/// list means no roster was declared or nobody was resolved; it never means nobody was mentioned.
+public struct WireEntity: Codable, Equatable, Sendable {
+    public let entityID: String
+    public let name: String
+    /// person / org / term, or whatever the roster's author uses — the engine has no opinion.
+    public let kind: String?
+    public let gloss: String?
+    public let documents: Int
+
+    public init(entityID: String, name: String, kind: String?, gloss: String?, documents: Int) {
+        self.entityID = entityID
+        self.name = name
+        self.kind = kind
+        self.gloss = gloss
+        self.documents = documents
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case entityID = "entity_id"
+        case name, kind, gloss, documents
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        entityID = try c.decode(String.self, forKey: .entityID)
+        name = try c.decode(String.self, forKey: .name)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        gloss = try c.decodeIfPresent(String.self, forKey: .gloss)
+        documents = try c.decode(Int.self, forKey: .documents)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(entityID, forKey: .entityID)
+        try c.encode(name, forKey: .name)
+        try c.encodeExplicitNull(kind, forKey: .kind)
+        try c.encodeExplicitNull(gloss, forKey: .gloss)
+        try c.encode(documents, forKey: .documents)
+    }
+}
+
 /// `freshness.drift` — the vault compared against what the index holds.
 public struct WireDriftDetail: Codable, Equatable, Sendable {
     /// Something DEFINITELY differs. Read WITH `checkable`: `stale: false, checkable: false` is
@@ -848,6 +893,8 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
     public let byStatus: [String: Int]
     public let byDocType: [String: Int]
     public let byConfidence: [String: Int]
+    /// Who this corpus is about, by note count. Empty when no identity roster is declared.
+    public let entities: [WireEntity]
     public let retrievalArms: WireRetrievalArms
     /// `null` when no vector arm is wired at all.
     public let vectors: WireVectorStatus?
@@ -858,6 +905,7 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
                 documents: Int, passages: Int, outlines: Int, schemaVersion: Int,
                 byVault: [String: Int], byTier: [String: Int], byStatus: [String: Int],
                 byDocType: [String: Int], byConfidence: [String: Int],
+                entities: [WireEntity] = [],
                 retrievalArms: WireRetrievalArms, vectors: WireVectorStatus?,
                 refresh: WireRefreshReport, drift: WireDriftReport) {
         self.scope = scope
@@ -874,6 +922,7 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
         self.byStatus = byStatus
         self.byDocType = byDocType
         self.byConfidence = byConfidence
+        self.entities = entities
         self.retrievalArms = retrievalArms
         self.vectors = vectors
         self.refresh = refresh
@@ -890,6 +939,7 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
         case byStatus = "by_status"
         case byDocType = "by_doc_type"
         case byConfidence = "by_confidence"
+        case entities
         case retrievalArms = "retrieval_arms"
         case vectors, refresh, drift
     }
@@ -910,6 +960,9 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
         byStatus = try c.decode([String: Int].self, forKey: .byStatus)
         byDocType = try c.decode([String: Int].self, forKey: .byDocType)
         byConfidence = try c.decode([String: Int].self, forKey: .byConfidence)
+        // `decodeIfPresent`: an engine older than v10 sends no key, which is the same fact as a
+        // scope with no roster — nobody was resolved.
+        entities = try c.decodeIfPresent([WireEntity].self, forKey: .entities) ?? []
         retrievalArms = try c.decode(WireRetrievalArms.self, forKey: .retrievalArms)
         vectors = try c.decodeIfPresent(WireVectorStatus.self, forKey: .vectors)
         refresh = try c.decodeRefresh(forKey: .refresh)
@@ -932,6 +985,7 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
         try c.encode(byStatus, forKey: .byStatus)
         try c.encode(byDocType, forKey: .byDocType)
         try c.encode(byConfidence, forKey: .byConfidence)
+        try c.encode(entities, forKey: .entities)
         try c.encode(retrievalArms, forKey: .retrievalArms)
         try c.encodeExplicitNull(vectors, forKey: .vectors)
         if refresh.wasSent { try c.encode(refresh, forKey: .refresh) }

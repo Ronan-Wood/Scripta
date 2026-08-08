@@ -339,6 +339,14 @@ TOOLS = [
                 "doc_type": {"type": "string",
                              "description": "Only notes doing this job (spine.DOC_TYPES)."},
                 "include_archived": {"type": "boolean", "description": "Default false."},
+                "entity": {
+                    "type": "string",
+                    "description": "Only passages from notes that MENTION this entity, by id. A "
+                                   "document-level filter: the note is about them, not necessarily "
+                                   "the passage. `status` lists the ids with how many notes name "
+                                   "each. Absent unless the scope's vault declares an identity "
+                                   "roster.",
+                },
                 "vaults": {
                     "type": "array", "items": {"type": "string"},
                     "description": "Only passages composed from these vaults, by manifest name. "
@@ -441,6 +449,9 @@ def _tool_search(args: dict, cfg: Config) -> dict:
     include_sources = bool(args.get("include_sources", False))
     statuses = retriever.statuses(include_archived=bool(args.get("include_archived", False)))
     vaults = _vault_set(args.get("vaults"))
+    entity = args.get("entity")
+    if entity is not None and (not isinstance(entity, str) or not entity.strip()):
+        raise ToolError(f"`entity` must be an entity id, got {entity!r}. `status` lists them.")
 
     # `fast`: THE EMBEDDER ONLY, for a caller that must answer inside a turn of speech.
     #
@@ -461,7 +472,7 @@ def _tool_search(args: dict, cfg: Config) -> dict:
     try:
         result = retriever.retrieve(
             store, query, k=k, statuses=statuses, vaults=vaults,
-            withheld_vaults=verdict.withhold,
+            withheld_vaults=verdict.withhold, entity=entity,
             include_sources=include_sources, with_outlines=render.OUTLINE_RECORDS,
             embedder=cfg.stack.embedder,
             expander=None if fast else cfg.stack.expander,
