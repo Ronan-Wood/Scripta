@@ -301,6 +301,20 @@ struct SettingsView: View {
         }
 
         Section {
+            WorkspaceContextVaults()
+        } header: {
+            Text("Context Vaults")
+        } footer: {
+            Text("Calls are written into one vault — this workspace's own — and that is the source. "
+                 + "These are the vaults it PULLS CONTEXT FROM when you ask it something: read-only, "
+                 + "never written to, composed into the same corpus so one question reaches your "
+                 + "calls and your notes together. Changing this takes effect the next time the "
+                 + "workspace is composed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        Section {
             Toggle("Show what your vault knows, during a call", isOn: $liveRecallEnabled)
                 .onChange(of: liveRecallEnabled) { _, v in AppSettings.liveRecallEnabled = v }
         } header: {
@@ -801,3 +815,80 @@ struct SettingsView: View {
         AppSettings.domainVocabulary = terms
     }
 }
+
+/// Which vaults the active workspace pulls CONTEXT from — its manifest's `inherits`.
+///
+/// ONE HOME, MANY CONTEXTS. Calls are written into this workspace's own vault and nowhere else;
+/// these are the read-only tiers composed alongside them so a single question reaches the calls and
+/// the notes together. Operator, 2026-08-07: "the others are just to pull context from."
+///
+/// DRAWN FROM THE ENGINE'S ROSTER, not from a list this app keeps. Every registered scope names the
+/// vault it composes, so the options are what the engine can actually resolve — a vault the operator
+/// has deleted or never composed simply is not offered, rather than being offered and failing at the
+/// next compose.
+struct WorkspaceContextVaults: View {
+    @ObservedObject private var scopes = SubstrateScopes.shared
+    @ObservedObject private var model = AppModel.shared
+    @State private var chosen: [String] = []
+
+    private var workspace: String { model.activeGroup }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(workspace.isEmpty ? "Ungrouped workspace" : workspace)
+                .font(.caption).foregroundStyle(.secondary)
+            switch scopes.roster {
+            case .unasked, .listing:
+                Text("Asking the engine which vaults exist…")
+                    .font(.caption).foregroundStyle(.secondary)
+            case .refused:
+                Text("The engine is not answering, so the vaults it composes cannot be listed. "
+                     + "This is not a report that there are none.")
+                    .font(.caption).foregroundStyle(.secondary)
+            case .listed(let rows):
+                let options = rows.filter {
+                    // Not this workspace's OWN vault: it is the source, always composed, and
+                    // offering it as context to itself would be a checkbox that means nothing.
+                    $0.scope != ScriptaVault.slug(workspace) && !$0.vault.isEmpty
+                }
+                if options.isEmpty {
+                    Text("No other composed vaults to pull from yet.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(options, id: \.scope) { row in
+                        Toggle(isOn: binding(for: row.vault)) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(row.scope)
+                                Text(row.vault).font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(1).truncationMode(.middle)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear { chosen = AppSettings.workspaceContextVaults[workspace] ?? [] }
+        .onChange(of: model.activeGroup) { _, _ in
+            chosen = AppSettings.workspaceContextVaults[workspace] ?? []
+        }
+        .task { await scopes.activate() }
+    }
+
+    private func binding(for vault: String) -> Binding<Bool> {
+        Binding(
+            get: { chosen.contains(vault) },
+            set: { on in
+                if on { if !chosen.contains(vault) { chosen.append(vault) } }
+                else { chosen.removeAll { $0 == vault } }
+                var all = AppSettings.workspaceContextVaults
+                // REMOVED, not stored empty. An empty list and "never chosen" must not be the same
+                // stored value, because absence falls back to the bound scope's vault and an empty
+                // choice would mean the operator deselected everything — which they can express by
+                // there being no entry at all.
+                if chosen.isEmpty { all.removeValue(forKey: workspace) } else { all[workspace] = chosen }
+                AppSettings.workspaceContextVaults = all
+            }
+        )
+    }
+}
+

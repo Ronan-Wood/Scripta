@@ -514,7 +514,7 @@ final class RecordingSession {
         // composes to a scope holding the workspace's calls AND its curated notes — one corpus, one
         // query, which is what live retrieval during a call requires. Absent when the workspace has
         // no binding yet: the vault is still written, and still correct, just holding only calls.
-        let inherits = WorkspaceBindings.binding(for: group).inheritsVault.map { [$0] } ?? []
+        let inherits = WorkspaceBindings.binding(for: group).contextVaults
         let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Recording")
         // AN UNNAMED WORKSPACE GETS THE DEFAULT VAULT; A NAMED-BUT-UNNAMEABLE ONE DOES NOT. "" is
         // the fresh-install state and means no choice was made, so filing under `default`
