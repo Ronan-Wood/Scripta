@@ -2,11 +2,22 @@ import Foundation
 import ScriptaCore
 import ScriptaShared
 
-/// Bridges the app's active workspace to the bundled MCP server. The server is spawned by the LLM
-/// client, not the app, so they share no session — instead the app writes `{activeGroup, heartbeat}`
-/// here and the server reads it. A stale heartbeat means the app isn't running, and the server
-/// **refuses** rather than trust a stale scope: the privacy wall binds LLM clients too, and a
-/// silently-wrong active group would leak a private workspace to the model.
+/// The app vouching for its own workspace, so the ENGINE will answer from it.
+///
+/// IT OUTLIVED THE SERVER IT WAS WRITTEN FOR. This bridged the app to the bundled `scripta-mcp`
+/// helper, which was spawned by an LLM client and shared no session with the app — so the app
+/// published `{activeGroup, heartbeat}` and the helper refused rather than trust a stale scope.
+/// That helper is deleted (Doc 4 Phase 3); the wall it enforced is not, because §7 moved the calls
+/// into vaults the engine composes and any local process can reach those.
+///
+/// So the same file now vouches to the engine instead. A workspace vault's manifest declares
+/// `guard_state` pointing here (`ScriptaVault.manifest()`), and `substrate/guard.py` withholds that
+/// vault's own notes unless this heartbeat is fresh AND `activeScope` names the scope being asked
+/// for. Same contract, one reader further out — and the engine learns nothing about Scripta: it
+/// enforces a shape a vault asked it to enforce.
+///
+/// `activeScope` is the SLUG, published beside the display name, so the engine compares two strings
+/// rather than acquiring this app's slug rule.
 enum MCPStateFile {
     static var url: URL { SharedLocations.mcpState }
 
@@ -34,7 +45,8 @@ enum MCPStateFile {
     private static var timer: Timer?
 
     /// Writes now and every 20s while the app runs. On quit the beat goes stale within the
-    /// server's ~60s freshness window, at which point the server refuses.
+    /// engine's 60s window (`guard.STALE_AFTER_SECONDS`), at which point the guarded vault's own
+    /// notes stop answering — while everything the scope inherits keeps working.
     @MainActor static func startHeartbeat() {
         write()
         timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { _ in write() }

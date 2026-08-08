@@ -2,24 +2,27 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- NOT SANDBOXED (Doc 3 §1, ratified 2026-07-30). The App Store was dropped because the
-	     bundled MCP helper cannot ship in a MAS bundle — an embedded executable must inherit its
-	     parent's sandbox, and `scripta-mcp` exists to be spawned by an LLM client that is not its
-	     parent — and Doc 3 §2 then made the app own the substrate engine's process as well. A
-	     sandboxed app cannot spawn a subprocess outside its bundle, so `com.apple.security.app-sandbox`
-	     and the engine supervisor are mutually exclusive. SPEC.md's locked-decision row records the
-	     move and both dates.
+	<!-- NOT SANDBOXED (Doc 3 §1, ratified 2026-07-30). Two reasons originally: the bundled MCP
+	     helper could not ship in a MAS bundle, and Doc 3 §2 made the app own the substrate engine's
+	     process. THE FIRST REASON IS GONE — that helper was deleted 2026-08-07 (Doc 4 Phase 3) —
+	     and the second alone still decides it: a sandboxed app cannot spawn a subprocess outside
+	     its bundle, so `com.apple.security.app-sandbox` and the engine supervisor remain mutually
+	     exclusive. SPEC.md's locked-decision row records the move and both dates.
 
 	     WHAT EACH REMAINING KEY IS NOW WORTH, since half of them were sandbox concepts:
 
-	       application-groups   KEPT, and it is the one that would have broken silently. On macOS
-	                            the group container is not a sandbox artefact: any binary signed by
-	                            this team and carrying this entitlement resolves it. `scripta-mcp`
-	                            is the proof — it has never been sandboxed and reads index.db and
-	                            mcp-state.json out of the same container today. Dropping the key
-	                            would send `SharedLocations.supportDirectory` to its legacy
-	                            Application Support fallback while the helper kept reading the group
-	                            container, and the two would silently stop sharing an index.
+	       application-groups   KEPT, and the reason CHANGED with the helper's deletion — it did not
+	                            weaken. On macOS the group container is not a sandbox artefact: any
+	                            binary signed by this team and carrying this entitlement resolves
+	                            it. It used to matter because the unsandboxed helper read index.db
+	                            out of the same container. It now matters because `mcp-state.json`
+	                            lives there and a workspace vault's manifest records that ABSOLUTE
+	                            PATH as its `guard_state`. Drop the key and
+	                            `SharedLocations.supportDirectory` falls back to Application
+	                            Support, every existing manifest keeps naming the container path,
+	                            and the engine finds no heartbeat — so the guard fails closed and
+	                            every workspace's own calls stop answering, correctly and for
+	                            entirely the wrong reason.
 	       device.audio-input   KEPT. TCC, not the sandbox — unaffected either way, and the
 	                            microphone prompt is still driven by NSMicrophoneUsageDescription.
 	       calendars            KEPT, same reason.

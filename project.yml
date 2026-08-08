@@ -182,45 +182,20 @@ targetTemplates:
 targets:
   Scripta:
     templates: [ScriptaApp]
-    dependencies:
-      - target: scripta-mcp
-        copy:
-          destination: executables
 
   # Build with SYMROOT=build-mas so the two flavors never overwrite each other — a baked
   # CONFIGURATION_BUILD_DIR override breaks SwiftPM module resolution (packages build to the
   # default location; the target would look in the overridden one).
   Scripta-MAS:
     templates: [ScriptaApp]
-    # Both flavors share PRODUCT_NAME, so a MAS build into a dir where the direct flavor built
-    # earlier (Xcode's shared DerivedData, or a reused SYMROOT) inherits the direct bundle's
-    # embedded helper — Xcode never scrubs foreign files. The store flavor must not carry the
-    # helper (embedded executables must inherit the sandbox), so re-establish that invariant
-    # structurally at the end of every MAS build.
+    # A stale helper from an earlier build of the retired `scripta-mcp` target can still be sitting
+    # in a reused SYMROOT or in Xcode's shared DerivedData, and Xcode never scrubs foreign files —
+    # so a MAS build could still inherit one and ship an unsandboxed executable the store refuses.
+    # The target is gone; this outlives it until the build directories have turned over.
     postBuildScripts:
-      - name: Scrub bundled helper (store flavor must not embed it)
+      - name: Scrub any stale bundled helper (the target is retired; old build dirs may still hold one)
         script: rm -f "$CODESIGNING_FOLDER_PATH/Contents/MacOS/scripta-mcp"
         basedOnDependencyAnalysis: false
-
-  scripta-mcp:
-    type: tool
-    platform: macOS
-    sources:
-      - SourcesMCP
-    dependencies:
-      - package: ScriptaCore
-        product: ScriptaShared
-    settings:
-      base:
-        PRODUCT_NAME: scripta-mcp
-        MACOSX_DEPLOYMENT_TARGET: "14.0"
-        SWIFT_VERSION: "5.0"
-        CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 6CTH5M9UWZ
-        ENABLE_HARDENED_RUNTIME: YES
-        # Unsandboxed (LLM clients spawn it, so it can't inherit a sandbox), but entitled to
-        # the shared App Group so it reads the index + state file without container prompts.
-        CODE_SIGN_ENTITLEMENTS: SourcesMCP/scripta-mcp.entitlements
 
   # The "Record & Register" review surface. A separate runnable app whose whole purpose is that
   # the design system can be accepted or rejected BEFORE it touches an app view.
