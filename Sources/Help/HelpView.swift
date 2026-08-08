@@ -10,18 +10,13 @@ struct HelpView: View {
     @State private var desktopStatus: String?
     @State private var activeSection = "getting-started"
 
-    private var mcpBinaryPath: String {
-        "\(Bundle.main.bundlePath)/Contents/MacOS/scripta-mcp"
-    }
 
-    /// The App Store flavor ships without the bundled server (store rules forbid an
-    /// externally-spawnable embedded executable) — its Docs point at the separate download.
-    private var helperIsBundled: Bool {
-        Bundle.main.url(forAuxiliaryExecutable: "scripta-mcp") != nil
-    }
-
+    /// Register the ENGINE, not a bundled helper. Scripta shipped its own MCP server until
+    /// 2026-08-07; Doc 4 §7 moved calls into vaults the engine composes, so the two were answering
+    /// the same questions differently and the app's was deleted. The engine serves every scope,
+    /// including this app's workspaces.
     private var mcpCommand: String {
-        "claude mcp add -s user scripta -- \"\(mcpBinaryPath)\""
+        "claude mcp add -s user substrate -- \"\(NSHomeDirectory())/.local/bin/substrate-mcp\""
     }
 
     private struct TOCEntry: Identifiable {
@@ -168,10 +163,8 @@ struct HelpView: View {
 
     @ViewBuilder private var connectClaude: some View {
         VStack(alignment: .leading, spacing: Space.x4) {
-            if !helperIsBundled {
-                body14("This App Store edition connects to Claude through a small free companion (App Store rules keep it out of this bundle). Download it, then return here — download link coming with release.")
-            }
-            body14("Scripta bundles a read-only MCP server so Claude can search and reason over your transcripts. Move the app to Applications first, then register it once:")
+            body14("Your calls live in a vault the substrate engine composes, so Claude reads them through the engine — the same server that answers for every other vault you keep. Register it once:")
+            body14("While Scripta is closed, this workspace's own calls are withheld and the engine says so; everything the workspace inherits keeps answering. Opening Scripta and selecting the workspace is what vouches for it.")
 
             HStack(alignment: .top, spacing: Space.x3) {
                 Text(mcpCommand)
@@ -243,7 +236,9 @@ struct HelpView: View {
                 root = existing
             }
             var servers = (root["mcpServers"] as? [String: Any]) ?? [:]
-            servers["scripta"] = ["command": mcpBinaryPath]
+            // The ENGINE, under its own name. Writing `scripta` here would register a helper this
+            // app no longer ships, and Claude Desktop would fail to spawn it every launch.
+            servers["substrate"] = ["command": "\(NSHomeDirectory())/.local/bin/substrate-mcp"]
             root["mcpServers"] = servers
             let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: configURL, options: .atomic)
