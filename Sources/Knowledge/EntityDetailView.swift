@@ -84,6 +84,11 @@ struct EntityDetailView: View {
                             if let gloss = entity.gloss, !gloss.isEmpty { glossSection(gloss) }
                         }
                         mentionsSection
+                        // AFTER the local mentions, deliberately. Those are what this app indexed
+                        // — its own calls and uploads — and this is the rest of the corpus: the
+                        // curated notes the workspace inherits, which the local registry has never
+                        // been able to see.
+                        EntityVaultNotes(entityID: entityID)
                         if !commitments.isEmpty { commitmentsSection }
                         if !coOccurring.isEmpty { coOccurringSection }
                     }

@@ -178,6 +178,9 @@ public struct SubstrateDocumentsRequest: Encodable, Sendable {
     public let scope: String
     /// Only notes composed from this vault, by manifest name. The filter a reader uses to separate
     /// their own notes from the tier they share with every other project.
+    /// Only notes that MENTION this entity, by id — "what has this person been in". Resolved from
+    /// the roster the scope's vault declares; `nil` on a scope that declares none.
+    public let entity: String?
     public let vault: String?
     /// Only notes doing this job. Honoured here and refused by `search`, because in retrieval it is
     /// an unmeasured ranking decision and here it is a column.
@@ -189,9 +192,11 @@ public struct SubstrateDocumentsRequest: Encodable, Sendable {
     public let offset: Int?
 
     public init(scope: String, vault: String? = nil, docType: String? = nil,
+                entity: String? = nil,
                 includeArchived: Bool? = nil, includeSources: Bool? = nil,
                 limit: Int? = nil, offset: Int? = nil) {
         self.scope = scope
+        self.entity = entity
         self.vault = vault
         self.docType = docType
         self.includeArchived = includeArchived
@@ -201,7 +206,7 @@ public struct SubstrateDocumentsRequest: Encodable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case scope, vault, limit, offset
+        case scope, vault, entity, limit, offset
         case docType = "doc_type"
         case includeArchived = "include_archived"
         case includeSources = "include_sources"
