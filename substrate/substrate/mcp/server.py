@@ -332,6 +332,10 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "scope": {"type": "string"},
+                "entity": {"type": "string",
+                           "description": "Only notes that MENTION this entity, by id — the "
+                                          "answer to \"what has this person been in\". `status` "
+                                          "lists the ids."},
                 "vault": {"type": "string",
                           "description": "Only notes composed from this vault, by manifest name. "
                                          "Omit it to browse every vault; an empty name is refused "
@@ -755,6 +759,9 @@ def _tool_documents(args: dict, cfg: Config) -> dict:
         raise ToolError(
             f"unknown doc_type {doc_type!r}; the vocabulary is {', '.join(sorted(DOC_TYPES))}."
         )
+    doc_entity = args.get("entity")
+    if doc_entity is not None and (not isinstance(doc_entity, str) or not doc_entity.strip()):
+        raise ToolError(f"`entity` must be an entity id, got {doc_entity!r}. `status` lists them.")
     vault = args.get("vault")
     if vault is not None and not isinstance(vault, str):
         raise ToolError(f"`vault` must be a string, got {vault!r}.")
@@ -785,7 +792,7 @@ def _tool_documents(args: dict, cfg: Config) -> dict:
     try:
         rows, total = store.browse(statuses=statuses, include_sources=include_sources,
                                    vault=vault, doc_type=doc_type,
-                                   withheld_vaults=verdict.withhold,
+                                   withheld_vaults=verdict.withhold, entity=doc_entity,
                                    limit=limit, offset=offset)
         return render.documents_payload(
             rows, total, scope=scope, statuses=statuses, include_sources=include_sources,
