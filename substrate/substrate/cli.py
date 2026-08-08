@@ -25,7 +25,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from substrate import classes, render, scopes
+from substrate import classes, identity, render, scopes
 from substrate.checks import document_checks, partition_check_failures
 from substrate.paths import ARTIFACTS, configure, internal_cache_footprint
 
@@ -687,6 +687,34 @@ def cmd_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_identity(store, vault_dir: Path) -> dict | None:
+    """Rebuild the entity cache from the vault's declared identity file. None when none is declared.
+
+    EVERY DOCUMENT IS RE-SCANNED, not just the ones this compose touched. The roster is a moving
+    target the engine does not own — an alias added to it changes who OLD documents mention, and a
+    cache that only updated freshly-ingested notes would answer "which notes mention Alexandra"
+    correctly for this week's and wrongly for everything before it.
+    """
+    declared = identity.declared_identity(vault_dir)
+    if declared is None:
+        return None
+    entities = identity.load(declared)
+    store.replace_identity([(e.entity_id, e.name, e.kind, e.gloss) for e in entities])
+
+    mentioned = 0
+    for row in store.documents():
+        doc_id = row["doc_id"]
+        text = store.document_text(doc_id)
+        pairs = [(eid, surface)
+                 for eid, surfaces in identity.mentions(text, entities).items()
+                 for surface in sorted(surfaces)]
+        store.set_document_entities(doc_id, pairs)
+        if pairs:
+            mentioned += 1
+    store.db.commit()
+    return {"entities": len(entities), "documents": mentioned, "source": declared}
+
+
 def cmd_compose(args: argparse.Namespace) -> int:
     """Resolve a project vault's manifest, ingest the composed note set, index it, and PROVE the
     composition — the inheritance mechanism end to end (Doc 2 §1–2, §6).
@@ -813,6 +841,14 @@ def cmd_compose(args: argparse.Namespace) -> int:
             print(f"\nFATAL (composition/status/doc_type/confidence assertion): {e}",
                   file=sys.stderr)
             return 3
+        # IDENTITY, RE-DERIVED. The rules live in a file the vault declares and this only ever reads
+        # them, so the cache is rebuilt here on every compose rather than carried — which is what
+        # makes a `--clean` rebuild safe for a layer nobody would want to re-author.
+        try:
+            identity_report = _resolve_identity(store, Path(args.project_vault))
+        except identity.IdentityError as e:
+            print(f"\nFATAL (identity): {e}", file=sys.stderr)
+            return 3
         index_version = store.index_version
 
     print(f"\n  indexed: added {len(rep.added)} · updated {len(rep.updated)} · "
@@ -823,6 +859,10 @@ def cmd_compose(args: argparse.Namespace) -> int:
           f"excluded {part['excluded_chunks']} · by status {part['by_status']}")
     print(f"  A21 doc_type PASS  by doc_type {dtp['by_doc_type']}")
     print(f"  A23 confidence PASS  by confidence {cfp['by_confidence']}")
+    if identity_report is not None:
+        print(f"  identity  {identity_report['entities']} entities · "
+              f"{identity_report['documents']} documents mention one · "
+              f"from {identity_report['source']}")
     # Never print a bare PASS beside an unreported failure: the label states which gates it covers,
     # and any quality warning is listed with the note that produced it, on its own line.
     if warned:

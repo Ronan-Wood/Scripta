@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # v1 (2026-07-21) initial: documents, chunks, chunks_fts (external-content), chunk_vectors.
 # v2 (2026-07-21) chunks.section_kind — references sections were acting as retrieval
@@ -101,8 +101,16 @@ SCHEMA_VERSION = 9
 #     `chunk_vectors`, exactly as v7 and v8 did — embeddings are a pure function of text and are
 #     re-derived, not lost.
 
-DDL = """
-CREATE TABLE IF NOT EXISTS documents(
+# v10 (2026-08-07) IDENTITY, as a CACHE. `entities` and `document_entities` hold who a note
+#     mentions, resolved at compose from a file the vault DECLARES (`identity` in the manifest,
+#     the same pattern `guard_state` uses). It bumps the version because it adds tables, and it is
+#     worth stating why they are only ever a cache: the system of record is that vault file, not
+#     this index. The index is dropped and rebuilt by every `--clean` compose, and identity must
+#     survive that — a hand-made "these two names are one person" decision that a rebuild could
+#     erase is worse than no identity layer at all. So nothing here is authored here; it is
+#     re-derived from the declared file on every compose, and losing it costs a compose.
+
+DDL = """CREATE TABLE IF NOT EXISTS documents(
     doc_id            TEXT PRIMARY KEY,
     source_path       TEXT NOT NULL,
     source_sha256     TEXT NOT NULL,
@@ -147,6 +155,29 @@ CREATE TABLE IF NOT EXISTS documents(
     tier              INTEGER,
     coverage          REAL
 );
+-- Identity, re-derived at compose from the vault's declared identity file. See v10 above for why
+-- this is a cache and not a record.
+CREATE TABLE IF NOT EXISTS entities(
+    entity_id TEXT PRIMARY KEY,
+    name      TEXT NOT NULL,
+    -- person / org / term. Not constrained here: the vocabulary belongs to whoever authors the
+    -- identity file, and an unknown kind should reach a reader as itself rather than be rejected
+    -- by an index that has no opinion about people.
+    kind      TEXT,
+    gloss     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS document_entities(
+    doc_id    TEXT NOT NULL REFERENCES documents(doc_id) ON DELETE CASCADE,
+    entity_id TEXT NOT NULL REFERENCES entities(entity_id) ON DELETE CASCADE,
+    -- The surface form that matched, kept because it is evidence: "A. McGinn" resolving to
+    -- Alexandra McGinn is a claim, and a reader auditing a wrong merge needs to see what was
+    -- actually written rather than what it was resolved to.
+    surface   TEXT NOT NULL,
+    PRIMARY KEY (doc_id, entity_id, surface)
+);
+CREATE INDEX IF NOT EXISTS idx_document_entities_entity ON document_entities(entity_id);
+
 CREATE INDEX IF NOT EXISTS idx_documents_class    ON documents(document_class);
 CREATE INDEX IF NOT EXISTS idx_documents_status   ON documents(status);
 CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type);
@@ -244,6 +275,8 @@ CREATE TABLE IF NOT EXISTS stage_ledger(
 DROP = """
 DROP TRIGGER IF EXISTS chunks_ai;
 DROP TRIGGER IF EXISTS chunks_ad;
+DROP TABLE IF EXISTS document_entities;
+DROP TABLE IF EXISTS entities;
 DROP TABLE IF EXISTS chunks_fts;
 DROP TABLE IF EXISTS chunk_vectors;
 DROP TABLE IF EXISTS stage_ledger;

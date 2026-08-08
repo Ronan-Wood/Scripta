@@ -224,6 +224,20 @@ def _add_vault_exclusion(where: list[str], args: list[Any], excluded: frozenset[
     args.extend(ordered)
 
 
+def _add_entity_filter(where: list[str], args: list[Any], entity: str | None) -> None:
+    """Restrict to documents that mention this entity. None means no filter.
+
+    A DOCUMENT-level test from a chunk query, which is what identity is: a person is mentioned in a
+    NOTE, so "which passages are about Alexandra" means passages of notes she appears in.
+    Chunk-level attribution would be a much stronger claim — that this paragraph is about her — and
+    nothing measures that.
+    """
+    if entity is None:
+        return
+    where.append("c.doc_id IN (SELECT doc_id FROM document_entities WHERE entity_id = ?)")
+    args.append(entity)
+
+
 def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
     return Hit(
         chunk_id=r["chunk_id"],
@@ -484,6 +498,7 @@ class IndexStore:
         include_sources: bool = False,
         vaults: frozenset[str] | None = None,
         withheld_vaults: frozenset[str] | None = None,
+        entity: str | None = None,
     ) -> list[Hit]:
         """Lexical search, precision-first with a recall TOP-UP.
 
@@ -502,6 +517,7 @@ class IndexStore:
             kind=kind, document_class=document_class, doc_id=doc_id,
             min_path_depth=min_path_depth, path_prefix=path_prefix, statuses=statuses,
             include_sources=include_sources, vaults=vaults, withheld_vaults=withheld_vaults,
+            entity=entity,
         )
         seen: set[str] = set()
         out: list[Hit] = []
@@ -539,6 +555,7 @@ class IndexStore:
                              or kw.get("document_class") is not None)
         _add_vault_filter(where, args, kw.get("vaults"))
         _add_vault_exclusion(where, args, kw.get("withheld_vaults"))
+        _add_entity_filter(where, args, kw.get("entity"))
         args.append(kw.get("k", 10))
 
         sql = (
@@ -594,12 +611,55 @@ class IndexStore:
         ).fetchall()
         return [_row_to_hit(r, 0.0) for r in rows]
 
+    # ---------------------------------------------------------------- identity (a CACHE)
+
+    def replace_identity(self, entities: list[tuple[str, str, str | None, str | None]]) -> None:
+        """Rewrite the entity roster wholesale. Cleared first, because this mirrors a file someone
+        may have REMOVED a person from — merging into what is there would resurrect them."""
+        self.db.execute("DELETE FROM entities")
+        self.db.executemany(
+            "INSERT INTO entities(entity_id, name, kind, gloss) VALUES (?,?,?,?)", entities)
+
+    def set_document_entities(self, doc_id: str, pairs: list[tuple[str, str]]) -> None:
+        """Who this document mentions: `(entity_id, surface)` pairs, replacing any prior set."""
+        self.db.execute("DELETE FROM document_entities WHERE doc_id=?", (doc_id,))
+        if pairs:
+            self.db.executemany(
+                "INSERT OR IGNORE INTO document_entities(doc_id, entity_id, surface) VALUES (?,?,?)",
+                [(doc_id, e, s) for e, s in pairs])
+
+    def document_text(self, doc_id: str) -> str:
+        """Every passage of a document, joined. What identity resolution scans.
+
+        FROM THE INDEX, not from the source file. The index holds what was actually ingested — the
+        same text retrieval will answer from — so a name that resolves here is a name a reader can
+        then find. Reading the source would let the two disagree about a document whose file has
+        moved on since the last compose.
+        """
+        rows = self.db.execute(
+            "SELECT text FROM chunks WHERE doc_id=? AND kind='passage' ORDER BY seq", (doc_id,))
+        return "\n".join(r[0] for r in rows)
+
+    def entity_documents(self, entity_id: str) -> set[str]:
+        return {r[0] for r in self.db.execute(
+            "SELECT doc_id FROM document_entities WHERE entity_id=?", (entity_id,))}
+
+    def entity_roster(self) -> list[dict]:
+        """Every entity the index knows, with how many documents mention it — ordered by that count,
+        so the roster reads as "who this corpus is about" rather than alphabetically."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT e.entity_id, e.name, e.kind, e.gloss, "
+            "       COUNT(DISTINCT d.doc_id) AS documents "
+            "FROM entities e LEFT JOIN document_entities d ON d.entity_id = e.entity_id "
+            "GROUP BY e.entity_id ORDER BY documents DESC, e.name")]
+
     def documents(self) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM documents ORDER BY doc_id")]
 
     def browse(self, *, statuses: frozenset[str] | None, include_sources: bool,
                vault: str | None = None, doc_type: str | None = None,
                withheld_vaults: frozenset[str] | None = None,
+               entity: str | None = None,
                limit: int = 25, offset: int = 0) -> tuple[list[dict], int]:
         """What a scope HOLDS, one row per note, in a stable order. The browse counterpart to
         `search`: no query, no ranking, no relevance — the whole corpus, filtered and paged.
@@ -642,6 +702,11 @@ class IndexStore:
             where.append("d.doc_type = ?")
             args.append(doc_type)
         _add_vault_exclusion(where, args, withheld_vaults)
+        # `d.doc_id` here, not `c.doc_id`: browse queries the documents table directly, and the
+        # chunk-shaped clause would have referenced a table this statement does not join.
+        if entity is not None:
+            where.append("d.doc_id IN (SELECT doc_id FROM document_entities WHERE entity_id = ?)")
+            args.append(entity)
         clause = f" WHERE {' AND '.join(where)}" if where else ""
 
         # ONE STATEMENT, ONE SNAPSHOT. `COUNT(*) OVER ()` rather than a separate `SELECT COUNT(*)`:
@@ -1033,6 +1098,7 @@ class IndexStore:
         include_sources: bool = False,
         vaults: frozenset[str] | None = None,
         withheld_vaults: frozenset[str] | None = None,
+        entity: str | None = None,
     ) -> list[Hit]:
         """Brute-force cosine. Vectors are L2-normalized, so a dot product IS cosine.
 
@@ -1060,6 +1126,7 @@ class IndexStore:
         # the other is a filter that holds until the stack is wired.
         _add_vault_filter(where, args, vaults)
         _add_vault_exclusion(where, args, withheld_vaults)
+        _add_entity_filter(where, args, entity)
 
         rows = self.db.execute(
             "SELECT c.*, d.title AS title, d.supersedes AS d_supersedes, "
