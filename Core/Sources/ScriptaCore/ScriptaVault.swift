@@ -154,6 +154,13 @@ public struct ScriptaVault: Equatable {
     /// answer from it. Generic on the engine's side (`guard.py`); Scripta's state file on ours.
     static let guardKey = "guard_state"
 
+    /// The manifest key naming the shared entity roster the engine resolves mentions against.
+    static let identityKey = "identity"
+
+    /// The roster's filename, at the output-folder root beside every workspace vault — shared, not
+    /// per-vault, because identity is one thing across workspaces.
+    static let registryName = ".calltranscriber-registry.json"
+
     static let ownershipKey = "scripta_workspace_vault"
 
     /// Whether a directory is a substrate vault at all: it carries a manifest. Read-only discovery
@@ -388,6 +395,15 @@ public struct ScriptaVault: Equatable {
             // shape a vault asked for. An operator who removes this line gets an unguarded vault,
             // which is a choice they can make and not one that happens by accident.
             "\(Self.guardKey) = \(Self.tomlString(SharedLocations.mcpState.path))",
+            // IDENTITY, SHARED ACROSS EVERY WORKSPACE (operator, 2026-08-07). One roster behind all
+            // of them means the same person found in a call and in a project note is the same id,
+            // which is the entire point of having ids — a registry per workspace would make
+            // "Alexandra" a different person in each.
+            //
+            // The engine READS this and never writes it. The rules are authored here, they survive
+            // an index rebuild because they are not in the index, and `compose` re-derives who each
+            // note mentions from them every time.
+            "\(Self.identityKey) = \(Self.tomlString(root.appendingPathComponent(Self.registryName).path))",
         ]
         if inherits.isEmpty {
             lines.append("inherits = []")

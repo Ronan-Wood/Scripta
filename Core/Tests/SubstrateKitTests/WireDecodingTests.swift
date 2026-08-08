@@ -154,9 +154,12 @@ final class WireDecodingTests: XCTestCase {
             .decode(WireStatusResult.self, from: try GoldenFixture.payload(GoldenFixture.status))
 
         XCTAssertEqual(result.scope, "scripta")
-        XCTAssertEqual(result.documents, 57)
-        XCTAssertEqual(result.schemaVersion, 9)
-        XCTAssertEqual(result.byStatus["active"], 48)
+        XCTAssertEqual(result.documents, 59)
+        XCTAssertEqual(result.schemaVersion, 10)
+        // v10's identity layer. EMPTY IS THE HONEST VALUE HERE: `scripta-vault` declares no roster,
+        // and an empty list means nobody was RESOLVED — never that nobody was mentioned.
+        XCTAssertEqual(result.entities, [])
+        XCTAssertEqual(result.byStatus["active"], 49)
         XCTAssertEqual(result.byConfidence["unjudged"], 1)
         XCTAssertEqual(result.byConfidence["unstated"], 3,
                        "`unstated` and `unjudged` are different values and both were counted")

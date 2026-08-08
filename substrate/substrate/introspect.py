@@ -90,6 +90,10 @@ def status_payload(store, entry, *, stack, registry: str | None = None) -> dict:
         "by_status": store.counts_by("status"),
         "by_doc_type": store.counts_by("doc_type"),
         "by_confidence": store.counts_by("confidence"),
+        # WHO THIS CORPUS IS ABOUT, ordered by how many notes name each. Empty when the scope's
+        # vault declares no identity roster, which is most of them — an absent list here means
+        # "nobody was resolved", never "nobody was mentioned".
+        "entities": store.entity_roster(),
         "retrieval_arms": arms(stack),
         "vectors": vector_status(store, stack),
         "refresh": refresh_state.report(entry.name, registry),

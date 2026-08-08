@@ -209,7 +209,7 @@ final class RenderContractTests: XCTestCase {
             "scope", "db", "vault", "composed", "index_version",
             "documents", "passages", "outlines", "schema_version",
             "by_vault", "by_tier", "by_status", "by_doc_type", "by_confidence",
-            "retrieval_arms", "vectors", "refresh", "drift",
+            "entities", "retrieval_arms", "vectors", "refresh", "drift",
         ])
         XCTAssertEqual(try source.payload(of: "arms").keys(),
                        ["embedder", "hyde", "reranker", "unavailable"])
