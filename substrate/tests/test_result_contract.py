@@ -44,7 +44,12 @@ def _cap(trace, *, embed_key=_OLLAMA, emb=True, hyde_model="qwen2.5:7b", hyde=Tr
 # out loud, and it is the half nothing else in the payload can cross-check.
 
 def test_expected_mrr_exact_stacks() -> None:
+    from substrate.retrieve.retriever import _CROSS_MODEL
+
     assert _measured_tier(_OLLAMA, "qwen2.5:7b", "qwen2.5:7b", True, True) == (0.698, None)
+    # The same embedder fronts TWO measured rerank arms since 2026-08-10. Both resolve; the
+    # listwise one is no longer the default but is still reachable by name.
+    assert _measured_tier(_OLLAMA, "qwen2.5:7b", _CROSS_MODEL, True, True) == (0.708, None)
     assert _measured_tier(_OLLAMA, "qwen2.5:7b", "qwen2.5:7b", True, False) == (0.603, None)
     assert _measured_tier("apple-nlcontextual", "apple-fm", "apple-fm", True, True) == (0.593, None)
     assert _measured_tier("apple-nlcontextual", "apple-fm", "apple-fm", True, False) == (0.467, None)
@@ -60,9 +65,14 @@ def test_expected_mrr_wrong_embedder_is_unmeasured() -> None:
 
 
 def test_expected_mrr_swapped_arm_model_is_unmeasured() -> None:
-    """A swapped HyDE or rerank model (e.g. the cross-encoder, measured 0.708) is a different
-    stack → unmeasured, not the shipped 0.698. The reason names WHICH arm was swapped: "no number"
-    is actionable only if the reader knows which model to put back."""
+    """A model outside every measured stack is unmeasured, and the reason names WHICH arm was
+    swapped: "no number" is actionable only if the reader knows which model to put back.
+
+    THE TAG IS PART OF THE IDENTITY. `dengcao/Qwen3-Reranker-4B` is unmeasured while
+    `dengcao/Qwen3-Reranker-4B:Q4_K_M` scores 0.708 — a different quantization is a different model
+    and was not the one measured. This used to read "the cross-encoder is a different stack", which
+    stopped being true when it gained its own tier; the property under test is now the narrower and
+    more interesting one."""
     assert _measured_tier(_OLLAMA, "gemma3:4b", "qwen2.5:7b", True, True) == (
         None, "unmeasured_hyde_model")
     assert _measured_tier(_OLLAMA, "qwen2.5:7b", "dengcao/Qwen3-Reranker-4B", True, True) == (
@@ -270,15 +280,43 @@ def test_shipped_objects_match_stacks() -> None:
     from substrate.embed.engine import AppleEmbedder, OllamaEmbedder
     from substrate.retrieve.expand import AppleFMExpander, HyDE
     from substrate.retrieve.rerank import AppleFMReranker, LLMReranker
+    from substrate.retrieve.rerank_cross import CrossEncoderReranker
     from substrate.retrieve.retriever import _STACKS
 
+    def stacks_for(embed_key: str) -> list[dict]:
+        return [s for s in _STACKS if s["embedder"] == embed_key]
+
     ok = OllamaEmbedder().key
-    assert ok in _STACKS and _STACKS[ok]["hyde"] == HyDE().model
-    assert _STACKS[ok]["reranker"] == LLMReranker().model
+    ollama = stacks_for(ok)
+    assert ollama, f"no measured stack for the shipped embedder key {ok!r}"
+    assert {s["hyde"] for s in ollama} == {HyDE().model}
+    # BOTH Ollama rerankers are measured, and both must resolve. The listwise arm is no longer the
+    # default but is still reachable by name, and a tier that stopped matching it would report a
+    # measured configuration as unmeasured.
+    assert {s["reranker"] for s in ollama} == {LLMReranker().model, CrossEncoderReranker().model}
 
     ak = AppleEmbedder().key
-    assert ak in _STACKS and _STACKS[ak]["hyde"] == AppleFMExpander().model
-    assert _STACKS[ak]["reranker"] == AppleFMReranker().model
+    apple = stacks_for(ak)
+    assert len(apple) == 1
+    assert apple[0]["hyde"] == AppleFMExpander().model
+    assert apple[0]["reranker"] == AppleFMReranker().model
+
+
+def test_the_shipped_default_stack_has_a_number() -> None:
+    """THE DEFAULT MUST BE A MEASURED STACK. `stack.py` states the property — "the defaults are a
+    measured stack precisely so that a caller who changes nothing gets the number" — and nothing
+    checked it, so moving `DEFAULT_RERANK` to an unmeasured arm would have silently made every
+    default query report `expected_mrr: null`. That is the exact loss `SubstrateEngine` refuses to
+    cause from the app side; it must not arrive from this side either."""
+    from substrate import stack as _stack
+    from substrate.embed.engine import OllamaEmbedder
+    from substrate.retrieve.retriever import _measured_tier
+
+    mrr, why = _measured_tier(OllamaEmbedder(model=_stack.DEFAULT_EMBED).key,
+                              _stack.DEFAULT_HYDE, _stack.DEFAULT_RERANK,
+                              hyde_in_tier=True, rerank_in_tier=True)
+    assert why is None, f"the shipped default stack is unmeasured: {why}"
+    assert mrr is not None and mrr > 0
 
 
 def _capability_kwargs(**over) -> dict:

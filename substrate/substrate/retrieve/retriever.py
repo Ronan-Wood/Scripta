@@ -122,17 +122,43 @@ class Trace:
 # never measured at, the exact Boundary-Principle sin this contract exists to prevent. NEVER
 # compare across cohorts (HANDOFF §6); the cohort travels on the Capability field. This replaces
 # PRINCIPLES.md's older mixed-cohort sketch (0.698/0.375/0.21) with same-cohort 44-case numbers.
+# Imported, not retyped. `rerank_cross` pulls only stdlib plus what this module already imports, so
+# there is no weight or cycle in taking the name from its owner — and a hand-copied model string
+# here would be a second author for a value the tier match compares EXACTLY.
+from substrate.retrieve.rerank_cross import DEFAULT_MODEL as _CROSS_MODEL  # noqa: E402
+
 _COHORT = "44-case semantic"
-_STACKS: dict[str, dict] = {
-    "qwen3-embedding:0.6b#raw": {           # all-Ollama CEILING
+
+# A SEQUENCE, NOT A DICT KEYED BY EMBEDDER, since 2026-08-10. One embedder can front more than one
+# measured stack — `qwen3-embedding:0.6b` was measured with the listwise reranker AND with the
+# cross-encoder, at the same 44 cases — and a dict keyed by embedder could hold only one of them,
+# so the other reported `unmeasured_rerank_model` despite EXPERIMENTS.md having the number. That is
+# the inverse of this table's job: it exists to stop a number being stamped on an unmeasured
+# config, not to withhold one from a measured config it had no room for.
+#
+# Matching is still EXACT on every arm that ran. Nothing here interpolates or generalizes by family.
+_STACKS: tuple[dict, ...] = (
+    {                                       # all-Ollama CEILING, the shipped listwise arm
+        "embedder": "qwen3-embedding:0.6b#raw",
         "hyde": "qwen2.5:7b", "reranker": "qwen2.5:7b",
         "mrr": {(True, True): 0.698, (True, False): 0.603},
     },
-    "apple-nlcontextual": {                 # all-Apple FLOOR (zero-install default)
+    {                                       # same embedder and HyDE, purpose-trained reranker
+        # EXPERIMENTS.md §"THE RERANKING AXIS IS SATURATED": 0.708 at 44 cases,
+        # `qwen3-embedding:0.6b`, same fused input, precision gate ON — which is how
+        # `stack.build` wires it. There is no gate-off entry: 0.716 was measured, but nothing
+        # ships that configuration, and a tier for a stack no caller can produce is a number
+        # waiting to be attached to the wrong run.
+        "embedder": "qwen3-embedding:0.6b#raw",
+        "hyde": "qwen2.5:7b", "reranker": _CROSS_MODEL,
+        "mrr": {(True, True): 0.708},
+    },
+    {                                       # all-Apple FLOOR (zero-install default)
+        "embedder": "apple-nlcontextual",
         "hyde": "apple-fm", "reranker": "apple-fm",
         "mrr": {(True, True): 0.593, (True, False): 0.467, (False, False): 0.343},
     },
-}
+)
 
 
 # WHY there is no number — one token per way `_measured_tier` can fail to find one. A closed
@@ -168,19 +194,33 @@ def _measured_tier(
 
     Exactly one of the pair is ever non-None, which `Capability` re-asserts at construction.
     """
-    stack = _STACKS.get(embed_key)
-    if stack is None:
+    by_embedder = [s for s in _STACKS if s["embedder"] == embed_key]
+    if not by_embedder:
         # An empty key is not an unknown embedder — it is the absence of one, which is the vector
         # arm having contributed nothing at all (never wired, or degraded out by the coverage guard
         # or a mid-run fallback). Same None, different fact, and only one of them is fixed by
         # pulling a model.
         return None, ("no_vector_arm" if not embed_key else "unmeasured_embedder")
-    if hyde_in_tier and hyde_model != stack["hyde"]:
+
+    # NARROWED ONE ARM AT A TIME so the REASON stays specific. Collapsing this into a single
+    # all-arms match would report `unmeasured_arm_combination` for a swapped HyDE model, and the
+    # caller reads that reason out loud — "the arms were never measured together" and "you are
+    # running a HyDE model nothing measured" send a reader to different places.
+    #
+    # An arm that did not run is not compared: with the reranker off, the listwise and cross-encoder
+    # records describe the same stack, and only one of them carries a rerank-off number.
+    by_hyde = [s for s in by_embedder if not hyde_in_tier or s["hyde"] == hyde_model]
+    if not by_hyde:
         return None, "unmeasured_hyde_model"
-    if rerank_in_tier and rerank_model != stack["reranker"]:
+    by_rerank = [s for s in by_hyde if not rerank_in_tier or s["reranker"] == rerank_model]
+    if not by_rerank:
         return None, "unmeasured_rerank_model"
-    mrr = stack["mrr"].get((hyde_in_tier, rerank_in_tier))
-    return (mrr, None) if mrr is not None else (None, "unmeasured_arm_combination")
+
+    for stack in by_rerank:
+        mrr = stack["mrr"].get((hyde_in_tier, rerank_in_tier))
+        if mrr is not None:
+            return mrr, None
+    return None, "unmeasured_arm_combination"
 
 
 @dataclass(frozen=True)
