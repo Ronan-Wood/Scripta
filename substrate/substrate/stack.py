@@ -28,12 +28,43 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-# The all-Ollama CEILING tier (retriever._STACKS): this embedder key with these two models is the
-# 44-case 0.698 configuration. The defaults are the measured stack precisely so that a caller who
-# changes nothing gets the number, and a caller who changes one model gets an honest None.
+# The one import this module takes at load time, for the one value it needs before any function
+# runs: the rerank default. Everything else here is imported lazily inside `build` on purpose —
+# wiring an arm should not cost a caller who never asks for it. `rerank_cross` pulls only stdlib
+# plus `substrate.net`/`substrate.retrieve`, so this is a name, not a model.
+from substrate.retrieve.rerank_cross import DEFAULT_MODEL as CROSS_MODEL
+
+# The all-Ollama CEILING tier (retriever._STACKS): this embedder key with these models is a MEASURED
+# configuration. The defaults are a measured stack precisely so that a caller who changes nothing
+# gets the number, and a caller who changes one model gets an honest None.
+#
+# THE RERANK DEFAULT MOVED TO THE CROSS-ENCODER on 2026-08-10, and the reason is that the argument
+# for the listwise arm did not survive the operator's own corpus.
+#
+# EXPERIMENTS.md §"THE RERANKING AXIS IS SATURATED" measured the two as a tie at 44 cases over
+# reference documents — 0.698 against 0.708, "total spread under two cases" — and kept the listwise
+# arm because the cross-encoder cost 4,558ms against 385ms. Both halves reverse on the vaults, which
+# is the corpus this engine actually answers from. Re-measured 2026-08-10 on `scripta` (v10, 34-case
+# gold-vault, 21 lexical / 13 semantic), only the rerank arm varying:
+#
+#     arm                             semantic MRR    overall MRR    p50 (uncached)
+#     none                               0.494          0.613           161 ms
+#     listwise qwen2.5:7b (was default)  0.426          0.671         4,050 ms
+#     cross-encoder                      0.679          0.683           586 ms
+#
+# The shipped arm scored BELOW no reranker at all on paraphrased queries, and was the slowest of the
+# three. The latency reversal is the surprising half and it is structural rather than incidental:
+# the listwise arm asks a 6.4 GB chat model to generate an ordering over 20 candidates, while the
+# cross-encoder runs 20 short scoring passes through a 2.5 GB model TRAINED on the relevance
+# judgment the other one improvises. The 586ms above includes loading it cold.
+#
+# This is the change `SubstrateEngine.serveArguments` asked for by refusing to make it itself: "that
+# belongs in the shim or in `stack.DEFAULT_RERANK`, where one value serves the CLI, the MCP and this
+# app alike." Moving the constant does exactly that, and the number survives the move because
+# `retriever._STACKS` gained the cross-encoder's own measured 44-case tier rather than losing one.
 DEFAULT_EMBED = "qwen3-embedding:0.6b"
 DEFAULT_HYDE = "qwen2.5:7b"
-DEFAULT_RERANK = "qwen2.5:7b"
+DEFAULT_RERANK = CROSS_MODEL
 DEFAULT_POOL = 20
 APPLE_POOL = 10      # Apple FM overflows above ~10 candidates (measured)
 DEFAULT_CACHE = Path.home() / ".substrate" / "vector-cache.db"

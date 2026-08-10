@@ -282,6 +282,26 @@ arm improvises. All at 44 cases, qwen3-embedding:0.6b, same fused input:
 Total spread 0.038 — under two cases. **Nothing here beats the shipped arm by a measurable
 margin, and the best of them costs 20x the latency.** The listwise workaround stays.
 
+> **SUPERSEDED 2026-08-10 — the default moved to the cross-encoder.** Both halves of the sentence
+> above are corpus-specific and both reverse on the vaults, which is what this engine answers from.
+> Re-measured on `scripta` (v10, 34-case `gold-vault`, 21 lexical / 13 semantic), only the rerank
+> arm varying: semantic MRR **none 0.494 · listwise 0.426 · cross 0.679**, and p50 uncached
+> **listwise 4,050ms · cross 586ms** (the 586 includes loading the model cold). The shipped arm
+> scored below NO RERANKER on paraphrased queries and was the slowest of the three.
+>
+> The latency reversal is structural, not noise: the listwise arm asks a 6.4 GB chat model to
+> GENERATE an ordering over 20 candidates, while the cross-encoder runs 20 short scoring passes
+> through a 2.5 GB model trained on the judgment. The 4,558ms above is not wrong — it is what that
+> arm cost in that run — but it did not survive contact with this hardware and this corpus.
+>
+> `stack.DEFAULT_RERANK` now names the cross-encoder and `retriever._STACKS` carries its own
+> measured 44-case tier (0.708), so the default keeps a number rather than reporting null.
+>
+> **One cost, recorded:** HyDE and the reranker used to SHARE `qwen2.5:7b`, so the full stack was
+> two resident models. It is three now (embedder 5.8 GB · HyDE 6.4 GB · reranker 8.6 GB at its
+> 40k context), and Ollama evicts between arms rather than holding all three on a 34 GB machine.
+> The measured p50 above already includes that swapping.
+
 **The aggregate was actively misleading, and the per-case diff is what caught it.** The
 cross-encoder's +0.017 looks like a small uniform improvement. It is not: 18 of 44 cases
 moved, 8 gained rank-1 and 7 lost it, net +1. It is not better, it is DIFFERENTLY WRONG —
