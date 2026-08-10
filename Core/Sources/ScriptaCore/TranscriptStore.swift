@@ -152,7 +152,16 @@ public enum TranscriptStore {
             tags: list("tags").filter { $0 != TranscriptWriter.ownerMarker },
             commitments: list("commitments"),
             isConference: field("mode") == "conference",
-            group: field("group")
+            // WHERE THE FILE IS, not what it says about itself (Doc 4 §7). A transcript inside a
+            // vault belongs to that vault's scope, and `group:` is no longer written at capture.
+            //
+            // The frontmatter is still READ, as the fallback, and that is not hedging: a transcript
+            // written before this change carries the line and sits wherever it sat, and a
+            // transcript that capture had to write flat (a vault it could not prepare) has no
+            // location to be derived from. Both are legacy shapes that resolve themselves the
+            // moment the file is filed into a vault — after which the folder answers and this
+            // fallback stops being consulted.
+            group: ScriptaVault.workspaceName(forTranscriptAt: url) ?? field("group")
         )
     }
 

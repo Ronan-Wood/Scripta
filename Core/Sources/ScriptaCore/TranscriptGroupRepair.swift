@@ -26,10 +26,21 @@ public enum TranscriptGroupRepair {
         public let url: URL
         public let title: String
         public let date: String
+        /// The workspace a pre-§7 transcript declared for itself, when it declared one. A
+        /// SUGGESTION for the operator to confirm — this app wrote that value, so offering it is
+        /// reading its own record rather than guessing, but nothing acts on it unasked.
+        public let declaredWorkspace: String?
         public var id: URL { url }
+
+        public init(url: URL, title: String, date: String, declaredWorkspace: String? = nil) {
+            self.url = url
+            self.title = title
+            self.date = date
+            self.declaredWorkspace = declaredWorkspace
+        }
     }
 
-    /// Every app-authored transcript directly in `folder` that declares no `group:`.
+    /// Every app-authored transcript sitting directly in `folder` — that is, in no vault.
     ///
     /// NOT RECURSIVE, matching `RetentionPruner`'s own rule and for the same reason: the output
     /// folder may live inside a real vault, and `Notes/`, `Files/` and `Entities/` are this app's
@@ -48,11 +59,22 @@ public enum TranscriptGroupRepair {
             .compactMap { url -> Untagged? in
                 guard let text = try? String(contentsOf: url, encoding: .utf8),
                       let split = Frontmatter.split(text),
-                      Frontmatter.hasOwnerMarker(split.frontmatter),
-                      group(in: split.frontmatter)?.isEmpty ?? true else { return nil }
+                      Frontmatter.hasOwnerMarker(split.frontmatter)
+                else { return nil }
+                // BEING HERE IS THE PROBLEM, not what the file says about itself. This used to
+                // select on an empty `group:`, which stopped meaning anything when the workspace
+                // became a matter of LOCATION: a transcript in the flat folder is in no vault,
+                // therefore in no scope, therefore unanswerable — whether or not it carries a
+                // stale label. Callers pass the flat root, so everything found here is unfiled.
                 return Untagged(url: url,
                                 title: value("title", in: split.frontmatter) ?? url.deletingPathExtension().lastPathComponent,
-                                date: value("date", in: split.frontmatter) ?? "")
+                                date: value("date", in: split.frontmatter) ?? "",
+                                // A LEGACY LABEL IS A SUGGESTION, NEVER AN ANSWER. A transcript
+                                // written before §7 carries the workspace capture knew, and that is
+                                // this app's own record rather than a guess — so it is offered to
+                                // the operator to confirm. `assign` still requires a name; nothing
+                                // files itself on the strength of this.
+                                declaredWorkspace: group(in: split.frontmatter))
             }
             .sorted { $0.date == $1.date ? $0.title < $1.title : $0.date < $1.date }
     }

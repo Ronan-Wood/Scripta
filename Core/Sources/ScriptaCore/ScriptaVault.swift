@@ -161,6 +161,15 @@ public struct ScriptaVault: Equatable {
     /// per-vault, because identity is one thing across workspaces.
     static let registryName = ".calltranscriber-registry.json"
 
+    /// The shared identity roster for every workspace under one output folder.
+    ///
+    /// A vault is always a direct child of that folder — `vault(forScope:under:)` builds
+    /// `root/slug` and `scope(forTranscriptAt:under:)` requires it — so the parent IS the folder,
+    /// and this is the one place that relationship is written down for identity.
+    public static func sharedRegistry(besideVaultAt vault: URL) -> URL {
+        vault.deletingLastPathComponent().appendingPathComponent(registryName)
+    }
+
     static let ownershipKey = "scripta_workspace_vault"
 
     /// Whether a directory is a substrate vault at all: it carries a manifest. Read-only discovery
@@ -295,6 +304,42 @@ public struct ScriptaVault: Equatable {
     /// `<root>/<scope>/_sources/transcripts/<file>` and `<scope>` must carry a manifest. A prefix
     /// test would claim any file that happens to live below a vault, including one in a directory
     /// this app does not own.
+    /// The scope a transcript belongs to, from WHERE IT IS — without needing to know the app's
+    /// output folder.
+    ///
+    /// The rooted variant below additionally proves the vault is a direct child of a given root.
+    /// That check is worth having where a caller is deciding what to WRITE or DELETE; it is dead
+    /// weight for deciding what a file already on disk belongs to, and demanding it would push a
+    /// root parameter through `TranscriptStore.meta`, its cache, and every reader of a
+    /// `TranscriptMeta` — for a question the path already answers. Callers cannot wander outside
+    /// the root anyway: `list(under:)` only ever visits locations beneath it.
+    public static func scope(forTranscriptAt file: URL) -> String? {
+        vaultRoot(forTranscriptAt: file)?.lastPathComponent.lowercased()
+    }
+
+    /// The WORKSPACE NAME a transcript belongs to — the operator's casing, not the slug.
+    ///
+    /// THE TWO ARE DIFFERENT NAMESPACES AND THIS IS THE ONE READERS WANT. The vault directory is
+    /// `slug(workspace)`, so deriving from the path alone yields `cbre` while every query site
+    /// partitions on the raw name with an exact match — indexing a "CBRE" call under "cbre" hides it
+    /// from search, Ask, entity pages and Related while it still appears in the browse list. The
+    /// manifest records the operator's spelling for exactly this, so it is read rather than
+    /// reconstructed; the directory name is the fallback for a vault written before that key.
+    public static func workspaceName(forTranscriptAt file: URL) -> String? {
+        guard let root = vaultRoot(forTranscriptAt: file) else { return nil }
+        return workspace(ofVaultAt: root) ?? root.lastPathComponent
+    }
+
+    /// The vault directory a transcript sits in, or nil when it sits outside one.
+    private static func vaultRoot(forTranscriptAt file: URL) -> URL? {
+        let transcriptDirectory = file.deletingLastPathComponent().standardizedFileURL
+        let root = transcriptDirectory.deletingLastPathComponent().deletingLastPathComponent()
+        guard transcriptDirectory == transcripts(inVaultAt: root).standardizedFileURL,
+              isVault(root)
+        else { return nil }
+        return root
+    }
+
     public static func scope(forTranscriptAt file: URL, under root: URL) -> String? {
         let transcriptDirectory = file.deletingLastPathComponent().standardizedFileURL
         let vaultRoot = transcriptDirectory.deletingLastPathComponent().deletingLastPathComponent()
@@ -403,8 +448,31 @@ public struct ScriptaVault: Equatable {
             // The engine READS this and never writes it. The rules are authored here, they survive
             // an index rebuild because they are not in the index, and `compose` re-derives who each
             // note mentions from them every time.
-            "\(Self.identityKey) = \(Self.tomlString(root.appendingPathComponent(Self.registryName).path))",
+            // THE VAULT'S PARENT, NOT THE VAULT. The roster is shared, which is what the paragraph
+            // above says and what `EntityRegistry+Live` does — it writes to
+            // `registryURL(in: AppSettings.outputFolder)`. Declaring it at `root` named a per-vault
+            // file that nothing ever creates, and the engine does not treat a declared-but-missing
+            // identity file as absent: it hard-fails the whole compose with
+            // `FATAL (identity): the declared identity file … cannot be read`.
+            //
+            // Live vaults were spared only by predating the key. `write()` regenerates the manifest
+            // on every recording and returns early only when `inherits` is empty — so the operator's
+            // `cbre` vault, which inherits, would have gained the bad declaration on its next call
+            // and stopped composing from then on. Four `ScriptaVaultTests` were already failing on
+            // exactly this and had been read as pre-existing noise.
         ]
+        // DECLARED ONLY WHEN IT EXISTS. The engine does not read a missing identity file as "no
+        // identity" — it hard-fails the whole compose — so declaring one before anything has
+        // written it makes the FIRST compose on a fresh install refuse. This is the rule this
+        // docstring already states: "Emitting a key whose consumer does not exist is how that
+        // defect happened; it is not repeated here."
+        //
+        // A vault written before the roster exists simply has no identity line, and gains one the
+        // next time the manifest is regenerated — which is every recording.
+        let registry = Self.sharedRegistry(besideVaultAt: root)
+        if FileManager.default.fileExists(atPath: registry.path) {
+            lines.append("\(Self.identityKey) = \(Self.tomlString(registry.path))")
+        }
         if inherits.isEmpty {
             lines.append("inherits = []")
         } else {

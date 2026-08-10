@@ -112,8 +112,7 @@ final class TranscriptSpineParityTests: XCTestCase {
             to: dir,
             segments: [TranscriptSegment(startMs: 0, text: "Budgets and hiring.", speaker: .you)],
             startedAt: Date(timeIntervalSince1970: 1_785_000_000),
-            duration: 630, participants: ["Ronan"], tags: ["call"], title: "Quarterly sync",
-            group: "CBRE")
+            duration: 630, participants: ["Ronan"], tags: ["call"], title: "Quarterly sync")
         let text = try String(contentsOf: url, encoding: .utf8)
 
         for expected in ["status: \(TranscriptSpine.status)",

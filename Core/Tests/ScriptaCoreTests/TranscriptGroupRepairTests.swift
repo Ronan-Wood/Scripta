@@ -49,14 +49,22 @@ final class TranscriptGroupRepairTests: XCTestCase {
         return yaml
     }
 
-    func testFindsOnlyTranscriptsWithNoWorkspace() throws {
+    /// UNFILED IS A PLACE NOW, NOT A FIELD. This used to select on an empty `group:`; since §7 the
+    /// workspace is where the file IS, so every transcript sitting in the flat folder needs filing
+    /// — including one carrying a stale label, which is in no vault and therefore in no scope.
+    func testFindsEveryTranscriptThatIsInNoVault() throws {
         try write("tagged.md", transcript(title: "Tagged", group: "CBRE"))
         try write("untagged.md", transcript(title: "Untagged", group: nil))
         try write("empty.md", transcript(title: "Empty", group: ""))
 
         let found = TranscriptGroupRepair.untagged(in: dir) ?? []
-        XCTAssertEqual(Set(found.map(\.title)), ["Untagged", "Empty"],
-                       "a present-but-empty group: is what the exporter treats as untagged too")
+        XCTAssertEqual(Set(found.map(\.title)), ["Tagged", "Untagged", "Empty"])
+
+        // The legacy label survives as a SUGGESTION, so the rail can offer it rather than making
+        // the operator retype a workspace this app already recorded.
+        let tagged = found.first { $0.title == "Tagged" }
+        XCTAssertEqual(tagged?.declaredWorkspace, "CBRE")
+        XCTAssertNil(found.first { $0.title == "Untagged" }?.declaredWorkspace)
     }
 
     /// The app writes four `app:` markers into one folder. Only transcripts are repairable — a note
@@ -78,7 +86,14 @@ final class TranscriptGroupRepairTests: XCTestCase {
 
         let text = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(text.contains("\ngroup: \"CBRE\"\n"), text)
-        XCTAssertTrue((TranscriptGroupRepair.untagged(in: dir) ?? []).isEmpty, "it must no longer be untagged")
+        // STILL UNFILED — `assign` labels, `file` moves, and only the move ends the state. The old
+        // assertion here (`untagged` is now empty) was true only while unfiled meant "no label",
+        // and it is the half that would have hidden the missing move.
+        XCTAssertEqual((TranscriptGroupRepair.untagged(in: dir) ?? []).count, 1,
+                       "a labelled transcript still in the flat folder is still in no vault")
+        try TranscriptGroupRepair.file(url, into: "CBRE", under: dir)
+        XCTAssertTrue((TranscriptGroupRepair.untagged(in: dir) ?? []).isEmpty,
+                      "once it is in the vault it is filed")
         // The body is untouched and the marker survives — otherwise the pruner stops recognising it.
         XCTAssertTrue(text.contains("**[0:01]** Something was said."), text)
         XCTAssertTrue(Frontmatter.hasOwnerMarker(Frontmatter.split(text)!.frontmatter))
