@@ -44,6 +44,9 @@ DEFAULT_MODEL = "qwen3-embedding:0.6b"
 # 64-item batch mid-corpus, failing after 256 of 1811 chunks. Smaller batches bound per-request
 # time; the longer ceiling covers a slow batch without aborting a 30-minute run.
 BATCH = 32
+# The floor for the shrink-until-accepted path. Below this an input is short enough that a refusal
+# is about the MODEL, not the length, and the loop must stop rather than keep halving toward zero.
+MIN_EMBED_CHARS = 256
 TIMEOUT = 600
 
 
@@ -146,15 +149,75 @@ class OllamaEmbedder:
         except urllib.error.URLError as e:
             raise EmbeddingError(f"{self.host} unreachable — is `ollama serve` running? ({e})")
 
+    def _embed_batch(self, batch: list[str]) -> list[list[float]]:
+        """One request, or a bisection when the server refuses it.
+
+        AN INPUT THE MODEL CANNOT HOLD MUST NOT COST THE CORPUS. Ollama does not always reject an
+        oversized input cleanly: `qwen3-embedding:0.6b` KILLS ITS OWN RUNNER, and the failure comes
+        back as `HTTP 400: do embedding request: … EOF` — a shape the `context length` guard above
+        cannot match. Measured 2026-08-10 on the operator's `prism` scope: ONE chunk of 8,681 chars,
+        34 over the model's ~8,647-char ceiling, out of 16,153 chunks across six scopes. It failed
+        the whole run, which left the index below `complete`, which switches the vector arm off, and
+        with it HyDE and the reranker. One table cost a 321-note corpus its entire retrieval stack.
+        Refusing the run is the honest answer to a corrupt index and the wrong one here: nothing is
+        wrong with the other 6,898 chunks.
+
+        So a failed batch is BISECTED to find the input the server will not take, rather than
+        assumed to be bad as a whole. That also fixes the diagnosis: the old error named a batch of
+        32 and left the operator to find which member.
+        """
+        try:
+            res = self._post("/api/embed", {"model": self.model, "input": batch})
+            vecs = res.get("embeddings") or []
+            if len(vecs) != len(batch):
+                raise EmbeddingError(f"expected {len(batch)} embeddings, got {len(vecs)}")
+            return [_l2([float(x) for x in v]) for v in vecs]
+        except EmbeddingError:
+            if len(batch) > 1:
+                mid = len(batch) // 2
+                return self._embed_batch(batch[:mid]) + self._embed_batch(batch[mid:])
+            return [self._embed_oversized(batch[0])]
+
+    def _embed_oversized(self, text: str) -> list[float]:
+        """One input the server refused, shrunk until it is accepted.
+
+        TRUNCATION, SAID OUT LOUD. Halving until it fits embeds a PREFIX, so the vector describes
+        part of the chunk — a real loss, and the alternative measured above is losing the vector arm
+        for the whole scope. It is reported on stderr with the length that worked, because a silently
+        shortened embedding is exactly the kind of quiet degradation this engine refuses elsewhere.
+        The full text is still what `expand` returns and what FTS matches; only the vector is of the
+        prefix.
+
+        The floor is not a fallback. If even `MIN_EMBED_CHARS` is refused, the model is not
+        rejecting the SIZE and the original error is raised — a truncation loop that swallowed a
+        genuinely broken model would report a healthy corpus built from nothing.
+        """
+        import sys
+
+        limit = len(text)
+        while limit > MIN_EMBED_CHARS:
+            limit //= 2
+            try:
+                res = self._post("/api/embed", {"model": self.model, "input": [text[:limit]]})
+                vecs = res.get("embeddings") or []
+                if len(vecs) != 1:
+                    continue
+                print(f"  WARNING: an input of {len(text):,} chars was refused by {self.model}; "
+                      f"embedded its first {limit:,} chars instead. The vector describes the "
+                      f"PREFIX of this chunk, not all of it.", file=sys.stderr)
+                return _l2([float(x) for x in vecs[0]])
+            except EmbeddingError:
+                continue
+        raise EmbeddingError(
+            f"{self.model} refused an input of {len(text):,} chars and kept refusing it down to "
+            f"{MIN_EMBED_CHARS} — so the model is not rejecting its SIZE. Check that `ollama serve` "
+            f"is healthy and that {self.model} is not corrupt."
+        )
+
     def _embed(self, texts: list[str]) -> list[list[float]]:
         out: list[list[float]] = []
         for i in range(0, len(texts), BATCH):
-            chunk = texts[i : i + BATCH]
-            res = self._post("/api/embed", {"model": self.model, "input": chunk})
-            vecs = res.get("embeddings") or []
-            if len(vecs) != len(chunk):
-                raise EmbeddingError(f"expected {len(chunk)} embeddings, got {len(vecs)}")
-            out.extend(_l2([float(x) for x in v]) for v in vecs)
+            out.extend(self._embed_batch(texts[i : i + BATCH]))
         if out:
             self.dim = len(out[0])
         return out
