@@ -64,7 +64,9 @@ struct KnowledgeView: View {
     @State private var whatsImportant: String?
     @State private var whatsImportantGeneration = 0
     @State private var collisions: [(a: EntityRegistry.Entity, b: EntityRegistry.Entity)] = []
-    @State private var docs: [(mdURL: URL, title: String, created: String, file: String)] = []
+    @State private var docs: [DocumentRow] = []
+    /// A vault document the reader opened from the shelf, read through the engine.
+    @State private var openVaultDoc: VaultDocument?
     @State private var deleteTarget: ItemTarget?
     @State private var renameTarget: ItemTarget?
     @State private var renameText = ""
@@ -128,6 +130,9 @@ struct KnowledgeView: View {
             Button("Rename") { performRename() }
             Button("Cancel", role: .cancel) { renameTarget = nil }
         }
+        .sheet(item: $openVaultDoc) { document in
+            VaultNoteSheet(document: document, model: VaultBrowseModel.shared)
+        }
         .sheet(item: $openNote) { note in
             NoteDetailView(note: note, pendingLink: pendingLink) { refreshed in
                 openNote = refreshed
@@ -168,6 +173,26 @@ struct KnowledgeView: View {
     }
 
     /// The corpus switch. Its selection lives on `VaultBrowseModel`, not here — see `vault` above.
+    /// The vault half of the shelf, merged in when the engine answers.
+    ///
+    /// SEPARATE FROM THE LOCAL LOAD because it is a subprocess round trip, and making the whole
+    /// shelf wait on the engine would leave locally-imported documents invisible whenever the
+    /// engine is slow or absent. The local half is already on screen by the time this lands.
+    ///
+    /// `uploadedDocuments()` returns [] rather than a refusal for the same reason — a shelf is not
+    /// where an engine fault belongs; the Vault lens reports that.
+    @MainActor
+    private func loadVaultDocuments(local: [DocumentRow], group: String) {
+        Task {
+            let uploaded = await VaultBrowseModel.shared.uploadedDocuments()
+            guard group == model.activeGroup else { return }   // a switch landed while we asked
+            let vaultRows = uploaded.map {
+                DocumentRow(id: $0.id, title: $0.title ?? $0.id, created: "", origin: .vault($0))
+            }
+            self.docs = (local + vaultRows).sorted { $0.created > $1.created }
+        }
+    }
+
     private var lensPicker: some View {
         Picker("", selection: $vault.lens) {
             ForEach(VaultBrowseModel.Lens.allCases) { Text($0.title).tag($0) }
@@ -245,7 +270,8 @@ struct KnowledgeView: View {
                 KnowledgeDocumentsSection(docs: docs,
                                           openDoc: $openDoc,
                                           deleteTarget: $deleteTarget,
-                                          onRename: startRename)
+                                          onRename: startRename,
+                                          openVaultDocument: { openVaultDoc = $0 })
             }
             .padding(Space.x7)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -337,13 +363,20 @@ struct KnowledgeView: View {
         Task.detached(priority: .userInitiated) {
             let rows = store?.digest(group: group) ?? []
             let notes = NoteStore.list(group: group)
-            let docs = DocumentImporter.list(group: group)
+            // BOTH ORIGINS while the migration runs (Doc 4 Phase 4b). `Files/` is the app's own
+            // importer; the vault half is what the engine's ingest promotes. Merged newest-first so
+            // the shelf reads as one list even though the two halves retire at different times.
+            let local = DocumentImporter.list(group: group).map {
+                DocumentRow(id: $0.mdURL.path, title: $0.title, created: $0.created,
+                            origin: .local(mdURL: $0.mdURL, file: $0.file))
+            }
             let rawCommitments = store?.commitments(group: group) ?? []
             await MainActor.run {
                 guard group == model.activeGroup else { return }   // discard a stale load after a switch
                 self.rows = rows
                 self.notes = notes
-                self.docs = docs
+                self.docs = local
+                self.loadVaultDocuments(local: local, group: group)
                 // ownerID → display name: a cheap in-memory registry lookup (same "cheap, inline"
                 // reasoning as vocabTerms/collisions above), done here rather than in the
                 // detached task so it always sees the freshest registry state at display time.

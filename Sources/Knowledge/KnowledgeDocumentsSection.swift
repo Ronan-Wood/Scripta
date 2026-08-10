@@ -1,12 +1,42 @@
+import SubstrateKit
 import SwiftUI
 import ScriptaCore
 
+/// One row on the Documents shelf, from either place a document can currently be.
+///
+/// TWO ORIGINS BECAUSE THERE ARE TWO INGEST PATHS, and this type exists to make the migration
+/// between them non-atomic (Doc 4 Phase 4b). `AppModel.importDocument` writes to `Files/` and is
+/// visible only to the local index; the Library rail runs the engine's `ingest` + `promote`, which
+/// puts a document in the workspace vault where Ask and live recall can reach it. The shelf shows
+/// BOTH while the second replaces the first, so no step of that replacement makes a document
+/// disappear from view.
+///
+/// `.local` is the case that retires. When `DocumentImporter` goes, so does it — and the compiler
+/// names every site that has to change, which is the point of modelling it this way rather than
+/// merging both into one shape and losing the distinction.
+struct DocumentRow: Identifiable {
+    enum Origin {
+        case local(mdURL: URL, file: String)
+        case vault(VaultDocument)
+    }
+
+    let id: String
+    let title: String
+    let created: String
+    let origin: Origin
+
+    var isLocal: Bool { if case .local = origin { return true }; return false }
+}
+
 /// Imported files, newest first — click opens the original.
 struct KnowledgeDocumentsSection: View {
-    let docs: [(mdURL: URL, title: String, created: String, file: String)]
+    let docs: [DocumentRow]
     @Binding var openDoc: OpenDocTarget?
     @Binding var deleteTarget: KnowledgeView.ItemTarget?
     let onRename: (KnowledgeView.ItemTarget) -> Void
+    /// Show a vault document. Passed in rather than resolved here so this view keeps drawing rows
+    /// and the screen that owns the sheet keeps owning it.
+    let openVaultDocument: (VaultDocument) -> Void
     // Observed here rather than passed down as values: the group and the job list are both read
     // at gesture time (see the live-group re-check below), and a snapshot taken when this row was
     // built is exactly the stale value that check exists to reject.
@@ -19,7 +49,7 @@ struct KnowledgeDocumentsSection: View {
                 // In-flight / just-finished imports — the "is it done?" signal.
                 ForEach(model.importJobs) { job in ImportJobRow(job: job) }
                 VStack(spacing: 1) {
-                    ForEach(docs.prefix(6), id: \.mdURL) { doc in
+                    ForEach(docs.prefix(6)) { doc in
                         HStack(spacing: Space.x3) {
                             CarbonIcon(name: "document", size: 14, color: Carbon.iconSecondary)
                             VStack(alignment: .leading, spacing: 1) {
@@ -29,18 +59,27 @@ struct KnowledgeDocumentsSection: View {
                                     .foregroundStyle(Carbon.textHelper)
                             }
                             Spacer()
-                            ItemMenu(
-                                open: {
-                                    // verifiedOriginalURL, not a raw folder.appendingPathComponent
-                                    // (crosscheck) — matches the other three resolution call sites
-                                    // in this feature instead of hand-rolling a fourth, unverified one.
-                                    if let url = DocumentImporter.verifiedOriginalURL(atPath: doc.mdURL.path, group: model.activeGroup) {
-                                        NSWorkspace.shared.open(url)
-                                    }
-                                },
-                                openLabel: "Open original",
-                                onRename: { onRename(.doc(mdURL: doc.mdURL, title: doc.title)) },
-                                onDelete: { deleteTarget = .doc(mdURL: doc.mdURL, title: doc.title) })
+                            // WHERE IT LIVES, said quietly. A document in the vault is reachable by
+                            // Ask and one in `Files/` is not, which is the entire reason for the
+                            // migration — so the shelf distinguishes them rather than presenting one
+                            // undifferentiated list whose rows behave differently when clicked.
+                            if !doc.isLocal {
+                                Text(verbatim: "vault").typeface(Register.monoMicro, Ink.textHelper)
+                            }
+                            if case .local(let mdURL, _) = doc.origin {
+                                ItemMenu(
+                                    open: {
+                                        // verifiedOriginalURL, not a raw folder.appendingPathComponent
+                                        // (crosscheck) — matches the other three resolution call sites
+                                        // in this feature instead of hand-rolling a fourth, unverified one.
+                                        if let url = DocumentImporter.verifiedOriginalURL(atPath: mdURL.path, group: model.activeGroup) {
+                                            NSWorkspace.shared.open(url)
+                                        }
+                                    },
+                                    openLabel: "Open original",
+                                    onRename: { onRename(.doc(mdURL: mdURL, title: doc.title)) },
+                                    onDelete: { deleteTarget = .doc(mdURL: mdURL, title: doc.title) })
+                            }
                         }
                         .padding(Space.x4)
                         .background(Carbon.layer)
@@ -55,8 +94,15 @@ struct KnowledgeDocumentsSection: View {
                             // here would let a stale row open another workspace's document inside
                             // this one's UI (and its delete button then feeds that same mdURL to a
                             // group-agnostic delete).
-                            if let meta = DocumentImporter.parse(doc.mdURL), meta.group == model.activeGroup {
-                                openDoc = OpenDocTarget(meta: meta, mdURL: doc.mdURL)
+                            guard case .local(let mdURL, _) = doc.origin else {
+                                // A vault document is read through the engine, in the Vault lens —
+                                // the same reader every other vault note uses. Routing it into the
+                                // local sheet would need a second reader for the same content.
+                                if case .vault(let document) = doc.origin { openVaultDocument(document) }
+                                return
+                            }
+                            if let meta = DocumentImporter.parse(mdURL), meta.group == model.activeGroup {
+                                openDoc = OpenDocTarget(meta: meta, mdURL: mdURL)
                             }
                         }
                     }

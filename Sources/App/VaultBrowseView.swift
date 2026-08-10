@@ -352,7 +352,10 @@ private struct VaultDocumentCard: View {
 /// The note itself, read from the vault. Its text arrives with a freshness verdict, and the verdict
 /// is on screen: `expand` reads the SOURCE file, so it can report that the note has moved on since
 /// the index was built — the one thing a reader of a search result cannot otherwise know.
-private struct VaultNoteSheet: View {
+/// Shared with the Knowledge Documents shelf: a vault document opened from there is the same
+/// content read the same way, and a second reader would be a second place for the freshness
+/// verdict to be got wrong.
+struct VaultNoteSheet: View {
     let document: VaultDocument
     @ObservedObject var model: VaultBrowseModel
     @Environment(\.dismiss) private var dismiss
