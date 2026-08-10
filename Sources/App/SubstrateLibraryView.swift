@@ -424,19 +424,31 @@ private struct LibraryUntaggedRow: View {
         Group {
             if !model.untagged.isEmpty {
                 VStack(alignment: .leading, spacing: Gap.s6) {
+                    // REWRITTEN with the exporter it named. There is no export to block: these
+                    // transcripts sit in the output folder rather than in a vault, so they are in
+                    // no scope and nothing can retrieve them — which is the real cost and the one
+                    // the sentence now states.
                     LibraryNote(
-                        id: "untagged", marker: "blocks the export", tone: Ink.warning,
+                        id: "untagged", marker: "in no vault", tone: Ink.warning,
                         text: "\(model.untagged.count) transcript\(model.untagged.count == 1 ? "" : "s") "
-                            + "belong\(model.untagged.count == 1 ? "s" : "") to no workspace, so the "
-                            + "engine refuses the whole export rather than filing "
-                            + "\(model.untagged.count == 1 ? "it" : "them") under a workspace nothing "
-                            + "on disk supports. Assigning is the operator's call, not the app's — "
-                            + "these are filed under the name in the field below.")
+                            + "\(model.untagged.count == 1 ? "is" : "are") in the output folder "
+                            + "rather than in a workspace vault, so \(model.untagged.count == 1 ? "it is" : "they are") "
+                            + "in no scope and Ask cannot reach "
+                            + "\(model.untagged.count == 1 ? "it" : "them"). Filing moves the file "
+                            + "into that workspace's vault. Which workspace is the operator's call, "
+                            + "not the app's — these are filed under the name in the field below.")
                     ForEach(model.untagged) { transcript in
                         HStack(spacing: Gap.s8) {
                             Text(transcript.date).typeface(Register.micro, Ink.textHelper)
                             Text(transcript.title).proseText(Register.proseSm, Ink.textSecondary)
                                 .lineLimit(1)
+                            // What this app recorded for it before §7, when it recorded one. Shown
+                            // rather than acted on: it is a suggestion the operator confirms by
+                            // typing that name, which keeps "assigning is the operator's call" true.
+                            if let declared = transcript.declaredWorkspace, !declared.isEmpty {
+                                Text(verbatim: "was \(declared)")
+                                    .typeface(Register.monoMicro, Ink.textHelper)
+                            }
                             Spacer(minLength: Gap.s8)
                             ActionButton(title: named.isEmpty ? "Name a workspace first"
                                                              : "File under \(named)",

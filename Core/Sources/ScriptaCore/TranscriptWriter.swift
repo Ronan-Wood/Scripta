@@ -22,14 +22,13 @@ public enum TranscriptWriter {
         screenSnippets: [ScreenSnippet] = [],
         notes: [CallNote] = [],
         isConference: Bool = false,
-        group: String = ""
     ) throws -> URL {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
         let url = uniqueURL(in: folder, startedAt: startedAt, title: title)
         var contents = frontmatter(startedAt: startedAt, duration: duration,
                                    participants: participants, tags: tags, title: title,
-                                   isConference: isConference, group: group)
+                                   isConference: isConference)
         if let summary, !summary.isEmpty {
             contents += "\n\n## Summary\n\n" + summary
         }
@@ -56,7 +55,7 @@ public enum TranscriptWriter {
 
     private static func frontmatter(startedAt: Date, duration: TimeInterval,
                                     participants: [String], tags: [String], title: String?,
-                                    isConference: Bool, group: String) -> String {
+                                    isConference: Bool) -> String {
         let dateFmt = posixFormatter("yyyy-MM-dd")
         let timeFmt = posixFormatter("HH:mm")
         let dateStr = dateFmt.string(from: startedAt)
@@ -87,8 +86,10 @@ public enum TranscriptWriter {
         yaml += "tags: [\(tagList)]\n"
         // Recorded from a single source, unlabeled. Absent = a normal two-party call.
         if isConference { yaml += "mode: conference\n" }
-        // The privacy/workspace partition. Absent/empty = ungrouped. Captured at record time.
-        if !group.isEmpty { yaml += "group: \"\(sanitizeScalar(group))\"\n" }
+        // NO `group:`. The workspace is WHERE THE FILE IS (Doc 4 §7) — a transcript inside a
+        // vault belongs to that vault, and `TranscriptStore.meta` derives it from the path. Writing
+        // it here as well was a second answer to a question the folder already answers, and the two
+        // could disagree: `IndexBuilder` had to log the conflict and pick a winner.
         // The spine, so the file is a self-describing note rather than one that only becomes a note
         // rather than leaving four values for something downstream to synthesise. See `TranscriptSpine`
         // for why each is what it is, and why the exporter still authors its own for now.

@@ -619,7 +619,7 @@ final class RecordingSession {
                                              startedAt: startedAt, duration: duration,
                                              tags: tags, title: title, summary: summary,
                                              screenSnippets: snippets, notes: notes,
-                                             isConference: isConference, group: group)
+                                             isConference: isConference)
 
         // Digest (when deferred) and commitment extraction (M17) both patch the SAME transcript's
         // OWN frontmatter after the write — two independent Task.detached writers here would race
