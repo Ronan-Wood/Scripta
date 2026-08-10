@@ -294,6 +294,23 @@ margin, and the best of them costs 20x the latency.** The listwise workaround st
 > through a 2.5 GB model trained on the judgment. The 4,558ms above is not wrong — it is what that
 > arm cost in that run — but it did not survive contact with this hardware and this corpus.
 >
+> **READ THOSE p50s AS EVAL NUMBERS, NOT AS WHAT A USER WAITS.** They come from `substrate eval`,
+> where HyDE expansions are CACHED across arms — so the generator never runs and the reranker is the
+> only model in play. That is the right isolation for comparing rerank arms and the wrong number for
+> "how long does Ask take". Measured end-to-end through the MCP path on FRESH queries (HyDE really
+> running, engine already warm), same four queries per arm:
+>
+>     listwise qwen2.5:7b     median 8,615 ms    [10097, 3707, 8047, 9184]
+>     cross-encoder           median 5,620 ms    [8618,   350, 5209, 6030]
+>
+> The ordering survives — the cross-encoder is still faster end-to-end despite adding a third model
+> — but the magnitude does not: seconds, not milliseconds, because HyDE generation dominates both
+> and Ollama swaps models between the arms. A first query after the engine starts pays both loads
+> and runs ~26s.
+>
+> Recorded because the isolated figure was quoted as the user-facing one first, which is the same
+> read-the-scales mistake this file warns about two sections up.
+>
 > `stack.DEFAULT_RERANK` now names the cross-encoder and `retriever._STACKS` carries its own
 > measured 44-case tier (0.708), so the default keeps a number rather than reporting null.
 >
