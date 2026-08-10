@@ -45,24 +45,31 @@ Expand-migrate-contract makes it four steps, each committable with the app never
 | step | state |
 |---|---|
 | 1 · the shelf shows BOTH origins | ✅ `8b0e98e` |
-| 2 · reroute `AppModel.importDocument` to the engine | **next** |
-| 3 · migrate the one existing document | — |
-| 4 · drop the `Files/` half; delete `DocumentImporter` | — |
+| 2 · reroute `AppModel.importDocument` to the engine | ✅ `8cae8d0` |
+| 3 · migrate the one existing document | ✅ 2026-08-10 |
+| 4 · drop the `Files/` half; delete `DocumentImporter` | **next** |
 
 Step 1 introduced `DocumentRow` with a `.local` / `.vault` origin, so the shelf shows documents from
 both paths and no later step makes one disappear. `.local` is the case that retires — when
 `DocumentImporter` goes the compiler names every site.
 
-**Step 2 is the one with a design decision already made.** The operator chose to KEEP
-`AppModel.ImportJob`'s inline progress, which rules out delegating `importDocument` to
-`SubstrateLibraryModel.addDocument()` wholesale. So: extract the ingest → promote → compose core out
-of `SubstrateLibraryModel.runAdd` (~100 lines, currently interleaved with `job`/`Step` reporting)
-into something both callers drive — a progress callback, with the caller mapping outcome to its own
-UI. `runAdd` maps it to `[Step]` for the rail's report card; `importDocument` maps failure to
-`ImportJob.State.failed`.
+**Step 4 is what is left, and it is the deletion.** `DocumentImporter` (339 lines) plus its `Files/`
+pass in `IndexBuilder`, plus `DocumentRow.local` and every site the compiler names when it goes —
+11 call sites across 6 files. Grep before planning.
 
-Do NOT start that extraction without room to finish it: `addDocument` is the working upload rail,
-and a half-lifted core breaks it.
+**The operator's files are NOT to be deleted.** `Scripta/Files/` still holds the app's copy of the
+one migrated document (`300 Keystone - Agency Report.pdf` + its old extracted `.md`). Step 4 stops
+SHOWING them; it must not remove them. Deleting the operator's copies is their call, after they are
+satisfied the vault copy is good.
+
+Two things step 4 has to answer that steps 1–3 did not:
+
+- **`verifiedOriginalURL` has no vault equivalent.** The shelf's "Open original" opens the copy in
+  `Files/`; a promoted document's origin is recorded in `_meta.md` as the path it was ingested FROM,
+  which may no longer exist. Decide whether "Open original" survives at all.
+- **`linkedCall` is already dropped** (step 2, named in the commit): the engine's ingest has no such
+  concept and inventing one would be a spine axis nothing reads. If that link is wanted back, it
+  belongs in identity, not in document frontmatter.
 
 Steps 3 and 4: migrate `Scripta/Files/300 Keystone - Agency Report.pdf` (27.6 MB, the ONLY existing
 document) through the engine's ingest — it doubles as the end-to-end proof — then delete
