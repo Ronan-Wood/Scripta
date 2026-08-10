@@ -33,6 +33,12 @@ record and was reconciled against the repo in the same pass. Read it before the 
 
 **1. Doc 4 Phase 4b — one document path. Step 1 of 4 SHIPPED 2026-08-10 (`8b0e98e`).**
 
+Two ingest paths exist. `AppModel.importDocument` runs the app's own `DocumentImporter` (339 lines,
+`Sources/Documents/`), which writes to `Scripta/Files/` and is visible only to the local index. The
+Library rail runs the engine's `ingest` + `SubstrateLibrary.promote`, which lands documents in the
+workspace vault at `10-reference/<source>/passages/` — tier 2, reachable by Ask, live recall and the
+Vault tab.
+
 **It is NOT atomic — an earlier version of this entry said it was, and that was wrong.**
 Expand-migrate-contract makes it four steps, each committable with the app never broken:
 
@@ -57,12 +63,6 @@ UI. `runAdd` maps it to `[Step]` for the rail's report card; `importDocument` ma
 
 Do NOT start that extraction without room to finish it: `addDocument` is the working upload rail,
 and a half-lifted core breaks it.
-
-Two ingest paths exist. `AppModel.importDocument` runs the app's own `DocumentImporter` (339 lines,
-`Sources/Documents/`), which writes to `Scripta/Files/` and is visible only to the local index. The
-Library rail runs the engine's `ingest` + `SubstrateLibrary.promote`, which lands documents in the
-workspace vault at `10-reference/<source>/passages/` — tier 2, reachable by Ask, live recall and the
-Vault tab.
 
 Steps 3 and 4: migrate `Scripta/Files/300 Keystone - Agency Report.pdf` (27.6 MB, the ONLY existing
 document) through the engine's ingest — it doubles as the end-to-end proof — then delete
