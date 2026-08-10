@@ -52,6 +52,27 @@ DEPLOYMENT="$REPO/tools/deployment.py"
 # empty — and nothing in that window composes, embeds or reads an index.
 ENGINE="" DATA="" UV="" COMMIT=""
 
+# The registered vault, read STRAIGHT FROM THE REGISTRY rather than through the engine.
+#
+# `status` is the normal source and it carries `vault` — but the one state where this is needed is
+# the state where `status` refuses to answer at all (a schema mismatch, where the index predates the
+# deployed engine). The remedy message printed there has to name a real path or it is not a remedy,
+# and deriving one from the scope name is what this commit removes everywhere else.
+vault_of() {
+  python3 - "$1" <<'PYEOF' 2>/dev/null
+import sys, pathlib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    sys.exit(0)
+try:
+    reg = tomllib.loads((pathlib.Path.home() / ".substrate" / "scopes.toml").read_text())
+    print(reg["scopes"][sys.argv[1]]["vault"])
+except Exception:
+    pass
+PYEOF
+}
+
 mkdir -p "$(dirname "$LOG")" "$(dirname "$LOCK")"
 exec >>"$LOG" 2>&1
 say() { echo "$(date '+%Y-%m-%d %H:%M:%S')  $*"; }
@@ -250,15 +271,32 @@ for s in "${SCOPES[@]}"; do
   # silently — the `current` branch logs nothing and the summary line is suppressed when nothing
   # changed. That is the exact false-healthy signal this whole mechanism exists to remove, emitted
   # by its own writer. Decided in Python where the shape is, and defaulting to `unknown`.
-  drift=$(cli status --scope "$s" --lexical-only --json 2>/dev/null \
+  #
+  # ONE PROBE, THREE ANSWERS: drift, the REGISTERED vault, and vector coverage.
+  #
+  # `--lexical-only` is gone and its stated reason was wrong. It said wiring an embedder here "would
+  # load a model on every tick just to read mtimes" — but `stack.build` only CONSTRUCTS an embedder,
+  # and Ollama loads a model on first inference, not on configuration. Measured: 0.12-0.20s per
+  # scope, no model load. What the flag actually did was blank `vectors`, which is the field this
+  # loop now needs.
+  probe=$(cli status --scope "$s" --json 2>/dev/null \
           | python3 -c 'import json,sys
 try:
-    d = json.load(sys.stdin)["drift"]
-    if "error" in d or not d.get("checkable", True) or d.get("stale") is None:
-        print("unknown")
+    d = json.load(sys.stdin)
+    dr = d["drift"]
+    if "error" in dr or not dr.get("checkable", True) or dr.get("stale") is None:
+        drift = "unknown"
     else:
-        print("stale" if d["stale"] else "current")
-except Exception: print("unknown")' 2>/dev/null)
+        drift = "stale" if dr["stale"] else "current"
+    v = d.get("vectors")
+    vec = "none" if not v else ("complete" if v.get("complete") else "incomplete")
+    print("%s|%s|%s" % (drift, d.get("vault") or "", vec))
+except Exception: print("unknown||none")' 2>/dev/null)
+  drift=${probe%%|*}
+  rest=${probe#*|}
+  vault=${rest%%|*}
+  vectors=${rest##*|}
+  [ -n "$drift" ] || drift=unknown
   checked=$((checked + 1))
 
   # A SCHEMA MISMATCH IS NOT A DRIFT PROBE FAILURE, and conflating the two let this script perform
@@ -283,7 +321,7 @@ except Exception: print("unknown")' 2>/dev/null)
     if [ "${mismatch:-0}" -gt 0 ]; then
       say "$s: SCHEMA MISMATCH — index predates the deployed engine (${COMMIT:0:12}). REFUSING to"
       say "    recompose: that is a migration, and it is the operator's call, not this job's."
-      say "    Run: substrate compose \"\$HOME/OneDrive/vaults/$s-vault\" --clean \\"
+      say "    Run: substrate compose \"${vault:-$(vault_of "$s")}\" --clean \\"
       say "         --index-root \"$DATA/$s-index\" --db \"$DATA/$s.db\""
       record schema_mismatch "$s"
       failed=$((failed + 1)); continue
@@ -294,7 +332,31 @@ except Exception: print("unknown")' 2>/dev/null)
     # Batched rather than recorded here: on a quiet tick that is one process instead of six, and
     # a crash mid-loop costs only an un-advanced timestamp on scopes nothing was wrong with —
     # which reads as "not verified recently", the loud direction.
-    current) unchanged+=("$s"); continue ;;
+    # A CLEAN VAULT IS NOT A HEALTHY INDEX. Drift compares the vault against the index and says
+    # nothing about vectors — so an index that lost coverage stayed `unchanged` forever once the
+    # vault went quiet, and every query against it silently degraded. Measured 2026-08-10: two
+    # unembedded chunks out of 1,256 on `cbre` (one call recorded three days earlier) put it below
+    # `complete`, which switches the vector arm off, which switches HyDE and the reranker off. The
+    # scope answered lexical-only with `expected_mrr: null` for three days while this loop reported
+    # `unchanged` every fifteen minutes.
+    #
+    # Repaired with `embed` alone, NOT a recompose: the vault has not moved, so tearing the index
+    # down would be work for nothing — and `--clean` on a healthy index is the one operation here
+    # that can make things worse.
+    current)
+      if [ "$vectors" = "incomplete" ]; then
+        say "$s: vault unchanged but vectors INCOMPLETE — embedding without recomposing"
+        if ! cli embed --db "$DATA/$s.db" >/dev/null; then
+          say "$s: EMBED FAILED — scope stays degraded and will retry next tick"
+          record embed_failed "$s"
+          failed=$((failed + 1)); continue
+        fi
+        record refreshed "$s"
+        changed=$((changed + 1))
+        say "$s: vectors repaired"
+        continue
+      fi
+      unchanged+=("$s"); continue ;;
     unknown) say "$s: drift UNCHECKABLE — recomposing to be safe" ;;
     stale)   say "$s: vault changed — recomposing" ;;
     # An empty or unrecognised probe result — python3 missing, the CLI killed mid-pipe. It already
@@ -305,7 +367,22 @@ except Exception: print("unknown")' 2>/dev/null)
 
   # The failure records go in IMMEDIATELY, before the loop can be interrupted. These are the
   # states a reader must not miss, so they are never held in a variable waiting for a tidy exit.
-  if ! cli compose "$HOME/OneDrive/vaults/$s-vault" --clean \
+  # THE VAULT COMES FROM THE REGISTRY, NOT FROM THE SCOPE NAME. This line used to read
+  # `$HOME/OneDrive/vaults/$s-vault`, which assumed every scope is a hand-curated vault named after
+  # it. Doc 4 §7 broke that: a WORKSPACE is a vault, so `cbre` is registered against
+  # `…/Scripta/cbre` — the workspace vault holding its calls — while `…/vaults/cbre-vault` still
+  # exists beside it holding the curated notes and no calls. On the next stale tick this would have
+  # `--clean`ed the index and rebuilt it from the wrong source, dropping every call from the scope,
+  # and only then failed at registration where `scopes.record` refuses to repoint a name.
+  #
+  # Empty means the probe could not read the scope at all, which is not a state to guess a path in.
+  [ -n "$vault" ] || vault=$(vault_of "$s")
+  if [ -z "$vault" ]; then
+    say "$s: no registered vault — neither the probe nor the registry names one. REFUSING to guess."
+    record compose_failed "$s"
+    failed=$((failed + 1)); continue
+  fi
+  if ! cli compose "$vault" --clean \
         --index-root "$DATA/$s-index" --db "$DATA/$s.db" >/dev/null; then
     say "$s: COMPOSE FAILED — index left as-is, will retry next tick"
     record compose_failed "$s"
