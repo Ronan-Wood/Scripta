@@ -343,14 +343,6 @@ TOOLS = [
                 "doc_type": {"type": "string",
                              "description": "Only notes doing this job (spine.DOC_TYPES)."},
                 "include_archived": {"type": "boolean", "description": "Default false."},
-                "entity": {
-                    "type": "string",
-                    "description": "Only passages from notes that MENTION this entity, by id. A "
-                                   "document-level filter: the note is about them, not necessarily "
-                                   "the passage. `status` lists the ids with how many notes name "
-                                   "each. Absent unless the scope's vault declares an identity "
-                                   "roster.",
-                },
                 "vaults": {
                     "type": "array", "items": {"type": "string"},
                     "description": "Only passages composed from these vaults, by manifest name. "

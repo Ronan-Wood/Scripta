@@ -451,7 +451,7 @@ def test_a_malformed_row_reads_the_same_in_a_browse_and_a_search() -> None:
     malformed `domains`: browse coerced to a list and `passage` emitted whatever `json.loads`
     returned, so one stored `"ops"` showed three phantom domains in search and none in browse."""
     from substrate.store.index_store import Hit, decode_string_list
-    from substrate.render import document_record, passage
+    from substrate.render import passage
 
     hit = Hit(chunk_id="c", doc_id="d", kind="passage", text="t", path_str="", path_depth=0,
               page_start=None, page_label_start=None, n_chars=1, score=0.0,
