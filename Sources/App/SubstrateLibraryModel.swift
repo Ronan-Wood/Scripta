@@ -353,25 +353,70 @@ final class SubstrateLibraryModel: ObservableObject {
         }
     }
 
-    private func runAdd(cli: SubstrateEngine.Command, file: URL,
-                        surface asked: SubstrateCLI.IngestSurface, forceMarkdown: Bool,
-                        docClass: String?, domains: String, workspace: String) async {
-        let title = "Adding \(file.lastPathComponent)"
-        var steps: [Step] = []
+    // MARK: - The three steps every document takes
+    //
+    // EXTRACTED SO THERE IS ONE DOCUMENT PATH (Doc 4 Phase 4b, step 2). `AppModel.importDocument`
+    // used to run the app's own `DocumentImporter` — a second extractor, a second store under
+    // `Files/`, and a document only the local index could see. It now runs THIS, so a document
+    // dropped on a call and a document added from the Library rail take the same three steps and
+    // land in the same place.
+    //
+    // WHAT IS NOT HERE IS THE UI, and that is the whole reason it is separate. The rail reports a
+    // step-by-step card built from `[Step]`; the drop path reports one inline row that is
+    // processing, done, or failed. Both are honest renderings of the same outcome, and neither is
+    // the other's business — so this returns what happened and calls `progress` as it moves,
+    // rather than owning a `job`.
 
+    enum AddPhase { case extracting, promoting, composing }
+
+    /// What the three steps produced. Every field is what the caller needs to say what happened —
+    /// a run for each engine step, and the app's own failure for the one step the app performs.
+    struct AddOutcome {
+        /// Nil when this engine's `ingest` names no way to pass a file, which is refused before
+        /// anything runs. `surfaceFailure` carries the sentence in that case.
+        let extraction: SubstrateRun?
+        let surfaceFailure: String?
+        let promoted: URL?
+        let vault: ScriptaVault?
+        let promoteFailure: String?
+        /// Nil when an earlier step failed or the task was stopped between steps.
+        let composed: SubstrateRun?
+
+        var succeeded: Bool { composed?.succeeded == true }
+
+        /// The first thing that went wrong, in the order the steps run — for a caller with one
+        /// line to say it in.
+        var failure: String? {
+            if let surfaceFailure { return surfaceFailure }
+            if let extraction, !extraction.succeeded {
+                return extraction.stderr.isEmpty ? "The engine could not extract that file."
+                                                 : extraction.stderr
+            }
+            if let promoteFailure { return promoteFailure }
+            if let composed, !composed.succeeded {
+                return composed.stderr.isEmpty
+                    ? "It was added to the vault but the scope would not compose, so it is not "
+                      + "findable yet." : composed.stderr
+            }
+            return succeeded ? nil : "The document was not added."
+        }
+    }
+
+    static func performAdd(
+        cli: SubstrateEngine.Command, file: URL, surface asked: SubstrateCLI.IngestSurface,
+        forceMarkdown: Bool, docClass: String?, domains: String, workspace: String,
+        progress: @escaping @MainActor (AddPhase) -> Void
+    ) async -> AddOutcome {
         // 1. EXTRACT INTO STAGING, never straight into the vault. `compose` refuses the entire
         //    scope when one note fails to ingest, so a document written into the vault before it
         //    passed the class gate takes every other document down with it — and keeps doing so
         //    until someone finds the file.
         //    AND THE EXTRACTION DOES NOT OUTLIVE THE JOB. It is the document's full text in
-        //    cleartext and it has no reader once `promote` has copied it into the vault; the
-        //    record of what happened is the engine's own transcript, which the report keeps. See
-        //    `SubstrateLibrary.stagingRun` for what a shared, never-swept directory did.
+        //    cleartext and it has no reader once `promote` has copied it into the vault.
         let out = SubstrateLibrary.stagingRun(for: file)
         defer { try? FileManager.default.removeItem(at: out) }
+
         //    HOW THE FILE IS NAMED TO THE ENGINE IS THE ENGINE'S SHAPE, not a constant here.
-        //    `ingest` grew a positional `path` and fourteen detected formats while this surface was
-        //    being written; a hardcoded `--pdf` would have refused everything the widening added.
         var arguments = ["ingest"]
         if forceMarkdown, let flag = asked.markdownFlag {
             arguments += [flag, file.path]
@@ -380,68 +425,117 @@ final class SubstrateLibraryModel: ObservableObject {
         } else if let flag = asked.inputFlags.first {
             arguments += [flag, file.path]
         } else {
-            return finish(title: title, steps: [
-                Step(id: "ingest", title: "Extract", run: nil,
-                     appFailure: "This engine's `ingest` names no way to pass a file — neither a "
-                        + "positional path nor an input flag — so Scripta will not guess at one.",
-                     skipped: false)])
+            return AddOutcome(
+                extraction: nil,
+                surfaceFailure: "This engine's `ingest` names no way to pass a file — neither a "
+                    + "positional path nor an input flag — so Scripta will not guess at one.",
+                promoted: nil, vault: nil, promoteFailure: nil, composed: nil)
         }
         arguments += ["--out", out.path]
         if let docClass { arguments += ["--doc-class", docClass] }
 
-        job = .running(Running(title: title, step: "Extracting", started: Date(), done: steps))
+        await progress(.extracting)
         let extraction = await SubstrateCLI.run(cli, arguments)
-        steps.append(Step(id: "ingest", title: "Extract", run: extraction, appFailure: nil,
-                          skipped: false))
-        // STOPPED IS CHECKED HERE, BETWEEN THE STEPS, because neither of the two below can be
-        // stopped once it has begun: promote is a file copy, and a compose launched into an
-        // already-cancelled task is a subprocess started only to be killed. `SubstrateCLI.run`
-        // reports a cancelled run as not succeeded, so a Stop landing during the extraction is
-        // already covered by the same guard — this is the window after it returned.
+        // STOPPED IS CHECKED BETWEEN THE STEPS, because neither of the two below can be stopped
+        // once begun: promote is a file copy, and a compose launched into an already-cancelled
+        // task is a subprocess started only to be killed.
         guard extraction.succeeded, !Task.isCancelled else {
-            return finish(title: title, steps: steps + [
+            return AddOutcome(extraction: extraction, surfaceFailure: nil, promoted: nil,
+                              vault: nil, promoteFailure: nil, composed: nil)
+        }
+
+        // 2. PROMOTE. The only step the app performs itself, and it writes three spine values the
+        //    engine leaves absent — see `SubstrateLibrary.promote` for which and why.
+        await progress(.promoting)
+        let promoted: URL
+        let target: ScriptaVault
+        do {
+            // THE WORKSPACE'S VAULT (Doc 4 §7, corrected): an upload is walled by default and
+            // promoted to a shared core vault deliberately, the same rule notes follow.
+            target = try ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder,
+                                            inherits: WorkspaceBindings.binding(for: workspace)
+                                                .contextVaults)
+            promoted = try SubstrateLibrary.promote(
+                SubstrateLibrary.Ingested(out: out, origin: file,
+                                          domains: domains.split(separator: ",").map(String.init)),
+                into: target)
+        } catch {
+            return AddOutcome(extraction: extraction, surfaceFailure: nil, promoted: nil,
+                              vault: nil, promoteFailure: error.localizedDescription,
+                              composed: nil)
+        }
+
+        // 3. COMPOSE. Without this the document is a file in a folder: present, unfindable, and
+        //    indistinguishable from one that was never added.
+        await progress(.composing)
+        let composed = await composeVault(cli: cli, vault: target.root, name: target.scope,
+                                          clean: false)
+        return AddOutcome(extraction: extraction, surfaceFailure: nil, promoted: promoted,
+                          vault: target, promoteFailure: nil, composed: composed)
+    }
+
+    /// The rail's rendering of `performAdd` — a step-by-step card.
+    ///
+    /// Every line here is UI. The pipeline itself moved to `performAdd` so the drop path could run
+    /// the same one (Doc 4 Phase 4b); what is left is the mapping from "what happened" to the four
+    /// `Step`s this surface shows, including the two that report as SKIPPED when an earlier step
+    /// stopped the run — which is what makes a failed add legible rather than just short.
+    private func runAdd(cli: SubstrateEngine.Command, file: URL,
+                        surface asked: SubstrateCLI.IngestSurface, forceMarkdown: Bool,
+                        docClass: String?, domains: String, workspace: String) async {
+        let title = "Adding \(file.lastPathComponent)"
+        var done: [Step] = []
+
+        let outcome = await Self.performAdd(
+            cli: cli, file: file, surface: asked, forceMarkdown: forceMarkdown,
+            docClass: docClass, domains: domains, workspace: workspace
+        ) { [weak self] phase in
+            guard let self else { return }
+            let step: String
+            switch phase {
+            case .extracting: step = "Extracting"
+            case .promoting: step = "Adding it to the library vault"
+            case .composing: step = "Composing the scope"
+            }
+            job = .running(Running(title: title, step: step, started: Date(), done: done))
+        }
+
+        // The surface refusal never reached the engine, so it is the app's failure on the first
+        // step rather than a run that came back badly.
+        if let surfaceFailure = outcome.surfaceFailure {
+            return finish(title: title, steps: [
+                Step(id: "ingest", title: "Extract", run: nil, appFailure: surfaceFailure,
+                     skipped: false)])
+        }
+
+        done.append(Step(id: "ingest", title: "Extract", run: outcome.extraction,
+                         appFailure: nil, skipped: false))
+        guard outcome.extraction?.succeeded == true else {
+            return finish(title: title, steps: done + [
                 Step(id: "promote", title: "Add to the library vault", run: nil, appFailure: nil,
                      skipped: true),
                 Step(id: "compose", title: "Compose and register the scope", run: nil,
                      appFailure: nil, skipped: true)])
         }
 
-        // 2. PROMOTE. The only step the app performs itself, and it writes three spine values the
-        //    engine leaves absent — see `SubstrateLibrary.promote` for which and why.
-        job = .running(Running(title: title, step: "Adding it to the library vault",
-                               started: Date(), done: steps))
-        var promoted: URL?
-        var libraryVault: ScriptaVault?
-        do {
-            // THE WORKSPACE'S VAULT (Doc 4 §7, corrected): an upload is walled by default and
-            // promoted to a shared core vault deliberately, the same rule notes follow.
-            let target = try ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder,
-                                                inherits: WorkspaceBindings.binding(for: workspace)
-                                                    .contextVaults)
-            promoted = try SubstrateLibrary.promote(
-                SubstrateLibrary.Ingested(out: out, origin: file,
-                                          domains: domains.split(separator: ",").map(String.init)),
-                into: target)
-            libraryVault = target
-            steps.append(Step(id: "promote", title: "Add to the library vault", run: nil,
-                              appFailure: nil, skipped: false))
-        } catch {
-            return finish(title: title, steps: steps + [
-                Step(id: "promote", title: "Add to the library vault", run: nil,
-                     appFailure: error.localizedDescription, skipped: false),
+        done.append(Step(id: "promote", title: "Add to the library vault", run: nil,
+                         appFailure: outcome.promoteFailure, skipped: false))
+        guard outcome.promoteFailure == nil else {
+            return finish(title: title, steps: done + [
                 Step(id: "compose", title: "Compose and register the scope", run: nil,
                      appFailure: nil, skipped: true)])
         }
 
-        // 3. COMPOSE. Without this the document is a file in a folder: present, unfindable, and
-        //    indistinguishable from one that was never added.
-        job = .running(Running(title: title, step: "Composing \(libraryVault?.scope ?? "the vault")",
-                               started: Date(), done: steps))
-        let composed = await compose(cli: cli, vault: libraryVault?.root ?? AppSettings.outputFolder,
-                                     name: libraryVault?.scope ?? "library", clean: false)
-        steps.append(Step(id: "compose", title: "Compose and register the scope", run: composed,
-                          appFailure: nil, skipped: false))
-        finish(title: title, steps: steps, orphaned: composed.succeeded ? nil : promoted)
+        // A compose that never ran is a stop between the steps, not a failure of the compose.
+        guard let composed = outcome.composed else {
+            return finish(title: title, steps: done + [
+                Step(id: "compose", title: "Compose and register the scope", run: nil,
+                     appFailure: nil, skipped: true)])
+        }
+        done.append(Step(id: "compose", title: "Compose and register the scope", run: composed,
+                         appFailure: nil, skipped: false))
+        finish(title: title, steps: done,
+               orphaned: composed.succeeded ? nil : outcome.promoted)
     }
 
     /// Take one source back out of the library and recompose without it.
@@ -495,7 +589,7 @@ final class SubstrateLibraryModel: ObservableObject {
             // Recomposed against the workspace vault the document was promoted into. `--clean`
             // because a removal must leave no ingest directory behind still answering queries.
             let vault = try? ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder)
-            let composed = await compose(cli: cli,
+            let composed = await Self.composeVault(cli: cli,
                                          vault: vault?.root ?? AppSettings.outputFolder,
                                          name: vault?.scope ?? "library", clean: true)
             steps.append(Step(id: "compose", title: "Recompose the scope", run: composed,
@@ -593,8 +687,8 @@ final class SubstrateLibraryModel: ObservableObject {
                                                      under: AppSettings.outputFolder).vault
         else { return }
         Task { [weak self] in
-            _ = await self?.compose(cli: cli, vault: vault,
-                                    name: SubstrateLibrary.slug(scope), clean: true)
+            _ = await Self.composeVault(cli: cli, vault: vault,
+                                        name: SubstrateLibrary.slug(scope), clean: true)
             // The roster now reports a scope whose index moved, and the tier chips are drawn from
             // it — re-listed so a call recorded seconds ago is askable without a relaunch.
             await SubstrateScopes.shared.listScopes()
@@ -608,7 +702,7 @@ final class SubstrateLibraryModel: ObservableObject {
         // what capture put there, so a stale ingest directory is the one way a deleted call comes
         // back — and `assert_composed` would refuse the next compose over it anyway, after the
         // operator had already deleted it for a reason.
-        let composed = await compose(cli: cli, vault: vault, name: name, clean: true)
+        let composed = await Self.composeVault(cli: cli, vault: vault, name: name, clean: true)
         finish(title: title,
                steps: [Step(id: "compose", title: "Compose and register the scope", run: composed,
                             appFailure: nil, skipped: false)])
@@ -640,8 +734,8 @@ final class SubstrateLibraryModel: ObservableObject {
     /// app whose cwd is the engine's export would write the operator's index tree into the pinned
     /// deployment. Both land under `~/.substrate/scripta/index`, which is the disposable layer the
     /// flag's own help says to keep off cloud-sync.
-    private func compose(cli: SubstrateEngine.Command, vault: URL, name: String,
-                         clean: Bool) async -> SubstrateRun {
+    static func composeVault(cli: SubstrateEngine.Command, vault: URL, name: String,
+                             clean: Bool) async -> SubstrateRun {
         // AN ALREADY-REGISTERED SCOPE KEEPS ITS OWN LOCATION, and the lookup is HERE rather than at
         // each call site so no caller can forget it. All three compose the workspace's own scope
         // now — the transcript rail and both document paths — so all three could move it.

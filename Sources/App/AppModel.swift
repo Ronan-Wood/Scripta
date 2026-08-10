@@ -221,30 +221,57 @@ final class AppModel: ObservableObject {
     /// dismissed so the reason is visible.
     @Published var importJobs: [ImportJob] = []
 
-    /// Copies a document in, extracts its text on-device, and indexes it as kind='doc'. Job state
-    /// drives the Documents shelf rows; a notification fires on completion (mirrors recordings).
+    /// Bring a dropped document in through the ENGINE, and report it inline.
+    ///
+    /// ONE DOCUMENT PATH (Doc 4 Phase 4b, step 2). This used to run `DocumentImporter` — the app's
+    /// own extractor, writing to `Files/`, producing a document only the local index could see. It
+    /// now runs `SubstrateLibraryModel.performAdd`, the same three steps the Library rail runs, so
+    /// a document dropped on a call lands in the workspace vault where Ask, live recall and the
+    /// Vault tab can reach it.
+    ///
+    /// THE INLINE ROWS STAY (operator's decision, 2026-08-10). Delegating to the rail's
+    /// `addDocument()` would have been less code and would have moved this progress to another
+    /// screen — a drop reports where the drop happened. So the pipeline is shared and the rendering
+    /// is not: this maps the same outcome onto one row that is processing, done, or failed.
+    ///
+    /// `linkedCall` is not carried through, and that is a real loss rather than an oversight. The
+    /// app's importer wrote a `linked_call:` key into its own frontmatter; the engine's ingest has
+    /// no such concept, and inventing one would mean a second spine axis nothing reads. The link
+    /// belongs in the note's own text or in identity, and until it exists a dropped document is
+    /// simply a document in the workspace.
     func importDocument(_ url: URL, linkedCall: URL? = nil) async {
         let job = ImportJob(filename: url.lastPathComponent, state: .processing)
         importJobs.append(job)
-        do {
-            let imported = try await DocumentImporter.importFile(url, group: activeGroup, linkedCall: linkedCall)
-            // Backgrounded (crosscheck): this ran synchronously on @MainActor when indexDoc was a
-            // cheap frontmatter-parse-plus-upsert; M20 added a full NLTagger pass over the whole
-            // extracted body, which would otherwise freeze the UI for the duration of every import.
-            if let store = index {
-                let mdURL = imported.mdURL
-                Task.detached(priority: .utility) { IndexBuilder.indexDoc(mdURL, into: store) }
-            }
-            setJob(job.id, .done)
-            NotificationManager.shared.notifyDocumentReady(
-                title: imported.title,
-                revealing: DocumentImporter.folder.appendingPathComponent(imported.fileName))
-            // Let the "done" row linger briefly, then clear it.
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            importJobs.removeAll { $0.id == job.id }
-        } catch {
-            setJob(job.id, .failed(error.localizedDescription))
+
+        guard let cli = SubstrateEngine.shared.serving?.cli else {
+            return setJob(job.id, .failed(
+                "The substrate engine is not running, and documents are added through it now. "
+                + "Open Library to see what it is doing."))
         }
+        // Refused before extraction for the reason the rail states: a document lands in the
+        // workspace's vault, and a workspace that slugifies to nothing cannot name one.
+        guard (try? ScriptaVault.vault(forScope: activeGroup,
+                                       under: AppSettings.outputFolder)) != nil else {
+            return setJob(job.id, .failed(
+                "This workspace has no usable name, so there is no vault to add the document to. "
+                + "Name the workspace first — nothing was extracted."))
+        }
+        let asked = await SubstrateCLI.ingestSurface(cli)
+
+        let outcome = await SubstrateLibraryModel.performAdd(
+            cli: cli, file: url, surface: asked, forceMarkdown: false, docClass: nil,
+            domains: "", workspace: activeGroup) { _ in }
+
+        guard outcome.succeeded else {
+            return setJob(job.id, .failed(outcome.failure ?? "The document was not added."))
+        }
+        setJob(job.id, .done)
+        NotificationManager.shared.notifyDocumentReady(
+            title: url.deletingPathExtension().lastPathComponent,
+            revealing: outcome.promoted ?? url)
+        // Let the "done" row linger briefly, then clear it.
+        try? await Task.sleep(nanoseconds: 4_000_000_000)
+        importJobs.removeAll { $0.id == job.id }
     }
 
     func dismissImportJob(_ id: UUID) {
