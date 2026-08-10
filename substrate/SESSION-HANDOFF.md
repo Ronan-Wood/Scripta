@@ -31,7 +31,32 @@ record and was reconciled against the repo in the same pass. Read it before the 
 
 ## Open, in the order I would take them
 
-**1. Doc 4 Phase 4b — one document path. Audited 2026-08-10, not started, and it is ATOMIC.**
+**1. Doc 4 Phase 4b — one document path. Step 1 of 4 SHIPPED 2026-08-10 (`8b0e98e`).**
+
+**It is NOT atomic — an earlier version of this entry said it was, and that was wrong.**
+Expand-migrate-contract makes it four steps, each committable with the app never broken:
+
+| step | state |
+|---|---|
+| 1 · the shelf shows BOTH origins | ✅ `8b0e98e` |
+| 2 · reroute `AppModel.importDocument` to the engine | **next** |
+| 3 · migrate the one existing document | — |
+| 4 · drop the `Files/` half; delete `DocumentImporter` | — |
+
+Step 1 introduced `DocumentRow` with a `.local` / `.vault` origin, so the shelf shows documents from
+both paths and no later step makes one disappear. `.local` is the case that retires — when
+`DocumentImporter` goes the compiler names every site.
+
+**Step 2 is the one with a design decision already made.** The operator chose to KEEP
+`AppModel.ImportJob`'s inline progress, which rules out delegating `importDocument` to
+`SubstrateLibraryModel.addDocument()` wholesale. So: extract the ingest → promote → compose core out
+of `SubstrateLibraryModel.runAdd` (~100 lines, currently interleaved with `job`/`Step` reporting)
+into something both callers drive — a progress callback, with the caller mapping outcome to its own
+UI. `runAdd` maps it to `[Step]` for the rail's report card; `importDocument` maps failure to
+`ImportJob.State.failed`.
+
+Do NOT start that extraction without room to finish it: `addDocument` is the working upload rail,
+and a half-lifted core breaks it.
 
 Two ingest paths exist. `AppModel.importDocument` runs the app's own `DocumentImporter` (339 lines,
 `Sources/Documents/`), which writes to `Scripta/Files/` and is visible only to the local index. The
@@ -39,28 +64,15 @@ Library rail runs the engine's `ingest` + `SubstrateLibrary.promote`, which land
 workspace vault at `10-reference/<source>/passages/` — tier 2, reachable by Ask, live recall and the
 Vault tab.
 
-There is no safe partial application, which is why it was not started at the end of a long session:
+Steps 3 and 4: migrate `Scripta/Files/300 Keystone - Agency Report.pdf` (27.6 MB, the ONLY existing
+document) through the engine's ingest — it doubles as the end-to-end proof — then delete
+`DocumentImporter`, its `Files/` pass in `IndexBuilder`, and the `.local` case. 11 call sites across
+6 files; grep before planning.
 
-- reroute the ingest first → new documents land in the vault and the Knowledge shelf (reading
-  `Files/`) stops showing them; imports appear to vanish
-- move the shelf first → it reads a vault with no documents in it; the shelf goes empty
-- delete `DocumentImporter` first → 11 call sites across 6 files stop compiling
-
-**Operator's decision, 2026-08-10: KEEP the inline progress.** `AppModel.ImportJob` and its rows
-stay, so drag-drop onto a call keeps reporting progress where it does now. That rules out the
-smaller option (delegating `importDocument` to `SubstrateLibraryModel.addDocument()` wholesale) and
-means extracting a reusable ingest core out of `SubstrateLibraryModel.runAdd` — the
-ingest → promote → compose pipeline minus the rail's `job` state — called by both.
-
-The rest of the plan:
-
-- point the Knowledge Documents shelf at the vault via the engine's `documents` tool, filtered to
-  the workspace's own vault at **tier 2** (`promote` writes there, and `tier` is already on every
-  browse row — a clean discriminator)
-- move detail / delete / rename onto vault notes
-- delete `DocumentImporter` and its `Files/` pass in `IndexBuilder`
-- migrate the ONE existing document — `Scripta/Files/300 Keystone - Agency Report.pdf`, 27.6 MB —
-  through the engine's ingest; it doubles as the end-to-end proof
+How the shelf finds vault documents, settled in step 1 and needing no new engine concept:
+**tier 2 AND the workspace's own vault**, which is exactly what `promote` writes
+(`10-reference/<source>/passages/`; `vault._tier_for` reads `10-reference` as tier 2). Calls are
+tier 3 conversation-class under `_sources/`; inherited notes come from a different vault.
 
 Two audit findings worth not re-deriving:
 
