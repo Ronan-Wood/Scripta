@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 import SubstrateKit
 
 /// Reading the vault, in the app (Doc 4 §8).
@@ -282,6 +283,30 @@ final class VaultBrowseModel: ObservableObject {
             }
             state = .refused(.of(failure))
         }
+    }
+
+    // MARK: - Uploaded documents, for the Knowledge shelf
+
+    /// The documents this workspace has UPLOADED, as opposed to everything its scope composes.
+    ///
+    /// TIER 2 AND THE WORKSPACE'S OWN VAULT, which together are exactly what `promote` writes:
+    /// `10-reference/<source>/passages/` inside the workspace vault, and `vault._tier_for` reads
+    /// `10-reference` as tier 2. Calls are tier 3 conversation-class in `_sources/`; inherited
+    /// curated notes come from a DIFFERENT vault. So this needs no new engine concept and no new
+    /// frontmatter — the two fields the browse row already carries separate the three.
+    ///
+    /// Returns an empty list rather than a refusal: this feeds a shelf that also shows locally
+    /// imported documents, and a workspace with no engine running should show those rather than an
+    /// error where its documents were. The Vault lens is where an engine fault is reported.
+    func uploadedDocuments() async -> [VaultDocument] {
+        guard let scope = WorkspaceBindings.active.readsScope else { return [] }
+        let ownVault = ScriptaVault.slug(AppSettings.activeGroup)
+        guard !ownVault.isEmpty else { return [] }
+
+        let request = SubstrateDocumentsRequest(scope: scope, vault: ownVault, limit: Self.pageSize)
+        guard case .ok(let payload) = await client.documents(request),
+              let documents = try? payload.mappedDocuments() else { return [] }
+        return documents.filter { $0.tier == 2 }
     }
 
     // MARK: - Reading one note
