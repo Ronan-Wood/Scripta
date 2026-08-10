@@ -53,9 +53,20 @@ from substrate.store.index_store import IndexStore  # noqa: E402
 _REPO = Path(__file__).resolve().parent.parent
 _AGENT = _REPO / "tools" / "substrate-refresh"
 
-# The three keys the agent's python3 probe reads, verbatim from its source:
-#     if "error" in d or not d.get("checkable", True) or d.get("stale") is None:
-_PROBE_KEYS = ("error", "checkable", "stale")
+# Every key the agent's python3 probe reads, verbatim from its source.
+#
+# `drift`, `vault` and `vectors` joined the original three on 2026-08-10, when the probe stopped
+# answering one question and started answering three. Each is a real new dependency on the payload
+# and is pinned deliberately:
+#   vault    — the compose source. It used to be derived from the scope NAME
+#              (`$HOME/OneDrive/vaults/$s-vault`), which Doc 4 §7 broke: a workspace IS a vault, so
+#              `cbre` composes from `…/Scripta/cbre` while `…/cbre-vault` still exists beside it.
+#   vectors  — coverage. Drift compares the vault against the index and says nothing about vectors,
+#              so an index that lost coverage stayed `unchanged` forever once the vault went quiet.
+#   complete — read off `vectors`, and pinned separately from it: the block being PRESENT and the
+#              coverage inside it being complete are different facts, and the agent acts on the
+#              second one.
+_PROBE_KEYS = ("error", "checkable", "stale", "drift", "vault", "vectors", "complete")
 
 # The five outcomes the agent passes to `refresh-record`. `record` REFUSES an outcome outside
 # OUTCOMES, so an outcome the agent emits that the engine dropped is a hard failure at 15-minute
@@ -168,8 +179,13 @@ def test_agent_probe_reads_exactly_these_keys_and_no_others() -> None:
     reported as healthy. Verified: that mutation passed the presence-only form.
     """
     body = _probe_source()
-    read = set(re.findall(r'd\.get\("([^"]+)"', body)) | set(re.findall(r'"([^"]+)" in d', body))
-    read |= set(re.findall(r'd\["([^"]+)"\]', body))
+    # ANY identifier, not just `d`. The probe now binds the drift block to its own name and reads
+    # `checkable`/`stale` off THAT, so a `d`-only pattern stopped seeing two of the arms it exists
+    # to pin — the mutation this test documents (deleting the `error` arm) would have gone green
+    # again the moment the probe used a local variable.
+    read = set(re.findall(r'\b\w+\.get\("([^"]+)"', body))
+    read |= set(re.findall(r'"([^"]+)" in \w+\b', body))
+    read |= set(re.findall(r'\b\w+\["([^"]+)"\]', body))
     assert read == set(_PROBE_KEYS), (
         f"the probe reads {sorted(read)}; this contract pins {sorted(_PROBE_KEYS)}. "
         "A key added here is a new dependency on the engine's payload; a key removed is an arm "
@@ -217,10 +233,24 @@ def test_freeze_is_only_claimed_by_a_failed_compose() -> None:
 # ---------------------------------------------------------------- end to end
 
 def _probe(label: str, payload: str) -> str:
-    """Run the SHIPPED probe over one payload and return its verdict."""
+    """Run the SHIPPED probe over one payload and return its DRIFT verdict.
+
+    The probe emits `drift|vault|vectors` since 2026-08-10. Only the first field is the drift
+    verdict every assertion below is about; the other two have their own test, so splitting here
+    keeps a coverage change from reading as a drift regression.
+    """
     r = subprocess.run([sys.executable, "-c", _probe_source()], input=payload,
                        capture_output=True, text=True)
-    return r.stdout.strip()
+    return r.stdout.strip().split("|")[0]
+
+
+def _probe_fields(payload: str) -> tuple[str, str, str]:
+    """All three fields, for the assertions that are about the other two."""
+    r = subprocess.run([sys.executable, "-c", _probe_source()], input=payload,
+                       capture_output=True, text=True)
+    parts = r.stdout.strip().split("|")
+    assert len(parts) == 3, f"probe emitted {r.stdout.strip()!r}, expected three fields"
+    return parts[0], parts[1], parts[2]
 
 
 def test_probe_parses_a_real_status_payload() -> None:
@@ -277,6 +307,43 @@ def test_probe_parses_a_real_status_payload() -> None:
 
     assert _probe("garbage", "not json at all") == "unknown", (
         "an unparseable payload must probe `unknown`")
+
+
+def test_probe_reports_the_registered_vault_and_vector_coverage() -> None:
+    """The two fields the probe gained, and the failures each one exists to prevent.
+
+    `vault` is the compose SOURCE. Derived from the scope name it aimed `cbre` at
+    `…/vaults/cbre-vault` — 31 curated notes — while the scope is registered against
+    `…/Scripta/cbre`, the workspace vault holding its calls. The next stale tick would have
+    `--clean`ed the index and rebuilt it from the wrong one.
+
+    `vectors` is coverage, which drift does not measure. Two unembedded chunks out of 1,256 put a
+    live scope below `complete`, which switches the vector arm off and HyDE and the reranker with
+    it — and the agent reported `unchanged` every fifteen minutes because the vault had not moved.
+    """
+    clean = {"stale": False, "checkable": True, "added": [], "removed": [], "changed": [],
+             "checked": 1, "unverifiable": 0}
+
+    drift, vault, vectors = _probe_fields(json.dumps(
+        {"drift": clean, "vault": "/v/Scripta/cbre",
+         "vectors": {"stored": 1256, "chunks": 1256, "complete": True}}))
+    assert (drift, vault, vectors) == ("current", "/v/Scripta/cbre", "complete")
+
+    # INCOMPLETE IS NOT `none`. They take different actions — one embeds, one does nothing — so
+    # collapsing them would restore the exact silence this field was added to break.
+    _, _, vectors = _probe_fields(json.dumps(
+        {"drift": clean, "vault": "/v", "vectors": {"stored": 1254, "chunks": 1256,
+                                                    "complete": False}}))
+    assert vectors == "incomplete"
+
+    # No vector arm wired at all — nothing to repair, and not a degraded index.
+    _, _, vectors = _probe_fields(json.dumps({"drift": clean, "vault": "/v", "vectors": None}))
+    assert vectors == "none"
+
+    # A payload with no vault names none, rather than inventing one. The agent refuses to compose
+    # on this rather than guessing a path.
+    _, vault, _ = _probe_fields(json.dumps({"drift": clean, "vectors": None}))
+    assert vault == ""
 
 
 def test_agent_refuses_a_repo_it_cannot_resolve() -> None:
