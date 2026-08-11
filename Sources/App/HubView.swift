@@ -74,7 +74,7 @@ struct HubView: View {
                 guard let plan = wipePlan else { return }
                 Task.detached(priority: .userInitiated) {
                     do {
-                        try WorkspaceDeleter.delete(plan)
+                        try await WorkspaceDeleter.delete(plan)
                         await MainActor.run { model.activeGroup = ""; model.reloadCalls() }
                     } catch {
                         // Either the plan could not be executed at all, or part of it survived —

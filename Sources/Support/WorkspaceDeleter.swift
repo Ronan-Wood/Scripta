@@ -184,7 +184,7 @@ enum WorkspaceDeleter {
     /// Execute a plan. Takes the SAME resolution the operator confirmed rather than recomputing it,
     /// so the tree removed is the tree they were shown.
     @discardableResult
-    static func delete(_ plan: Plan) throws -> Int {
+    static func delete(_ plan: Plan) async throws -> Int {
         let group = plan.group
         // Capture BOTH switchable globals once: a vault switch (repoint) landing mid-cascade must
         // not split the halves — files from vault A but stubs/registry purged in vault B.
@@ -250,6 +250,17 @@ enum WorkspaceDeleter {
                 IndexBuilder.syncTerms(store: store, registry: registry)
             }
         }
+        // CHAT HISTORY, and deliberately OUTSIDE the `!group.isEmpty` block above. That gate exists
+        // because `""` is the EntityRegistry's global vocabulary sentinel, so purging it would
+        // destroy terms every workspace uses. For conversations `""` is just the Ungrouped
+        // workspace — a real partition with real threads — so gating this the same way would leave
+        // Ungrouped's chat history behind on every wipe of it.
+        //
+        // Threads carry verbatim passage snippets since Phase 5, so this is the residue the "wipe
+        // before lending the laptop" scenario is about. It also stops a later workspace of the same
+        // name silently re-adopting them, which is the argument `WorkspaceBindings.forget` already
+        // makes above and which was never applied here.
+        await MainActor.run { AskModel.shared.forget(workspace: group) }
         if let store = IndexStore.shared {
             store.pruneOrphanedEntities()   // registry-independent — runs for "" wipes too
             // Truncate the WAL: the wiped calls' verbatim text must not linger in index.db-wal at

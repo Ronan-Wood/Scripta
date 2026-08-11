@@ -137,6 +137,49 @@ final class AskConversationTests: XCTestCase {
         XCTAssertFalse(message.citationsNotCarried)
     }
 
+    // MARK: - The workspace wipe reaches chat history
+
+    private func thread(_ workspace: String, _ title: String) -> AskConversation {
+        AskConversation(title: title, workspace: workspace,
+                        messages: [AskMessage(fromUser: true, text: "q")])
+    }
+
+    func testForgettingAWorkspaceTakesItsThreadsAndNothingElse() {
+        var conversations = [thread("ACME", "a"), thread("Family", "b"), thread("ACME", "c")]
+        XCTAssertEqual(ConversationPurge.forget("ACME", from: &conversations), 2)
+        XCTAssertEqual(conversations.map(\.workspace), ["Family"])
+    }
+
+    /// `""` IS UNGROUPED, NOT A WILDCARD. It is the registry's global sentinel and `WorkspaceDeleter`
+    /// gates the registry purge on `!group.isEmpty` for exactly that reason — if that gate's logic
+    /// ever leaked into this rule, wiping Ungrouped would wipe every conversation in the app.
+    func testWipingUngroupedTakesOnlyUngrouped() {
+        var conversations = [thread("", "ungrouped"), thread("ACME", "acme"), thread("", "also")]
+        XCTAssertEqual(ConversationPurge.forget("", from: &conversations), 2)
+        XCTAssertEqual(conversations.map(\.title), ["acme"])
+    }
+
+    /// And a named wipe must not take Ungrouped with it.
+    func testANamedWipeLeavesUngroupedAlone() {
+        var conversations = [thread("", "ungrouped"), thread("ACME", "acme")]
+        XCTAssertEqual(ConversationPurge.forget("ACME", from: &conversations), 1)
+        XCTAssertEqual(conversations.map(\.title), ["ungrouped"])
+    }
+
+    /// Exact match, so a workspace whose name merely contains another's is untouched. "CB" must not
+    /// take "ACME" — the failure a `hasPrefix` or `contains` would introduce silently.
+    func testMatchingIsExactNotPrefix() {
+        var conversations = [thread("CB", "short"), thread("ACME", "long")]
+        XCTAssertEqual(ConversationPurge.forget("CB", from: &conversations), 1)
+        XCTAssertEqual(conversations.map(\.title), ["long"])
+    }
+
+    func testForgettingAWorkspaceWithNoThreadsChangesNothing() {
+        var conversations = [thread("ACME", "a")]
+        XCTAssertEqual(ConversationPurge.forget("Family", from: &conversations), 0)
+        XCTAssertEqual(conversations.count, 1)
+    }
+
     // MARK: - Stop leaves a turn that cannot be mistaken for a finished one
 
     private static let marker = "\n\n_(Stopped.)_"
