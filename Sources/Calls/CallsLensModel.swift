@@ -35,20 +35,24 @@ final class CallsLensModel: ObservableObject {
     @Published var lens: Lens = .list
 
     /// The lenses the picker offers. `recording` is a STATE, not a choice — a chip for it while
-    /// nothing is being recorded would select a screen with no call on it.
-    static func available(recording: Bool) -> [Lens] {
-        recording ? Lens.allCases : Lens.allCases.filter { $0 != .recording }
+    /// nothing is happening would select a screen with no call on it.
+    ///
+    /// `.processing` COUNTS AS BUSY. Gating on `recording` alone hid the lens the instant the
+    /// operator pressed stop, which made the screen's whole "Transcribing…" state unreachable —
+    /// the phase that takes the longest and is the one a reader most wants to watch.
+    static func available(busy: Bool) -> [Lens] {
+        busy ? Lens.allCases : Lens.allCases.filter { $0 != .recording }
     }
 
-    /// Follow the recording lifecycle. Starting a call selects the recording screen; finishing one
-    /// hands the reader back to the list rather than leaving them on a lens that no longer has a
-    /// subject — and the transcript they just made is the top row of it.
+    /// Follow the recording lifecycle. Starting a call selects the recording screen and it STAYS
+    /// selected through transcription; only returning to idle hands the reader back to the list,
+    /// where the transcript they just made is the top row.
     ///
     /// IT DOES NOT CHANGE SECTION. `HomeView` used to take itself over when a recording began,
     /// which only reached a reader who was already on Home; yanking someone out of Ask mid-question
     /// because a call started would be a larger claim than the one being replaced.
-    func follow(recording: Bool) {
-        if recording {
+    func follow(busy: Bool) {
+        if busy {
             lens = .recording
         } else if lens == .recording {
             lens = .list

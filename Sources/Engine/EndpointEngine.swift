@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaShared   // ChatHistoryBudget — the retention rule, kept where a test can reach it
 
 /// A local OpenAI-format server as a model engine. Chat streams via SSE; enrichment uses JSON mode.
 final class EndpointEngine: ChatEngine, EnrichEngine {
@@ -134,8 +135,24 @@ private final class EndpointChat: ChatConversing {
         self.messages = [["role": "system", "content": system]]
     }
 
+    /// How much conversation to carry, in characters of message content.
+    ///
+    /// A CEILING, NOT A MODEL LIMIT, and the distinction is why it is stated rather than tuned. The
+    /// endpoint is whatever the operator pointed at, so its real window is unknown here; what IS
+    /// known is that history grew without bound while each Ask turn now carries up to
+    /// `PromptCatalog.enrichCharCap` of retrieved passage text (24k for the capable tier). Four
+    /// turns of that exceeds a 32k-token window on their own, and `EndpointChat` had no equivalent
+    /// of `AppleFMChat`'s rebuild-on-`exceededContextWindowSize`, so the thread simply began failing
+    /// and surfaced "Something went wrong — try again."
+    ///
+    /// ~48k characters is roughly 12k tokens, which leaves room for a reply on the 16k-32k windows
+    /// local builds usually ship. It is a guard against unbounded growth, not a promise the endpoint
+    /// accepts exactly this much.
+    private static let historyCharBudget = 48_000
+
     func stream(_ prompt: String) -> AsyncThrowingStream<String, Error> {
         messages.append(["role": "user", "content": prompt])
+        trimHistory()
         let outgoing = messages
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -158,5 +175,10 @@ private final class EndpointChat: ChatConversing {
             // instead of leaking the HTTP request until the server finishes on its own (audit L10).
             continuation.onTermination = { @Sendable _ in task.cancel() }
         }
+    }
+
+    /// The rule itself is `ChatHistoryBudget`, in the package, where a test can reach it.
+    private func trimHistory() {
+        ChatHistoryBudget.trim(&messages, budget: Self.historyCharBudget)
     }
 }

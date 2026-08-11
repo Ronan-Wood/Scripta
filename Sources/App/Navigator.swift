@@ -150,7 +150,14 @@ final class Navigator: ObservableObject {
         // while the reader had left it on Calendar or Digest would select the call underneath a
         // surface that cannot draw it — navigation reporting success and showing nothing. Decided
         // here because this type already owns what a section arrives showing.
-        if destination.section == .calls, destination.callFocus != .none {
+        //
+        // ONLY ON A NEW CONTEXT, and never over a live call. `follow(.section(.calls))` deliberately
+        // CARRIES the previous focus (see above), so keying on `callFocus != .none` alone fired on a
+        // plain "show me Calls" that happened to have a stale focus attached — and it fired while
+        // recording, dropping the reader off the live screen with nothing to put them back on it.
+        // `enteringNewContext` is the question actually being asked: did the reader ask for a
+        // different call than the one already showing.
+        if destination.section == .calls, destination.callFocus != .none, enteringNewContext {
             CallsLensModel.shared.focusList()
         }
     }

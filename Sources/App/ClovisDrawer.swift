@@ -24,8 +24,13 @@ struct ClovisDrawerView: View {
                         // `messages` and `thinking` left a question sitting under a vanished
                         // spinner with no reply and no reason — the Boundary Principle, in the one
                         // surface reachable from the title bar on every screen.
-                        if ask.running != nil { retrievingRow }
-                        if ask.thinking { thinkingRow }
+                        // ONE ROW, NAMING THE PHASE IT IS ACTUALLY IN. `running` spans retrieval
+                        // AND generation (so Stop stays reachable) and `thinking` overlaps the
+                        // second half of it, so drawing both put two spinners under one wait —
+                        // and the retrieval row went on saying "Searching…" while the local model
+                        // was the thing stalled, pointing the reader at the wrong component.
+                        if let running = ask.running { waitingRow(running) }
+                        else if ask.thinking { thinkingRow }
                         if case .refused(let refusal) = ask.answer {
                             VaultRefusalCard(refusal: refusal, scope: ask.scope,
                                              retryTitle: "Ask again", retry: ask.rerun)
@@ -101,11 +106,7 @@ struct ClovisDrawerView: View {
                 .font(CarbonFont.body(14)).foregroundStyle(Carbon.textPrimary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            if !message.passages.isEmpty {
-                VStack(spacing: 4) {
-                    ForEach(message.passages.prefix(4), id: \.id) { ClovisCitation(stored: $0) }
-                }
-            }
+            if !message.passages.isEmpty { ClovisCitations(message: message) }
             if !message.fromUser, !message.text.isEmpty {
                 ClovisAnswerFooter(message: message)
             }
@@ -145,13 +146,15 @@ struct ClovisDrawerView: View {
             && !ask.query.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    /// Retrieval is running. Named separately from "Thinking…" because they are different waits and
-    /// the first is the long one: search plus an `expand` per passage, seconds before a generator is
-    /// even asked.
-    private var retrievingRow: some View {
+    /// The wait, named by which half of it is running. They are genuinely different — retrieval is
+    /// the engine's, generation is the local model's — and "still searching" over a stalled
+    /// generator sends the reader to look at the wrong thing.
+    private func waitingRow(_ running: AskModel.Running) -> some View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.small)
-            Text("Searching \(ask.scope ?? "the vault")…")
+            Text(running.phase == .retrieving
+                 ? "Searching \(running.scope)…"
+                 : "Answering from \(running.scope)…")
                 .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
         }
     }
@@ -173,6 +176,33 @@ struct ClovisDrawerView: View {
     }
 }
 
+/// The citations under a drawer answer, restored through the same refusal the pane uses.
+///
+/// RESTORED, NOT READ RAW. Rendering `StoredPassage`'s fields directly printed whatever string was
+/// on disk — so a token this build has no vocabulary for appeared as itself, and an absent one as a
+/// blank, in the one place with no room to explain either. `StoredPassage.passage` is the existing
+/// door and it REFUSES rather than guesses, which makes the drawer and the pane give the same
+/// answer about the same stored turn: show what can be read, and say how many could not.
+private struct ClovisCitations: View {
+    let message: AskMessage
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ForEach(restored.prefix(4)) { ClovisCitation(passage: $0) }
+            if withheld > 0 {
+                Text("\(withheld) citation\(withheld == 1 ? "" : "s") withheld — this build has no "
+                     + "vocabulary for a value stored earlier.")
+                    .font(CarbonFont.label(10.5)).foregroundStyle(Carbon.textHelper)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var restored: [Passage] { message.passages.compactMap(\.passage) }
+    private var withheld: Int { message.passages.count - restored.count }
+}
+
 /// One citation in the drawer: what it was, and how it should be read.
 ///
 /// THE SPINE TRAVELS EVEN HERE, in a 400pt panel where the temptation is to show a title and stop.
@@ -185,11 +215,11 @@ struct ClovisDrawerView: View {
 /// resolves to a file only through a round trip — so a row that still looked clickable would be
 /// promising navigation this build cannot perform.
 private struct ClovisCitation: View {
-    let stored: StoredPassage
+    let passage: Passage
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(stored.citation)
+            Text(passage.citation)
                 .font(CarbonFont.medium(11.5)).foregroundStyle(Carbon.textPrimary).lineLimit(2)
             Text(spine).font(CarbonFont.label(10.5)).foregroundStyle(Carbon.textHelper).lineLimit(1)
         }
@@ -202,14 +232,13 @@ private struct ClovisCitation: View {
         }
     }
 
-    /// `conversation` first, as `LiveRecallPanel` and the prompt builder both name it first.
+    /// `conversation` first, as `LiveRecallPanel` and the prompt builder both name it first, and
+    /// through `.label` so one vocabulary reaches every surface.
     private var spine: String {
         var parts: [String] = []
-        if stored.documentClass == PassageDocumentClass.conversation.wireToken {
-            parts.append("from a call")
-        }
-        parts.append(stored.status)
-        parts.append(stored.confidence)
+        if passage.documentClass == .conversation { parts.append("from a call") }
+        parts.append(passage.status.label)
+        parts.append(passage.confidence.label)
         return parts.joined(separator: " · ")
     }
 }
