@@ -17,7 +17,7 @@ import SubstrateKit
 /// `doc_type`, `confidence`, `document_class`, `vault` and `supersedes`; a `ContextChunk` carries
 /// none of them. Converting the other way to reuse Clovis's existing generation path would have
 /// been the shorter diff and would have dropped the spine on the way — so generation consumes
-/// passages, and `Retriever.context` has no caller left here.
+/// passages, and the local retrieval stack it replaced is deleted (Doc 4 Phase 6).
 ///
 /// NOTHING HERE IS RETRIEVAL. Every value the reader sees is one the engine produced or one
 /// `SubstrateMapping` derived from it, which is what keeps Doc 3 §6 checkable — an in-app query and
