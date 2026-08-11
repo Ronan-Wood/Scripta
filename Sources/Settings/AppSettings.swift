@@ -41,7 +41,6 @@ enum AppSettings {
         static let endpointKnownModels = "endpointKnownModels"
         static let appleFMSizeClass = "appleFMSizeClass"
         static let rerankEnabled = "rerankEnabled"
-        static let embedModel = "embedModel"
         static let mirrorEnabled = "mirrorEnabled"
         static let visionModel = "visionModel"
         static let sidebarExpanded = "sidebarExpanded"
@@ -453,10 +452,6 @@ enum AppSettings {
 
     /// The local embedding model for semantic retrieval (e.g. "nomic-embed-text"). "" = off, so
     /// retrieval stays pure-FTS. Hybrid fusion turns on once chunks are embedded with it.
-    static var embedModel: String {
-        get { defaults.string(forKey: Keys.embedModel) ?? "" }
-        set { defaults.set(newValue, forKey: Keys.embedModel) }
-    }
 
     /// Local vision model for captioning screenshots OCR can't read (e.g. "qwen2.5vl:7b"). "" =
     /// off. Runs only in the post-call pass, never during a meeting.

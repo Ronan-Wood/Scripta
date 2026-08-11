@@ -50,7 +50,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 IndexBuilder.syncTerms(store: store)   // vocabulary cache before anything queries
                 IndexBuilder.reconcile(store: store)
                 await AppModel.shared.reconcileCalendarGroupCasing()   // needs reconcile's fresh group list
-                await IndexBuilder.embedPending(store: store)   // best-effort; no-op without an embedder
                 EntityMirror.sync(store: store)                 // opt-in; no-op unless enabled
             }
         }

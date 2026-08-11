@@ -115,13 +115,6 @@ extension EndpointEngine: RerankEngine {
     }
 }
 
-extension EndpointEngine: EmbeddingEngine {
-    var embedModel: String { model }
-    func embed(_ texts: [String]) async -> [[Float]]? {
-        (try? await wire.embeddings(model: model, input: texts))
-    }
-}
-
 /// One endpoint conversation. Keeps message history app-side so multi-turn context is preserved
 /// (the server is stateless per request).
 private final class EndpointChat: ChatConversing {
