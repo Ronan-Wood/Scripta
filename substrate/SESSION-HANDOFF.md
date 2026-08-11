@@ -76,27 +76,7 @@ and the second is the one that changed:
 Default retention is `0` (keep forever), so nothing ages these out. One method on `AskModel`
 (`forget(workspace:)`) plus a call in `WorkspaceDeleter.delete` closes it.
 
-**6. Eighteen `/adversary` findings on the Phase 5 diff are UNTRIAGED — the operator had not picked
-when the session ended.** Report-only by design, so none is fixed. Full list in the session log; the
-seven ranked high, with the three one-liners first:
-
-| # | where | what |
-|---|---|---|
-| 1 | `AskModel.bind(scope:)` | never clears `chat`, so the generator keeps the PREVIOUS scope's expanded context and can answer out of it while every control names the new one. Five other transitions clear it; this is the one that does not |
-| 2 | `AskModel.pruneExpiredConversations` | bumps the epoch without clearing `running` or cancelling `task` — the only epoch path that does not. Orphans an in-flight run, and `running == nil` gates `start()` and both `canSend`s, so Ask locks until a workspace switch |
-| 3 | `AskView` per-turn `ExclusionBar(filter:)` | takes the default no-op toggle, but `Pill` still wraps it in `Pressable` — every historical turn draws chips that hover, focus, press and do nothing. `VaultInclusionRefusal` exists to prevent exactly this |
-| 4 | `AskModel.stop()` | epoch bump makes `run` return before the interrupted marker, so a stopped answer reads as a finished one (partial text, or a blank bubble if stopped before the first token) and persists on the next `syncCurrent`. Needs a decision, not a line |
-| 5 | `AskModel.bind(scope:)` doc | first line still promises "and re-ask the standing question against it"; the body three lines down says "NOT RE-ASKED" |
-| 6 | `nothingMatched` / `generationUnavailable` | both say "the bar above names what was not searched" — `VaultTurn` draws the answer FIRST and the bars after, so the bar is below |
-| 7 | `AskView` | `ClovisAnswerFooter` is gone from the Ask pane and survives only in the drawer, so "copy answer" and "add to note" left the main surface. A silently deleted feature that this handoff did not notice — unlike the citation-navigation loss below, which was |
-
-**A third of them are comments asserting properties the code does not have** (5, 6, and four mediums),
-all written during this session and several while fixing `/crosscheck` findings. That is PRINCIPLES'
-fourth law at roughly one per major edit, and it is the argument for `/adversary` being diff-only:
-crosscheck had the files open and read those same comments as CONTEXT, which is how a false claim
-survives a review that is otherwise looking straight at it.
-
-**7. Ask lost citation→call navigation, and it is a real capability, not a rendering detail.**
+**6. Ask lost citation→call navigation, and it is a real capability, not a rendering detail.**
 Clovis's source rows opened the call at the spoken timestamp, which they could do because a
 `ContextChunk` carried a local file path and a `startMs`. A `Passage` carries neither: its `path` is
 structural (`"Oldfield Agency Call > Summary"`) and its `id` is an expand ref. The route back exists
@@ -159,14 +139,27 @@ became one `AskModel` + `AskView`. Retrieval is the engine's, generation consume
   deliberately, so the axis now travels with the RESULT.
 
 **What the review caught, kept here because the build did not.** `/crosscheck` returned 23 findings
-across three lenses; 15 were applied. The one that mattered is under *Failure patterns* below — the
-`HomeView` deletion took the in-call recording screen with it, silently. Others worth knowing:
-`bind(scope:)` did not fence its in-flight run (a `cbre` answer could land on the thread under
-`prism`, permanently, because a turn records `index_version` and not scope); `AskModel.shared` was
-never initialised unless the Ask pane had been opened with a serving engine, which left the Clovis
-drawer showing an empty thread with a live send button that did nothing; and `Stop` was unreachable
-during generation — `running` was cleared when retrieval returned, so the one control documented as
-"the answer to a spinner that never resolves" was absent from exactly the state that produces one.
+across three lenses (15 applied); `/adversary` then read the diff with no reasoning attached and
+found 18 more (14 applied, `73f516d`). The one that mattered is under *Failure patterns* below — the
+`HomeView` deletion took the in-call recording screen with it, silently.
+
+**The generalisable result is the DIFFERENCE between the two gates.** Crosscheck's reviewers get the
+touched files opened for context; adversary's get the diff and nothing else. Six of adversary's
+findings were comments asserting properties the code did not have — and crosscheck had read those
+same comments, as context, without questioning them. A false claim in a comment is invisible to a
+reviewer who is using that comment to understand the code. Run both; the second is not a slower
+version of the first.
+
+Three worth carrying as shapes rather than as fixed bugs:
+
+- **A fence that stops the wrong half.** `bind(scope:)` bumped the epoch, which abandons a stale
+  REPLY — and left `chat`, which is where the previous scope's expanded context lives. The next
+  answer would then be generated from stale MATERIAL, which no epoch guard can see.
+- **The only path that forgot.** `pruneExpiredConversations` bumped the epoch without clearing
+  `running`. Six sibling methods did it correctly; correctness by repetition fails at the seventh.
+- **A control absent from the state it exists for.** `running` was cleared when retrieval returned,
+  so Stop — documented as "the answer to a spinner that never resolves" — was unreachable for the
+  whole of generation, the phase that actually hangs.
 
 ## What this session shipped earlier — 2026-08-10
 
@@ -292,7 +285,9 @@ Claims the next session may rely on without re-verifying, each with what establi
 | assertion | verified by |
 |---|---|
 | 587 engine tests pass | `uv run pytest tests/ -q`, 2026-08-10 |
-| 229 Core tests pass (1 skipped) — 220 + Phase 5's 9 | `cd Core && swift test`, 2026-08-10 |
+| 238 Core tests pass (1 skipped) — 220 + Phase 5's 18 | `cd Core && swift test`, 2026-08-11 |
+| Stop keeps partial text and removes an empty placeholder | `AskConversationTests`, mutation-verified |
+| Endpoint history is bounded, oldest-first, system + current turn kept | `ChatHistoryBudgetTests`, mutation-verified |
 | The app builds after Phase 5 | `xcodebuild -project Scripta.xcodeproj -scheme Scripta build`, 2026-08-10 |
 | The stored-passage spine survives JSON for EVERY value of all four axes | `AskConversationTests`, mutation-verified: nil→`unclassified` fails 3 of them, restored passes |
 | Pre-merge `conversations.json` still decodes, `group` included | `testPreMergeConversationsStillDecode` |
@@ -330,7 +325,7 @@ Claims the next session may rely on without re-verifying, each with what establi
 >
 > Before changing anything: `cd substrate && ./lint.sh` (16 pre-existing errors, not yours),
 > `uv run python tools/fixture-signature.py out/substrate.db` (must print `4a560ce34aa6378a`,
-> 1811 chunks), `uv run pytest tests/ -q` (587), `cd Core && swift test` (229), and
+> 1811 chunks), `uv run pytest tests/ -q` (587), `cd Core && swift test` (238), and
 > `xcodebuild -project Scripta.xcodeproj -scheme Scripta build` (the bare `-scheme` form fails —
 > two projects in the root). Discipline is audit → review → implement → verify, `/crosscheck` then
 > `/adversary`.
