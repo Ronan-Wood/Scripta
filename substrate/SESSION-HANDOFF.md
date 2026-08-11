@@ -44,25 +44,7 @@ fix, if ever wanted, is residency (`keep_alive`, or pre-warming on launch), not 
 
 **3. `reference_pins` is still the last unimplemented Doc 2 §2 feature.** Prerequisite unchanged.
 
-**4. `WorkspaceDeleter` does not purge `conversations.json`, and Phase 5 raised what that costs.**
-Surfaced by review, NOT applied — widening a destructive operation is the operator's call. The
-deleter cascades transcripts, index rows, FTS, the WAL, the entity registry under both name and
-slug, entity mirrors and `WorkspaceBindings`; it has never touched chat history. Two consequences,
-and the second is the one that changed:
-
-- Threads now store `StoredPassage.snippet` — verbatim excerpts of the wiped workspace's notes and
-  calls — where the pre-merge `Source` stored a title and a path. So "wipe Family before lending the
-  laptop" now leaves more behind than it used to.
-- `conversations(in:)` matches the workspace NAME exactly, so orphaned threads are invisible until
-  someone creates a workspace with the same name, at which point every thread and passage from the
-  wiped one is silently re-adopted. The deleter already reasons about exactly this hazard for
-  bindings — "It also stops a later workspace of the same name silently re-adopting a wiped one's
-  binding" — and the same argument was never applied here.
-
-Default retention is `0` (keep forever), so nothing ages these out. One method on `AskModel`
-(`forget(workspace:)`) plus a call in `WorkspaceDeleter.delete` closes it.
-
-**5. Ask lost citation→call navigation, and it is a real capability, not a rendering detail.**
+**4. Ask lost citation→call navigation, and it is a real capability, not a rendering detail.**
 Clovis's source rows opened the call at the spoken timestamp, which they could do because a
 `ContextChunk` carried a local file path and a `startMs`. A `Passage` carries neither: its `path` is
 structural (`"Oldfield Agency Call > Summary"`) and its `id` is an expand ref. The route back exists
@@ -71,6 +53,19 @@ for which passages are app-recorded calls (a curated `class: conversation` note 
 NOT one, and routing it into the transcript reader would open a file that reader cannot show). It
 was left undone rather than half-built; the citations render with the full spine and no affordance
 that promises navigation.
+
+## What shipped after Doc 4 — 2026-08-11
+
+**The workspace wipe reaches chat history** (`4c4c166`). `WorkspaceDeleter` had never touched
+`conversations.json`; Phase 5 made that matter, because a thread now holds verbatim passage
+snippets rather than a title and a path. The rule is `ConversationPurge` in SubstrateKit, and the
+subtle half is that it sits OUTSIDE the `!group.isEmpty` gate: `""` is the EntityRegistry's global
+vocabulary sentinel, which is why that gate exists, and it is ALSO just Ungrouped for conversations
+— so gating this the same way leaves Ungrouped's history behind on every wipe of it. Mutating the
+rule to read `""` as a wildcard turns "wipe Ungrouped" into "wipe everything", and that is the test
+that trips loudest. Orphans from wipes performed BEFORE this shipped are deliberately not swept:
+identifying them needs to know which names are still real, and `availableGroups()` omits a
+workspace with no calls yet, so a sweep would delete live threads to clean up dead ones.
 
 ## What Phase 6 shipped — 2026-08-11
 
@@ -311,7 +306,7 @@ Claims the next session may rely on without re-verifying, each with what establi
 | assertion | verified by |
 |---|---|
 | 587 engine tests pass | `uv run pytest tests/ -q`, 2026-08-10 |
-| 240 Core tests pass (2 skipped) | `cd Core && swift test`, 2026-08-11 |
+| 245 Core tests pass (2 skipped) | `cd Core && swift test`, 2026-08-11 |
 | Every field the reader sees is the engine's, with `degraded` and arm-promotion pinned as rules | `MappingParityTests`, mutation-verified (3 mutations → 1/2/6 assertions) |
 | Nothing reads or writes `chunk_vectors` | `grep -rn` over `Sources Core/Sources`, 2026-08-11 |
 | Stop keeps partial text and removes an empty placeholder | `AskConversationTests`, mutation-verified |
@@ -337,13 +332,12 @@ Claims the next session may rely on without re-verifying, each with what establi
 > what to do next. Doc 2 lives in `~/OneDrive/vaults/core-vault/00-operator/specs/`; the repo has a
 > pointer, not a copy.
 >
-> **There is no next phase.** The handoff's *Open* list is the agenda now, and item 4 is the one I
-> would take first: `WorkspaceDeleter` has never purged `conversations.json`, and Phase 5 raised
-> what that costs — threads now store verbatim passage snippets rather than titles, and
-> `conversations(in:)` matches workspaces by NAME, so a later workspace of the same name silently
-> re-adopts a wiped one's threads. The deleter already reasons about exactly that hazard for
-> bindings and never applied the argument here. It is one method (`AskModel.forget(workspace:)`)
-> plus one call site — but it widens a destructive operation, so confirm the scope before writing it.
+> **There is no next phase.** The handoff's *Open* list is the agenda now. The privacy item that
+> headed it is done (`4c4c166`), so the first substantial one left is **item 4: Ask lost
+> citation→call navigation** — a capability Phase 5 removed. `expand(mode: "note")` returns the
+> real file, so the work is not the round trip; it is the RULE for which passages are app-recorded
+> calls, since a curated `class: conversation` note in `cbre-vault` is not one and routing it into
+> the transcript reader opens a file that reader cannot draw. Decide the rule before writing code.
 >
 > **Doc 4 §2's delete row is not a checklist to finish.** It lists `IndexStore (1,209)`, which is
 > load-bearing for Calls, the Digest lens, entities and commitments. Phase 6 deleted per-method on
@@ -351,7 +345,7 @@ Claims the next session may rely on without re-verifying, each with what establi
 >
 > Before changing anything: `cd substrate && ./lint.sh` (16 pre-existing errors, not yours),
 > `uv run python tools/fixture-signature.py out/substrate.db` (must print `4a560ce34aa6378a`,
-> 1811 chunks), `uv run pytest tests/ -q` (587), `cd Core && swift test` (240 passed, 2 skipped),
+> 1811 chunks), `uv run pytest tests/ -q` (587), `cd Core && swift test` (245 passed, 2 skipped),
 > and `xcodebuild -project Scripta.xcodeproj -scheme Scripta build` (the bare `-scheme` form fails —
 > two projects in the root; and adding or deleting a file needs `xcodegen generate` first).
 > Discipline is audit → review → implement → verify, `/crosscheck` then `/adversary` — and the
