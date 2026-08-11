@@ -143,10 +143,6 @@ struct TranscriptDetail: View {
             if let note = NoteStore.verified(atPath: path, group: meta.group) {
                 NSWorkspace.shared.open(note.url)
             }
-        } onOpenDoc: { path in
-            if let url = DocumentImporter.verifiedOriginalURL(atPath: path, group: meta.group) {
-                NSWorkspace.shared.open(url)
-            }
         }
     }
 
