@@ -286,7 +286,19 @@ final class VaultBrowseModel: ObservableObject {
         let request = SubstrateDocumentsRequest(scope: scope, vault: ownVault, limit: Self.pageSize)
         guard case .ok(let payload) = await client.documents(request),
               let documents = try? payload.mappedDocuments() else { return [] }
-        return documents.filter { $0.tier == 2 }
+        return documents.filter(isRemovable)
+    }
+
+    /// Whether THIS app may remove the document — the same two fields `uploadedDocuments` selects
+    /// on, named once so the shelf and the browser cannot drift apart about it.
+    ///
+    /// IT GATES THE AFFORDANCE, not just the action. `SubstrateLibraryModel.remove(source:)` already
+    /// refuses anything outside the workspace vault's `10-reference/`, so a wrong tap is safe — but
+    /// a delete button that refuses is the control this codebase keeps writing cards to apologise
+    /// for. An inherited `core-vault` note is not this app's to remove and must not look like it is.
+    func isRemovable(_ document: VaultDocument) -> Bool {
+        let own = ScriptaVault.slug(AppSettings.activeGroup)
+        return !own.isEmpty && document.vault == own && document.tier == 2
     }
 
     // MARK: - Reading one note
