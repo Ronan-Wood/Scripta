@@ -10,11 +10,11 @@ and marked where not.
 ## Bottom line
 
 The disconnect this project opened on — "there is the engine and there is the app, and the app is
-old" — is closed for capture, retrieval, browse and identity. Calls are written straight into
+old" — is closed for capture, retrieval, browse, identity AND documents. Calls are written straight into
 workspace vaults, the engine is the only MCP server, the app reads the vault through it, and
 `transcript_export` and transcript `group:` are deleted rather than maintained.
 
-What is left is one duplicated path (documents), one Ask, and the Swift retrieval stack.
+What is left is one Ask and the Swift retrieval stack.
 
 | Doc 4 phase | state |
 |---|---|
@@ -22,8 +22,8 @@ What is left is one duplicated path (documents), one Ask, and the Swift retrieva
 | 1 · capture declares the spine | ✅ |
 | 2 · §7 vault migration; `transcript_export` + `group:` | ✅ 2026-08-07 / 2026-08-10 |
 | 3 · one MCP server | ✅ 2026-08-07 (`adfe04e`) |
-| **4 · identity ✅, one document path ❌** | **◐ — the next task** |
-| 5 · one Ask; four-section shell | open |
+| 4 · identity; one document path | ✅ 2026-08-07 / 2026-08-10 |
+| **5 · one Ask; four-section shell** | **◐ — the next task** |
 | 6 · retire the Swift retrieval stack | open |
 
 Doc 4 itself (`~/OneDrive/vaults/scripta-vault/03-references/doc4-engine-first.md`) is the decision
@@ -31,110 +31,70 @@ record and was reconciled against the repo in the same pass. Read it before the 
 
 ## Open, in the order I would take them
 
-**1. Doc 4 Phase 4b — one document path. Step 1 of 4 SHIPPED 2026-08-10 (`8b0e98e`).**
+**1. Doc 4 Phase 5 — one Ask, and the four-section shell. TWO CHANGES, and the first is the
+largest single piece left in Doc 4.**
 
-Two ingest paths exist. `AppModel.importDocument` runs the app's own `DocumentImporter` (339 lines,
-`Sources/Documents/`), which writes to `Scripta/Files/` and is visible only to the local index. The
-Library rail runs the engine's `ingest` + `SubstrateLibrary.promote`, which lands documents in the
-workspace vault at `10-reference/<source>/passages/` — tier 2, reachable by Ask, live recall and the
-Vault tab.
+### 5a · One Ask
 
-**It is NOT atomic — an earlier version of this entry said it was, and that was wrong.**
-Expand-migrate-contract makes it four steps, each committable with the app never broken:
+~1,780 lines across four files: `AskModel` (360) + `AskView` (283) + `SubstrateAskModel` (367) +
+`SubstrateAskView` (769). Each model owns something the other does not, which is why neither can
+simply absorb the other:
 
-| step | state |
+| `AskModel` (Clovis) | `SubstrateAskModel` (vault) |
 |---|---|
-| 1 · the shelf shows BOTH origins | ✅ `8b0e98e` |
-| 2 · reroute `AppModel.importDocument` to the engine | ✅ `8cae8d0` |
-| 3 · migrate the one existing document | ✅ 2026-08-10 |
-| 4 · drop the `Files/` half; delete `DocumentImporter` | **next** — needs vault delete first, below |
+| persisted per-workspace conversations, pruned on expiry | the engine envelope and `retrieval_mode` |
+| streaming, `LanguageModelSession` | the disclosure contract — `ExclusionBar`, the filters block |
+| a mid-stream workspace switch that abandons its writes (audit H3) | scope binding + `adoptBinding` |
+| | the five refusal states, and the four engine-lifecycle cards |
 
-Step 1 introduced `DocumentRow` with a `.local` / `.vault` origin, so the shelf shows documents from
-both paths and no later step makes one disappear. `.local` is the case that retires — when
-`DocumentImporter` goes the compiler names every site.
+Doc 4 §2 names the target: *"Clovis's generation, streaming and persisted conversations, carrying
+the vault Ask's disclosure contract."*
 
-**Step 4 is what is left, and it is the deletion.** `DocumentImporter` (339 lines) plus its `Files/`
-pass in `IndexBuilder`, plus `DocumentRow.local` and every site the compiler names when it goes —
-11 call sites across 6 files. Grep before planning.
+**THE DIRECTION RULE IS THE WHOLE THING, and it is stated in §2 because it is easy to get backwards:
+`ContextChunk` → `Passage`, NEVER the reverse.** A `Passage` carries `status`, `doc_type`,
+`confidence`, `document_class`, `vault` and `supersedes`; a `ContextChunk` carries none of them.
+Converting the other way to reuse Clovis's existing generation path would silently drop the spine —
+and the spine is the reason a model does not read an unbuilt design as settled. Whatever the merge
+does with the two view layers, generation must consume `Passage`.
 
-**The operator's files are NOT to be deleted.** `Scripta/Files/` still holds the app's copy of the
-one migrated document (`300 Keystone - Agency Report.pdf` + its old extracted `.md`). Step 4 stops
-SHOWING them; it must not remove them. Deleting the operator's copies is their call, after they are
-satisfied the vault copy is good.
+Two things already decided elsewhere that constrain this:
 
-**STEP 4 WAS STARTED AND REVERTED 2026-08-10, for a reason worth reading before restarting it.**
-The mechanical half is fine — `IndexBuilder`'s `Files/` pass and `indexDoc` come out cleanly (mind
-the block boundaries: `private enum Listing` and `private static func mdFiles` sit between `indexDoc`
-and the next plain `static func`, and a naive "delete to the next declaration" takes both).
+- **Ask is a several-second operation** (item 5 below) and the operator has accepted that. Do not
+  reopen it as part of the merge.
+- **`LiveRecall` already consumes `Passage` and renders the spine** (`LiveRecallPanel`), including
+  naming `conversation` FIRST. It is the smallest working example of what generation-side rendering
+  has to preserve — read it before designing the merged view.
 
-What stopped it is a CAPABILITY GAP, not effort: **removing `ItemTarget.doc` loses the ability to
-delete a document from the app entirely.** `SubstrateLibraryModel.remove(source:)` exists and does
-exactly the right thing — removes the source directory, constrained to `10-reference/`, then
-recomposes `--clean` — but it is only OFFERED for an orphaned document (one whose compose refused).
-It is a recovery affordance, not a delete.
+### 5b · The four-section shell
 
-So step 4 must first wire the shelf's delete for a vault document, and the design is settled:
+Independent of 5a, mostly mechanical, and safe to do first. `HubSection.primary` is
+`[.home, .calls, .meetings, .ask, .library, .knowledge]` and `.secondary` is `[.settings, .docs]`;
+the target is **Ask · Calls · Library · Settings**. Doc 4 §2: Home is Swift aggregates over the
+local index, Meetings folds into Calls, Knowledge splits, Docs becomes a Help menu item.
 
-    expand(document) → WireNote.path (…/10-reference/<name>/passages/document.md)
-                     → deletingLastPathComponent ×2 → the source directory
-                     → SubstrateLibraryModel.remove(source:)
+**Knowledge is not a simple deletion any more** — it now holds the vault lens (`This workspace |
+Vault`) added 2026-08-10, which is a real surface. Decide where the Vault lens lands before removing
+the section that hosts it; "Knowledge splits" was written before it existed.
 
-`VaultDocument` carries no `source_path` — deliberately, it was removed from the browse payload so a
-listing does not hand back every note's absolute path — so the path comes from `expand`, which is
-one document at a time and asked for by name. That is the same privacy shape, honoured.
-
-RENAME does not survive and should not: the title comes from the engine's extraction, and a rename
-would be the app re-declaring a value the engine owns.
-
-Two things step 4 has to answer that steps 1–3 did not:
-
-- **`verifiedOriginalURL` has no vault equivalent.** The shelf's "Open original" opens the copy in
-  `Files/`; a promoted document's origin is recorded in `_meta.md` as the path it was ingested FROM,
-  which may no longer exist. Decide whether "Open original" survives at all.
-- **`linkedCall` is already dropped** (step 2, named in the commit): the engine's ingest has no such
-  concept and inventing one would be a spine axis nothing reads. If that link is wanted back, it
-  belongs in identity, not in document frontmatter.
-
-Steps 3 and 4: migrate `Scripta/Files/300 Keystone - Agency Report.pdf` (27.6 MB, the ONLY existing
-document) through the engine's ingest — it doubles as the end-to-end proof — then delete
-`DocumentImporter`, its `Files/` pass in `IndexBuilder`, and the `.local` case. 11 call sites across
-6 files; grep before planning.
-
-How the shelf finds vault documents, settled in step 1 and needing no new engine concept:
-**tier 2 AND the workspace's own vault**, which is exactly what `promote` writes
-(`10-reference/<source>/passages/`; `vault._tier_for` reads `10-reference` as tier 2). Calls are
-tier 3 conversation-class under `_sources/`; inherited notes come from a different vault.
-
-Two audit findings worth not re-deriving:
-
-- **Format coverage is not a blocker**, which was the expected obstacle. Docling and RapidOCR are
-  both installed, so the engine handles images too, and adds xlsx, html, csv, vtt, asciidoc, latex
-  and eml. The only regression is **`.heic`** — the app OCRs it, the engine does not list it.
-- The engine path is strictly better on reach: app documents are local-index-only, engine documents
-  are in the composed scope.
-
-**2. Phase 5 — one Ask, and the four-section shell.** `Sources/App/AskModel.swift` (360 lines) still
-exists beside `SubstrateAskModel`. Blocked by nothing now that 2 is done.
-
-**3. Phase 6 — retire the Swift retrieval stack.** `Sources/Engine/Retriever.swift` (96 lines).
+**2. Phase 6 — retire the Swift retrieval stack.** `Sources/Engine/Retriever.swift` (96 lines).
 Doc 4 says this needs a live parity number first, and Doc 3 §6's Swift-side parity test still does
 not exist — `TransportTests:159` never runs the CLI and compares one answer to its own round trip.
 
-**4. `NoteStore` and `DocumentImporter` are the last two holders of `group:`.** Both are app-local by
-construction, so location cannot answer for them until they move into the vault. Phase 4b closes the
-document half; §8's `NoteStore` migration closes the other. One change each.
+**3. `NoteStore` is the last holder of `group:`.** `DocumentImporter` is gone (Phase 4b), so the
+document half is closed. Notes are app-local by construction, so location cannot answer for them
+until §8's migration moves them into the vault. One change.
 
-**5. Ask is a several-second operation.** Warm, end-to-end through MCP on fresh queries: median
+**4. Ask is a several-second operation.** Warm, end-to-end through MCP on fresh queries: median
 5.6s. Dominated by HyDE generation, not reranking. A first query after the engine starts pays
 ~23–26s of model loading, because Ollama's default `keep_alive` is 5 minutes and the engine sets
 none. **Operator has accepted this** (2026-08-10) — recorded so it is not re-opened as a bug. The
 fix, if ever wanted, is residency (`keep_alive`, or pre-warming on launch), not the arms.
 
-**6. `reference_pins` is still the last unimplemented Doc 2 §2 feature.** Prerequisite unchanged.
+**5. `reference_pins` is still the last unimplemented Doc 2 §2 feature.** Prerequisite unchanged.
 
 ## What this session shipped — 2026-08-10
 
-Range `0a143f7..dc0de78`, 77 commits. Highlights, in dependency order:
+Range `0a143f7..9fe7974`, 84 commits. Highlights, in dependency order:
 
 - **`documents` — the engine's browse tool.** What a scope HOLDS, as opposed to what it matched.
   Needed because the app must be able to SHOW the vault and `search(query="")` is not a listing.
@@ -160,7 +120,14 @@ Range `0a143f7..dc0de78`, 77 commits. Highlights, in dependency order:
   now bisected and a single refused input shrunk until accepted, with the truncation reported.
 - **v9 → v10 migration of all six scopes**, fully embedded, all `unchanged`, none frozen.
 - **The rerank default moved to the cross-encoder** and kept its number — `_STACKS` became a
-  sequence so one embedder can front two measured stacks.
+  sequence so one embedder can front two measured stacks. On the vault corpus the shipped listwise
+  arm measured BELOW no reranker at all (semantic MRR 0.426 against 0.494); the cross-encoder is
+  0.679 and faster end-to-end.
+- **Phase 4b, all four steps: one document path.** `DocumentImporter` (339 lines) deleted along with
+  its `Files/` pass, `indexDoc`, `DocumentDetailView`, `DocumentSheet` and `OpenDocTarget`. Both
+  ingest paths became `SubstrateLibraryModel.performAdd`; the shelf reads the vault; the operator's
+  one existing document was migrated and verified retrievable. Delete now routes through
+  `remove(source:)` — `expand` gives the note path, up two components is the source directory.
 
 ## What the last handoff got wrong
 
@@ -222,6 +189,8 @@ Claims the next session may rely on without re-verifying, each with what establi
 | assertion | verified by |
 |---|---|
 | 587 engine tests pass | `uv run pytest tests/ -q`, 2026-08-10 |
+| Zero `DocumentImporter` references remain | `grep -rn DocumentImporter Sources Core`, 2026-08-10 |
+| The migrated document is retrievable at tier 2 of `cbre` | `browse(vault: "cbre")` → one tier-2 row, 2026-08-10 |
 | 220 Core tests pass (1 skipped — needs a live engine) | `cd Core && swift test`, 2026-08-10 |
 | The app builds | `xcodebuild -scheme Scripta build`, 2026-08-10 |
 | All six scopes are v10, fully embedded, `unchanged`, `frozen=false` | per-scope `status`/`query`, 2026-08-10 |
@@ -236,19 +205,21 @@ Claims the next session may rely on without re-verifying, each with what establi
 > then Doc 4 at `~/OneDrive/vaults/scripta-vault/03-references/doc4-engine-first.md` §§2–5. Doc 2
 > lives in `~/OneDrive/vaults/core-vault/00-operator/specs/` — the repo has a pointer, not a copy.
 >
-> First item: **Doc 4 Phase 4b — one document path.** It is fully audited in the handoff and it is
-> an ATOMIC change: two document ingest paths exist, and rerouting, moving the shelf, or deleting
-> `DocumentImporter` in isolation each break the app. The operator has decided to KEEP
-> `AppModel.ImportJob`'s inline progress, so extract a reusable ingest core out of
-> `SubstrateLibraryModel.runAdd` (ingest → promote → compose, minus the rail's `job` state) and call
-> it from both, rather than delegating to `addDocument()`.
+> First item: **Doc 4 Phase 5 — one Ask, and the four-section shell.** It is TWO changes and the
+> handoff scopes both. 5b (the shell) is independent and mostly mechanical; 5a (one Ask) is the
+> largest single piece left in Doc 4 — ~1,780 lines across `AskModel`, `AskView`,
+> `SubstrateAskModel` and `SubstrateAskView`, each model owning something the other does not.
 >
-> Read first: `Sources/Documents/DocumentImporter.swift` (339 lines, to be deleted),
-> `Sources/App/SubstrateLibraryModel.swift` (`runAdd`, `addDocument`),
-> `Sources/App/AppModel.swift` (`importDocument`), `Sources/Knowledge/KnowledgeDocumentsSection.swift`
-> and `Sources/App/VaultBrowseModel.swift` (the `documents` browse client the shelf should use).
-> There are 11 `DocumentImporter` call sites across 6 files — grep before planning. Migrate the one
-> existing document (`Scripta/Files/300 Keystone - Agency Report.pdf`) as the end-to-end proof.
+> The rule that decides 5a is Doc 4 §2's: **`ContextChunk` → `Passage`, never the reverse.** A
+> `Passage` carries the spine and a `ContextChunk` carries none of it, so converting the other way
+> to reuse Clovis's generation path silently drops `confidence` and `document_class` — which is the
+> whole reason the spine exists. Read `Sources/App/LiveRecallPanel.swift` first: it is the smallest
+> working example of generation-side rendering that preserves the spine.
+>
+> Read first: `Sources/App/AskModel.swift`, `Sources/App/SubstrateAskModel.swift`,
+> `Sources/App/SubstrateAskView.swift`, and `Sources/App/Navigator.swift` (`HubSection.primary`).
+> Note that Knowledge now hosts the vault lens, so "Knowledge splits" needs a destination for it
+> before that section can move.
 >
 > Before changing anything: `cd substrate && ./lint.sh` (16 pre-existing errors, not yours),
 > `uv run python tools/fixture-signature.py out/substrate.db` (must print `4a560ce34aa6378a`,
