@@ -43,6 +43,9 @@ struct VaultBrowseView: View {
 private struct VaultBrowseConsole: View {
     @ObservedObject var model: VaultBrowseModel
     @State private var reading: VaultDocument?
+    /// The document a delete is pending on. Held as the whole value because removing one resolves
+    /// its source directory through `expand` — the listing deliberately carries no absolute path.
+    @State private var removing: VaultDocument?
 
     var body: some View {
         content
@@ -54,6 +57,31 @@ private struct VaultBrowseConsole: View {
             .onAppear { model.adoptWorkspace() }
             .task(id: model.reloadToken) { await model.loadIfNeeded() }
             .sheet(item: $reading) { VaultNoteSheet(document: $0, model: model) }
+            .confirmationDialog(
+                removing.map { "Remove “\($0.title ?? $0.id)” from this workspace's vault?" } ?? "",
+                isPresented: Binding(get: { removing != nil },
+                                     set: { if !$0 { removing = nil } }),
+                presenting: removing
+            ) { document in
+                Button("Remove", role: .destructive) { remove(document) }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("This removes the document from this workspace's vault and recomposes the "
+                     + "scope without it. The file you imported from is not affected.")
+            }
+    }
+
+    /// THROUGH THE ENGINE, because that is where the document is — the same path the documents
+    /// shelf takes. `remove(source:)` deletes the source directory, constrained to the vault's own
+    /// `10-reference/`, and recomposes `--clean`, without which the removed note's ingest directory
+    /// survives in the index root and keeps answering.
+    private func remove(_ document: VaultDocument) {
+        removing = nil
+        Task {
+            guard let source = await model.sourceDirectory(of: document) else { return }
+            SubstrateLibraryModel.shared.remove(source: source)
+            await model.load()
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -72,7 +100,8 @@ private struct VaultBrowseConsole: View {
                 .padding(Metrics.pageGutter)
             }
         case .listed(let listing):
-            VaultBrowseListing(listing: listing, model: model) { reading = $0 }
+            VaultBrowseListing(listing: listing, model: model,
+                               open: { reading = $0 }, confirmRemove: { removing = $0 })
         }
     }
 }
@@ -149,6 +178,9 @@ private struct VaultBrowseListing: View {
     let listing: VaultBrowseModel.Listing
     @ObservedObject var model: VaultBrowseModel
     let open: (VaultDocument) -> Void
+    /// Asks the console to confirm a removal — the dialog and the `expand` round trip live there,
+    /// with the state they need.
+    let confirmRemove: (VaultDocument) -> Void
 
     /// A view filter over what was already fetched — no round trip to show fewer rows.
     private var shown: [VaultDocument] {
@@ -173,7 +205,13 @@ private struct VaultBrowseListing: View {
                     VaultBrowseEmpty(listing: listing, filtered: model.vaultFilter != nil)
                 } else {
                     ForEach(shown) { document in
-                        VaultDocumentCard(document: document) { open(document) }
+                        VaultDocumentCard(document: document,
+                                          open: { open(document) },
+                                          // Only what this app wrote, and only tier 2 — an
+                                          // inherited note is not ours to remove, so it gets no
+                                          // control rather than one that refuses.
+                                          remove: model.isRemovable(document)
+                                              ? { confirmRemove(document) } : nil)
                     }
                 }
             }
@@ -293,6 +331,8 @@ private struct VaultBrowseEmpty: View {
 private struct VaultDocumentCard: View {
     let document: VaultDocument
     let open: () -> Void
+    /// `nil` for a document this app may not remove — see `VaultBrowseModel.isRemovable`.
+    var remove: (() -> Void)?
 
     var body: some View {
         Button(action: open) {
@@ -318,6 +358,14 @@ private struct VaultDocumentCard: View {
         .buttonStyle(.plain)
         .disabled(document.expandRef == nil)
         .opacity(document.expandRef == nil ? 0.6 : 1)
+        // A CONTEXT MENU, because the card IS the button. A trailing control nested inside it would
+        // be swallowed by the outer `Button` on macOS, and the conversation rows in Ask already take
+        // this shape for the same reason. Absent entirely on a document this app may not remove.
+        .contextMenu {
+            if let remove {
+                Button("Remove from this vault…", role: .destructive, action: remove)
+            }
+        }
     }
 
     /// The note's own title, or its id — VISIBLY the id, not dressed up as a title. A title is a
