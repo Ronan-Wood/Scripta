@@ -59,7 +59,7 @@ struct CallsView: View {
 
     private var lensPicker: some View {
         Picker("", selection: $lens.lens) {
-            ForEach(CallsLensModel.available(recording: appModel.recordingState == .recording)) {
+            ForEach(CallsLensModel.available(busy: appModel.recordingState != .idle)) {
                 Text($0.title).tag($0)
             }
         }

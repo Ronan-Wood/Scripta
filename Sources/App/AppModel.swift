@@ -140,7 +140,7 @@ final class AppModel: ObservableObject {
         // The Calls section follows the recording lifecycle: a call in progress selects the
         // recording lens, and finishing one hands the reader back to the list. Doc 4 §2 retired
         // Home, which used to be where this screen lived.
-        CallsLensModel.shared.follow(recording: recordingState == .recording)
+        CallsLensModel.shared.follow(busy: recordingState != .idle)
         switch recordingState {
         case .recording:
             if startedAt == nil { startedAt = Date() }

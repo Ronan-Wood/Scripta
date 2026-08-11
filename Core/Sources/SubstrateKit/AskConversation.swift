@@ -169,8 +169,14 @@ public struct AskMessage: Codable, Equatable, Identifiable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-        fromUser = try c.decode(Bool.self, forKey: .fromUser)
-        text = try c.decode(String.self, forKey: .text)
+        // `decodeIfPresent` DOWN TO THE LAST TWO. These were `decode`, which made the tolerance
+        // above only partly true: one malformed message still threw, propagated through the array,
+        // and hit the `try?` that turns the whole store into `[]`. A defence with a hole the size of
+        // its own justification is not a defence. A message with no `fromUser` reads as an answer
+        // (the safer of the two — a question attributed to the assistant is a lie about who spoke);
+        // absent text reads as empty, which the surface already draws as a turn with nothing in it.
+        fromUser = try c.decodeIfPresent(Bool.self, forKey: .fromUser) ?? false
+        text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
         passages = try c.decodeIfPresent([StoredPassage].self, forKey: .passages) ?? []
         engineLabel = try c.decodeIfPresent(String.self, forKey: .engineLabel)
         indexVersion = try c.decodeIfPresent(String.self, forKey: .indexVersion)

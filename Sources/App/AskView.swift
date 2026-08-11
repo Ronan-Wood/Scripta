@@ -470,8 +470,9 @@ private struct VaultRunStrip: View {
         HStack(spacing: Gap.s8) {
             Spinner()
             Text(phrase).typeface(Register.ui, Ink.textPrimary)
-            // The question, in mono, because it is the argument that was sent — and because a
-            // re-run from a filter chip re-asks the ANSWERED question, not whatever is in the field.
+            // The question, in mono, because it is the argument that was sent — which since the
+            // merge is not always what is in the field: `rerun` from a refusal re-asks the turn
+            // already on the thread.
             Text(running.query).typeface(Register.monoMicro, Ink.textHelper).lineLimit(1)
             VaultElapsed(started: running.started)
             Spacer(minLength: Gap.s8)
@@ -523,7 +524,11 @@ private struct VaultThreadScroll: View {
                                   disclosure: model.disclosures[message.id],
                                   listScopes: { Task { await model.listScopes() } })
                     }
-                    if model.thinking { VaultThinking() }
+                    // NOT WHILE THE RUN STRIP IS UP. `running` is now held through generation so
+                    // Stop stays reachable, and `thinking` is true until the first token — so both
+                    // were drawing at once and one wait wore two spinners. The strip is the better
+                    // of the two here: it names the phase, counts, and carries the control.
+                    if model.thinking, model.running == nil { VaultThinking() }
                     // A refusal is NOT a turn. It sits under the thread because nothing was added
                     // to it — the question is still the last thing said, and this says why it went
                     // unanswered.

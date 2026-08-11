@@ -816,13 +816,19 @@ final class AskModel: ObservableObject {
 
     /// Why there is no answer over these passages.
     ///
-    /// THE SYSTEM'S OWN REASON FIRST. `TranscriptEnricher.availabilityMessage` distinguishes four
+    /// THE SYSTEM'S OWN REASON, ALWAYS. `TranscriptEnricher.availabilityMessage` distinguishes four
     /// states, and one fixed sentence telling every one of them to "enable Apple Intelligence"
     /// prints a remedy that CANNOT BE PERFORMED on a device-ineligible Mac and is a no-op on a
     /// model that is still downloading. PRINCIPLES' fourth law, item (4): a refusal is complete
-    /// only when its remedy has been executed against the state that triggers it. The fixed
-    /// sentence survives only as the fallback for the case that message has no opinion on — an
-    /// endpoint assigned for Ask that is not answering.
+    /// only when its remedy has been executed against the state that triggers it.
+    ///
+    /// The `??` arm is a TYPE REQUIREMENT, not a reachable case, and saying so is the point: this
+    /// runs only under `guard available else`, and `available` is false exactly when the endpoint
+    /// is unassigned AND Apple Intelligence is unavailable — which is precisely when
+    /// `availabilityMessage` is non-nil. An earlier version of this comment claimed the fallback
+    /// covered "an assigned endpoint that is not answering"; it cannot, because an assigned
+    /// endpoint makes `available` true and skips this path entirely. A stated fallback nobody can
+    /// reach is the same defect one level down.
     private static func generationUnavailable() -> String {
         let reason = TranscriptEnricher.availabilityMessage
             ?? "There is no answering model available for Ask."
