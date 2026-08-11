@@ -2,7 +2,6 @@ import Foundation
 import ScriptaShared
 import SQLite3
 import OSLog
-import Accelerate
 import os
 
 /// Transcript-level metadata as stored in the index.
@@ -190,6 +189,13 @@ public final class IndexStore {
         exec("PRAGMA foreign_keys=ON;")
         migrateIfNeeded()
         createSchema()
+        // RECLAIM, WITHOUT A SCHEMA BUMP. Doc 4 Phase 6 deleted both halves of the vector arm, so
+        // `chunk_vectors` has no reader and no writer — but an installed DB still holds a Float
+        // array per chunk, which is the largest table here. A version bump would shed it and would
+        // also drop every other table and re-chunk the whole corpus, which is a lot of work to
+        // reclaim space nothing is using. Unconditional and idempotent: it costs one no-op DDL per
+        // open once the table is gone.
+        exec("DROP TABLE IF EXISTS chunk_vectors;")
     }
 
     deinit { sqlite3_close(db) }
@@ -209,13 +215,15 @@ public final class IndexStore {
 
     private func dropAll() {
         // A schema/chunking bump is a full rebuild: drop EVERY derived table so createSchema recreates
-        // each at the new schema and reconcile/syncTerms/embedPending repopulate from source (the .md
-        // files + the EntityRegistry). DROP (not DELETE) is what lets a table's columns change across a
-        // bump — createSchema is all IF NOT EXISTS, so any surviving table silently keeps its old schema.
+        // each at the new schema and reconcile/syncTerms repopulate from source (the .md files + the
+        // EntityRegistry). DROP (not DELETE) is what lets a table's columns change across a bump —
+        // createSchema is all IF NOT EXISTS, so any surviving table silently keeps its old schema.
         // This MUST cover the enrichment_ledger + entity graph: a ledger row that outlives its dropped
-        // output table gates that output's regeneration off (stale hash == current ⇒ skip), e.g. leaving
-        // chunk_vectors empty after the bump — the invariant clear() enforces (M2). clear() keeps `terms`
-        // (a live rebuild at an unchanged schema); a migration drops it too, and syncTerms refills it.
+        // output table gates that output's regeneration off (stale hash == current ⇒ skip) — the
+        // invariant clear() enforces (M2). clear() keeps `terms` (a live rebuild at an unchanged
+        // schema); a migration drops it too, and syncTerms refills it.
+        // `chunk_vectors` stays in the DROP list though nothing creates it any more: an installed DB
+        // predating Doc 4 Phase 6 still has one.
         exec("""
         DROP TRIGGER IF EXISTS chunks_ai;
         DROP TRIGGER IF EXISTS chunks_ad;
@@ -258,12 +266,12 @@ public final class IndexStore {
         -- match a call by its topic/name even when no spoken chunk contains the literal word
         -- (e.g. "baseball" finding a call that only says "home runs"). Standalone FTS keyed by path.
         CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(path UNINDEXED, title, summary, tags, participants);
-        -- Reserved for Phase B: chunk_id -> embedding BLOB, tagged with the embed model + its
-        -- dimension so vectors from different models/spaces never mix (invalidate-on-change).
-        -- Left empty until an embedder passes a measured eval gate; the retriever works without it.
-        CREATE TABLE IF NOT EXISTS chunk_vectors(
-            chunk_id INTEGER PRIMARY KEY, vector BLOB, embed_model TEXT, dim INTEGER
-        );
+        -- NO `chunk_vectors`. Doc 4 Phase 6 retired the local retrieval stack, which was this
+        -- table's only reader; the write half was deleted with it rather than left populating a
+        -- table nothing queries. `dropAll` still names it so an old DB sheds it on the next bump,
+        -- and `open` drops it unconditionally so one does not have to wait for a bump to reclaim
+        -- the space. Doc 4 §6 forecloses a second local retrieval implementation, so there is no
+        -- future reader to hold it for.
         -- Enrichment ledger: per-transcript, per-stage {chunk, embed, extract, summarize} status
         -- so multi-stage processing heals independently. content_hash is over the derived chunks
         -- (Indexing.contentHash) — a stage whose stored hash != the current one is stale and re-runs.
@@ -360,10 +368,9 @@ public final class IndexStore {
     }
 
     private func removeRows(path: String) -> Bool {
-        // Cascade (I6): vectors reference chunk ids, so drop them before the chunks; ledger + FTS
-        // + transcript row follow. As entity mentions/registry arrive, delete them here too.
-        var ok = run("DELETE FROM chunk_vectors WHERE chunk_id IN (SELECT id FROM chunks WHERE path = ?)") { bind($0, 1, path) }
-        ok = run("DELETE FROM chunks WHERE path = ?") { bind($0, 1, path) } && ok
+        // Cascade (I6): ledger + FTS + transcript row follow the chunks. As entity
+        // mentions/registry arrive, delete them here too.
+        var ok = run("DELETE FROM chunks WHERE path = ?") { bind($0, 1, path) }
         ok = run("DELETE FROM enrichment_ledger WHERE path = ?") { bind($0, 1, path) } && ok
         ok = run("DELETE FROM entity_mentions WHERE path = ?") { bind($0, 1, path) } && ok
         ok = run("DELETE FROM action_items WHERE path = ?") { bind($0, 1, path) } && ok
@@ -374,18 +381,6 @@ public final class IndexStore {
 
     // MARK: - Semantic vectors (Phase B — hybrid retrieval)
 
-    /// Stores a chunk embedding, tagged with its embed model + dimension so vector spaces can never
-    /// silently mix (Fable: a model change means a full re-embed, never mixed-space fusion).
-    public func storeVector(chunkID: Int64, vector: [Float], model: String) {
-        let unlock = acquireLock(); defer { unlock() }
-        let data = vector.withUnsafeBytes { Data($0) }
-        run("INSERT OR REPLACE INTO chunk_vectors(chunk_id,vector,embed_model,dim) VALUES(?,?,?,?)") { stmt in
-            sqlite3_bind_int64(stmt, 1, chunkID)
-            _ = data.withUnsafeBytes { sqlite3_bind_blob(stmt, 2, $0.baseAddress, Int32(data.count), Self.TRANSIENT) }
-            bind(stmt, 3, model); sqlite3_bind_int64(stmt, 4, Int64(vector.count))
-        }
-    }
-
     /// (chunk id, text) for a transcript — the embed pipeline's input.
     public func chunkRows(path: String) -> [(id: Int64, text: String)] {
         let unlock = acquireLock(); defer { unlock() }
@@ -394,108 +389,6 @@ public final class IndexStore {
               bind: { Self.bindStatic($0, 1, path) }) { out.append((sqlite3_column_int64($0, 0), text($0, 1))) }
         return out
     }
-
-    /// `(vectors stored under `model`, total chunks)` — COMPLETENESS, not presence.
-    ///
-    /// This replaced a `LIMIT 1` presence check, and the difference is not pedantry. `vectorCandidates`
-    /// returns whatever it finds rather than raising, so ONE embedded chunk in five thousand satisfied
-    /// "has vectors", sent the retriever down the hybrid path, and had RRF fuse a 40-item lexical list
-    /// with a 1-item vector list. Reciprocal-rank fusion scores by POSITION, so that single chunk
-    /// arrived at rank 0 and scored as the vector arm's best possible answer — promoting one
-    /// arbitrarily-embedded passage toward the top of every query in the corpus. Worse than no vector
-    /// arm at all, and silent.
-    ///
-    /// Partial coverage is the ORDINARY state, not an exotic one: `IndexBuilder.embedPending` skips a
-    /// path whose embedder call fails and continues the loop, so a single Ollama hiccup mid-batch
-    /// leaves some paths embedded and some not, with nothing recorded anywhere.
-    ///
-    /// This is `substrate/store/index_store.py:785` carried across deliberately, including its JOIN.
-    /// Both delete paths do remove vectors today, so an orphaned vector is not reachable — but a bare
-    /// `COUNT(*)` over `chunk_vectors` would make this guard's correctness depend on every future
-    /// delete path remembering to, and the failure that produces is the one this exists to stop:
-    /// enough orphans to satisfy `embedded >= total` on a partly-embedded index.
-    ///
-    /// Returns the pair rather than a Bool so the caller can tell "never embedded" from "partly
-    /// embedded" — different remedies, and only one of them is a bug.
-    public func vectorCoverage(model: String) -> (embedded: Int, total: Int) {
-        let unlock = acquireLock(); defer { unlock() }
-        var embedded = 0, total = 0
-        query("SELECT COUNT(*) FROM chunk_vectors v JOIN chunks c ON c.id = v.chunk_id "
-              + "WHERE v.embed_model = ?",
-              bind: { Self.bindStatic($0, 1, model) }) { embedded = Int(sqlite3_column_int64($0, 0)) }
-        query("SELECT COUNT(*) FROM chunks") { total = Int(sqlite3_column_int64($0, 0)) }
-        return (embedded, total)
-    }
-
-    /// Embed-version discipline: drop every vector NOT from the current model (a model change
-    /// invalidates the whole space; cheap to re-embed at personal scale).
-    public func dropVectors(keepingModel model: String) {
-        let unlock = acquireLock(); defer { unlock() }
-        run("DELETE FROM chunk_vectors WHERE embed_model <> ?") { bind($0, 1, model) }
-    }
-
-    /// Cosine top-k over in-group chunk vectors (brute-force vDSP — instant at personal scale, and
-    /// no ANN index to maintain). Group-scoped inside the query, before ranking.
-    public func vectorCandidates(vector queryVec: [Float], group: String?, model: String, limit: Int) -> [Int64] {
-        let unlock = acquireLock(); defer { unlock() }
-        var qnorm = queryVec
-        var qmag: Float = 0; vDSP_svesq(queryVec, 1, &qmag, vDSP_Length(queryVec.count)); qmag = sqrt(qmag)
-        if qmag > 0 { var inv = 1 / qmag; vDSP_vsmul(queryVec, 1, &inv, &qnorm, 1, vDSP_Length(queryVec.count)) }
-
-        var sql = """
-        SELECT v.chunk_id, v.vector FROM chunk_vectors v
-        JOIN chunks c ON c.id = v.chunk_id JOIN transcripts t ON t.path = c.path
-        WHERE v.embed_model = ?
-        """
-        if group != nil { sql += " AND t.\"group\" = ?" }
-        var scored: [(Int64, Float)] = []
-        query(sql, bind: { stmt in
-            Self.bindStatic(stmt, 1, model)
-            if let group { Self.bindStatic(stmt, 2, group) }
-        }) { stmt in
-            let id = sqlite3_column_int64(stmt, 0)
-            guard let blob = sqlite3_column_blob(stmt, 1) else { return }
-            let bytes = Int(sqlite3_column_bytes(stmt, 1))
-            let count = bytes / MemoryLayout<Float>.size
-            guard count == queryVec.count else { return }   // never compare across dimensions
-            let vec = [Float](unsafeUninitializedCapacity: count) { buf, n in
-                memcpy(buf.baseAddress, blob, bytes); n = count
-            }
-            var mag: Float = 0; vDSP_svesq(vec, 1, &mag, vDSP_Length(count)); mag = sqrt(mag)
-            var dot: Float = 0; vDSP_dotpr(qnorm, 1, vec, 1, &dot, vDSP_Length(count))
-            scored.append((id, mag > 0 ? dot / mag : 0))
-        }
-        return scored.sorted { $0.1 > $1.1 }.prefix(max(1, limit)).map(\.0)
-    }
-
-    /// FTS spoken-passage candidate chunk ids (group-scoped) — the lexical half of hybrid fusion.
-    public func ftsCandidates(_ rawQuery: String, group: String?, limit: Int) -> [Int64] {
-        let unlock = acquireLock(); defer { unlock() }
-        let aliases = aliasGroupsLocked(group: group)
-        var ids = rankedChunkIDs(FTSQuery.andExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit)
-        if ids.isEmpty { ids = rankedChunkIDs(FTSQuery.orExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit) }
-        return ids.map(\.id)
-    }
-
-    /// Materialises chunk ids into context passages (neighbour-expanded), preserving the given
-    /// order — used by the hybrid retriever after RRF fusion.
-    public func contextForChunkIDs(_ ids: [Int64], limit: Int) -> [ContextChunk] {
-        let unlock = acquireLock(); defer { unlock() }
-        var out: [ContextChunk] = []
-        var seenID = Set<Int64>()
-        for id in ids.prefix(limit) {
-            var path = ""
-            query("SELECT path FROM chunks WHERE id = ?", bind: { sqlite3_bind_int64($0, 1, id) }) { path = text($0, 0) }
-            guard !path.isEmpty else { continue }
-            for chunk in neighbours(of: id, path: path) where seenID.insert(chunk.id).inserted {
-                out.append(chunk.chunk)
-            }
-        }
-        return out
-    }
-
-    // MARK: - Entity graph (cache of the registry)
-
     /// Upserts entity cache rows (from the registry) and replaces a transcript's mentions wholesale.
     public func setEntities(_ ents: [(id: String, name: String, kind: String)],
                      mentions path: String, _ mentions: [(entityID: String, startMs: Int, surface: String)]) {
@@ -620,7 +513,6 @@ public final class IndexStore {
         exec("DELETE FROM chunks;")            // triggers keep chunks_fts in sync
         exec("DELETE FROM transcripts;")
         exec("DELETE FROM transcripts_fts;")
-        exec("DELETE FROM chunk_vectors;")
         // Reset the derived caches too, or reconcile's ledger-gated stages no-op: stale
         // enrichment_ledger hashes suppress re-embedding + re-extraction, so "Rebuild Index" would
         // silently leave stale (now orphaned) embeddings and entity graph (audit M2). `terms` is the
@@ -834,138 +726,6 @@ public final class IndexStore {
                 startMs: 0, speaker: nil, snippet: snippet, score: sqlite3_column_double(stmt, 5)))
         }
         return hits
-    }
-
-    /// Full-text passages for retrieval-augmented answering: the whole chunk text (not a snippet),
-    /// ranked by BM25, with provenance. Feeds the on-device "Ask your calls" chat.
-    /// Retrieval for grounded answering. Ranks spoken passages (AND-first, OR fallback), caps to
-    /// ≤2 per call for source diversity, expands each hit to its neighbour turns so the model sees
-    /// the answer around the question, and appends up to 2 topic passages (title/summary/tags) so
-    /// concept-tag matches — the "baseball" ↔ "home runs" layer — reach Ask too, not just search.
-    /// Topic-only matches (documents, notes, and concept/title/tag call matches) for a query —
-    /// the layer that has no spoken chunks or vectors. The hybrid (embeddings) retrieval path is
-    /// chunk/vector-only, so it must call this too or docs and notes become invisible once a
-    /// corpus is embedded.
-    public func topicMatches(for rawQuery: String, group: String? = nil, limit: Int = 3) -> [ContextChunk] {
-        let unlock = acquireLock(); defer { unlock() }
-        let aliases = aliasGroupsLocked(group: group)
-        return topicContext(FTSQuery.andExpression(rawQuery, aliasGroups: aliases)
-                            ?? FTSQuery.orExpression(rawQuery, aliasGroups: aliases),
-                            group: group, limit: limit)
-    }
-
-    public func context(for rawQuery: String, group: String? = nil, limit: Int = 6) -> [ContextChunk] {
-        let unlock = acquireLock(); defer { unlock() }
-        let aliases = aliasGroupsLocked(group: group)
-        var hits = rankedChunkIDs(FTSQuery.andExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit * 3)
-        if hits.isEmpty { hits = rankedChunkIDs(FTSQuery.orExpression(rawQuery, aliasGroups: aliases), group: group, limit: limit * 3) }
-
-        // Per-call diversity: at most 2 chunks per path, keeping best-ranked.
-        var perPath: [String: Int] = [:]
-        var kept: [(id: Int64, path: String)] = []
-        for h in hits {
-            let n = perPath[h.path, default: 0]
-            if n >= 2 { continue }
-            perPath[h.path] = n + 1
-            kept.append((h.id, h.path))
-            if kept.count >= limit { break }
-        }
-
-        // Expand each kept chunk to id-1…id+1 (chunk ids are contiguous and ordered per path),
-        // de-duplicated, so a retrieved turn carries its surrounding exchange.
-        var seenID = Set<Int64>()
-        var out: [ContextChunk] = []
-        for k in kept {
-            for chunk in neighbours(of: k.id, path: k.path) where seenID.insert(chunk.id).inserted {
-                out.append(chunk.chunk)
-            }
-        }
-
-        // Topic fusion: append summary passages for concept/title/tag matches not already present.
-        let seenPath = Set(out.map(\.path))
-        for topic in topicContext(FTSQuery.andExpression(rawQuery, aliasGroups: aliases)
-                                    ?? FTSQuery.orExpression(rawQuery, aliasGroups: aliases), group: group, limit: 2)
-        where !seenPath.contains(topic.path) {
-            out.append(topic)
-        }
-        return out
-    }
-
-    /// (chunk id, path) for spoken-passage hits, best-ranked first. Group-scoped inside the query
-    /// (joins transcripts to apply the wall before LIMIT).
-    private func rankedChunkIDs(_ match: String?, group: String?, limit: Int) -> [(id: Int64, path: String)] {
-        guard let match else { return [] }
-        var out: [(Int64, String)] = []
-        var sql = """
-        SELECT c.id, c.path FROM chunks_fts
-        JOIN chunks c ON c.id = chunks_fts.rowid
-        JOIN transcripts t ON t.path = c.path
-        WHERE chunks_fts MATCH ?
-        """
-        if group != nil { sql += " AND t.\"group\" = ?" }
-        sql += " ORDER BY bm25(chunks_fts) LIMIT \(max(1, limit));"
-        query(sql, bind: { stmt in
-            Self.bindStatic(stmt, 1, match)
-            if let group { Self.bindStatic(stmt, 2, group) }
-        }) { stmt in
-            out.append((sqlite3_column_int64(stmt, 0), text(stmt, 1)))
-        }
-        return out
-    }
-
-    /// The chunk and its immediate neighbours on the same path, ordered by start time.
-    private func neighbours(of id: Int64, path: String) -> [(id: Int64, chunk: ContextChunk)] {
-        var out: [(Int64, ContextChunk)] = []
-        let sql = """
-        SELECT c.id, c.path, t.title, t.date, c.start_ms, IFNULL(c.speaker,''), c.text
-        FROM chunks c JOIN transcripts t ON t.path = c.path
-        WHERE c.path = ? AND c.id BETWEEN ? AND ? ORDER BY c.start_ms;
-        """
-        query(sql, bind: { stmt in
-            Self.bindStatic(stmt, 1, path)
-            sqlite3_bind_int64(stmt, 2, id - 1); sqlite3_bind_int64(stmt, 3, id + 1)
-        }) { stmt in
-            out.append((sqlite3_column_int64(stmt, 0),
-                        ContextChunk(path: text(stmt, 1), title: text(stmt, 2), date: text(stmt, 3),
-                                     startMs: Int(sqlite3_column_int64(stmt, 4)),
-                                     speaker: text(stmt, 5), text: text(stmt, 6))))
-        }
-        return out
-    }
-
-    /// Synthetic passages for calls that matched by title/summary/tags — the connective tissue
-    /// the on-device model uses for "reasonable connections" and whole-call questions.
-    private func topicContext(_ match: String?, group: String?, limit: Int) -> [ContextChunk] {
-        guard let match else { return [] }
-        var out: [ContextChunk] = []
-        var sql = """
-        SELECT f.path, f.title, t.date, f.summary, f.tags, t.kind
-        FROM transcripts_fts f JOIN transcripts t ON t.path = f.path
-        WHERE transcripts_fts MATCH ?
-        """
-        if group != nil { sql += " AND t.\"group\" = ?" }
-        sql += " ORDER BY bm25(transcripts_fts) LIMIT \(max(1, limit));"
-        query(sql, bind: { stmt in
-            Self.bindStatic(stmt, 1, match)
-            if let group { Self.bindStatic(stmt, 2, group) }
-        }) { stmt in
-            let title = text(stmt, 1), summary = text(stmt, 3), tags = text(stmt, 4)
-            let kind = text(stmt, 5)
-            let name = title.isEmpty ? "Untitled" : title
-            // Notes and documents ARE their body (indexed as summary): the user's own words and
-            // files, labeled so the model treats them as theirs, not something spoken on a call.
-            var parts: [String]
-            switch kind {
-            case "note": parts = ["The user's note: \(name)"]
-            case "doc": parts = ["From the user's document “\(name)”:"]
-            default: parts = ["Call: \(name)"]
-            }
-            if !summary.isEmpty { parts.append(kind == "call" ? "Summary: \(summary)" : summary) }
-            if !tags.isEmpty { parts.append("Topics: \(tags.replacingOccurrences(of: " ", with: ", "))") }
-            out.append(ContextChunk(path: text(stmt, 0), title: title, date: text(stmt, 2),
-                                    startMs: 0, speaker: "", text: parts.joined(separator: ". "), isTopic: true))
-        }
-        return out
     }
 
     /// One call's card for the Home dashboard and Knowledge digest — everything the index

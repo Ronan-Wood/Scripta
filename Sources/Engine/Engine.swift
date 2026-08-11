@@ -65,19 +65,15 @@ struct MergeNotesDTO: Decodable {
     let body: String
 }
 
-// MARK: - Reranking + embeddings (gated experiments — see P10 / design phases E, F)
+// MARK: - Reranking
 
 /// Listwise reranker. Apple FM deliberately does NOT conform (measured too weak); only a capable
 /// endpoint model does. Returns candidate indices most→least relevant, or nil to fail open.
+///
+/// `EmbeddingEngine` used to sit beside this and is gone: Doc 4 Phase 6 retired the local vector
+/// arm, and it was the only conformer's only consumer.
 protocol RerankEngine {
     func rerank(query: String, passages: [(index: Int, text: String)]) async -> [Int]?
-}
-
-/// Text embedder for Phase B vector fusion. Only reopened behind a measured eval gate — the
-/// on-device NLContextualEmbedding already failed it.
-protocol EmbeddingEngine {
-    var embedModel: String { get }
-    func embed(_ texts: [String]) async -> [[Float]]?
 }
 
 // MARK: - Errors

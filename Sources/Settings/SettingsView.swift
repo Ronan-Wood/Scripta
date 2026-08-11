@@ -81,7 +81,6 @@ struct SettingsView: View {
     @State private var testingEndpoint = false
     @State private var confirmLAN = false
     @State private var rerankEnabled = AppSettings.rerankEnabled
-    @State private var embedModel = AppSettings.embedModel
     @State private var mirrorEnabled = AppSettings.mirrorEnabled
     @State private var visionModel = AppSettings.visionModel
 
@@ -593,14 +592,6 @@ struct SettingsView: View {
                     }
                 }
                 .onChange(of: enrichModel) { _, v in AppSettings.setEndpointModel(v.isEmpty ? nil : v, for: .enrich) }
-                Picker("Semantic search (embeddings)", selection: $embedModel) {
-                    Text("Off — keyword only").tag("")
-                    ForEach(endpointModels, id: \.self) { Text($0).tag($0) }
-                    if !embedModel.isEmpty && !endpointModels.contains(embedModel) {
-                        Text("\(embedModel) (not on server)").tag(embedModel)
-                    }
-                }
-                .onChange(of: embedModel) { _, v in AppSettings.embedModel = v }
                 Picker("Screen captioning (vision)", selection: $visionModel) {
                     Text("Off — OCR text only").tag("")
                     ForEach(endpointModels, id: \.self) { Text($0).tag($0) }
@@ -699,10 +690,6 @@ struct SettingsView: View {
             if let store = IndexStore.shared {
                 IndexBuilder.syncTerms(store: store)
                 IndexBuilder.reconcile(store: store)
-                // Re-embed here too: clear() wiped chunk_vectors, and embedPending otherwise only runs
-                // at launch — so a manual rebuild would leave vectors empty until the next launch.
-                // No-op unless an embedder is configured. EntityMirror mirrors the launch order.
-                await IndexBuilder.embedPending(store: store)
                 EntityMirror.sync(store: store)   // no-op unless mirroring is enabled
             }
             await MainActor.run {
