@@ -24,15 +24,6 @@ struct EntitySheetTarget: Identifiable {
     var fallbackName: String? = nil
 }
 
-/// A document's full parsed content (M24), fetched on tap — `DocMeta` carries no path of its own,
-/// so this pairs it with the `mdURL` it came from. Not `private`: the Documents shelf constructs
-/// it and `DocumentSheet` consumes it, and both live in their own files.
-struct OpenDocTarget: Identifiable {
-    let meta: DocumentImporter.DocMeta
-    let mdURL: URL
-    var id: String { mdURL.path }
-}
-
 /// The Knowledge center: review what happened across your calls. A day-grouped digest of every
 /// call's generated note (title, summary, topics, people), with the workspace's people and
 /// topics alongside — all served from the index, so it opens instantly and never re-reads
@@ -50,7 +41,6 @@ struct KnowledgeView: View {
     /// M24: the doc list (`docs`) is a lightweight projection with no `.body` — loading every
     /// document's full extracted text just to show a list would be wasteful, unlike notes (short
     /// entries, cheap to keep in full). A tap re-parses the ONE tapped document on demand.
-    @State private var openDoc: OpenDocTarget?
     @State private var pendingLink: URL?
     @State private var creatingNote = false
     @State private var newNoteTitle = ""
@@ -74,24 +64,27 @@ struct KnowledgeView: View {
     /// A note or document the user is acting on (rename/delete), pending confirmation.
     enum ItemTarget: Identifiable {
         case note(KnowledgeNote)
-        case doc(mdURL: URL, title: String)
+        /// A document in the workspace vault. Carries the whole `VaultDocument` because deleting
+        /// one needs its `expandRef` — the source directory is resolved through `expand`, not from
+        /// a path the listing hands out.
+        case vaultDoc(VaultDocument)
 
         var id: String {
             switch self {
             case .note(let n): return n.url.path
-            case .doc(let url, _): return url.path
+            case .vaultDoc(let d): return d.id
             }
         }
         var name: String {
             switch self {
             case .note(let n): return n.title
-            case .doc(_, let title): return title
+            case .vaultDoc(let d): return d.title ?? d.id
             }
         }
         var kindWord: String {
             switch self {
             case .note: return "note"
-            case .doc: return "document"
+            case .vaultDoc: return "document"
             }
         }
     }
@@ -121,7 +114,7 @@ struct KnowledgeView: View {
         } message: { target in
             switch target {
             case .note: Text("This permanently deletes the note file. This can't be undone.")
-            case .doc: Text("This deletes the copied file and its extracted text from your vault. Your original file is not affected.")
+            case .vaultDoc: Text("This removes the document from this workspace's vault and recomposes the scope without it. The file you imported from is not affected.")
             }
         }
         .alert("Rename \(renameTarget?.kindWord ?? "item")",
@@ -167,9 +160,6 @@ struct KnowledgeView: View {
             EntitySheet(target: target, entitySheetTarget: $entitySheetTarget,
                         openNote: $openNote, onCommitmentsChanged: reload)
         }
-        .sheet(item: $openDoc) { target in
-            DocumentSheet(target: target, openDoc: $openDoc, deleteTarget: $deleteTarget)
-        }
     }
 
     /// The corpus switch. Its selection lives on `VaultBrowseModel`, not here — see `vault` above.
@@ -182,14 +172,14 @@ struct KnowledgeView: View {
     /// `uploadedDocuments()` returns [] rather than a refusal for the same reason — a shelf is not
     /// where an engine fault belongs; the Vault lens reports that.
     @MainActor
-    private func loadVaultDocuments(local: [DocumentRow], group: String) {
+    private func loadVaultDocuments(group: String) {
         Task {
             let uploaded = await VaultBrowseModel.shared.uploadedDocuments()
             guard group == model.activeGroup else { return }   // a switch landed while we asked
             let vaultRows = uploaded.map {
-                DocumentRow(id: $0.id, title: $0.title ?? $0.id, created: "", origin: .vault($0))
+                DocumentRow(id: $0.id, title: $0.title ?? $0.id, created: "", document: $0)
             }
-            self.docs = (local + vaultRows).sorted { $0.created > $1.created }
+            self.docs = vaultRows
         }
     }
 
@@ -268,9 +258,7 @@ struct KnowledgeView: View {
                                     onRename: startRename)
                 // jobs + imported files — visible with or without calls
                 KnowledgeDocumentsSection(docs: docs,
-                                          openDoc: $openDoc,
                                           deleteTarget: $deleteTarget,
-                                          onRename: startRename,
                                           openVaultDocument: { openVaultDoc = $0 })
             }
             .padding(Space.x7)
@@ -308,9 +296,17 @@ struct KnowledgeView: View {
             NoteStore.delete(note)
             model.index?.remove(path: note.url.path)
             if openNote?.id == note.id { openNote = nil }
-        case .doc(let mdURL, _):
-            DocumentImporter.delete(mdURL: mdURL)
-            model.index?.remove(path: mdURL.path)
+        case .vaultDoc(let document):
+            // THROUGH THE ENGINE, because that is where the document is. `remove(source:)` deletes
+            // the source directory — constrained to the vault's own `10-reference/` — and
+            // recomposes `--clean`, without which the removed note's ingest directory survives in
+            // the index root and keeps answering.
+            Task {
+                guard let source = await VaultBrowseModel.shared.sourceDirectory(of: document)
+                else { return }
+                SubstrateLibraryModel.shared.remove(source: source)
+                reload()
+            }
         }
         deleteTarget = nil
         reload()
@@ -332,12 +328,11 @@ struct KnowledgeView: View {
                 let url = note.url
                 Task.detached(priority: .utility) { IndexBuilder.indexNote(url, into: store) }
             }
-        case .doc(let mdURL, _):
-            DocumentImporter.rename(mdURL: mdURL, to: newName)
-            if let store = model.index {
-                let url = mdURL
-                Task.detached(priority: .utility) { IndexBuilder.indexDoc(url, into: store) }
-            }
+        case .vaultDoc:
+            // NOT SUPPORTED, and deliberately not faked. A promoted document's title is what the
+            // engine's extraction declared; renaming it here would be the app re-declaring a value
+            // it does not own, and the next compose would read the engine's again.
+            break
         }
         renameTarget = nil
         reload()
@@ -363,20 +358,13 @@ struct KnowledgeView: View {
         Task.detached(priority: .userInitiated) {
             let rows = store?.digest(group: group) ?? []
             let notes = NoteStore.list(group: group)
-            // BOTH ORIGINS while the migration runs (Doc 4 Phase 4b). `Files/` is the app's own
-            // importer; the vault half is what the engine's ingest promotes. Merged newest-first so
-            // the shelf reads as one list even though the two halves retire at different times.
-            let local = DocumentImporter.list(group: group).map {
-                DocumentRow(id: $0.mdURL.path, title: $0.title, created: $0.created,
-                            origin: .local(mdURL: $0.mdURL, file: $0.file))
-            }
+
             let rawCommitments = store?.commitments(group: group) ?? []
             await MainActor.run {
                 guard group == model.activeGroup else { return }   // discard a stale load after a switch
                 self.rows = rows
                 self.notes = notes
-                self.docs = local
-                self.loadVaultDocuments(local: local, group: group)
+                self.loadVaultDocuments(group: group)
                 // ownerID → display name: a cheap in-memory registry lookup (same "cheap, inline"
                 // reasoning as vocabTerms/collisions above), done here rather than in the
                 // detached task so it always sees the freshest registry state at display time.

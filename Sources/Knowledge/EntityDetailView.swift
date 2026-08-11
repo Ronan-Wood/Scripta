@@ -35,7 +35,6 @@ struct EntityDetailView: View {
     /// to do that itself via `NoteStore.verified`/`DocumentImporter.verifiedOriginalURL`, so a
     /// convenient-looking default that skips it would be a silent trap for whichever one forgets.
     var onOpenNote: (String) -> Void
-    var onOpenDoc: (String) -> Void
 
     /// Where `jumpTo` came from, for the back button (M21). Not `[String]` — carries each stop's
     /// `fallbackName` too, so going back can seed the header instantly the same way jumping
@@ -52,14 +51,13 @@ struct EntityDetailView: View {
     // private) — breaking the one existing call site, which is in a different file.
     init(entityID: String, group: String, fallbackName: String? = nil, onClose: @escaping () -> Void,
          onCommitmentsChanged: @escaping () -> Void = {}, onOpenNote: @escaping (String) -> Void = { _ in },
-         onOpenDoc: @escaping (String) -> Void = { _ in }) {
+         ) {
         self._entityID = State(initialValue: entityID)
         self.group = group
         self._fallbackName = State(initialValue: fallbackName)
         self.onClose = onClose
         self.onCommitmentsChanged = onCommitmentsChanged
         self.onOpenNote = onOpenNote
-        self.onOpenDoc = onOpenDoc
     }
 
     var body: some View {
@@ -175,7 +173,10 @@ struct EntityDetailView: View {
                             // note/doc's path as if it were a call transcript.
                             switch hit.kind {
                             case "note": onOpenNote(hit.path)
-                            case "doc": onOpenDoc(hit.path)
+                            // NO `doc` ARM. `entity_mentions` spanned calls, notes and docs while
+                            // the app indexed its own documents; the engine holds them now, so the
+                            // local index has no doc rows for this to reach. A branch that could
+                            // never fire is worse than its absence — it reads as a supported path.
                             default: AppModel.shared.route = .call(URL(fileURLWithPath: hit.path), ms: hit.startMs)
                             }
                         } label: {

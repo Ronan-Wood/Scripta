@@ -311,6 +311,23 @@ final class VaultBrowseModel: ObservableObject {
 
     // MARK: - Reading one note
 
+    /// The source directory a promoted document lives in — what `remove(source:)` takes.
+    ///
+    /// RESOLVED THROUGH `expand`, NOT FROM THE LISTING. `VaultDocument` carries no `source_path`
+    /// on purpose: a browse hands back every note in a scope, and every note's absolute path with
+    /// it is the operator's whole directory layout in one call. Asking for ONE document by name is
+    /// the same rule honoured — and it is only ever asked at the moment the reader acts on that
+    /// document.
+    ///
+    /// Up two components, because `promote` writes `<source>/passages/document.md` and the unit
+    /// that is added and removed is `<source>` — the directory holding the note AND its `_meta.md`.
+    func sourceDirectory(of document: VaultDocument) async -> URL? {
+        guard case .note(let note) = await read(document) else { return nil }
+        return URL(fileURLWithPath: note.path)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
     /// The outcome of reading one note. Its own enum rather than a `Result`: `VaultRefusal` is
     /// deliberately not an `Error` — it is a report the surface DRAWS, with its own card, and
     /// making it throwable would invite it being caught and flattened to a string somewhere.

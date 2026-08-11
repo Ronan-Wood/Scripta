@@ -198,47 +198,6 @@ enum IndexBuilder {
         }
     }
 
-    /// Indexes one imported document's companion note as `kind: 'doc'` — retrievable by search,
-    /// Clovis, and the MCP; invisible to every call surface. Extracted text is the searchable
-    /// body. Also entity-extracted as a single chunk (M20) — same reasoning as `indexNote`, but a
-    /// document has no entry structure to split on.
-    static func indexDoc(_ url: URL, into store: IndexStore, registry: EntityRegistry = EntityRegistry.shared) {
-        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
-            .contentModificationDate?.timeIntervalSince1970 ?? 0
-        guard let doc = DocumentImporter.parse(url) else {
-            store.remove(path: url.path)
-            return
-        }
-        // Strip control chars (a NUL from a broken PDF glyph would truncate the FTS bind at strlen).
-        let cleanBody = Indexing.stripControlChars(doc.body)
-        store.upsert(IndexedTranscript(
-            path: url.path, title: doc.title, date: String(doc.created.prefix(10)), time: "",
-            duration: "", participants: [], tags: [], summary: String(cleanBody.prefix(60_000)),
-            mtime: mtime, mode: "", group: doc.group, kind: "doc"), chunks: [])
-
-        // Unlike the summary above, extraction runs over the FULL body, not the 60k-char
-        // preview — a mention past that point should still land the doc on the person's page.
-        let chunks = [IndexedChunk(startMs: 0, endMs: 0, speaker: nil, text: cleanBody)]
-        let hash = Indexing.contentHash(chunks)
-        if store.stageHash(path: url.path, stage: "extract") != hash {
-            extractEntities(url: url, group: doc.group, attendees: [], chunks: chunks, store: store, registry: registry)
-            store.recordStage(path: url.path, stage: "extract", hash: hash, model: "nltagger-v1")
-        }
-    }
-
-    /// One directory's markdown, or the fact that it could not be read.
-    ///
-    /// THE DISTINCTION IS THE WHOLE POINT, because `reconcile` deletes every indexed path it does
-    /// not find on disk. `(try? contentsOfDirectory) ?? []` reported an unreadable folder as an
-    /// EMPTY one, so a single failed listing of the output folder removed every row in the index —
-    /// every transcript, note and document — and the next pass would re-index only what it could
-    /// then see. The entity cache prunes itself off those removals, so the loss reached further
-    /// than the rows.
-    ///
-    /// It is not a hypothetical path. `AppSettings.outputFolder` is a user-chosen directory that on
-    /// this machine sits in OneDrive, and reading it returned EPERM twice in one session on
-    /// 2026-08-05 under an ordinary TCC state. Unmounted volumes and revoked folder grants reach
-    /// the same branch.
     private enum Listing {
         case files([URL])
         /// The listing failed. NOT an empty folder — absent evidence is not evidence of absence,
@@ -312,15 +271,16 @@ enum IndexBuilder {
             transcripts += listing.files
             if let failure = listing.failure { unreadable.append(failure) }
         }
+        // NO `Files/` PASS. Documents are ingested by the engine into the workspace vault now
+        // (Doc 4 Phase 4b), so the local index holds calls and notes — the two things this app
+        // still authors. A document is found through the engine's `documents`, where it lives.
         let noteListing = mdFiles(in: NoteStore.folder, mustExist: false)
-        let docListing = mdFiles(in: DocumentImporter.folder, mustExist: false)
         let notes = noteListing.files
-        let docs = docListing.files
-        unreadable += [noteListing, docListing].compactMap(\.failure)
+        unreadable += [noteListing].compactMap(\.failure)
 
         let start = Date()
         let indexed = store.indexedPaths()
-        let livePaths = Set((transcripts + notes + docs).map(\.path))
+        let livePaths = Set((transcripts + notes).map(\.path))
 
         // Remove entries whose files no longer exist — ONLY when EVERY listing succeeded, across
         // both layouts and every vault.
@@ -354,9 +314,8 @@ enum IndexBuilder {
         }
         sweep(transcripts) { index($0, into: $1, registry: registry) }
         sweep(notes) { indexNote($0, into: $1, registry: registry) }
-        sweep(docs) { indexDoc($0, into: $1, registry: registry) }
         let ms = Int(Date().timeIntervalSince(start) * 1000)
-        log.info("reconcile: \(transcripts.count)+\(notes.count)+\(docs.count) on disk, \(reindexed) indexed, \(removed) removed, \(unchanged) unchanged, \(ms)ms")
+        log.info("reconcile: \(transcripts.count)+\(notes.count) on disk, \(reindexed) indexed, \(removed) removed, \(unchanged) unchanged, \(ms)ms")
 
         // End of the write pass: fold this pass's writes out of the WAL and truncate it, so the -wal file
         // can't grow across passes and slow the read-only MCP opener. Only when the pass actually wrote.
