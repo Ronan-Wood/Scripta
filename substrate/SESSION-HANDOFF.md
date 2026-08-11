@@ -1,4 +1,4 @@
-# Session handoff — Doc 4 phases 0–5 are done; the app and the engine are one system
+# Session handoff — Doc 4 is done; the app and the engine are one system
 
 **Reconciled against the repo 2026-08-10.** The previous version of this file was 76 commits and
 12 days stale and predated Doc 4 entirely — it opened "the MCP server is built, deployed, and
@@ -15,7 +15,7 @@ straight into workspace vaults, the engine is the only MCP server, the app reads
 it, there is one Ask over one corpus behind a four-section shell, and `transcript_export`,
 transcript `group:` and the second Ask are deleted rather than maintained.
 
-What is left is the Swift retrieval stack.
+Nothing in Doc 4 is left. Phase 6 closed 2026-08-11 and there is one retrieval implementation.
 
 | Doc 4 phase | state |
 |---|---|
@@ -25,40 +25,26 @@ What is left is the Swift retrieval stack.
 | 3 · one MCP server | ✅ 2026-08-07 (`adfe04e`) |
 | 4 · identity; one document path | ✅ 2026-08-07 / 2026-08-10 |
 | 5 · one Ask; four-section shell | ✅ 2026-08-10 |
-| **6 · retire the Swift retrieval stack** | **◐ — the next task, and 5a did most of it** |
+| 6 · retire the Swift retrieval stack | ✅ 2026-08-11 (`cbdb584`, `efd8254`) |
 
 Doc 4 itself (`~/OneDrive/vaults/scripta-vault/03-references/doc4-engine-first.md`) is the decision
 record and was reconciled against the repo in the same pass. Read it before the code.
 
 ## Open, in the order I would take them
 
-**1. Phase 6 — retire the Swift retrieval stack, and 5a already stranded it.**
-`Sources/Engine/Retriever.swift` (96 lines) now has **zero callers**: `AskModel` was its last one,
-and the merged Ask retrieves through the engine. So the deletion is no longer a migration, it is a
-deletion — what remains of the phase is the verification Doc 4 asks for, not the work.
-
-Doc 4 still says this needs a live parity number, and Doc 3 §6's Swift-side parity test still does
-not exist — `TransportTests:159` never runs the CLI and compares one answer to its own round trip.
-**Note the parity test got harder, not easier:** Ask no longer returns a result object to compare,
-it returns a generated answer over one. The comparable surface is the `search` call inside
-`AskModel.run`, not Ask's output.
-
-`IndexStore` is NOT stranded with it — the Calls list, the digest lens, entities, commitments and
-`RelatedItemsPanel` all still read it. Phase 6 is the RETRIEVAL half only.
-
-**2. `NoteStore` is the last holder of `group:`.** `DocumentImporter` is gone (Phase 4b), so the
+**1. `NoteStore` is the last holder of `group:`.** `DocumentImporter` is gone (Phase 4b), so the
 document half is closed. Notes are app-local by construction, so location cannot answer for them
 until §8's migration moves them into the vault. One change.
 
-**3. Ask is a several-second operation.** Warm, end-to-end through MCP on fresh queries: median
+**2. Ask is a several-second operation.** Warm, end-to-end through MCP on fresh queries: median
 5.6s. Dominated by HyDE generation, not reranking. A first query after the engine starts pays
 ~23–26s of model loading, because Ollama's default `keep_alive` is 5 minutes and the engine sets
 none. **Operator has accepted this** (2026-08-10) — recorded so it is not re-opened as a bug. The
 fix, if ever wanted, is residency (`keep_alive`, or pre-warming on launch), not the arms.
 
-**4. `reference_pins` is still the last unimplemented Doc 2 §2 feature.** Prerequisite unchanged.
+**3. `reference_pins` is still the last unimplemented Doc 2 §2 feature.** Prerequisite unchanged.
 
-**5. `WorkspaceDeleter` does not purge `conversations.json`, and Phase 5 raised what that costs.**
+**4. `WorkspaceDeleter` does not purge `conversations.json`, and Phase 5 raised what that costs.**
 Surfaced by review, NOT applied — widening a destructive operation is the operator's call. The
 deleter cascades transcripts, index rows, FTS, the WAL, the entity registry under both name and
 slug, entity mirrors and `WorkspaceBindings`; it has never touched chat history. Two consequences,
@@ -76,7 +62,7 @@ and the second is the one that changed:
 Default retention is `0` (keep forever), so nothing ages these out. One method on `AskModel`
 (`forget(workspace:)`) plus a call in `WorkspaceDeleter.delete` closes it.
 
-**6. Ask lost citation→call navigation, and it is a real capability, not a rendering detail.**
+**5. Ask lost citation→call navigation, and it is a real capability, not a rendering detail.**
 Clovis's source rows opened the call at the spoken timestamp, which they could do because a
 `ContextChunk` carried a local file path and a `startMs`. A `Passage` carries neither: its `path` is
 structural (`"Oldfield Agency Call > Summary"`) and its `id` is an expand ref. The route back exists
@@ -85,6 +71,37 @@ for which passages are app-recorded calls (a curated `class: conversation` note 
 NOT one, and routing it into the transcript reader would open a file that reader cannot show). It
 was left undone rather than half-built; the citations render with the full spine and no affordance
 that promises navigation.
+
+## What Phase 6 shipped — 2026-08-11
+
+**The parity test Doc 4 named as the blocker now exists** (`MappingParityTests`). It asserts what
+Doc 3 §6 wants in the form checkable from Swift — every field the reader sees is the field the
+engine sent — and does NOT invoke the CLI: the CLI renders through the same `render.py` the wire
+payload came from, so running it tests Python against itself, and `test_entrypoint_parity.py`
+already pins arm parity between entry points. **Two fields are allowed to diverge and both are
+asserted as RULES rather than equality**, because equality would fail on correct code and pressure
+someone into deleting a safety net: `degraded` may only be RAISED, and an `off` arm the health block
+calls `unavailable` is PROMOTED.
+
+**Then the stack went, both halves.** `Retriever` · `RRF` · `Embedder` · `EmbeddingEngine` ·
+`IndexBuilder.embedPending` · nine `IndexStore` methods · the embeddings picker ·
+`AppSettings.embedModel` · `VectorCoverageTests`. `chunk_vectors` is dropped at open rather than by
+a schema bump — the table is the largest an installed DB holds, and a bump would re-chunk the whole
+corpus to reclaim space nothing uses.
+
+**The framing that decided the second half, and it was the operator's correction.** The question
+was posed as delete-vs-keep a feature, and that trade no longer existed: `vectorCandidates` — the
+only retrieval read of `chunk_vectors` — had already gone with the read stack, so the capability was
+lost one commit earlier and committed. What remained was *stop doing work nothing consumes* versus
+*keep doing it*, and the work was live: `embedModel` was set in the operator's defaults, so every
+launch walked every indexed path and made an embedding call per chunk to write vectors nothing would
+read.
+
+**And the doc could not have decided it.** Doc 4 §2's delete row lists `IndexStore (1,209)` beside
+`Embedder`, and `IndexStore` is load-bearing for Calls, the digest, entities and commitments. A row
+wrong about one member is not an authority on the others — but it did not need to be, because the
+empirical check (zero callers, per method) is decisive and the vector methods are separate from the
+ones those surfaces use.
 
 ## What Phase 5 shipped — 2026-08-10
 
@@ -238,6 +255,15 @@ Corrections found by reconciling, not by being told:
   destination, and 5a's blast radius included `ClovisDrawer` (238 lines, shares the same model and
   rendered the badge that had to go), which nothing in the estimate mentioned. **Grep for the
   consumers before quoting a size.**
+- **A test written to enforce the discipline broke the discipline.** The first `MappingParityTests`
+  COULD NOT FAIL: both golden captures carry `degraded: false` and `filters.vaults: null`, so one
+  assertion was a branch that never ran and the other was `nil == nil`. Measured, not suspected —
+  inverting the `degraded` mapping and deleting `vaults` from the filter mapping BOTH went green.
+  PRINCIPLES already names this exact shape (the A17 fixture that passed with the fix and without
+  it), and it reappeared inside the test written to enforce it. **A fixture has to reach the state
+  the assertion objects to, and the only way to know it does is to break the code and watch.**
+  `patchedSearch` now moves the real frame into those states; the same mutations trip 2 and 1
+  assertions, and dropping the arm promotion trips 6.
 - **Deleting a file deletes what was parked in it — and the compiler only warns you SOMETIMES,
   which is the trap.** `HomeView.swift` held two things that were not Home. `FlexWrap` (a `Layout`
   with six call sites in `Sources/Knowledge/`) failed the build immediately, so it looked like the
@@ -285,7 +311,9 @@ Claims the next session may rely on without re-verifying, each with what establi
 | assertion | verified by |
 |---|---|
 | 587 engine tests pass | `uv run pytest tests/ -q`, 2026-08-10 |
-| 238 Core tests pass (1 skipped) — 220 + Phase 5's 18 | `cd Core && swift test`, 2026-08-11 |
+| 240 Core tests pass (2 skipped) | `cd Core && swift test`, 2026-08-11 |
+| Every field the reader sees is the engine's, with `degraded` and arm-promotion pinned as rules | `MappingParityTests`, mutation-verified (3 mutations → 1/2/6 assertions) |
+| Nothing reads or writes `chunk_vectors` | `grep -rn` over `Sources Core/Sources`, 2026-08-11 |
 | Stop keeps partial text and removes an empty placeholder | `AskConversationTests`, mutation-verified |
 | Endpoint history is bounded, oldest-first, system + current turn kept | `ChatHistoryBudgetTests`, mutation-verified |
 | The app builds after Phase 5 | `xcodebuild -project Scripta.xcodeproj -scheme Scripta build`, 2026-08-10 |
@@ -303,29 +331,28 @@ Claims the next session may rely on without re-verifying, each with what establi
 ## Ready-to-paste next-session prompt
 
 > Working on Scripta (branch `substrate-engine`, repo `~/CodeHome/CallTranscriber`; the engine is in
-> `substrate/`). Read `substrate/PRINCIPLES.md` (four laws), then `substrate/SESSION-HANDOFF.md`,
-> then Doc 4 at `~/OneDrive/vaults/scripta-vault/03-references/doc4-engine-first.md` §§2–5. Doc 2
-> lives in `~/OneDrive/vaults/core-vault/00-operator/specs/` — the repo has a pointer, not a copy.
+> `substrate/`). Read `substrate/PRINCIPLES.md` (four laws), then `substrate/SESSION-HANDOFF.md`.
+> Doc 4 (`~/OneDrive/vaults/scripta-vault/03-references/doc4-engine-first.md`) is now a CLOSED
+> decision record — all six phases shipped — so read it for WHY the code looks like this, not for
+> what to do next. Doc 2 lives in `~/OneDrive/vaults/core-vault/00-operator/specs/`; the repo has a
+> pointer, not a copy.
 >
-> First item: **Doc 4 Phase 6 — retire the Swift retrieval stack.** Phase 5 shipped, and it left
-> `Sources/Engine/Retriever.swift` (96 lines) with ZERO callers — the merged Ask retrieves through
-> the engine. So the code deletion is trivial and the phase is really its verification: Doc 4 wants
-> a live parity number, and Doc 3 §6's Swift-side parity test still does not exist
-> (`TransportTests:159` never runs the CLI and compares one answer to its own round trip).
+> **There is no next phase.** The handoff's *Open* list is the agenda now, and item 4 is the one I
+> would take first: `WorkspaceDeleter` has never purged `conversations.json`, and Phase 5 raised
+> what that costs — threads now store verbatim passage snippets rather than titles, and
+> `conversations(in:)` matches workspaces by NAME, so a later workspace of the same name silently
+> re-adopts a wiped one's threads. The deleter already reasons about exactly that hazard for
+> bindings and never applied the argument here. It is one method (`AskModel.forget(workspace:)`)
+> plus one call site — but it widens a destructive operation, so confirm the scope before writing it.
 >
-> **The comparable surface moved.** Ask no longer returns a result object — it returns a generated
-> answer over one — so parity has to be asserted against the `search` call inside `AskModel.run`,
-> not against what Ask shows. Decide that before writing the test.
->
-> **Do not delete `IndexStore` with it.** The Calls list, the Digest lens, entities, commitments and
-> `RelatedItemsPanel` all still read it. Phase 6 is the RETRIEVAL half only.
->
-> Read first: `Sources/Engine/Retriever.swift`, `Sources/App/AskModel.swift` (`run`), and
-> `Core/Tests/SubstrateKitTests/TransportTests.swift:159`.
+> **Doc 4 §2's delete row is not a checklist to finish.** It lists `IndexStore (1,209)`, which is
+> load-bearing for Calls, the Digest lens, entities and commitments. Phase 6 deleted per-method on
+> the evidence (zero callers), not on the doc's authority; do the same for anything it still names.
 >
 > Before changing anything: `cd substrate && ./lint.sh` (16 pre-existing errors, not yours),
 > `uv run python tools/fixture-signature.py out/substrate.db` (must print `4a560ce34aa6378a`,
-> 1811 chunks), `uv run pytest tests/ -q` (587), `cd Core && swift test` (238), and
-> `xcodebuild -project Scripta.xcodeproj -scheme Scripta build` (the bare `-scheme` form fails —
-> two projects in the root). Discipline is audit → review → implement → verify, `/crosscheck` then
-> `/adversary`.
+> 1811 chunks), `uv run pytest tests/ -q` (587), `cd Core && swift test` (240 passed, 2 skipped),
+> and `xcodebuild -project Scripta.xcodeproj -scheme Scripta build` (the bare `-scheme` form fails —
+> two projects in the root; and adding or deleting a file needs `xcodegen generate` first).
+> Discipline is audit → review → implement → verify, `/crosscheck` then `/adversary` — and the
+> lesson this session earned is that a new test must be MUTATION-CHECKED before you trust it.
