@@ -47,7 +47,7 @@ Expand-migrate-contract makes it four steps, each committable with the app never
 | 1 · the shelf shows BOTH origins | ✅ `8b0e98e` |
 | 2 · reroute `AppModel.importDocument` to the engine | ✅ `8cae8d0` |
 | 3 · migrate the one existing document | ✅ 2026-08-10 |
-| 4 · drop the `Files/` half; delete `DocumentImporter` | **next** |
+| 4 · drop the `Files/` half; delete `DocumentImporter` | **next** — needs vault delete first, below |
 
 Step 1 introduced `DocumentRow` with a `.local` / `.vault` origin, so the shelf shows documents from
 both paths and no later step makes one disappear. `.local` is the case that retires — when
@@ -61,6 +61,30 @@ pass in `IndexBuilder`, plus `DocumentRow.local` and every site the compiler nam
 one migrated document (`300 Keystone - Agency Report.pdf` + its old extracted `.md`). Step 4 stops
 SHOWING them; it must not remove them. Deleting the operator's copies is their call, after they are
 satisfied the vault copy is good.
+
+**STEP 4 WAS STARTED AND REVERTED 2026-08-10, for a reason worth reading before restarting it.**
+The mechanical half is fine — `IndexBuilder`'s `Files/` pass and `indexDoc` come out cleanly (mind
+the block boundaries: `private enum Listing` and `private static func mdFiles` sit between `indexDoc`
+and the next plain `static func`, and a naive "delete to the next declaration" takes both).
+
+What stopped it is a CAPABILITY GAP, not effort: **removing `ItemTarget.doc` loses the ability to
+delete a document from the app entirely.** `SubstrateLibraryModel.remove(source:)` exists and does
+exactly the right thing — removes the source directory, constrained to `10-reference/`, then
+recomposes `--clean` — but it is only OFFERED for an orphaned document (one whose compose refused).
+It is a recovery affordance, not a delete.
+
+So step 4 must first wire the shelf's delete for a vault document, and the design is settled:
+
+    expand(document) → WireNote.path (…/10-reference/<name>/passages/document.md)
+                     → deletingLastPathComponent ×2 → the source directory
+                     → SubstrateLibraryModel.remove(source:)
+
+`VaultDocument` carries no `source_path` — deliberately, it was removed from the browse payload so a
+listing does not hand back every note's absolute path — so the path comes from `expand`, which is
+one document at a time and asked for by name. That is the same privacy shape, honoured.
+
+RENAME does not survive and should not: the title comes from the engine's extraction, and a rename
+would be the app re-declaring a value the engine owns.
 
 Two things step 4 has to answer that steps 1–3 did not:
 
