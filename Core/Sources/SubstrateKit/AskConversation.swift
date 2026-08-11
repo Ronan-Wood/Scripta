@@ -210,6 +210,37 @@ struct AnyCodableSource: Codable {
     var title: String?
 }
 
+/// Chat history's half of the workspace wipe.
+///
+/// IN THE PACKAGE FOR THE REASON THE OTHER TWO ARE (Doc 4 §6), and with a sharper motive: this is a
+/// privacy cascade, and the one thing a privacy feature must never do is under-delete quietly. The
+/// selection rule is therefore somewhere a test can reach it rather than inline in an `@MainActor`
+/// method the suite cannot run.
+public enum ConversationPurge {
+
+    /// Drop every conversation belonging to `workspace`. Returns how many went.
+    ///
+    /// EXACT MATCH, AND `""` IS A WORKSPACE. The empty string is the Ungrouped partition here — a
+    /// real place with real threads — NOT a wildcard and NOT the global sentinel it means to
+    /// `EntityRegistry`, which is why `WorkspaceDeleter` gates the registry purge on
+    /// `!group.isEmpty` and must not gate this one the same way. Treating `""` as "match
+    /// everything" would turn wiping Ungrouped into wiping every conversation in the app.
+    ///
+    /// NO SLUG FALLBACK, unlike the registry purge beside it. `EntityRegistry` is purged under both
+    /// the display name and `ScriptaVault.slug(name)` because `IndexBuilder` registers under the
+    /// slug when no known workspace matches. `AskConversation.workspace` has one source —
+    /// `AskModel.workspace`, which is `AppSettings.activeGroup` — so it is always the display name
+    /// and a slug pass would match nothing. Stated because the sibling doing it differently is the
+    /// obvious reason to think this is a bug.
+    @discardableResult
+    public static func forget(_ workspace: String,
+                              from conversations: inout [AskConversation]) -> Int {
+        let before = conversations.count
+        conversations.removeAll { $0.workspace == workspace }
+        return before - conversations.count
+    }
+}
+
 /// What becomes of the answer a Stop landed on.
 ///
 /// IN THE PACKAGE BECAUSE IT IS A RULE, NOT A GESTURE. Doc 4 §6: anything rebuilt lands where

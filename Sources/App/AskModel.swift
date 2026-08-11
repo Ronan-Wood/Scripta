@@ -335,6 +335,32 @@ final class AskModel: ObservableObject {
         Self.save(conversations)
     }
 
+    /// Drop every conversation belonging to a wiped workspace — the chat-history half of
+    /// `WorkspaceDeleter`'s cascade.
+    ///
+    /// IT HAD TO GO THROUGH HERE rather than rewriting `conversations.json` from the deleter. This
+    /// object holds the array in memory and writes it whole on every `syncCurrent`, so a deleter
+    /// that edited the file directly would be overwritten by the next turn the operator took —
+    /// a privacy wipe undone by an unrelated later action, which is the failure mode a wipe can
+    /// least afford.
+    ///
+    /// WHAT PHASE 5 CHANGED, and why this was worth doing now: a thread used to store a title and a
+    /// path per citation, and now stores `StoredPassage.snippet` — verbatim excerpts of the wiped
+    /// workspace's notes and calls. The residue got materially worse while nothing was removing it.
+    func forget(workspace: String) {
+        guard ConversationPurge.forget(workspace, from: &conversations) > 0 else { return }
+        // The visible thread may have been one of them. Reset the way `pruneExpiredConversations`
+        // does — including the run, or an in-flight answer would land back into a wiped thread.
+        if !conversations.contains(where: { $0.id == currentID }) {
+            epoch &+= 1
+            task?.cancel(); task = nil
+            currentID = nil; messages = []; running = nil; thinking = false
+            disclosures.removeAll(); answer = .idle; chat = nil
+            loadedWorkspace = nil
+        }
+        Self.save(conversations)
+    }
+
     /// Drops conversations older than the user's retention window (Settings). 0 = keep forever.
     /// `nowProvider` is injectable for tests; the app passes the real clock.
     func pruneExpiredConversations(now: Date = Date()) {
