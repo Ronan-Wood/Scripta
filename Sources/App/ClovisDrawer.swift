@@ -4,7 +4,7 @@ import SwiftUI
 /// showing the live Clovis thread — the SAME conversation the Ask pane holds (shared AskModel),
 /// so the drawer is a quick peek/continue surface, not a second brain.
 struct ClovisDrawerView: View {
-    @ObservedObject private var ask = AppModel.shared.ask
+    @ObservedObject private var ask = AskModel.shared
     @ObservedObject private var app = AppModel.shared
     let close: () -> Void
 
@@ -18,7 +18,18 @@ struct ClovisDrawerView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         if ask.messages.isEmpty { intro }
                         ForEach(ask.messages) { bubble($0) }
+                        // THE THREE STATES THE MERGE HANDED THIS SURFACE, none of which it could
+                        // reach before. Clovis answered a local FTS index in milliseconds and could
+                        // not be unbound, down or slow; Ask can be all three. Rendering only
+                        // `messages` and `thinking` left a question sitting under a vanished
+                        // spinner with no reply and no reason — the Boundary Principle, in the one
+                        // surface reachable from the title bar on every screen.
+                        if ask.running != nil { retrievingRow }
                         if ask.thinking { thinkingRow }
+                        if case .refused(let refusal) = ask.answer {
+                            VaultRefusalCard(refusal: refusal, scope: ask.scope,
+                                             retryTitle: "Ask again", retry: ask.rerun)
+                        }
                         Color.clear.frame(height: 1).id("drawer-bottom")
                     }
                     .padding(.vertical, 18)
@@ -32,6 +43,7 @@ struct ClovisDrawerView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Rectangle().fill(Carbon.borderSubtle).frame(height: 1)
+            unboundNote
             composer
         }
         .frame(width: 400)
@@ -81,7 +93,7 @@ struct ClovisDrawerView: View {
         }
     }
 
-    @ViewBuilder private func bubble(_ message: AskModel.Message) -> some View {
+    @ViewBuilder private func bubble(_ message: AskMessage) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(message.fromUser ? "You" : "Clovis")
                 .font(CarbonFont.medium(11)).foregroundStyle(Carbon.textHelper)
@@ -89,29 +101,9 @@ struct ClovisDrawerView: View {
                 .font(CarbonFont.body(14)).foregroundStyle(Carbon.textPrimary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            if !message.sources.isEmpty {
+            if !message.passages.isEmpty {
                 VStack(spacing: 4) {
-                    ForEach(message.sources.prefix(4)) { source in
-                        Button {
-                            app.route = .call(source.url, ms: source.startMs > 0 ? source.startMs : nil)
-                            close()
-                        } label: {
-                            HStack(spacing: 6) {
-                                CarbonIcon(name: "document", size: 11, color: Carbon.iconSecondary)
-                                Text(source.title).font(CarbonFont.medium(11.5))
-                                    .foregroundStyle(Carbon.textPrimary).lineLimit(1)
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 8).padding(.vertical, 6)
-                            .background(Carbon.layer, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .strokeBorder(Carbon.borderSubtle, lineWidth: 1)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
+                    ForEach(message.passages.prefix(4), id: \.id) { ClovisCitation(stored: $0) }
                 }
             }
             if !message.fromUser, !message.text.isEmpty {
@@ -130,7 +122,7 @@ struct ClovisDrawerView: View {
 
     private var composer: some View {
         HStack(spacing: 8) {
-            TextField("Ask about your calls…", text: $ask.input, axis: .vertical)
+            TextField("Ask about your calls and notes…", text: $ask.query, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(CarbonFont.body(13.5))
                 .lineLimit(1...4)
@@ -147,34 +139,99 @@ struct ClovisDrawerView: View {
         .padding(.vertical, 12)
     }
 
+    /// Mirrors the pane's, `scope != nil` included — see `VaultComposer.canSend`.
     private var canSend: Bool {
-        !ask.thinking && !ask.input.trimmingCharacters(in: .whitespaces).isEmpty
+        !ask.thinking && ask.running == nil && ask.scope != nil
+            && !ask.query.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Retrieval is running. Named separately from "Thinking…" because they are different waits and
+    /// the first is the long one: search plus an `expand` per passage, seconds before a generator is
+    /// even asked.
+    private var retrievingRow: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Searching \(ask.scope ?? "the vault")…")
+                .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
+        }
+    }
+
+    /// An unbound workspace has no corpus to ask. Said out loud beside a disabled composer, with the
+    /// remedy named, rather than left as a button that does nothing.
+    @ViewBuilder private var unboundNote: some View {
+        if ask.scope == nil {
+            Text("This workspace reads no vault yet. Bind it to a scope in Ask.")
+                .font(CarbonFont.label(11)).foregroundStyle(Carbon.warning)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 14).padding(.bottom, 6)
+        }
     }
 
     private func submit() {
         guard canSend else { return }
-        Task { await ask.send() }
+        ask.send()
     }
 }
 
-/// Shared under-answer footer for Clovis (pane + drawer): the deterministic grounding badge
-/// (retrieval-derived, never model self-report), the engine label, and deterministic next-step
-/// chips — append the answer into a standing note (linked to its top source call), or copy it.
+/// One citation in the drawer: what it was, and how it should be read.
+///
+/// THE SPINE TRAVELS EVEN HERE, in a 400pt panel where the temptation is to show a title and stop.
+/// A title alone is what the old source row showed, and it is the half that cannot distinguish a
+/// decision someone verified from a sentence a speaker abandoned four turns later.
+///
+/// NOT A BUTTON, and that is a change rather than an oversight. The old row opened the call at its
+/// timestamp, which it could do because a `ContextChunk` carried a local file path and a `startMs`.
+/// A `Passage` carries neither — its path is structural (`"Call > Summary"`) and its expand ref
+/// resolves to a file only through a round trip — so a row that still looked clickable would be
+/// promising navigation this build cannot perform.
+private struct ClovisCitation: View {
+    let stored: StoredPassage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(stored.citation)
+                .font(CarbonFont.medium(11.5)).foregroundStyle(Carbon.textPrimary).lineLimit(2)
+            Text(spine).font(CarbonFont.label(10.5)).foregroundStyle(Carbon.textHelper).lineLimit(1)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Carbon.layer, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(Carbon.borderSubtle, lineWidth: 1)
+        }
+    }
+
+    /// `conversation` first, as `LiveRecallPanel` and the prompt builder both name it first.
+    private var spine: String {
+        var parts: [String] = []
+        if stored.documentClass == PassageDocumentClass.conversation.wireToken {
+            parts.append("from a call")
+        }
+        parts.append(stored.status)
+        parts.append(stored.confidence)
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// Under-answer footer for the drawer: the engine label and deterministic next-step chips — append
+/// the answer into a standing note, or copy it.
+///
+/// THE GROUNDING BADGE IS GONE, deleted rather than ported (Doc 4 §2, and PRINCIPLES' fourth law).
+/// It read strong / partly / thin and was computed from `chunks.filter { !$0.isTopic }.count` plus
+/// a retrieval-fallback flag — both properties of the LOCAL call index, and neither exists on the
+/// engine path. Recomputing something similarly-shaped over passages would have kept a label whose
+/// calibration came from a different measurement, which is a claim with nothing behind it. What
+/// replaces it is `EngineBar` in the Ask pane: the arms that actually ran and the measured tier for
+/// that exact stack, or an honest null.
 struct ClovisAnswerFooter: View {
-    let message: AskModel.Message
+    let message: AskMessage
     @ObservedObject private var app = AppModel.shared
     @State private var copied = false
     @State private var savedTo: String?
 
     var body: some View {
         HStack(spacing: 10) {
-            if let grounding = message.grounding {
-                HStack(spacing: 4) {
-                    Circle().fill(color(grounding)).frame(width: 6, height: 6)
-                    Text(grounding.label).font(CarbonFont.label(10.5)).foregroundStyle(Carbon.textHelper)
-                }
-                .help("How well-supported this answer is by retrieved passages — not the model's opinion of itself")
-            }
             if let engine = message.engineLabel {
                 Text(engine).font(CarbonFont.label(10.5)).foregroundStyle(Carbon.textHelper)
             }
@@ -218,21 +275,16 @@ struct ClovisAnswerFooter: View {
         }
     }
 
+    /// `linkedCall` is nil now. It used to be the top source's local file URL, which a
+    /// `ContextChunk` carried and a `Passage` does not — see `ClovisCitation`. The answer still
+    /// lands in the note; what it no longer carries is a link back to one call.
     private func append(to note: KnowledgeNote) {
-        guard let refreshed = NoteStore.append(message.text, linkedCall: message.sources.first?.url,
-                                               to: note) else { return }
+        guard let refreshed = NoteStore.append(message.text, linkedCall: nil, to: note)
+        else { return }
         savedTo = refreshed.title
         if let store = AppModel.shared.index {
             let url = refreshed.url
             Task.detached(priority: .utility) { IndexBuilder.indexNote(url, into: store) }
-        }
-    }
-
-    private func color(_ grounding: AskModel.Grounding) -> Color {
-        switch grounding {
-        case .strong: return Carbon.success
-        case .moderate: return Carbon.warning
-        case .thin: return Carbon.orange
         }
     }
 }

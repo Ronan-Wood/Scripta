@@ -161,7 +161,7 @@ final class SubstrateEngine: ObservableObject {
     /// that, since Ollama exposes no logprobs so it ran as a yes/no FILTER where "most candidates
     /// tie" — for "roughly an order of magnitude slower, consistent with 385ms → 4,558ms".
     ///
-    /// So the app states NOTHING about retrieval. `SubstrateAskModel` requires an in-app query and
+    /// So the app states NOTHING about retrieval. `AskModel` requires an in-app query and
     /// the equivalent CLI query to agree, "and they can only be compared while this side computes
     /// none of the three"; a reranker chosen by a Swift constant is this side computing one.
     ///

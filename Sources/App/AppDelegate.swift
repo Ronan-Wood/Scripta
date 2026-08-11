@@ -1,8 +1,11 @@
 import AppKit
 import ScriptaCore
+import SwiftUI   // NSHostingController, for the Help window
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuController: MenuController?
+    /// Held so ⌘? reopens the same window instead of stacking a new one each time.
+    private var helpWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // FIRST, BEFORE ANY SETTING IS READ. The sandbox came off (Doc 3 §1), and a sandboxed app's
@@ -24,7 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Prune old transcripts if the user enabled auto-delete.
         RetentionPruner.pruneIfNeeded()
         NotificationManager.shared.configure()
-        MainMenu.install(settingsTarget: self, settingsAction: #selector(openSettings))
+        MainMenu.install(settingsTarget: self, settingsAction: #selector(openSettings),
+                         helpAction: #selector(openHelp))
         menuController = MenuController()
 
         if case .blocked(let plist) = carried { presentSettingsUnreachableAlert(plist) }
@@ -144,6 +148,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor @objc private func openSettings() {
         AppModel.shared.route = .section(.settings)
         menuController?.showHub()
+    }
+
+    /// ⌘? from the Help menu: the docs, in their own window rather than as a hub section (Doc 4 §2).
+    ///
+    /// ITS OWN WINDOW, NOT A ROUTE, and the difference is the reason it left the sidebar: help is
+    /// read BESIDE the thing it explains. A hub section replaced the surface the reader was stuck
+    /// on with the page describing it, which is the one arrangement documentation must not have.
+    @MainActor @objc private func openHelp() {
+        if helpWindow == nil {
+            let window = NSWindow(contentViewController: NSHostingController(rootView: HelpView()))
+            window.title = "Scripta Help"
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 720, height: 640))
+            window.isReleasedWhenClosed = false   // reopened from the menu; do not free it on close
+            window.center()
+            helpWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        helpWindow?.makeKeyAndOrderFront(nil)
     }
 
     /// Clicking the Dock icon with no window open reopens the hub — normal-app behavior.

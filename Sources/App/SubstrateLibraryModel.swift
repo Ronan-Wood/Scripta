@@ -89,6 +89,28 @@ final class SubstrateLibraryModel: ObservableObject {
 
     // MARK: - State
 
+    /// Which direction of the scope relationship is on screen. Doc 4 §2 folds the vault browser in
+    /// here rather than leaving it a section of its own, because the two are one relationship read
+    /// both ways: this surface is the only thing that WRITES a scope, and browsing is what the
+    /// scope then HOLDS. `VaultBrowseView`'s own header already called itself "the third sibling of
+    /// Ask and the Library"; this is that sibling landing where it belongs.
+    ///
+    /// ON THE MODEL, NOT THE VIEW, and it moved here for the reason its previous host recorded:
+    /// `HubContent` rebuilds this pane every time the sidebar reselects the section, so a `@State`
+    /// lens silently resets to Add on the way back.
+    enum Lens: String, CaseIterable, Identifiable {
+        case add, vault
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .add: return "Add"
+            case .vault: return "Vault"
+            }
+        }
+    }
+
+    @Published var lens: Lens = .add
+
     @Published private(set) var surface: Surface = .unasked
     @Published private(set) var job: Job = .idle
 

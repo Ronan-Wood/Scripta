@@ -18,7 +18,7 @@ struct DocumentRow: Identifiable {
 /// Imported files, newest first — click opens the original.
 struct KnowledgeDocumentsSection: View {
     let docs: [DocumentRow]
-    @Binding var deleteTarget: KnowledgeView.ItemTarget?
+    @Binding var deleteTarget: CallsDigestLens.ItemTarget?
     /// Show a document. Passed in rather than resolved here so this view keeps drawing rows and
     /// the screen that owns the sheet keeps owning it.
     let openVaultDocument: (VaultDocument) -> Void

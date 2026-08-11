@@ -6,37 +6,50 @@ import Foundation
 enum PromptCatalog {
 
     /// Grounding instructions for the Ask conversation.
+    ///
+    /// THE CORPUS IS NO LONGER "CALLS". Since Doc 4 §7 one scope holds the recorded calls, the
+    /// operator's curated notes and the documents they uploaded, so text telling the model it is
+    /// answering about calls made it describe a note as something someone said. Each passage now
+    /// arrives labelled with its spine, and the instructions name what those labels MEAN — a
+    /// passage marked `from a call` may be reasoning the speaker abandoned four turns later, and
+    /// one marked `proposed` was never enacted. That distinction is the reason the spine exists;
+    /// carrying it to the screen and not to the model would have been half the job.
     static func askInstructions(_ sizeClass: SizeClass) -> String {
         switch sizeClass {
         case .compact:
-            // The validated 3B strict-grounding text, verbatim.
+            // Derived from the validated 3B strict-grounding text: same shape, same refusal
+            // clause, widened corpus plus the two spine rules. Kept short — the measured weak zone.
             return """
-            You answer questions about the user's own recorded calls, using ONLY the provided \
-            context passages. You may make reasonable connections between related facts in the \
-            context. Cite the call by name when you answer. If the answer is genuinely not in the \
-            context, say you don't have it in these calls. Be concise and specific.
+            You answer questions about the user's own vault: recorded calls, their notes, and \
+            documents they added — using ONLY the provided context passages. Each passage is \
+            labelled with where it came from and how settled it is. Treat one marked "from a call" \
+            as something someone said, not as a decision, and one marked "proposed" or "inferred" \
+            as not settled. You may make reasonable connections between related facts in the \
+            context. Cite the passage by name when you answer. If the answer is genuinely not in \
+            the context, say you don't have it. Be concise and specific.
             """
         case .capable:
             // Capable/endpoint tier only: permitted ONE clarifying question. The 3B stays
             // answer-only (knowing when/what to ask is inference — its measured weak zone).
             return """
-            You answer questions about the user's own recorded calls, grounded in the provided \
-            context passages. Synthesise across passages and calls, resolve pronouns from context, \
-            and note when calls disagree. Cite each call by name and date. If the question is \
-            genuinely ambiguous between two calls or two people in the context, ask ONE short \
+            You answer questions about the user's own vault: recorded calls, their notes, and \
+            documents they added — grounded in the provided context passages. Each passage is \
+            labelled with its source and status. Weigh them accordingly: a passage marked "from a \
+            call" is something that was said and may be reasoning abandoned later in the same \
+            conversation, while a note is a considered claim; "proposed" and "inferred" are not \
+            settled, "verified" is. Say which kind you are relying on when it matters. Synthesise \
+            across passages, resolve pronouns from context, and note when sources disagree — \
+            including when a call and a note disagree. Cite each passage by name. If the question \
+            is genuinely ambiguous between two sources or two people in the context, ask ONE short \
             clarifying question instead of guessing. If the answer is genuinely not in the \
-            context, say you don't have it in these calls — do not invent details. Be concise \
-            and specific.
+            context, say you don't have it — do not invent details. Be concise and specific.
             """
         }
     }
 
-    /// How many retrieved context chunks to feed Ask (bigger models take more).
-    static func askContextChunks(_ sizeClass: SizeClass) -> Int {
-        sizeClass == .compact ? 6 : 14
-    }
-
-    /// Character cap on the transcript fed to enrichment (bigger models take more).
+    /// Character cap on the transcript fed to enrichment (bigger models take more). Ask budgets its
+    /// assembled passage context against this too — a character budget means the same thing whether
+    /// the text is one transcript or eight notes, which is why it serves both.
     static func enrichCharCap(_ sizeClass: SizeClass) -> Int {
         sizeClass == .compact ? 8_000 : 24_000
     }

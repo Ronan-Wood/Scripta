@@ -83,7 +83,7 @@ struct TranscriptDetail: View {
         .sheet(item: $entitySheetTarget) { target in entitySheet(target) }
     }
 
-    /// Split out of `body` for the reason `KnowledgeView.knowledgeContent` documents: the solver's
+    /// Split out of `body` for the reason `CallsDigestLens.knowledgeContent` documents: the solver's
     /// cost is a THRESHOLD in modifier DEPTH, not a per-modifier rate, so re-basing on a shallow
     /// opaque type buys back the whole chain above it. Five presentations sit on `body` and nothing
     /// else does.
@@ -128,7 +128,7 @@ struct TranscriptDetail: View {
         meta.title + " " + meta.tags.joined(separator: " ")
     }
 
-    // Extracted (not inline in the modifier chain above): a very similar addition to KnowledgeView
+    // Extracted (not inline in the modifier chain above): a very similar addition to CallsDigestLens
     // pushed its own already-long `body` past the type checker's timeout — isolating the
     // construction here keeps this chain from risking the same thing.
     @ViewBuilder
@@ -136,7 +136,7 @@ struct TranscriptDetail: View {
         EntityDetailView(entityID: target.id, group: meta.group, fallbackName: target.fallbackName) {
             entitySheetTarget = nil
         } onOpenNote: { path in
-            // Same group re-check KnowledgeView's own onOpenNote does (crosscheck) — this sheet
+            // Same group re-check CallsDigestLens's own onOpenNote does (crosscheck) — this sheet
             // has no in-app note surface to open into, but "no richer surface" isn't a reason to
             // skip the check, just a reason the resulting action is "open externally" instead of
             // "present a sheet."
@@ -261,7 +261,7 @@ struct TranscriptDetail: View {
     }
 
     /// Resolves a participant's name to their registry entity, matching the fallback shape used
-    /// everywhere else this pattern already exists (e.g. KnowledgeView's People rail) — never
+    /// everywhere else this pattern already exists (e.g. CallsDigestLens's People rail) — never
     /// allocates (`resolveConfirmed`), since this is a read-only surface, not a place that should
     /// mint a new identity from a name it merely displays. Falls back to opening the page by raw
     /// name when nothing confirmed matches — the page still shows correctly (M17's own commitment-

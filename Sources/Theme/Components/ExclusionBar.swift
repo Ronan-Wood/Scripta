@@ -26,7 +26,14 @@ import SwiftUI
 
 struct ExclusionBar: View {
     let filter: ExclusionFilter
-    var toggle: (RetrievalClass) -> Void = { _ in }
+    /// `nil` MEANS READ-ONLY, and it has to be nil rather than a no-op closure. A default
+    /// `{ _ in }` still hands `Pill` a non-nil action, which wraps it in `Pressable` — so a bar
+    /// with nothing to toggle drew chips with hover fill, a pressed state and a focus ring that
+    /// silently swallowed every click. That is the behaviour `ExclusionChip`'s own doc calls the
+    /// defect it was built to fix, reintroduced through the DEFAULT rather than through the style.
+    /// Ask's per-turn disclosure is the read-only case: it records what one finished run searched,
+    /// and there is nothing on a past run to change.
+    var toggle: ((RetrievalClass) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s8) {
@@ -45,7 +52,7 @@ struct ExclusionBar: View {
 /// exactly the class the reader needed to know about.
 private struct ExclusionChipRows: View {
     let filter: ExclusionFilter
-    let toggle: (RetrievalClass) -> Void
+    let toggle: ((RetrievalClass) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s6) {
@@ -65,7 +72,7 @@ private struct ExclusionGroup: View {
     let label: String
     let classes: [RetrievalClass]
     let included: Bool
-    let toggle: (RetrievalClass) -> Void
+    let toggle: ((RetrievalClass) -> Void)?
 
     var body: some View {
         HStack(alignment: .center, spacing: Gap.s8) {
@@ -92,12 +99,14 @@ private struct ExclusionGroup: View {
 struct ExclusionChip: View {
     let klass: RetrievalClass
     let included: Bool
-    let toggle: (RetrievalClass) -> Void
+    let toggle: ((RetrievalClass) -> Void)?
 
     var body: some View {
+        // `nil` straight through to `Pill`, which is what makes the chip genuinely inert rather
+        // than merely ineffective — `Pill` only reaches for `Pressable` when it has an action.
         Pill(text: klass.label,
              style: included ? .included : .withheld,
-             action: { toggle(klass) })
+             action: toggle.map { fire in { fire(klass) } })
     }
 }
 

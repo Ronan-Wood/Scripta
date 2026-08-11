@@ -26,11 +26,30 @@ struct SubstrateLibraryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            column
+            lensPicker
+            switch model.lens {
+            case .add: column
+            // WHOLE, WITH ITS OWN GATE, rather than reaching past it for the console inside. The
+            // two gates are the same four cards and the duplication is the point: each surface
+            // keeps the reasoning it documents about waiting for the engine, so neither inherits
+            // the other's by accident.
+            case .vault: VaultBrowseView(model: VaultBrowseModel.shared)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Ink.background)
         .task { engine.startIfIdle() }
+    }
+
+    private var lensPicker: some View {
+        Picker("", selection: $model.lens) {
+            ForEach(SubstrateLibraryModel.Lens.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .padding(.horizontal, Metrics.pageGutter)
+        .padding(.top, Gap.s12)
     }
 
     /// THE SAME OUTER GATE AS ASK, and for a sharper reason here. Ask needs the engine because a

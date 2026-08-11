@@ -6,10 +6,10 @@ import ScriptaCore
 struct KnowledgeNotesShelf: View {
     let notes: [KnowledgeNote]
     @Binding var openNote: KnowledgeNote?
-    @Binding var deleteTarget: KnowledgeView.ItemTarget?
+    @Binding var deleteTarget: CallsDigestLens.ItemTarget?
     let onImport: () -> Void
     let onNewNote: () -> Void
-    let onRename: (KnowledgeView.ItemTarget) -> Void
+    let onRename: (CallsDigestLens.ItemTarget) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.x3) {

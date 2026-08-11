@@ -24,9 +24,21 @@ public struct ExclusionFilter {
     /// `filters.notes`, which is always present and empty when there is nothing to say.
     public var notes: [String]
 
-    public init(searched: Set<RetrievalClass>, notes: [String] = []) {
+    /// WHICH TIERS OF THE COMPOSED CHAIN ANSWERED. `nil` is every vault the scope composes; a list
+    /// is the narrowing that was applied. The engine has always sent this
+    /// (`WireAppliedFilters.vaults`) and this type dropped it, which was harmless only while the
+    /// tier chips re-ran the query on every toggle — the selection on screen and the result on
+    /// screen were then in sync by construction. Ask's thread broke that sync deliberately (a
+    /// filter describes the NEXT question), so the axis has to travel with the RESULT or a turn
+    /// narrowed to one vault is indistinguishable from one that searched the whole chain. The
+    /// engine's own words for why: "a reader who cannot see that only one tier answered reads a
+    /// partial corpus as the whole one."
+    public var vaults: [String]?
+
+    public init(searched: Set<RetrievalClass>, notes: [String] = [], vaults: [String]? = nil) {
         self.searched = searched
         self.notes = notes
+        self.vaults = vaults
     }
 
     public static let standard = ExclusionFilter(searched: defaultClasses)
