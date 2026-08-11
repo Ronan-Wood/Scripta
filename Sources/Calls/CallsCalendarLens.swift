@@ -1,9 +1,22 @@
 import SwiftUI
 import ScriptaCore
 
-/// The calendar: an always-visible "Upcoming" strip of the next video meetings, over a Month/Week/
-/// Day calendar of recorded calls (past) and meetings (future). Recording is always a manual click.
-struct MeetingsView: View {
+/// Calls against time: an always-visible "Upcoming" strip of the next video meetings, over a
+/// Month/Week/Day calendar of recorded calls (past) and meetings (future). Recording is always a
+/// manual click.
+///
+/// WAS THE `Meetings` SECTION, folded in per Doc 4 §2. It is the same corpus `CallsView` lists,
+/// read against the calendar instead of as a ranked list, which is why it is a lens rather than a
+/// place of its own.
+///
+/// SCOPED TO THE ACTIVE WORKSPACE, which it was NOT as a section. It listed every transcript on the
+/// machine — defensible while it was its own top-level place, and wrong the moment it sits inside a
+/// surface whose scope indicator claims otherwise. `CallsView` keeps cross-workspace search
+/// deliberately transient "so it can never become a lingering default"; a calendar quietly showing
+/// every workspace would be exactly that default, arriving through the back door. The partition is
+/// `meta.group`, which since Doc 4 §7 is derived from the vault the file sits in rather than from a
+/// label that can disagree with its own location.
+struct CallsCalendarLens: View {
     @ObservedObject private var app = AppModel.shared
     @State private var calls: [TranscriptMeta] = []
     @State private var meetings: [UpcomingCall] = []
@@ -23,6 +36,7 @@ struct MeetingsView: View {
         }
         .background(Carbon.background)
         .onAppear(perform: reload)
+        .onChange(of: app.activeGroup) { _, _ in reload() }
         .onChange(of: app.recordingState) { _, state in if state == .idle { reload() } }
     }
 
@@ -67,7 +81,16 @@ struct MeetingsView: View {
     }
 
     private func reload() {
-        calls = TranscriptStore.list()
-        meetings = app.upcomingMeetings
+        let group = app.activeGroup
+        calls = TranscriptStore.list().filter { $0.group == group }
+        // BOTH HALVES, or the claim above is only half true. The Upcoming strip and the future side
+        // of the grid render calendar events, and `AppSettings.calendarGroups` already routes each
+        // calendar to a workspace — it is what decides where a recording of that meeting lands. So
+        // an unfiltered strip shows meetings this lens would refuse to file here: sitting in
+        // Personal, the titles of every upcoming CBRE client call. Same mapping as the record path,
+        // so what is shown is what would be recorded into this workspace.
+        meetings = app.upcomingMeetings.filter {
+            AppSettings.recordingGroup(forCalendarID: $0.calendarID) == group
+        }
     }
 }

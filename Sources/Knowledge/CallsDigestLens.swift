@@ -24,15 +24,22 @@ struct EntitySheetTarget: Identifiable {
     var fallbackName: String? = nil
 }
 
-/// The Knowledge center: review what happened across your calls. A day-grouped digest of every
-/// call's generated note (title, summary, topics, people), with the workspace's people and
-/// topics alongside — all served from the index, so it opens instantly and never re-reads
-/// transcript files. Comments (the "add on" layer) attach per call via NoteStore.
+/// What was said across your calls: a day-grouped digest of every call's generated note (title,
+/// summary, topics, people), with the workspace's people and topics alongside — all served from the
+/// index, so it opens instantly and never re-reads transcript files. Comments (the "add on" layer)
+/// attach per call via NoteStore.
 ///
-/// This type owns the hub's state and everything that loads or mutates it; each visible area is
+/// WAS THE `Knowledge` SECTION. Doc 4 §2's "Knowledge splits" is two moves, and this is the second:
+/// the vault lens went to the Library, which is the surface that WRITES a scope and now also reads
+/// what it holds; everything left is an aggregate over the LOCAL call index, which is what Calls
+/// already is. Doc 4 §5 keeps these surfaces app-side deliberately — they are backed by `confirmed`
+/// and `groups`, the two fields the engine's identity layer does not carry — so this is a fold, not
+/// a deletion pending an engine equivalent.
+///
+/// This type owns the lens's state and everything that loads or mutates it; each visible area is
 /// its own concrete `View` struct in a sibling file (overview, digest, rail, notes shelf,
 /// documents, sheets).
-struct KnowledgeView: View {
+struct CallsDigestLens: View {
     @ObservedObject var model = AppModel.shared
     @State private var entitySheetTarget: EntitySheetTarget?
     @State private var rows: [IndexStore.DigestRow] = []
@@ -89,20 +96,8 @@ struct KnowledgeView: View {
         }
     }
 
-    /// NOT `@State`. `HubContent` rebuilds this pane every time the sidebar reselects the section,
-    /// so a `@State` lens silently reset to the call digest on the way back — the same defect
-    /// `SubstrateAskModel` records for its own `brain` ("the one thing the reader must never be
-    /// wrong about"). Held on the model that already outlives the view.
-    @ObservedObject private var vault = VaultBrowseModel.shared
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            lensPicker
-            switch vault.lens {
-            case .workspace: knowledgeContent
-            case .vault: VaultBrowseView(model: vault)
-            }
-        }
+        knowledgeContent
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .confirmationDialog(
             deleteTarget.map { "Delete the “\($0.name)” \($0.kindWord)?" } ?? "",
@@ -162,7 +157,6 @@ struct KnowledgeView: View {
         }
     }
 
-    /// The corpus switch. Its selection lives on `VaultBrowseModel`, not here — see `vault` above.
     /// The vault half of the shelf, merged in when the engine answers.
     ///
     /// SEPARATE FROM THE LOCAL LOAD because it is a subprocess round trip, and making the whole
@@ -181,17 +175,6 @@ struct KnowledgeView: View {
             }
             self.docs = vaultRows
         }
-    }
-
-    private var lensPicker: some View {
-        Picker("", selection: $vault.lens) {
-            ForEach(VaultBrowseModel.Lens.allCases) { Text($0.title).tag($0) }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
-        .padding(.horizontal, Space.x7)
-        .padding(.top, Space.x5)
     }
 
     /// Split out of `body` so neither half carries the whole modifier chain. Cost here is a

@@ -9,8 +9,6 @@ struct HubContent: View {
 
     var body: some View {
         switch destination.section {
-        case .home:
-            HomeView()
         case .calls:
             CallsView(focusCall: destination.callFocus.callURL,
                       focusMs: destination.callFocus.callMs,
@@ -23,21 +21,18 @@ struct HubContent: View {
                 // identity does incidentally. Retiring it needs CallsView to accept the focus as a
                 // binding, which is that file's change to make.
                 .id(searchScopeGeneration)
-        case .meetings:
-            MeetingsView()
         case .ask:
-            AskView()
+            // `shared`, like the Library's model: the pane is rebuilt every time the sidebar
+            // reselects the section, and a `@State` model would drop the thread and any answer
+            // still streaming into it.
+            AskView(model: AskModel.shared)
         case .library:
             // `shared`, like Ask's model, and for the same reason: the pane is rebuilt every time
             // the sidebar reselects the section, and a `@State` model would drop a running ingest
             // — a minutes-long subprocess — the moment someone looked at another tab.
             SubstrateLibraryView(model: SubstrateLibraryModel.shared)
-        case .knowledge:
-            KnowledgeView()
         case .settings:
             SettingsView()
-        case .docs:
-            HelpView()
         }
     }
 }

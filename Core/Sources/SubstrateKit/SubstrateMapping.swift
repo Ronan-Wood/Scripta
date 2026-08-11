@@ -158,7 +158,7 @@ extension WireAppliedFilters {
                                          to: RetrievalClass.self))
         }
         if !sourcesExcluded { searched.insert(.sources) }
-        return ExclusionFilter(searched: searched, notes: notes)
+        return ExclusionFilter(searched: searched, notes: notes, vaults: vaults)
     }
 }
 

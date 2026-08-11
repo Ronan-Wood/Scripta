@@ -1,40 +1,42 @@
 import Foundation
 
 /// The hub's sections — the sidebar's rows, and the top level of every `Destination`.
+///
+/// FOUR, and the list is Doc 4 §2's: **Ask · Calls · Library · Settings**. The seven-row sidebar
+/// predated the engine and had one row per thing that had been built, not per thing a reader goes
+/// looking for. What folded, and where:
+///
+/// | went | into | why |
+/// |---|---|---|
+/// | `home` | — | a dashboard of Swift aggregates over the local index; every card had a real home |
+/// | `meetings` | Calls, as the Calendar lens | the same calls, read against time |
+/// | `knowledge` | Library (vault lens) + Calls (Digest lens) | it was two unrelated surfaces sharing a picker |
+/// | `docs` | the Help menu | it is documentation, and macOS has a place for that |
+///
+/// Ask leads because Doc 4 §8 makes the app the interface to a vault and asking is what that is
+/// for; `library` sits beside it because they are the two directions of one relationship — Ask
+/// reads a composed scope, the Library writes one and now also browses it.
 enum HubSection: String, CaseIterable {
-    case home, calls, meetings, ask, library, knowledge, settings, docs
+    case ask, calls, library, settings
 
-    /// `library` sits directly after `ask`, and the adjacency is the point: they are the two halves
-    /// of the same relationship with the engine. Ask reads a composed scope; the Library is the only
-    /// way anything gets into one. Doc 3's open question asks whether the sidebar eventually
-    /// collapses to Ask / Library — this is not that change, but it puts the pair where that
-    /// decision can be seen.
-    static let primary: [HubSection] = [.home, .calls, .meetings, .ask, .library, .knowledge]
-    static let secondary: [HubSection] = [.settings, .docs]
+    static let primary: [HubSection] = [.ask, .calls, .library]
+    static let secondary: [HubSection] = [.settings]
 
     var title: String {
         switch self {
-        case .home: return "Home"
-        case .calls: return "Calls"
-        case .meetings: return "Meetings"
         case .ask: return "Ask"
+        case .calls: return "Calls"
         case .library: return "Library"
-        case .knowledge: return "Knowledge"
         case .settings: return "Settings"
-        case .docs: return "Docs"
         }
     }
 
     var sfIcon: String {
         switch self {
-        case .home: return "house"
-        case .calls: return "doc.text"
-        case .meetings: return "calendar"
         case .ask: return "bubble.left.and.bubble.right"
+        case .calls: return "doc.text"
         case .library: return "books.vertical"
-        case .knowledge: return "list.bullet.rectangle"
         case .settings: return "gearshape"
-        case .docs: return "book"
         }
     }
 }
@@ -73,16 +75,12 @@ struct Destination: Equatable {
     var section: HubSection
     var callFocus: CallFocus = .none
 
-    static let home = Destination(section: .home)
     static func calls(_ focus: CallFocus = .none) -> Destination {
         Destination(section: .calls, callFocus: focus)
     }
-    static let meetings = Destination(section: .meetings)
     static let ask = Destination(section: .ask)
     static let library = Destination(section: .library)
-    static let knowledge = Destination(section: .knowledge)
     static let settings = Destination(section: .settings)
-    static let docs = Destination(section: .docs)
 }
 
 /// A navigation request posted from anywhere in the app through `AppModel.route`. This is the
@@ -101,7 +99,11 @@ enum Route: Equatable {
 /// happens to be holding.
 @MainActor
 final class Navigator: ObservableObject {
-    @Published private(set) var destination: Destination = .home
+    /// Ask, not Home — Home is gone, and Ask is the first primary row. The engine may still be
+    /// coming up on a cold launch, which Ask draws as `VaultEngineStarting`: a designed, named,
+    /// counting state rather than a fault, and the one surface that already had to be honest about
+    /// the engine's lifecycle before it could show anything.
+    @Published private(set) var destination: Destination = .ask
 
     /// The identity Calls is mounted under. Bumped by `clearSearchScope()`, by nothing else.
     @Published private(set) var searchScopeGeneration = 0
@@ -112,7 +114,7 @@ final class Navigator: ObservableObject {
     }
 
     /// Resolves a cross-view request. `.section` deliberately keeps the current focus: it means
-    /// "show me that section", not "here is a new context" (HomeView's "View all calls").
+    /// "show me that section", not "here is a new context".
     func follow(_ route: Route) {
         switch route {
         case .call(let url, let ms):
@@ -144,5 +146,12 @@ final class Navigator: ObservableObject {
         let enteringNewContext = destination.callFocus.contextKey != self.destination.callFocus.contextKey
         self.destination = destination
         if enteringNewContext { clearSearchScope() }
+        // A specific call or tag can only be shown by the list lens. Arriving at Calls with a focus
+        // while the reader had left it on Calendar or Digest would select the call underneath a
+        // surface that cannot draw it — navigation reporting success and showing nothing. Decided
+        // here because this type already owns what a section arrives showing.
+        if destination.section == .calls, destination.callFocus != .none {
+            CallsLensModel.shared.focusList()
+        }
     }
 }

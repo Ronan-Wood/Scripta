@@ -247,7 +247,7 @@ struct SettingsView: View {
             }
             .onChange(of: conversationRetention) { _, newValue in
                 AppSettings.conversationRetentionDays = newValue
-                AppModel.shared.ask.pruneExpiredConversations()
+                AskModel.shared.pruneExpiredConversations()
             }
         } header: {
             Text("Clovis")

@@ -3,8 +3,8 @@ import ScriptaCore
 
 // The hub's top-of-page strip: what this page is, the at-a-glance counts, the synthesized
 // "what's important" blurb, and the nothing-recorded-yet card. Concrete structs rather than
-// computed `some View` properties on KnowledgeView — each one is its own inference scope, which
-// is what keeps `KnowledgeView.body`'s already-long modifier chain inside the type checker's
+// computed `some View` properties on CallsDigestLens — each one is its own inference scope, which
+// is what keeps `CallsDigestLens.body`'s already-long modifier chain inside the type checker's
 // budget (see KnowledgeSheets.swift for the failure this file's shape is guarding against).
 
 /// Masthead: the page's name and how much it was compiled from.
@@ -21,9 +21,9 @@ struct KnowledgeHeader: View {
     }
 }
 
-/// At-a-glance counts (M22) — the shared `StatTile` `HomeView` already uses, with
+/// At-a-glance counts (M22) — the shared `StatTile`, with
 /// Knowledge-specific numbers (not a duplicate of Home's calls/hours tiles), all from data
-/// KnowledgeView already loads in `reload()` — no new queries for the tiles themselves.
+/// CallsDigestLens already loads in `reload()` — no new queries for the tiles themselves.
 struct KnowledgeStatRow: View {
     let commitmentCount: Int
     let peopleCount: Int

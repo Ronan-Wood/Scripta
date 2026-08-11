@@ -33,15 +33,50 @@ struct CallsView: View {
         var startMs: Int?
     }
 
+    /// Three readings of this workspace's calls. Doc 4 §2 folds Meetings and the Knowledge digest in
+    /// here; the lens lives on a shared model because `HubContent`'s `switch` destroys this branch
+    /// whenever the reader leaves the section — see `CallsLensModel`.
+    @ObservedObject private var lens = CallsLensModel.shared
+
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            lensPicker
+            switch lens.lens {
+            case .recording: CallsRecordingScreen()
+            case .list: listAndDetail
+            case .calendar: CallsCalendarLens()
+            case .digest: CallsDigestLens()
+            }
+        }
+        .background(Carbon.background)
+        // ON THE OUTER VIEW, NOT ON `listAndDetail`. The cross-workspace widening is `@State` here
+        // and the lens `switch` does not destroy it, so a reset that only exists while the list
+        // lens is mounted misses a workspace change made from the Calendar or Digest lens — and
+        // "search all workspaces" becomes the lingering default this file's own comment says it can
+        // never become.
+        .onChange(of: appModel.activeGroup) { _, _ in allGroups = false; refresh() }
+    }
+
+    private var lensPicker: some View {
+        Picker("", selection: $lens.lens) {
+            ForEach(CallsLensModel.available(recording: appModel.recordingState == .recording)) {
+                Text($0.title).tag($0)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .padding(.horizontal, Space.x5)
+        .padding(.top, Space.x4)
+    }
+
+    private var listAndDetail: some View {
         HStack(spacing: 0) {
             listColumn.frame(width: 340)
             Rectangle().fill(Carbon.borderSubtle).frame(width: 1)
             detailColumn.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Carbon.background)
         .onAppear(perform: refresh)
-        .onChange(of: appModel.activeGroup) { _, _ in allGroups = false; refresh() }
     }
 
     private var scopeName: String {

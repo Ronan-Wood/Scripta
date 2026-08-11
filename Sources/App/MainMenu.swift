@@ -5,7 +5,8 @@ import AppKit
 /// and the fix for edit shortcuts. Built in code (no nib); standard selectors dispatch
 /// through the responder chain.
 enum MainMenu {
-    static func install(settingsTarget: AnyObject, settingsAction: Selector) {
+    static func install(settingsTarget: AnyObject, settingsAction: Selector,
+                        helpAction: Selector) {
         let main = NSMenu()
 
         // App menu (title is replaced by the app name automatically).
@@ -48,6 +49,16 @@ enum MainMenu {
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         main.addItem(submenu(windowMenu, title: "Window"))
         NSApp.windowsMenu = windowMenu
+
+        // Help — where the Docs section went (Doc 4 §2). It was a sidebar row competing with the
+        // four surfaces a reader actually works in; documentation is what this menu is for, and
+        // `NSApp.helpMenu` is what puts it in the place macOS has already taught everyone to look.
+        let helpMenu = NSMenu(title: "Help")
+        let help = NSMenuItem(title: "Scripta Help", action: helpAction, keyEquivalent: "?")
+        help.target = settingsTarget
+        helpMenu.addItem(help)
+        main.addItem(submenu(helpMenu, title: "Help"))
+        NSApp.helpMenu = helpMenu
 
         NSApp.mainMenu = main
     }

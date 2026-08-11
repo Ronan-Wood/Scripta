@@ -21,7 +21,7 @@ struct EntityDetailView: View {
     /// chip's own name) so the header doesn't flash blank while the fresh load resolves.
     @State private var fallbackName: String? = nil
     let onClose: () -> Void
-    /// Invoked after a commitment here is marked done, so the presenting view (KnowledgeView's
+    /// Invoked after a commitment here is marked done, so the presenting view (CallsDigestLens's
     /// rail) can refresh — this sheet's own `commitments` state already updates itself, but the
     /// rail's separately-loaded copy of the same rows would otherwise go stale (crosscheck).
     var onCommitmentsChanged: () -> Void
@@ -227,7 +227,7 @@ struct EntityDetailView: View {
         }
     }
 
-    /// Same frontmatter-is-source-of-truth path as KnowledgeView's markCommitmentDone — see that
+    /// Same frontmatter-is-source-of-truth path as CallsDigestLens's markCommitmentDone — see that
     /// one's doc comment for why this can't be a DB-only status flip. `ownerID` prevents
     /// cross-resolving two people's identically-worded commitments (crosscheck); the callback
     /// lets the presenting rail refresh its own separately-loaded copy of these rows.

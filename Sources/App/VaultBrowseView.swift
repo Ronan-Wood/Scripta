@@ -165,7 +165,7 @@ private struct VaultBrowseListing: View {
                 VaultFilterRow(listing: listing, model: model)
                 ExclusionBar(filter: listing.filters, toggle: model.include)
                 if let refused = model.refusedInclusion {
-                    Text(SubstrateAskModel.refusalSentence(for: refused))
+                    Text(AskModel.refusalSentence(for: refused))
                         .typeface(Register.micro, Ink.textHelper)
                         .fixedSize(horizontal: false, vertical: true)
                 }

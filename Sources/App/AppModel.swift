@@ -50,7 +50,7 @@ final class AppModel: ObservableObject {
             // when content changes, never when the reader changes." Both engine surfaces re-read
             // their binding here rather than sampling `activeGroup` at init, which is what left the
             // Library pointing at launch-time's workspace (bc950f1).
-            SubstrateAskModel.shared.adoptBinding()
+            AskModel.shared.adoptBinding()
             SubstrateLibraryModel.shared.adoptWorkspace()
             // The browser is the third engine surface bound to the workspace, and the one where a
             // missed re-read is worst: Ask showing the old scope's answer is a wrong answer, but a
@@ -102,10 +102,6 @@ final class AppModel: ObservableObject {
     /// Settings would be a feature that only works while watched.
     let recall = LiveRecall()
 
-    /// App-lifetime Ask conversation: clicking a citation (or any tab switch) swaps the hub's
-    /// content view, which must not wipe the messages or the in-flight LanguageModelSession.
-    let ask = AskModel()
-
     /// Set by MenuController; pauses/resumes the in-progress recording.
     var togglePause: (() -> Void)?
 
@@ -141,6 +137,10 @@ final class AppModel: ObservableObject {
     }
 
     private func syncRecordingClock() {
+        // The Calls section follows the recording lifecycle: a call in progress selects the
+        // recording lens, and finishing one hands the reader back to the list. Doc 4 §2 retired
+        // Home, which used to be where this screen lived.
+        CallsLensModel.shared.follow(recording: recordingState == .recording)
         switch recordingState {
         case .recording:
             if startedAt == nil { startedAt = Date() }

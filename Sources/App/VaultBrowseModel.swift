@@ -21,32 +21,12 @@ import SubstrateKit
 final class VaultBrowseModel: ObservableObject {
     static let shared = VaultBrowseModel()
 
-    /// Which corpus the Knowledge screen is showing. It lives HERE rather than as `@State` on that
-    /// screen because `HubContent` rebuilds the pane on every sidebar reselect, which silently reset
-    /// the selection to the call digest — the defect `SubstrateAskModel` records for its own brain.
-    ///
-    /// The two are not merged into one list because they are not one corpus: the digest is this
-    /// app's on-device reading of its own calls, and the vault is a composed scope spanning several
-    /// vaults, most of which this app did not write.
-    enum Lens: String, CaseIterable, Identifiable {
-        case workspace, vault
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .workspace: return "This workspace"
-            case .vault: return "Vault"
-            }
-        }
-    }
-
-    @Published var lens: Lens = .workspace
-
     /// A scope the reader chose instead of this workspace's own. `nil` follows the workspace.
     ///
     /// ASK HAS ALWAYS HAD THIS AND THE BROWSER DID NOT, which is why the operator could not see
     /// `prism` here at all: every other corpus was one chip away in Ask and unreachable in the one
-    /// surface whose entire job is looking at a corpus. Held on the model rather than the view for
-    /// the reason `lens` is — `HubContent` rebuilds this pane on every sidebar reselect.
+    /// surface whose entire job is looking at a corpus. Held on the model rather than the view
+    /// because `HubContent` rebuilds this pane on every sidebar reselect.
     @Published private(set) var scopeOverride: String?
 
     /// Look at a different scope, or `nil` to follow the workspace again.
@@ -194,7 +174,7 @@ final class VaultBrowseModel: ObservableObject {
     /// IT BUMPS THE GENERATION, and that is the point rather than bookkeeping. Without it a switch
     /// made while a request was in flight left the reply valid: the guard in `load()` still matched,
     /// and the PREVIOUS workspace's notes landed on the new workspace's screen. That is the privacy
-    /// partition leaking, not a stale view, and it is what `SubstrateAskModel.adoptBinding` spends
+    /// partition leaking, not a stale view, and it is what `AskModel.adoptBinding` spends
     /// its `epoch` on.
     func adoptWorkspace() {
         // A CHOSEN SCOPE SURVIVES A WORKSPACE SWITCH — it was chosen, not inherited. The privacy
