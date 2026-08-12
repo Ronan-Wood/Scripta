@@ -54,6 +54,43 @@ NOT one, and routing it into the transcript reader would open a file that reader
 was left undone rather than half-built; the citations render with the full spine and no affordance
 that promises navigation.
 
+## What shipped after Doc 4 — 2026-08-11/12
+
+**A legibility pass over the whole shell, and the reason it was needed is the finding**
+(`012cf84`). Phase 5 restructured the navigation model and NOTHING HAD BEEN RENDERED. The build
+was green and 245 tests passed through every defect below, because none of them is a thing a type
+checker or a unit test can see. They were found by the operator opening the app.
+
+**One mistake, eight symptoms: disclosure rendered UNCONDITIONALLY on surfaces that repeat.** The
+console it came from showed ONE result, so a full envelope under it was proportionate; a thread
+stacks it under every turn and a list under every row. Rule 3 — a healthy engine is quiet —
+violated by the code written to serve it. The fix is the same everywhere: collapse what a healthy
+default would say, and never collapse a DEVIATION.
+
+**Two capabilities were unreachable, both from deleting `HomeView`** on the strength of Doc 4
+calling Home "aggregates over the local index" — which described its dashboard and not the other
+half of that file. The recording screen went first (restored by review); then the way IN to it,
+because `Record` was gated on the app being busy so the "Ready to record" card could not be
+reached at all. `Home` is back as a LANDING and deliberately not the dashboard §2 retired.
+
+**The live transcript was half-deaf.** One transcriber on the mic, so a two-party call showed only
+your side — and `LiveRecall` read that same half, asking the vault about your own sentences rather
+than the client's. Two transcribers now, labelled You/Them.
+
+**And the app already knew things it was not saying.** The vault list re-read only on first load
+while three paths change a vault, each ending in a compose the app watches finish. All three now
+invalidate it — `composeAfterRecording` was ALREADY re-listing the roster on that reasoning and
+the list simply was not told. The Boundary Principle, in the wiring rather than the logic, for the
+third time this session.
+
+**`com.ronanwood.substrate-refresh` is retired** (operator, 2026-08-12). Doc 3 §2 decided it and
+`SubstrateRefresh.swift` had sequenced removal as the operator's act once the in-app half worked.
+Nothing of Scripta's outlives Scripta now — measured: app running → 3 engine processes, quit → 0
+orphans, relaunch → engine back on `:8765`. The plist is backed up in the session scratchpad.
+CONSEQUENCE TO KNOW: vaults refresh only while the app is open, so a Claude Code session after a
+week of not opening Scripta reads a week-old index — and `refresh.frozen` will say `false`,
+because nothing failed, nothing ran.
+
 ## What shipped after Doc 4 — 2026-08-11
 
 **The workspace wipe reaches chat history** (`4c4c166`). `WorkspaceDeleter` had never touched
@@ -250,6 +287,13 @@ Corrections found by reconciling, not by being told:
   destination, and 5a's blast radius included `ClovisDrawer` (238 lines, shares the same model and
   rendered the badge that had to go), which nothing in the estimate mentioned. **Grep for the
   consumers before quoting a size.**
+- **A green build is not a rendered screen, and this cost more than everything else combined.**
+  Phase 5 restructured the navigation model; the build passed and 245 tests passed and the app was
+  not looked at once. What that hid: the entire in-call recording screen deleted, then the way into
+  it; the live transcript hearing one side of a two-party call; note sheets showing raw YAML and
+  literal `**bold**`; a disclosure block taller than the answer it qualified, under every turn.
+  Every one was found by opening the app, and each took minutes to fix. **Open the app after a
+  change to a view. The suite cannot see layout, reachability, or a control that does nothing.**
 - **A test written to enforce the discipline broke the discipline.** The first `MappingParityTests`
   COULD NOT FAIL: both golden captures carry `degraded: false` and `filters.vaults: null`, so one
   assertion was a branch that never ran and the other was `nil == nil`. Measured, not suspected —
