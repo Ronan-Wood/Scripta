@@ -451,7 +451,14 @@ Claims the next session may rely on without re-verifying, each with what establi
 > the mechanical work before that is answered.
 >
 > Read first: `Sources/App/SubstrateEngine.swift` (`discover()`), `substrate/pyproject.toml`,
-> `substrate/tools/substrate-deploy`.
+> `substrate/tools/substrate-deploy`. Doc 2 (the structural spec) lives in
+> `~/OneDrive/vaults/core-vault/00-operator/specs/` — the repo has a pointer, not a copy.
+>
+> **Two states that look like faults and are not.** The branch is ~86 commits ahead of
+> `origin/substrate-engine` and unpushed — that is deliberate, do not push without being asked. And
+> the DEPLOYED engine is behind HEAD: `c61055d` added MCP `instructions` that the live server will
+> not carry until `tools/substrate-deploy` runs, which is a decision rather than a chore (deploying
+> has previously moved six live scopes onto a new schema inside one tick).
 >
 > Before changing anything: `cd substrate && ./lint.sh` (16 pre-existing errors, not yours),
 > `uv run python tools/fixture-signature.py out/substrate.db` (must print `4a560ce34aa6378a`,
