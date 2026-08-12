@@ -41,10 +41,10 @@ struct CallsRecordingScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    /// The live pane's header — "(you)" only for a two-party call; a conference is unlabeled.
+    /// The live pane header. No "(you)" any more — both sides are on screen and each line says which.
     private var liveTitle: String {
         if !AppSettings.liveTranscriptionEnabled { return "Live transcript off" }
-        return model.recordingModeName == nil ? "Live transcript (you)" : "Live transcript"
+        return "Live transcript"
     }
 
     // MARK: - Transport
@@ -187,34 +187,73 @@ private struct LiveTranscriptPane: View {
     let title: String
     @ObservedObject var live = AppModel.shared.live
 
+    /// Non-empty in-progress lines, in a stable order so a redraw does not reshuffle them.
+    private var partials: [(LiveTranscriptModel.Speaker, String)] {
+        let order: [LiveTranscriptModel.Speaker] = [.you, .them, .unlabeled]
+        return order.compactMap { speaker in
+            guard let text = live.partials[speaker], !text.isEmpty else { return nil }
+            return (speaker, text)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Space.x2) {
             SectionHeader(title: title)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: Space.x3) {
-                        if live.finalized.isEmpty && live.partial.isEmpty {
+                        if live.lines.isEmpty && live.partials.values.allSatisfy(\.isEmpty) {
                             Text("Listening…").font(CarbonFont.body(14)).foregroundStyle(Carbon.textSecondary)
                         }
-                        // Indices are stable ids here: the array is append-only during a recording.
-                        ForEach(live.finalized.indices, id: \.self) { i in
-                            Text(live.finalized[i]).font(CarbonFont.body(15)).foregroundStyle(Carbon.textPrimary)
-                        }
-                        if !live.partial.isEmpty {
-                            Text(live.partial).font(CarbonFont.body(15)).foregroundStyle(Carbon.textSecondary)
+                        ForEach(live.lines) { LiveLineRow(line: $0, settled: true) }
+                        // Each side's in-progress line, dimmer. Both can be mid-utterance at once,
+                        // so this is a loop rather than one field — a two-party call where only the
+                        // mic's partial showed was the old shape, and the other side simply did not
+                        // appear until the recording had stopped.
+                        ForEach(partials, id: \.0) { speaker, text in
+                            LiveLineRow(line: .init(speaker: speaker, text: text), settled: false)
                         }
                         Color.clear.frame(height: 1).id("live-bottom")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Space.x5)
                 }
-                .onChange(of: live.finalized.count) { _, _ in withAnimation { proxy.scrollTo("live-bottom", anchor: .bottom) } }
-                .onChange(of: live.partial) { _, _ in proxy.scrollTo("live-bottom", anchor: .bottom) }
+                .onChange(of: live.lines.count) { _, _ in withAnimation { proxy.scrollTo("live-bottom", anchor: .bottom) } }
+                .onChange(of: live.partials) { _, _ in proxy.scrollTo("live-bottom", anchor: .bottom) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Carbon.layer, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
         }
         .frame(maxHeight: .infinity)
+    }
+}
+
+/// One spoken line, attributed. The label is the ONLY thing distinguishing the two sides here, so
+/// it is a real column rather than a colour: a transcript read at a glance mid-call has to answer
+/// "who said that" without the reader parsing the sentence to work it out.
+///
+/// A conference has no label — one source, deliberately unlabeled — and the row simply omits the
+/// column rather than inventing a name for it.
+private struct LiveLineRow: View {
+    let line: LiveTranscriptModel.Line
+    /// Finalized, or still volatile. Volatile text is dimmer because it can still change under the
+    /// reader; presenting an in-progress guess in the same ink as settled speech is the surface
+    /// asserting more than it knows.
+    let settled: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.x3) {
+            if let label = line.speaker.label {
+                Text(label)
+                    .font(CarbonFont.medium(11))
+                    .foregroundStyle(line.speaker == .you ? Carbon.interactive : Carbon.textHelper)
+                    .frame(width: 38, alignment: .leading)
+            }
+            Text(line.text)
+                .font(CarbonFont.body(15))
+                .foregroundStyle(settled ? Carbon.textPrimary : Carbon.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }

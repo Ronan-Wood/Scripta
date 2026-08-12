@@ -67,6 +67,18 @@ struct ClovisDrawerView: View {
                 .background(Carbon.blueSoft, in: Capsule())
                 .foregroundStyle(Carbon.interactive)
             Spacer()
+            // NEW CONVERSATION, which the drawer had no way to start. The Ask pane has the control
+            // and the drawer shares the same thread, so from here the only way to begin a fresh one
+            // was to open the pane — on a surface whose whole point is not having to.
+            Button {
+                ask.newConversation()
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 11)).foregroundStyle(Carbon.iconSecondary)
+                    .frame(width: 22, height: 22).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("New conversation")
             Button {
                 app.route = .section(.ask)
                 close()

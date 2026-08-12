@@ -66,6 +66,10 @@ enum Glyph: String, CaseIterable, Identifiable {
     case link = "link"
     case settings = "gearshape"
     case view = "eye"
+    /// Reading a note: fill the pane, hand the pane back, or tear the note off into its own window.
+    case expand = "arrow.up.left.and.arrow.down.right"
+    case collapse = "arrow.down.right.and.arrow.up.left"
+    case launch = "macwindow"
 
     // State — deviation only, per rule 3. These are the icons that mean something departed.
     case warning = "exclamationmark.triangle"

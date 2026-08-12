@@ -43,6 +43,9 @@ struct VaultBrowseView: View {
 private struct VaultBrowseConsole: View {
     @ObservedObject var model: VaultBrowseModel
     @State private var reading: VaultDocument?
+    /// Reading a note FILLS the pane rather than sharing it with the list. Not a window — the
+    /// reader wanted one screen for one note without leaving the app.
+    @State private var full = false
     /// The document a delete is pending on. Held as the whole value because removing one resolves
     /// its source directory through `expand` — the listing deliberately carries no absolute path.
     @State private var removing: VaultDocument?
@@ -56,7 +59,6 @@ private struct VaultBrowseConsole: View {
             // trigger and spin forever.
             .onAppear { model.adoptWorkspace() }
             .task(id: model.reloadToken) { await model.loadIfNeeded() }
-            .sheet(item: $reading) { VaultNoteSheet(document: $0, model: model) }
             .confirmationDialog(
                 removing.map { "Remove “\($0.title ?? $0.id)” from this workspace's vault?" } ?? "",
                 isPresented: Binding(get: { removing != nil },
@@ -84,7 +86,44 @@ private struct VaultBrowseConsole: View {
         }
     }
 
+    /// The list, and the note beside it. A SPLIT, not a sheet: a modal covered the list it came
+    /// from, so comparing two notes meant closing one, and reading is what this surface is for.
     @ViewBuilder private var content: some View {
+        if let document = reading, full {
+            VaultNoteReader(document: document, model: model, controls: AnyView(readerControls),
+                            follow: { reading = $0 })
+        } else {
+            HStack(spacing: 0) {
+                listing
+                if let document = reading {
+                    Rectangle().fill(Ink.borderSubtle.color).frame(width: 1)
+                    VaultNoteReader(document: document, model: model,
+                                    controls: AnyView(readerControls),
+                                    follow: { reading = $0 })
+                        .frame(minWidth: 380, idealWidth: 520, maxWidth: .infinity)
+                }
+            }
+        }
+    }
+
+    /// Fill the pane, tear it off, or close it — the three things a reader wants from a panel.
+    private var readerControls: some View {
+        HStack(spacing: Gap.s4) {
+            IconButton(glyph: full ? .collapse : .expand,
+                       label: full ? "Show the list too" : "Fill the pane",
+                       action: { full.toggle() })
+            IconButton(glyph: .launch, label: "Open in a new window", action: {
+                if let document = reading {
+                    VaultNoteWindows.show(document, model: model)
+                    reading = nil
+                    full = false
+                }
+            })
+            IconButton(glyph: .close, label: "Close", action: { reading = nil; full = false })
+        }
+    }
+
+    @ViewBuilder private var listing: some View {
         switch model.state {
         case .unasked, .loading:
             VaultProbe()
@@ -101,7 +140,8 @@ private struct VaultBrowseConsole: View {
             }
         case .listed(let listing):
             VaultBrowseListing(listing: listing, model: model,
-                               open: { reading = $0 }, confirmRemove: { removing = $0 })
+                               open: { reading = $0 }, confirmRemove: { removing = $0 },
+                               reload: { Task { await model.load() } })
         }
     }
 }
@@ -146,7 +186,7 @@ private struct VaultBrowseIdle: View {
             VaultRetry(title: "Read the vault", action: load)
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: Metrics.listMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Metrics.pageGutter)
     }
 }
@@ -167,7 +207,7 @@ private struct VaultBrowseUnbound: View {
                 .surface(Ink.layer)
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: Metrics.listMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Metrics.pageGutter)
     }
 }
@@ -181,6 +221,10 @@ private struct VaultBrowseListing: View {
     /// Asks the console to confirm a removal — the dialog and the `expand` round trip live there,
     /// with the state they need.
     let confirmRemove: (VaultDocument) -> Void
+    let reload: () -> Void
+    /// Vaults the reader has folded away. BY NAME, not by index, so collapsing `core-vault` and then
+    /// changing the filter does not silently fold whichever group slid into that position.
+    @State private var collapsed: Set<String> = []
 
     /// A view filter over what was already fetched — no round trip to show fewer rows.
     private var shown: [VaultDocument] {
@@ -191,42 +235,89 @@ private struct VaultBrowseListing: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Gap.s16) {
-                VaultScopePicker(model: model)
-                header
-                if let note = frozenNote { VaultScopeNote(note: note) }
-                VaultFilterRow(listing: listing, model: model)
-                ExclusionBar(filter: listing.filters, toggle: model.include)
-                if let refused = model.refusedInclusion {
-                    Text(AskModel.refusalSentence(for: refused))
-                        .typeface(Register.micro, Ink.textHelper)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                controls
+                rows
+            }
+            // NO `listMaxWidth` HERE. That cap exists so a paragraph does not run to a 2000pt
+            // measure, and these are CARDS — a title, a meta line and a count. Capping them left
+            // two thirds of a widened window empty while the list it was hiding scrolled on.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Metrics.pageGutter)
+        }
+    }
+
+    /// Split from `rows` because the solver charges for DEPTH, not for modifier identity — the same
+    /// threshold `CallsDigestLens` records. One expression here failed to type-check at all.
+    @ViewBuilder private var controls: some View {
+        VaultScopePicker(model: model)
+        header
+        if let note = frozenNote { VaultScopeNote(note: note) }
+        VaultFilterRow(listing: listing, model: model)
+        ExclusionBar(filter: listing.filters, toggle: model.include)
+        if let refused = model.refusedInclusion {
+            Text(AskModel.refusalSentence(for: refused))
+                .typeface(Register.micro, Ink.textHelper)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder private var rows: some View {
                 if shown.isEmpty {
                     VaultBrowseEmpty(listing: listing, filtered: model.vaultFilter != nil)
                 } else {
-                    ForEach(shown) { document in
-                        VaultDocumentCard(document: document,
-                                          open: { open(document) },
-                                          // Only what this app wrote, and only tier 2 — an
-                                          // inherited note is not ours to remove, so it gets no
-                                          // control rather than one that refuses.
-                                          remove: model.isRemovable(document)
-                                              ? { confirmRemove(document) } : nil)
+                    // GROUPED BY VAULT, which is the question this screen exists to answer. A flat
+                    // scroll of seventy-six cards from three vaults cannot say which corpus you are
+                    // looking through, and `vault` + `tier` are exactly the two fields a directory
+                    // listing could never carry — the reason the engine sends them at all.
+                    ForEach(groups) { group in
+                        VaultGroupHeader(vault: group.vault, tier: group.tier,
+                                         count: group.documents.count,
+                                         open: !collapsed.contains(group.vault)) {
+                            if collapsed.contains(group.vault) { collapsed.remove(group.vault) }
+                            else { collapsed.insert(group.vault) }
+                        }
+                        ForEach(collapsed.contains(group.vault) ? [] : group.documents) { document in
+                            VaultDocumentCard(document: document,
+                                              open: { open(document) },
+                                              // Only what this app wrote, and only tier 2 — an
+                                              // inherited note is not ours to remove, so it gets no
+                                              // control rather than one that refuses.
+                                              remove: model.isRemovable(document)
+                                                  ? { confirmRemove(document) } : nil)
+                        }
                     }
                 }
-            }
-            .frame(maxWidth: Metrics.listMaxWidth, alignment: .leading)
-            .padding(Metrics.pageGutter)
+    }
+
+    /// One vault's rows, ordered by TIER — shared knowledge first, this project's own last, which
+    /// is the order the chain composes in and the order a reader builds context in.
+    private var groups: [VaultGroup] {
+        // A NAMED TYPE, not a tuple. The tuple-returning `Dictionary(grouping:).map.sorted` chain
+        // defeated the type checker outright — "unable to type-check in reasonable time" — and the
+        // fix is the same one the codebase keeps recording: give the solver a boundary.
+        let byVault: [String: [VaultDocument]] = Dictionary(grouping: shown, by: { $0.vault })
+        var built: [VaultGroup] = []
+        for (vault, documents) in byVault {
+            let tier = documents.compactMap(\.tier).min() ?? 9
+            built.append(VaultGroup(vault: vault, tier: tier, documents: documents))
         }
+        built.sort { $0.tier != $1.tier ? $0.tier < $1.tier : $0.vault < $1.vault }
+        return built
     }
 
     /// COUNTS, BOTH OF THEM. `shown` is what is on screen after the vault filter; `total` is what
     /// the engine matched. Reporting only the first would make a filtered view look like the whole
     /// corpus, which is the browse surface's version of a silent exclusion.
     private var header: some View {
-        VStack(alignment: .leading, spacing: Gap.s4) {
-            Text(listing.scope).typeface(Register.title3, Ink.textPrimary)
-            Text(countSentence).typeface(Register.micro, Ink.textHelper)
+        HStack(alignment: .firstTextBaseline, spacing: Gap.s8) {
+            VStack(alignment: .leading, spacing: Gap.s4) {
+                Text(listing.scope).typeface(Register.title3, Ink.textPrimary)
+                Text(countSentence).typeface(Register.micro, Ink.textHelper)
+            }
+            Spacer(minLength: Gap.s8)
+            // The list re-reads on every appearance now, so this is for the case that does not
+            // involve leaving: a compose finishing, or a call landing, while the screen is open.
+            ActionButton(title: "Refresh", glyph: .refresh, rank: .tertiary, action: reload)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -336,22 +427,27 @@ private struct VaultDocumentCard: View {
 
     var body: some View {
         Button(action: open) {
-            VStack(alignment: .leading, spacing: Gap.s6) {
+            VStack(alignment: .leading, spacing: Gap.s2) {
                 HStack(alignment: .firstTextBaseline, spacing: Gap.s8) {
                     Text(title).typeface(Register.uiEmphasis, Ink.textPrimary)
+                        .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Text(provenance).typeface(Register.monoMicro, Ink.textHelper)
                 }
-                PassageSpine(passage: spine)
-                if !document.domains.isEmpty {
-                    Text(document.domains.joined(separator: " · "))
-                        .typeface(Register.micro, Ink.textHelper)
+                // ONE META LINE, AND ONLY WHAT VARIES. The full `PassageSpine` drew four badges on
+                // every row — and `active` and `unclassified` are what almost every note IS, so two
+                // of the four carried no information and cost a line of height each. That is rule 3
+                // again: a healthy default should be quiet. `doc_type` stays because it genuinely
+                // varies, and status/confidence speak only when they deviate.
+                HStack(spacing: Gap.s8) {
+                    Text(meta).typeface(Register.monoMicro, Ink.textHelper).lineLimit(1)
+                    Spacer(minLength: Gap.s4)
                 }
                 if let line = supersessionLine {
-                    Text(line).typeface(Register.micro, Ink.textHelper)
+                    Text(line).typeface(Register.micro, Ink.textHelper).lineLimit(1)
                 }
             }
-            .padding(Metrics.cardPaddingCompact)
+            .padding(.horizontal, Gap.s12).padding(.vertical, Gap.s8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .surface(Ink.layer)
         }
@@ -372,12 +468,25 @@ private struct VaultDocumentCard: View {
     /// claim the note makes about itself and an id is one the engine makes about the file.
     private var title: String { document.title ?? document.id }
 
+    /// What this note IS, plus anything unusual about it. Deviations only — see the body.
+    private var meta: String {
+        var parts = [document.docType.label]
+        if document.status != .active { parts.append(document.status.label) }
+        if document.confidence.isJudged || document.confidence == .unjudged {
+            parts.append(document.confidence.label)
+        }
+        if document.documentClass == .conversation { parts.append("from a call") }
+        parts.append(contentsOf: document.domains)
+        return parts.joined(separator: " · ")
+    }
+
     /// Which vault, and how big. `passage_count` rather than a snippet: there was no query, so any
     /// sentence picked from the note would be an arbitrary one presented as its gist.
+    /// The vault name is NOT repeated here any more — the group header above these rows says it
+    /// once, and printing it on all thirty-three of them was the same fact thirty-three times.
     private var provenance: String {
-        let size = document.expandRef == nil
+        document.expandRef == nil
             ? "empty" : "\(document.passageCount) passage\(document.passageCount == 1 ? "" : "s")"
-        return document.vault.isEmpty ? size : "\(document.vault) · \(size)"
     }
 
     private var supersessionLine: String? {
@@ -389,98 +498,82 @@ private struct VaultDocumentCard: View {
     /// The spine, borrowed through `Passage` so `PassageSpine` can draw it. Empty text and citation
     /// because neither is drawn — the alternative is a second spine component to keep in step with
     /// the first, which is the duplication this delegation exists to avoid.
-    private var spine: Passage {
-        Passage(id: document.id, snippet: "", citation: "", vault: document.vault,
-                status: document.status, docType: document.docType,
-                confidence: document.confidence, documentClass: document.documentClass,
-                domains: document.domains, supersedes: document.supersedes)
-    }
 }
 
-/// The note itself, read from the vault. Its text arrives with a freshness verdict, and the verdict
-/// is on screen: `expand` reads the SOURCE file, so it can report that the note has moved on since
-/// the index was built — the one thing a reader of a search result cannot otherwise know.
-/// Shared with the Knowledge Documents shelf: a vault document opened from there is the same
-/// content read the same way, and a second reader would be a second place for the freshness
-/// verdict to be got wrong.
+/// One note in a sheet — the documents shelf's presentation, where a modal is right: that shelf is
+/// a list of a workspace's own uploads inside a digest, not a browse surface, so there is nothing
+/// beside it worth keeping visible.
+///
+/// A WRAPPER, NOT A SECOND READER. It had its own copy of the header, the freshness verdict and the
+/// body; `VaultNoteReader` owns all three now, so the sheet and the Library's panel cannot render
+/// the same note two ways.
 struct VaultNoteSheet: View {
     let document: VaultDocument
     @ObservedObject var model: VaultBrowseModel
     @Environment(\.dismiss) private var dismiss
-    @State private var outcome: VaultBrowseModel.Reading?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
-            body(for: outcome)
-        }
-        .frame(minWidth: 620, minHeight: 480)
-        .background(Ink.background)
-        .task { outcome = await model.read(document) }
+        VaultNoteReader(document: document, model: model,
+                        controls: AnyView(Button("Done") { dismiss() }
+                                            .keyboardShortcut(.defaultAction)))
+            .frame(minWidth: 620, minHeight: 480)
     }
+}
 
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Gap.s8) {
+/// Which vault the rows beneath came from, and what that MEANS.
+///
+/// The name alone does not tell a reader whether `core-vault` is theirs, this project's, or shared
+/// with everything — and that is the distinction the whole browse surface exists for. The tier says
+/// it, so the tier is spelled out in words rather than printed as the number the engine uses.
+private struct VaultGroupHeader: View {
+    let vault: String
+    let tier: Int
+    let count: Int
+    let open: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
             VStack(alignment: .leading, spacing: Gap.s2) {
-                Text(document.title ?? document.id).typeface(Register.title3, Ink.textPrimary)
-                if !document.vault.isEmpty {
-                    Text(document.vault).typeface(Register.monoMicro, Ink.textHelper)
+                HStack(spacing: Gap.s8) {
+                    Icon(open ? .chevronDown : .chevronRight, Register.monoMicro, Ink.textHelper)
+                    Text(vault).typeface(Register.uiEmphasis, Ink.textPrimary)
+                    Text("\(count) note\(count == 1 ? "" : "s")")
+                        .typeface(Register.monoMicro, Ink.textHelper)
+                    Spacer(minLength: Gap.s4)
+                }
+                // The role line folds with the rows: collapsed, the point is to scan vault NAMES,
+                // and three explanatory sentences between them defeats that.
+                if open {
+                    Text(role).typeface(Register.micro, Ink.textHelper)
+                        .padding(.leading, Gap.s16)
                 }
             }
-            Spacer(minLength: Gap.s8)
-            Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, Gap.s8)
+            .contentShape(Rectangle())
         }
-        .padding(Metrics.cardPaddingCompact)
+        .buttonStyle(.plain)
     }
 
-    @ViewBuilder private func body(for outcome: VaultBrowseModel.Reading?) -> some View {
-        switch outcome {
-        case nil:
-            VaultProbe()
-        case .refused(let refusal):
-            ScrollView {
-                VaultRefusalCard(refusal: refusal, retryTitle: nil, retry: nil)
-                    .padding(Metrics.pageGutter)
-            }
-        case .note(let note):
-            ScrollView {
-                VStack(alignment: .leading, spacing: Gap.s12) {
-                    if let line = freshness(note) {
-                        EngineNoteRow(note: line)
-                            .padding(Metrics.cardPaddingCompact)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .surface(Ink.layer)
-                    }
-                    Text(note.text)
-                        .typeface(Register.proseSm, Ink.textPrimary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(note.path).typeface(Register.monoMicro, Ink.textHelper)
-                        .textSelection(.enabled)
-                }
-                .padding(Metrics.pageGutter)
-            }
+    /// Doc 4 §7's two vault roles, said in the reader's terms. Tier 3 is the workspace vault — the
+    /// one capture and upload write, the only one an unattended path can reach.
+    private var role: String {
+        switch tier {
+        case 1: return "Shared with every project — your own knowledge, inherited here."
+        case 2: return "Reference — documents added to this project."
+        default: return "This project — its calls and its notes."
         }
     }
+}
 
-    /// Only when there is something to say. A note that matches the index is the healthy state and
-    /// rule 3 keeps it quiet; the other two verdicts are not the same as each other and neither is
-    /// the same as silence.
-    private func freshness(_ note: WireNote) -> EngineNote? {
-        switch note.stale {
-        case .matches:
-            return nil
-        case .stale:
-            return EngineNote(id: "stale", marker: "changed", tone: Ink.warning,
-                              text: "This note has been edited since the index was built. You are "
-                                  + "reading the vault's current text; a search would still answer "
-                                  + "from the older one until the scope is recomposed.")
-        case .uncheckable:
-            return EngineNote(id: "unverifiable", marker: "unverified", tone: Ink.textHelper,
-                              text: "Whether this note has changed cannot be told from the index — "
-                                  + "its stored checksum names a source file rather than the note "
-                                  + "itself. This is the vault's current text either way.")
-        }
-    }
+/// One vault's rows in the browse list.
+struct VaultGroup: Identifiable {
+    let vault: String
+    /// The shallowest tier any of its notes sits at — a vault composes at one tier in practice, and
+    /// `min` keeps the ordering stable if that ever stops being true.
+    let tier: Int
+    let documents: [VaultDocument]
+
+    var id: String { vault }
 }

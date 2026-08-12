@@ -76,4 +76,14 @@ public struct VaultDocument: Identifiable {
                 confidence: confidence, documentClass: documentClass, domains: domains,
                 supersedes: supersedes).withheldAs
     }
+
+    /// This row's spine as a `Passage`, so the badge row is drawn by the SAME component a search
+    /// result uses. ONE DEFINITION: the browse card and the note sheet both needed it and the card
+    /// had a private copy, which is how two renderings of one vocabulary start disagreeing.
+    /// `snippet` and `citation` are empty because a row is not a passage — nothing reads them here.
+    public var spine: Passage {
+        Passage(id: id, snippet: "", citation: "", vault: vault,
+                status: status, docType: docType, confidence: confidence,
+                documentClass: documentClass, domains: domains, supersedes: supersedes)
+    }
 }

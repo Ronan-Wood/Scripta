@@ -113,7 +113,7 @@ struct VaultEngineRefusal: View {
             VaultEngineCard(lifecycle: lifecycle, restart: restart)
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: Metrics.listMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Metrics.pageGutter)
     }
 }
@@ -242,7 +242,7 @@ private struct VaultRosterRefusal: View {
             VaultRefusalCard(refusal: refusal, retryTitle: "Try again", retry: retry)
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: Metrics.listMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Metrics.pageGutter)
     }
 }
@@ -272,6 +272,24 @@ private struct VaultConversationList: View {
         .frame(width: 220)
     }
 
+    /// ONE UNIT, ROUNDED, AND IT DOES NOT TICK. `Text(date, style: .relative)` is second-accurate
+    /// and multi-unit — "10 min, 57 sec", "4 days, 23 hr" — which is precision nobody asked a
+    /// conversation LIST for, and it re-renders every row every second to maintain it. A thread's
+    /// age is a rough ordering cue: "10 min ago" is the whole information content.
+    ///
+    /// The pre-merge Clovis list formatted it exactly this way and the merge dropped it for the
+    /// built-in style. Static formatter because this is per row, per redraw.
+    private static let ages: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        formatter.dateTimeStyle = .named   // "yesterday" where there is a word for it
+        return formatter
+    }()
+
+    private static func age(_ date: Date) -> String {
+        ages.localizedString(for: date, relativeTo: Date())
+    }
+
     private func row(_ conversation: AskConversation) -> some View {
         let selected = conversation.id == model.currentID
         return Button {
@@ -281,7 +299,7 @@ private struct VaultConversationList: View {
                 Text(conversation.title)
                     .typeface(Register.ui, selected ? Ink.textPrimary : Ink.textSecondary)
                     .lineLimit(1)
-                Text(conversation.created, style: .relative)
+                Text(Self.age(conversation.created))
                     .typeface(Register.monoMicro, Ink.textHelper)
             }
             .padding(Gap.s8)
@@ -322,7 +340,7 @@ private struct VaultConsole: View {
             VaultRequestControls(model: model)
             VaultComposer(model: model)
         }
-        .frame(maxWidth: Metrics.listMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .frame(maxWidth: .infinity)
         .padding(Metrics.pageGutter)
     }
@@ -333,21 +351,61 @@ private struct VaultConsole: View {
 private struct VaultRequestControls: View {
     @ObservedObject var model: AskModel
 
+    @State private var open = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s6) {
-            // LABELLED, because the bar under an answered turn is byte-identical to this one and
-            // says something about "these results". This one is about results that do not exist
-            // yet. The whole disclosure design rests on telling what I ASKED FOR apart from what
-            // the engine DID, and without the marker the screen draws them the same.
-            HStack(spacing: Gap.s6) {
-                EnvelopeMarkerLabel(name: "next question")
-                Spacer(minLength: Gap.s4)
+            toggle
+            if open {
+                // LABELLED, because the bar under an answered turn is byte-identical to this one
+                // and says something about "these results". This one is about results that do not
+                // exist yet. The whole disclosure design rests on telling what I ASKED FOR apart
+                // from what the engine DID, and without the marker the screen draws them the same.
+                HStack(spacing: Gap.s6) {
+                    EnvelopeMarkerLabel(name: "next question")
+                    Spacer(minLength: Gap.s4)
+                }
+                ExclusionBar(filter: model.requestedFilter, toggle: model.include)
+                if let klass = model.refusedInclusion { VaultInclusionRefusal(klass: klass) }
+                VaultTierRow(model: model)
             }
-            ExclusionBar(filter: model.requestedFilter, toggle: model.include)
-            if let klass = model.refusedInclusion { VaultInclusionRefusal(klass: klass) }
-            VaultTierRow(model: model)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// ONE LINE, and it only says anything when the next question is not the default one.
+    ///
+    /// These controls used to sit permanently open above the composer — a full `ExclusionBar` card
+    /// with its own prose, plus a tier row — so the request apparatus was taller than the input it
+    /// qualified, on every screen, whether or not anything had been changed. A control that is
+    /// always shouting cannot mark the moment it starts mattering.
+    private var toggle: some View {
+        Button { open.toggle() } label: {
+            HStack(spacing: Gap.s6) {
+                Icon(open ? .chevronDown : .chevronRight, Register.monoMicro, Ink.textHelper)
+                Text(summary)
+                    .typeface(Register.monoMicro, narrowed ? Ink.textSecondary : Ink.textHelper)
+                    .lineLimit(1)
+                Spacer(minLength: Gap.s4)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("What the next question will search")
+    }
+
+    /// Whether the next question differs from the default one — the only case worth a louder tone.
+    private var narrowed: Bool {
+        !model.selectedVaults.isEmpty || model.includeArchived || !model.includeSources
+    }
+
+    private var summary: String {
+        guard narrowed else { return "asking the whole scope" }
+        var parts: [String] = []
+        if !model.selectedVaults.isEmpty { parts.append(model.selectedVaults.sorted().joined(separator: ", ")) }
+        if model.includeArchived { parts.append("+archived") }
+        if !model.includeSources { parts.append("no calls") }
+        return "asking " + parts.joined(separator: " · ")
     }
 }
 
@@ -577,21 +635,102 @@ private struct VaultTurn: View {
                 // capabilities missed. `ClovisAnswerFooter` carries the engine label too, so the
                 // separate label row it replaces is gone rather than drawn twice.
                 if !message.text.isEmpty { ClovisAnswerFooter(message: message) }
-                // WHAT RAN, then WHAT WAS WITHHELD, then WHAT IT STOOD ON — the order the reader
-                // needs them in, and the same order the single-answer console used. Absent for a
-                // turn restored from disk: an envelope describes a run, and this one is over.
-                if let disclosure {
-                    EngineBar(envelope: disclosure.envelope, selectScope: listScopes)
-                    HStack(spacing: Gap.s6) {
-                        EnvelopeMarkerLabel(name: "searched")
-                        Spacer(minLength: Gap.s4)
-                    }
-                    ExclusionBar(filter: disclosure.filter)
-                    VaultAnsweredTiers(filter: disclosure.filter)
-                }
-                VaultTurnPassages(message: message)
+                VaultTurnFooter(message: message, disclosure: disclosure,
+                                listScopes: listScopes)
             }
         }
+    }
+}
+
+/// Everything that stood behind one answer, COLLAPSED BY DEFAULT.
+///
+/// THE FULL ENVELOPE UNDER EVERY TURN WAS A MISREADING OF RULE 3. The single-answer console it came
+/// from showed one result at a time, so `EngineBar` + `ExclusionBar` + tiers + passage cards was
+/// proportionate. A thread stacks that under EVERY answer — two full disclosure cards with prose on
+/// screen at once, before the composer's own controls — and the reader loses the conversation in the
+/// apparatus that exists to qualify it. Rule 3 says a healthy engine is QUIET, and this was drawing
+/// a healthy engine as loudly as a broken one.
+///
+/// SO THE SPLIT IS DEVIATION, NOT DETAIL. What the reader could not reconstruct and must not miss —
+/// a degraded run, superseded content, a narrowed corpus, an unmeasured stack, a clamp — stays on
+/// screen and carries its own tone. Everything a healthy measured run would have said is one line
+/// they can open. Nothing is dropped: the same block is one click away, which is not the same as
+/// hidden, because the line itself says a deviation exists whenever one does.
+private struct VaultTurnFooter: View {
+    let message: AskMessage
+    let disclosure: AskModel.TurnDisclosure?
+    let listScopes: () -> Void
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Gap.s8) {
+            summaryRow
+            // DEVIATIONS ARE NOT BEHIND THE TOGGLE. They are the half of the envelope that changes
+            // how the answer should be read, so collapsing them would be the Boundary Principle's
+            // failure with a chevron in front of it.
+            ForEach(deviations) { EngineNoteRow(note: $0) }
+            if open, let disclosure {
+                EngineBar(envelope: disclosure.envelope, selectScope: listScopes)
+                ExclusionBar(filter: disclosure.filter)
+                VaultAnsweredTiers(filter: disclosure.filter)
+            }
+            if open || !message.passages.isEmpty { VaultTurnPassages(message: message, open: open) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// One line: the corpus, what it stood on, and the measured tier when there is one.
+    private var summaryRow: some View {
+        Button { open.toggle() } label: {
+            HStack(spacing: Gap.s6) {
+                Icon(open ? .chevronDown : .chevronRight, Register.monoMicro, Ink.textHelper)
+                Text(summary).typeface(Register.monoMicro, Ink.textHelper).lineLimit(1)
+                Spacer(minLength: Gap.s4)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(open ? "Hide what produced this answer" : "Show what produced this answer")
+    }
+
+    private var summary: String {
+        var parts: [String] = []
+        if let count = message.passages.isEmpty ? nil : message.passages.count {
+            parts.append("\(count) passage\(count == 1 ? "" : "s")")
+        }
+        if let envelope = disclosure?.envelope {
+            // The measured tier, or its ABSENCE said as absence — never a substitute number.
+            parts.append(envelope.expectedMRR.map { String(format: "mrr %.3f", $0) } ?? "unmeasured")
+        }
+        if let version = message.indexVersion { parts.append(version) }
+        return parts.isEmpty ? "what produced this" : parts.joined(separator: " · ")
+    }
+
+    /// The conditions a reader must not have to open a disclosure to discover.
+    private var deviations: [EngineNote] {
+        guard let disclosure else { return [] }
+        var notes: [EngineNote] = []
+        if disclosure.envelope.degraded {
+            notes.append(EngineNote(id: "degraded", marker: "degraded", tone: Ink.warning,
+                                    text: "Something in the stack fell back, so this answer is "
+                                        + "weaker than the measured one."))
+        }
+        if disclosure.envelope.frozen == true {
+            notes.append(EngineNote(id: "frozen", marker: "frozen", tone: Ink.warning,
+                                    text: "The vault changed and the last recompose refused, so "
+                                        + "this came from superseded content."))
+        }
+        if let vaults = disclosure.filter.vaults, !vaults.isEmpty {
+            notes.append(EngineNote(id: "tiers", marker: "narrowed", tone: Ink.stale,
+                                    text: "Only \(vaults.joined(separator: ", ")) answered — this is "
+                                        + "part of the corpus, not all of it.",
+                                    dotted: true))
+        }
+        for note in disclosure.filter.notes {
+            notes.append(EngineNote(id: "note-\(note)", marker: "filter", tone: Ink.stale,
+                                    text: note, dotted: true))
+        }
+        return notes
     }
 }
 
@@ -622,6 +761,10 @@ private struct VaultAnsweredTiers: View {
 /// step.
 private struct VaultTurnPassages: View {
     let message: AskMessage
+    /// Cards when open; the count alone when not. The citations are how a reader CHECKS the answer,
+    /// which is a thing they do deliberately — eight cards under every turn is the apparatus
+    /// outweighing the prose it qualifies.
+    var open: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s8) {
@@ -634,15 +777,9 @@ private struct VaultTurnPassages: View {
                         + "kept; what it stood on is not.",
                     dotted: true))
             }
-            if !message.passages.isEmpty {
-                HStack(spacing: Gap.s8) {
-                    EnvelopeMarkerLabel(name: "passages")
-                    Text("\(message.passages.count)").typeface(Register.monoMicro, Ink.textSecondary)
-                    if let version = message.indexVersion {
-                        Text(version).typeface(Register.monoMicro, Ink.textHelper)
-                    }
-                    Spacer(minLength: Gap.s4)
-                }
+            // The count and version live on the footer's summary line now — repeating them here
+            // was two rows saying one thing.
+            if open, !message.passages.isEmpty {
                 ForEach(restored, id: \.id) { PassageCard(passage: $0) }
                 if unreadable > 0 {
                     // Refused rather than relabelled — `StoredPassage.passage` returns nil for a

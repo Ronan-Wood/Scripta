@@ -27,7 +27,8 @@ final class RecordingSession {
     private var micCapture: MicrophoneCapture?
     private var systemCapture: SystemAudioCapture?
     private var screenCapturer: ScreenContextCapturer?
-    private var liveTranscriber: LiveTranscriber?
+    /// One per captured track — see the start block. Drained by `stop()`.
+    private var liveTranscribers: [LiveTranscriber] = []
     private var liveStartTask: Task<Void, Never>?
     /// Set (under `lock`) when stop() begins teardown, so the live-transcription start task — which
     /// may still be inside a first-use model download stop() must not block on — won't resurrect the
@@ -314,36 +315,51 @@ final class RecordingSession {
         // must never delay the recording itself. The task is cancelled by stop() if it loses the
         // race. Fed by the mic when captured, otherwise the system track (system-audio conference).
         if AppSettings.liveTranscriptionEnabled {
-            let live = LiveTranscriber()
-            live.onUpdate = { finalized, partial in
-                if let finalized { AppModel.shared.live.finalized = finalized }
-                AppModel.shared.live.partial = partial
-            }
-            let feedsMic = mode.capturesMic
+            // ONE TRANSCRIBER PER TRACK. A two-party call has two sides and the live view is worth
+            // both — this used to wire a single transcriber to the mic and let the other side reach
+            // only the saved file. A conference is deliberately ONE source (mic and system would
+            // capture the same speech and double every line), so it gets one, unlabeled.
+            let tracks: [(mic: Bool, speaker: LiveTranscriptModel.Speaker)] =
+                mode.labelsSpeakers ? [(true, .you), (false, .them)]
+                                    : [(mode.capturesMic, .unlabeled)]
+            await MainActor.run { AppModel.shared.live.reset() }
+
             let startTask = Task { [weak self] in
-                do {
-                    try await live.start()
-                } catch {
-                    self?.log.error("live transcription unavailable: \(error.localizedDescription, privacy: .public)")
-                    return
+                for track in tracks {
+                    if Task.isCancelled { return }
+                    let live = LiveTranscriber()
+                    let speaker = track.speaker
+                    live.onUpdate = { finalized, partial in
+                        AppModel.shared.live.absorb(finalized: finalized, partial: partial,
+                                                    from: speaker)
+                    }
+                    do {
+                        try await live.start()
+                    } catch {
+                        // ONE TRACK FAILING IS NOT BOTH FAILING. The other side is still worth
+                        // hearing, so this continues rather than returning.
+                        self?.log.error("live transcription unavailable for \(String(describing: speaker), privacy: .public): \(error.localizedDescription, privacy: .public)")
+                        continue
+                    }
+                    guard let self, let feed = live.feed, !Task.isCancelled else {
+                        await live.stop()
+                        return
+                    }
+                    // If stop() already began teardown, don't resurrect the transcriber — stop this
+                    // instance ourselves so it can't outlive the session (audit L6). Wire onBuffer
+                    // INSIDE the lock too: the lock handshake then orders this write before stop()'s
+                    // (also lock-guarded) isStopping=true, hence before its capture teardown, so the
+                    // onBuffer assignment can't race stop() niling micCapture/systemCapture.
+                    self.lock.lock()
+                    let claimed = !self.isStopping
+                    if claimed {
+                        self.liveTranscribers.append(live)
+                        if track.mic { self.micCapture?.onBuffer = feed }
+                        else { self.systemCapture?.onBuffer = feed }
+                    }
+                    self.lock.unlock()
+                    guard claimed else { await live.stop(); return }
                 }
-                guard let self, let feed = live.feed, !Task.isCancelled else {
-                    await live.stop()
-                    return
-                }
-                // If stop() already began teardown, don't resurrect the transcriber — stop this
-                // instance ourselves so it can't outlive the session (audit L6). Wire onBuffer INSIDE
-                // the lock too: the lock handshake then orders this write before stop()'s (also
-                // lock-guarded) isStopping=true, hence before its capture teardown, so the onBuffer
-                // assignment can't race stop() niling micCapture/systemCapture.
-                self.lock.lock()
-                let claimed = !self.isStopping
-                if claimed {
-                    self.liveTranscriber = live
-                    if feedsMic { self.micCapture?.onBuffer = feed } else { self.systemCapture?.onBuffer = feed }
-                }
-                self.lock.unlock()
-                guard claimed else { await live.stop(); return }
             }
             // Publish the task under the lock so stop()'s read/cancel/nil can't race this assignment.
             lock.lock(); liveStartTask = startTask; lock.unlock()
@@ -429,12 +445,12 @@ final class RecordingSession {
         let mic = micCapture
         let system = systemCapture
         let screen = screenCapturer
-        let live = liveTranscriber
+        let live = liveTranscribers
         let startTask = liveStartTask
         micCapture = nil
         systemCapture = nil
         screenCapturer = nil
-        liveTranscriber = nil
+        liveTranscribers = []
         liveStartTask = nil
         lock.unlock()
 
@@ -444,8 +460,9 @@ final class RecordingSession {
         startTask?.cancel()
         // Don't await .value — a first-use model download inside live.start() may not cancel promptly
         // and would block stop()/quit. The isStopping flag stops any live instance the task assigns,
-        // and this stops one already assigned; so the transcriber is torn down exactly once (audit L6).
-        await live?.stop()
+        // and this stops those already assigned; so each transcriber is torn down exactly once
+        // (audit L6).
+        for transcriber in live { await transcriber.stop() }
         endActivity()
 
         let systemURL = self.systemURL

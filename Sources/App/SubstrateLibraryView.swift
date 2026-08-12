@@ -90,7 +90,7 @@ private struct LibraryConsole: View {
                 LibraryScopeRail()
                 LibraryRefreshRail()
             }
-            .frame(maxWidth: Metrics.listMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .frame(maxWidth: .infinity)
             .padding(Metrics.pageGutter)
         }

@@ -184,8 +184,18 @@ struct HubView: View {
             Rectangle().fill(Carbon.borderSubtle).frame(height: 1)
                 .padding(.horizontal, 2).padding(.vertical, 6)
 
-            ForEach(HubSection.primary, id: \.self) {
-                SidebarNavItem(section: $0, navigator: navigator, expanded: expanded)
+            ForEach(HubSection.primary, id: \.self) { section in
+                SidebarNavItem(section: section, navigator: navigator, expanded: expanded)
+                // CALLS IS FOUR SURFACES AND THE SIDEBAR HAD THE ROOM. They were behind a segmented
+                // picker inside the pane while this column sat four rows deep in a 220pt space —
+                // chrome competing with content for width that was already free. Hanging them here
+                // keeps Doc 4 §2's four SECTIONS (the picker was never one of them) and removes a
+                // control from every Calls screen.
+                if section == .calls {
+                    ForEach(CallsLensModel.Lens.secondary) { lens in
+                        SidebarLensItem(lens: lens, navigator: navigator, expanded: expanded)
+                    }
+                }
             }
             Spacer()
             ForEach(HubSection.secondary, id: \.self) {
@@ -337,15 +347,72 @@ struct HubView: View {
 
 /// One sidebar row. Concrete struct rather than a `some View` helper: the sidebar stack is long
 /// enough that inlining seven of these puts the whole thing in one expression for the solver.
+/// One of Calls' surfaces, hanging under it.
+///
+/// INDENTED AND QUIETER, not a peer. Doc 4 §2 retired a seven-row sidebar of unrelated places, and
+/// four of these being siblings of Ask and Library would rebuild it. They are one place read four
+/// ways, so they read as one group: the parent carries the icon at full weight, the children sit in
+/// its gutter. On the collapsed 64pt rail they are hidden entirely — a rail has room for sections,
+/// not for their contents.
+private struct SidebarLensItem: View {
+    let lens: CallsLensModel.Lens
+    @ObservedObject var navigator: Navigator
+    let expanded: Bool
+    @ObservedObject private var lenses = CallsLensModel.shared
+
+    private var selected: Bool {
+        navigator.destination.section == .calls && lenses.lens == lens
+    }
+
+    var body: some View {
+        if expanded {
+            Button {
+                lenses.lens = lens
+                navigator.select(.calls)
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: lens.sfIcon)
+                        .font(.system(size: 12))
+                        .foregroundStyle(selected ? Carbon.interactive : Carbon.iconSecondary)
+                        .frame(width: 14)
+                    Text(lens.title)
+                        .font(selected ? CarbonFont.medium(12.5) : CarbonFont.body(12.5))
+                        .foregroundStyle(selected ? Carbon.textPrimary : Carbon.textHelper)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 29)   // the parent's icon gutter: 10 padding + 18 icon + 1
+                .padding(.trailing, 10)
+                .frame(height: 27)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(selected ? Carbon.blueSoft : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(lens.title)
+        }
+    }
+}
+
 private struct SidebarNavItem: View {
     let section: HubSection
     @ObservedObject var navigator: Navigator
     let expanded: Bool
+    @ObservedObject private var lenses = CallsLensModel.shared
 
-    private var selected: Bool { navigator.destination.section == section }
+    /// Calls is selected only when its OWN surface is showing. With the lenses hanging beneath it,
+    /// highlighting the parent as well would mean two rows lit for one destination.
+    private var selected: Bool {
+        guard navigator.destination.section == section else { return false }
+        return section != .calls || lenses.lens == .list
+    }
 
     var body: some View {
         Button {
+            // The parent row IS the list surface — see `selected`. Without this, tapping Calls
+            // while a lens was showing would light neither row.
+            if section == .calls { lenses.lens = .list }
             navigator.select(section)
         } label: {
             HStack(spacing: 11) {

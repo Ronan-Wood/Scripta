@@ -15,10 +15,74 @@ final class MicMeterModel: ObservableObject {
 
 /// The live transcript updates on every volatile speech result; isolated so the rest of the
 /// hub isn't invalidated per spoken word.
+///
+/// BOTH SIDES, ATTRIBUTED. It used to be one `[String]` fed by ONE track — the mic in a two-party
+/// call — so the live view showed only what YOU said while the other half of the conversation went
+/// to the saved transcript and nowhere else. The saved file has had You/Them since `RecordingMode`
+/// was written (`labelsSpeakers`); it was the live path that was half-deaf, and `LiveRecall` read
+/// that same half, so the vault was being asked about your own sentences rather than the client's.
+///
+/// MERGED BY ARRIVAL, not by timestamp. Each transcriber republishes its own whole `finalized`
+/// array, so a track's growth is the new lines; interleaving them as they land is the ordering a
+/// conversation actually has. Two people talking over each other can interleave imperfectly — the
+/// SAVED transcript is the record, and this is the live view.
 @MainActor
 final class LiveTranscriptModel: ObservableObject {
-    @Published var finalized: [String] = []
-    @Published var partial = ""
+    enum Speaker: Equatable {
+        case you
+        case them
+        /// A conference: one source, deliberately unlabeled — the mic and the system track would
+        /// otherwise capture the same speech and double every line.
+        case unlabeled
+
+        var label: String? {
+            switch self {
+            case .you: return "You"
+            case .them: return "Them"
+            case .unlabeled: return nil
+            }
+        }
+    }
+
+    struct Line: Identifiable, Equatable {
+        let id = UUID()
+        let speaker: Speaker
+        let text: String
+    }
+
+    @Published var lines: [Line] = []
+    /// One in-progress line PER TRACK — both sides can be mid-utterance at once.
+    @Published var partials: [Speaker: String] = [:]
+
+    /// How many finalized lines each track has already contributed.
+    private var counts: [Speaker: Int] = [:]
+
+    /// Absorb one track's update. `finalized` is that track's WHOLE array when a line closed, and
+    /// nil on a volatile tick — so only the tail beyond what this track already contributed is new.
+    func absorb(finalized: [String]?, partial: String, from speaker: Speaker) {
+        if let finalized {
+            let seen = counts[speaker] ?? 0
+            if finalized.count > seen {
+                lines.append(contentsOf: finalized[seen...].map { Line(speaker: speaker, text: $0) })
+                counts[speaker] = finalized.count
+            }
+        }
+        partials[speaker] = partial
+    }
+
+    func reset() {
+        lines = []
+        partials = [:]
+        counts = [:]
+    }
+
+    /// Everything said so far, both sides, as one string — what `LiveRecall` asks the vault about
+    /// and what `RelatedCallsPanel` searches. Unlabeled on purpose: these are QUERIES, and "You:"
+    /// prefixes would be query terms rather than speech.
+    var transcriptText: String {
+        (lines.map(\.text) + partials.values.filter { !$0.isEmpty })
+            .joined(separator: " ")
+    }
 }
 
 @MainActor
@@ -146,10 +210,10 @@ final class AppModel: ObservableObject {
             if startedAt == nil { startedAt = Date() }
             // Reads the live transcript through a closure rather than taking a copy: the words are
             // still arriving, and each tick must ask what has been said BY THEN.
-            recall.start { [weak self] in
-                guard let self else { return "" }
-                return (self.live.finalized + [self.live.partial]).joined(separator: " ")
-            }
+            // BOTH SIDES NOW. This asked the vault about the mic track alone, which in a
+            // two-party call is your own sentences — the half least worth looking up. What the
+            // other party says is what a recall should be triggered by.
+            recall.start { [weak self] in self?.live.transcriptText ?? "" }
             guard clock == nil else { return }
             // .common mode: the elapsed clock must keep ticking while the status menu is open.
             let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -171,7 +235,7 @@ final class AppModel: ObservableObject {
         case .idle:
             clock?.invalidate(); clock = nil
             startedAt = nil; recordingElapsed = 0; meter.level = 0; isPaused = false; pauseStart = nil
-            live.finalized = []; live.partial = ""
+            live.reset()
             recordingModeName = nil; noteCount = 0
             recall.stop()
         }

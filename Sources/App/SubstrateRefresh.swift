@@ -139,6 +139,10 @@ final class SubstrateRefresh: ObservableObject {
         }
         state = .finished(at: Date(), run: run)
         Self.log.info("refresh pass exited \(run.status ?? -1)")
+        // The agent is the ONE path that sees changes this app did not make — an Obsidian edit, a
+        // Claude session writing a note. Its pass is therefore the moment an outside change becomes
+        // visible, so the browse list is invalidated here rather than waiting to be reopened.
+        VaultBrowseModel.shared.corpusChanged()
         // The verdict per scope lives on the roster, which the surface draws from. Re-listed rather
         // than inferred: `refresh_state.report` is the only thing that knows how to read an outcome,
         // including the freeze that is carried forward when the latest pass checked nothing.

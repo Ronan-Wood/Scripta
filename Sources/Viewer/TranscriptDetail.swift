@@ -213,10 +213,17 @@ struct TranscriptDetail: View {
         }
     }
 
+    /// TOP-ALIGNED, because the names now wrap onto their own lines and a centred duration would
+    /// float against the middle of a two-line block.
     private var metaRow: some View {
-        HStack(spacing: Gap.s12) {
+        HStack(alignment: .top, spacing: Gap.s12) {
             if !meta.duration.isEmpty { durationLabel }
-            if !meta.participants.isEmpty { participantsRow }
+            if !meta.participants.isEmpty {
+                HStack(alignment: .top, spacing: Gap.s4) {
+                    Icon(.people, Register.caption, Ink.iconSecondary)
+                    participantsRow
+                }
+            }
         }
     }
 
@@ -233,9 +240,17 @@ struct TranscriptDetail: View {
     /// disclosed and deferred at the time. Keeps the same icon-plus-comma-separated LOOK the
     /// single joined Label had, just per-name now, so each is its own tap target instead of one
     /// opaque string.
+    /// IT FLOWS, IT DOES NOT COMPRESS, and that is the whole fix. Seven participants in an `HStack`
+    /// gave each name a narrow share of the width and let it wrap INSIDE itself, so a header of
+    /// seven people rendered as three ragged lines of fragments — "McGinn, / Alexandra @ /
+    /// Philadelphia," — where the line breaks fall in the middle of a person's name and every column
+    /// has a different baseline. `FlexWrap` measures each child at its ideal width and breaks
+    /// BETWEEN children, which is what a list of names needs; `fixedSize` is what stops a child
+    /// accepting a squeeze in the first place.
+    ///
+    /// Each name stays its own tap target (M21) — that part was right and is unchanged.
     private var participantsRow: some View {
-        HStack(spacing: Gap.s4) {
-            Icon(.people, Register.caption, Ink.iconSecondary)
+        FlexWrap(spacing: Gap.s4) {
             ForEach(Array(meta.participants.enumerated()), id: \.offset) { index, name in
                 // `Pressable` rather than a bare `Button(.plain)`: it is the system's hit target
                 // and publishes pressed/focused state, so this stays one control vocabulary even
@@ -243,6 +258,8 @@ struct TranscriptDetail: View {
                 Pressable(action: { openParticipant(name) }) {
                     Text(index == meta.participants.count - 1 ? name : "\(name),")
                         .typeface(Register.caption, Ink.textSecondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
             }
         }
