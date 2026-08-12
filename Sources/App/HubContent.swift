@@ -9,6 +9,8 @@ struct HubContent: View {
 
     var body: some View {
         switch destination.section {
+        case .home:
+            HomeView()
         case .calls:
             CallsView(focusCall: destination.callFocus.callURL,
                       focusMs: destination.callFocus.callMs,

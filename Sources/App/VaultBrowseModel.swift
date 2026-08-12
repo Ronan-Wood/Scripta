@@ -41,6 +41,48 @@ final class VaultBrowseModel: ObservableObject {
         reloadToken &+= 1
     }
 
+    /// The note a `[[link]]` names, if this scope holds one.
+    ///
+    /// MATCHED AGAINST THE LOADED PAGE, which is the honest limit and is stated rather than hidden:
+    /// the browse call returns one page, so a link into a note beyond it will not resolve and is
+    /// therefore left as plain text rather than drawn as a dead link. Title first (that is what a
+    /// `[[link]]` is written as), then `doc_id`, then a slug comparison so `Boundary Principle` and
+    /// `boundary-principle` find each other — which is exactly how these links are written in
+    /// practice.
+    func note(named target: String) -> VaultDocument? {
+        guard case .listed(let listing) = state else { return nil }
+        let wanted = Self.slug(target)
+        return listing.documents.first {
+            $0.title?.caseInsensitiveCompare(target) == .orderedSame
+                || $0.id.caseInsensitiveCompare(target) == .orderedSame
+                || Self.slug($0.title ?? "") == wanted
+                || Self.slug($0.id) == wanted
+        }
+    }
+
+    /// Lowercase, non-alphanumerics to hyphens, collapsed. Enough to bridge a title and a doc id.
+    private static func slug(_ text: String) -> String {
+        let mapped = text.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }
+        return String(mapped).split(separator: "-").joined(separator: "-")
+    }
+
+    /// Something changed the corpus. Invalidates the listing so the next pass re-reads it.
+    ///
+    /// EVENT-DRIVEN, BECAUSE THE APP ALREADY KNOWS. Three paths change a vault from inside this
+    /// app and each one ends in a compose it can see finish: a recording
+    /// (`composeAfterRecording`), an Add in the Library, and the background refresh agent's pass.
+    /// Polling for a change the app itself caused is asking a question it already has the answer
+    /// to — and `composeAfterRecording` was ALREADY re-listing the roster on exactly this reasoning
+    /// ("so a call recorded seconds ago is askable without a relaunch"); the browse list simply
+    /// was not told.
+    ///
+    /// WHAT THIS DOES NOT COVER, and why the re-read on appearance stays: a vault is a folder, and
+    /// the operator edits it in Obsidian and a Claude session writes notes into it. Those changes
+    /// reach the index through the refresh agent's next tick and reach this list through the pass
+    /// that follows it — but nothing in this app observed them happen. On-appearance is what makes
+    /// an outside edit visible without waiting.
+    func corpusChanged() { reloadToken &+= 1 }
+
     /// The scope this pane is showing: the chosen one, else the workspace's own.
     var activeScope: String? { scopeOverride ?? WorkspaceBindings.active.readsScope }
 
@@ -194,9 +236,15 @@ final class VaultBrowseModel: ObservableObject {
     /// Load if nothing has been loaded yet. It does NOT adopt — the pane adopts on appear, so the
     /// binding is re-read every time this screen is opened (which is what catches a rebind made in
     /// Ask) without the loading task being able to invalidate its own trigger.
-    func loadIfNeeded() async {
-        if case .unasked = state { await load() }
-    }
+    /// ALWAYS RE-READ. This used to load only from `.unasked`, so the list you came back to was the
+    /// one you left — and the vault moves underneath it: the background agent recomposes every
+    /// fifteen minutes, capture writes a call into it after every recording, and the Library's own
+    /// Add lands notes in it. A browse surface showing a corpus that has since changed is the
+    /// stale-read-as-current failure this project keeps naming, and here it is free to avoid — the
+    /// engine answers a listing in milliseconds off an index it already holds.
+    ///
+    /// The name stays `loadIfNeeded` for its callers; what is "needed" is now every appearance.
+    func loadIfNeeded() async { await load() }
 
     func load() async {
         guard let scope = activeScope else {

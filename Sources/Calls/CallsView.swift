@@ -40,7 +40,6 @@ struct CallsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            lensPicker
             switch lens.lens {
             case .recording: CallsRecordingScreen()
             case .list: listAndDetail
@@ -55,19 +54,6 @@ struct CallsView: View {
         // "search all workspaces" becomes the lingering default this file's own comment says it can
         // never become.
         .onChange(of: appModel.activeGroup) { _, _ in allGroups = false; refresh() }
-    }
-
-    private var lensPicker: some View {
-        Picker("", selection: $lens.lens) {
-            ForEach(CallsLensModel.available(busy: appModel.recordingState != .idle)) {
-                Text($0.title).tag($0)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
-        .padding(.horizontal, Space.x5)
-        .padding(.top, Space.x4)
     }
 
     private var listAndDetail: some View {

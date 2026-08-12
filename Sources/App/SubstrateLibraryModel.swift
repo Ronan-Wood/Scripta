@@ -99,17 +99,19 @@ final class SubstrateLibraryModel: ObservableObject {
     /// `HubContent` rebuilds this pane every time the sidebar reselects the section, so a `@State`
     /// lens silently resets to Add on the way back.
     enum Lens: String, CaseIterable, Identifiable {
-        case add, vault
+        case vault, add
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .add: return "Add"
             case .vault: return "Vault"
+            case .add: return "Add"
             }
         }
     }
 
-    @Published var lens: Lens = .add
+    /// VAULT FIRST, and it is the default. Looking at the corpus is the everyday act;
+    /// adding to it is deliberate and occasional, so the surface opens on the one you reach for.
+    @Published var lens: Lens = .vault
 
     @Published private(set) var surface: Surface = .unasked
     @Published private(set) var job: Job = .idle
@@ -711,6 +713,8 @@ final class SubstrateLibraryModel: ObservableObject {
         Task { [weak self] in
             _ = await Self.composeVault(cli: cli, vault: vault,
                                         name: SubstrateLibrary.slug(scope), clean: true)
+            // The corpus just gained a call. The browse list is told rather than left to notice.
+            VaultBrowseModel.shared.corpusChanged()
             // The roster now reports a scope whose index moved, and the tier chips are drawn from
             // it — re-listed so a call recorded seconds ago is askable without a relaunch.
             await SubstrateScopes.shared.listScopes()
@@ -804,6 +808,9 @@ final class SubstrateLibraryModel: ObservableObject {
         let composed = steps.first { $0.id == "compose" }?.run
         let scope = composed?.succeeded == true ? Self.registeredScope(in: composed) : nil
         job = .finished(Report(title: title, steps: steps, scope: scope, orphaned: orphaned))
+        // ONLY WHEN A COMPOSE ACTUALLY LANDED. `scope` is non-nil exactly when compose succeeded and
+        // named one, so a refused or failed job does not invalidate a list that is still correct.
+        if scope != nil { VaultBrowseModel.shared.corpusChanged() }
         task = nil
         // The workspace change this job refused, taken now that it can be. Re-asked rather than
         // replayed — see `missedWorkspaceChange`.

@@ -73,7 +73,7 @@ struct RelatedCallsPanel: View {
     /// query runs off the main actor — it contends on the store's lock with background upserts,
     /// which must not stall the recording UI.
     private func refresh() {
-        let recent = AppModel.shared.live.finalized.suffix(4).joined(separator: " ")
+        let recent = String(AppModel.shared.live.transcriptText.suffix(400))
         guard recent.split(separator: " ").count >= 4, let store = model.index else { return }
         Task.detached(priority: .utility) {
             // Passage-only (a real spoken moment) and above the relevance floor — show nothing

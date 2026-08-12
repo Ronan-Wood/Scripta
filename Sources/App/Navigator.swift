@@ -2,28 +2,33 @@ import Foundation
 
 /// The hub's sections — the sidebar's rows, and the top level of every `Destination`.
 ///
-/// FOUR, and the list is Doc 4 §2's: **Ask · Calls · Library · Settings**. The seven-row sidebar
-/// predated the engine and had one row per thing that had been built, not per thing a reader goes
-/// looking for. What folded, and where:
+/// The seven-row sidebar predated the engine and had one row per thing that had been built, not per
+/// thing a reader goes looking for. Doc 4 §2 cut it to **Ask · Calls · Library · Settings**:
 ///
-/// | went | into | why |
-/// |---|---|---|
-/// | `home` | — | a dashboard of Swift aggregates over the local index; every card had a real home |
-/// | `meetings` | Calls, as the Calendar lens | the same calls, read against time |
-/// | `knowledge` | Library (vault lens) + Calls (Digest lens) | it was two unrelated surfaces sharing a picker |
-/// | `docs` | the Help menu | it is documentation, and macOS has a place for that |
+/// | went | into |
+/// |---|---|
+/// | `meetings` | Calls, as the Calendar lens — the same calls, read against time |
+/// | `knowledge` | Library (vault lens) + Calls (Digest lens) — two unrelated surfaces sharing a picker |
+/// | `docs` | the Help menu — it is documentation, and macOS has a place for that |
 ///
-/// Ask leads because Doc 4 §8 makes the app the interface to a vault and asking is what that is
-/// for; `library` sits beside it because they are the two directions of one relationship — Ask
-/// reads a composed scope, the Library writes one and now also browses it.
+/// `home` CAME BACK, and the doc's reason for cutting it is still right about what it cut. §2
+/// retired "a dashboard of Swift aggregates over the local index" — stat tiles and a second call
+/// list, every card duplicating a surface that owned its content better. What went with it was the
+/// LANDING: four places to work and no view of the whole, so the app opened into whichever you left
+/// it on. `HomeView` is that landing and deliberately not that dashboard — it starts a call, shows
+/// what is next, and links into Calls rather than rebuilding it.
+///
+/// `library` sits beside `ask` because they are the two directions of one relationship — Ask reads
+/// a composed scope, the Library writes one and now also browses it.
 enum HubSection: String, CaseIterable {
-    case ask, calls, library, settings
+    case home, ask, calls, library, settings
 
-    static let primary: [HubSection] = [.ask, .calls, .library]
+    static let primary: [HubSection] = [.home, .ask, .calls, .library]
     static let secondary: [HubSection] = [.settings]
 
     var title: String {
         switch self {
+        case .home: return "Home"
         case .ask: return "Ask"
         case .calls: return "Calls"
         case .library: return "Library"
@@ -33,6 +38,7 @@ enum HubSection: String, CaseIterable {
 
     var sfIcon: String {
         switch self {
+        case .home: return "house"
         case .ask: return "bubble.left.and.bubble.right"
         case .calls: return "doc.text"
         case .library: return "books.vertical"
@@ -78,6 +84,7 @@ struct Destination: Equatable {
     static func calls(_ focus: CallFocus = .none) -> Destination {
         Destination(section: .calls, callFocus: focus)
     }
+    static let home = Destination(section: .home)
     static let ask = Destination(section: .ask)
     static let library = Destination(section: .library)
     static let settings = Destination(section: .settings)
@@ -99,11 +106,11 @@ enum Route: Equatable {
 /// happens to be holding.
 @MainActor
 final class Navigator: ObservableObject {
-    /// Ask, not Home — Home is gone, and Ask is the first primary row. The engine may still be
-    /// coming up on a cold launch, which Ask draws as `VaultEngineStarting`: a designed, named,
-    /// counting state rather than a fault, and the one surface that already had to be honest about
-    /// the engine's lifecycle before it could show anything.
-    @Published private(set) var destination: Destination = .ask
+    /// HOME, and it is a landing rather than the dashboard Doc 4 §2 retired — see `HomeView`. It
+    /// also needs no engine, which Ask (the previous default) did: opening a cold launch onto a
+    /// surface that must say "starting the substrate engine" before it can say anything is a poor
+    /// first frame even when that state is honest.
+    @Published private(set) var destination: Destination = .home
 
     /// The identity Calls is mounted under. Bumped by `clearSearchScope()`, by nothing else.
     @Published private(set) var searchScopeGeneration = 0

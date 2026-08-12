@@ -18,31 +18,48 @@ final class CallsLensModel: ObservableObject {
     static let shared = CallsLensModel()
 
     enum Lens: String, CaseIterable, Identifiable {
-        /// The call happening right now. OFFERED ONLY WHILE ONE IS — see `available(recording:)`.
+        /// Where a call begins, happens and finishes — see `available`. Idle it is the record card.
         case recording
         case list, calendar, digest
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .recording: return "Recording"
-            case .list: return "Calls"
+            case .recording: return "Record"
+            case .list: return "Transcripts"
             case .calendar: return "Calendar"
             case .digest: return "Digest"
             }
         }
+
+        var sfIcon: String {
+            switch self {
+            case .recording: return "record.circle"
+            case .list: return "doc.text"
+            case .calendar: return "calendar"
+            case .digest: return "list.bullet.rectangle"
+            }
+        }
+
+        /// The three that hang UNDER Calls in the sidebar. `list` is what the Calls row itself
+        /// shows, so listing it again as a child would be one destination with two rows.
+        static let secondary: [Lens] = [.recording, .calendar, .digest]
     }
 
     @Published var lens: Lens = .list
 
-    /// The lenses the picker offers. `recording` is a STATE, not a choice — a chip for it while
-    /// nothing is happening would select a screen with no call on it.
+    /// ALWAYS ALL FOUR, and `record` in particular is always offered.
     ///
-    /// `.processing` COUNTS AS BUSY. Gating on `recording` alone hid the lens the instant the
-    /// operator pressed stop, which made the screen's whole "Transcribing…" state unreachable —
-    /// the phase that takes the longest and is the one a reader most wants to watch.
-    static func available(busy: Bool) -> [Lens] {
-        busy ? Lens.allCases : Lens.allCases.filter { $0 != .recording }
-    }
+    /// It used to be gated on the app being busy, on the reasoning that a recording screen with no
+    /// recording on it is a chip pointing at nothing. That was wrong twice over. The screen's idle
+    /// state is not empty — it is "Ready to record" and the START button, which is the app's PRIMARY
+    /// ACTION and lived on Home until Doc 4 §2 retired that section. Gating the lens deleted the
+    /// place you start a call from and left only the title-bar pill. And the gate also hid the
+    /// `.processing` state, so "Transcribing…" — the longest phase — was unreachable in the other
+    /// direction.
+    ///
+    /// A place, then, not a state: `Record` is where a call begins, happens, and finishes, and
+    /// `follow` selects it when one starts rather than conjuring it.
+    static var available: [Lens] { Lens.allCases }
 
     /// Follow the recording lifecycle. Starting a call selects the recording screen and it STAYS
     /// selected through transcription; only returning to idle hands the reader back to the list,
