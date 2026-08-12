@@ -1,4 +1,4 @@
-# Session handoff — Doc 4 is done; the app and the engine are one system
+# Session handoff — Doc 4 is done and Doc 5 is written; packaging is what is left
 
 **Reconciled against the repo 2026-08-10.** The previous version of this file was 76 commits and
 12 days stale and predated Doc 4 entirely — it opened "the MCP server is built, deployed, and
@@ -16,6 +16,9 @@ it, there is one Ask over one corpus behind a four-section shell, and `transcrip
 transcript `group:` and the second Ask are deleted rather than maintained.
 
 Nothing in Doc 4 is left. Phase 6 closed 2026-08-11 and there is one retrieval implementation.
+**Doc 5 — packaging — was written 2026-08-12** and is the next body of work: the engine ships
+inside the app bundle, and nothing Scripta needs is hand-installed. It is scoped with measured
+numbers rather than estimates (§ *Assertions*).
 
 | Doc 4 phase | state |
 |---|---|
@@ -32,19 +35,34 @@ record and was reconciled against the repo in the same pass. Read it before the 
 
 ## Open, in the order I would take them
 
-**1. `NoteStore` is the last holder of `group:`.** `DocumentImporter` is gone (Phase 4b), so the
+**1. Doc 5 — packaging. The only thing between this and an app someone can install.**
+`~/OneDrive/vaults/scripta-vault/03-references/doc5-packaging.md`. `SubstrateEngine.discover()`
+already prefers a bundled engine and nothing puts one there, so the app falls through to
+`~/.substrate/engine` — a hand-deployed artifact that does not exist on any other machine.
+
+**The blocker is one dependency.** The venv is 1.2 GB; `pyproject.toml` declares exactly one
+dependency (`docling`) and 508 MB of it is `torch`. Every `docling` import is already LAZY, so the
+split is latent in the code rather than a refactor — MEASURED: a venv with numpy alone (22 MB) ran
+`search` against the live `scripta` index and composed `demo-vault` with every gate passing. The
+whole runtime path is 22 MB; 1.18 GB exists for document ingest.
+
+The one real product decision is §3's: on-demand download, drop non-markdown ingest, or an optional
+second bundle. Everything else is mechanical (vendor a runtime, split the extra, build step, sign
+and notarize, flip discovery).
+
+**2. `NoteStore` is the last holder of `group:`.** `DocumentImporter` is gone (Phase 4b), so the
 document half is closed. Notes are app-local by construction, so location cannot answer for them
 until §8's migration moves them into the vault. One change.
 
-**2. Ask is a several-second operation.** Warm, end-to-end through MCP on fresh queries: median
+**3. Ask is a several-second operation.** Warm, end-to-end through MCP on fresh queries: median
 5.6s. Dominated by HyDE generation, not reranking. A first query after the engine starts pays
 ~23–26s of model loading, because Ollama's default `keep_alive` is 5 minutes and the engine sets
 none. **Operator has accepted this** (2026-08-10) — recorded so it is not re-opened as a bug. The
 fix, if ever wanted, is residency (`keep_alive`, or pre-warming on launch), not the arms.
 
-**3. `reference_pins` is still the last unimplemented Doc 2 §2 feature.** Prerequisite unchanged.
+**4. `reference_pins` is still the last unimplemented Doc 2 §2 feature.** Prerequisite unchanged.
 
-**4. Ask lost citation→call navigation, and it is a real capability, not a rendering detail.**
+**5. Ask lost citation→call navigation, and it is a real capability, not a rendering detail.**
 Clovis's source rows opened the call at the spoken timestamp, which they could do because a
 `ContextChunk` carried a local file path and a `startMs`. A `Passage` carries neither: its `path` is
 structural (`"Oldfield Agency Call > Summary"`) and its `id` is an expand ref. The route back exists
@@ -102,9 +120,17 @@ CONSEQUENCE TO KNOW: vaults refresh only while the app is open, so a Claude Code
 week of not opening Scripta reads a week-old index — and `refresh.frozen` will say `false`,
 because nothing failed, nothing ran.
 
-## What shipped after Doc 4 — 2026-08-11
+**Two dead MCP servers removed and the `scripta` skill rewritten** — see below. **The engine now
+ships `instructions`** (`c61055d`): `initialize` returned a name and a version and nothing about
+what the server is FOR, so the rules that span tools lived only in the operator's global CLAUDE.md
+and every other client of this engine got none of them. Four rules earned a line, on the bar that
+not knowing one produces a WRONG ANSWER rather than a slow one — calls withheld by default is the
+one that bites hardest. **NOT DEPLOYED**: the live MCP keeps the pinned commit until
+`tools/substrate-deploy` runs.
 
-**The workspace wipe reaches chat history** (`4c4c166`). `WorkspaceDeleter` had never touched
+### The workspace wipe reaches chat history — 2026-08-11 (`4c4c166`)
+
+ `WorkspaceDeleter` had never touched
 `conversations.json`; Phase 5 made that matter, because a thread now holds verbatim passage
 snippets rather than a title and a path. The rule is `ConversationPurge` in SubstrateKit, and the
 subtle half is that it sits OUTSIDE the `!group.isEmpty` gate: `""` is the EntityRegistry's global
@@ -298,6 +324,20 @@ Corrections found by reconciling, not by being told:
   destination, and 5a's blast radius included `ClovisDrawer` (238 lines, shares the same model and
   rendered the badge that had to go), which nothing in the estimate mentioned. **Grep for the
   consumers before quoting a size.**
+- **I defended a leftover as a design, then reversed inside two turns.** Asked whether everything
+  was internal to the app, I answered with four categories and framed the launchd refresh agent as
+  a FEATURE serving another consumer — arguing the operator should keep it because Claude Code
+  depended on it. It was not a feature; it was the second half of a migration Doc 3 §2 had already
+  decided and `SubstrateRefresh.swift` had explicitly sequenced as the operator's act. One push
+  back later I removed it. **An accurate description of a half-migrated state, given without saying
+  it is half-migrated, reads as an architecture** — and the operator then has to argue against a
+  design that nobody chose.
+- **Answering the narrow question when the broad one was asked.** "Should the MCP be renamed",
+  "should reading require the app" — I answered both, twice, while the actual question was *why is
+  this spread across my filesystem instead of being an app*. The answer was available the whole
+  time and is now Doc 5: `discover()` prefers a bundled engine, nothing bundles one, and everything
+  confusing on that machine is pre-packaging scaffolding. **When an operator asks the same shape of
+  question three times, the question being answered is the wrong one.**
 - **A green build is not a rendered screen, and this cost more than everything else combined.**
   Phase 5 restructured the navigation model; the build passed and 245 tests passed and the app was
   not looked at once. What that hid: the entire in-call recording screen deleted, then the way into
@@ -364,6 +404,15 @@ Claims the next session may rely on without re-verifying, each with what establi
 | 245 Core tests pass (2 skipped) | `cd Core && swift test`, 2026-08-11 |
 | Every field the reader sees is the engine's, with `degraded` and arm-promotion pinned as rules | `MappingParityTests`, mutation-verified (3 mutations → 1/2/6 assertions) |
 | Nothing reads or writes `chunk_vectors` | `grep -rn` over `Sources Core/Sources`, 2026-08-11 |
+| The whole RUNTIME path runs on a 22 MB venv (numpy only) | built one, ran `search` on live `scripta` (2 passages, `v10:b3d2d4d6d333`) and composed `demo-vault`, all gates PASS — 2026-08-12 |
+| The deployed engine's venv is 1.2 GB, 508 MB of it `torch` | `du -sh ~/.substrate/engine/.venv`, 2026-08-12 |
+| Every `docling` import is lazy (inside a function) | `cli.py:96`, `extract/convert.py:429-436`, `extract/docling_arm.py:24-26`, 2026-08-12 |
+| Nothing is bundled in the app today | `ls Scripta.app/Contents/Resources` — fonts, icon, privacy manifest, no `substrate-engine`, 2026-08-12 |
+| Reading works with the app CLOSED; only refresh is tied to it | quit the app, ran `status` on `prism` through `substrate-mcp` → 321 documents, 2026-08-12 |
+| The engine dies with the app, no orphans | app running → 3 engine processes, quit → 0, relaunch → back on `:8765`, 2026-08-12 |
+| No vault declares `guard_state` — the privacy wall is OFF | `grep -rln guard_state` over every manifest, 2026-08-12 |
+| `substrate` is the only MCP server, and it answers | `claude mcp list` → `substrate ✔ connected`; `scripta` and `calltranscriber` removed (both `ENOENT`), 2026-08-12 |
+| The server ships `instructions` | real `initialize` handshake → 2093 chars present, 2026-08-12 |
 | Stop keeps partial text and removes an empty placeholder | `AskConversationTests`, mutation-verified |
 | Endpoint history is bounded, oldest-first, system + current turn kept | `ChatHistoryBudgetTests`, mutation-verified |
 | The app builds after Phase 5 | `xcodebuild -project Scripta.xcodeproj -scheme Scripta build`, 2026-08-10 |
@@ -382,26 +431,35 @@ Claims the next session may rely on without re-verifying, each with what establi
 
 > Working on Scripta (branch `substrate-engine`, repo `~/CodeHome/CallTranscriber`; the engine is in
 > `substrate/`). Read `substrate/PRINCIPLES.md` (four laws), then `substrate/SESSION-HANDOFF.md`.
-> Doc 4 (`~/OneDrive/vaults/scripta-vault/03-references/doc4-engine-first.md`) is now a CLOSED
-> decision record — all six phases shipped — so read it for WHY the code looks like this, not for
-> what to do next. Doc 2 lives in `~/OneDrive/vaults/core-vault/00-operator/specs/`; the repo has a
-> pointer, not a copy.
+> Doc 4 is a CLOSED decision record — all six phases shipped — so read it for why the code looks
+> like this, not for what to do next.
 >
-> **There is no next phase.** The handoff's *Open* list is the agenda now. The privacy item that
-> headed it is done (`4c4c166`), so the first substantial one left is **item 4: Ask lost
-> citation→call navigation** — a capability Phase 5 removed. `expand(mode: "note")` returns the
-> real file, so the work is not the round trip; it is the RULE for which passages are app-recorded
-> calls, since a curated `class: conversation` note in `cbre-vault` is not one and routing it into
-> the transcript reader opens a file that reader cannot draw. Decide the rule before writing code.
+> First item: **Doc 5 — packaging**
+> (`~/OneDrive/vaults/scripta-vault/03-references/doc5-packaging.md`). The engine ships inside the
+> app bundle and nothing Scripta needs is hand-installed. `SubstrateEngine.discover()` ALREADY
+> prefers a bundled engine; nothing puts one there, so every artifact on this machine
+> (`~/.substrate/engine`, `~/.local/bin/substrate-mcp`) is developer scaffolding that would not
+> exist on a machine that just installed the app.
 >
-> **Doc 4 §2's delete row is not a checklist to finish.** It lists `IndexStore (1,209)`, which is
-> load-bearing for Calls, the Digest lens, entities and commitments. Phase 6 deleted per-method on
-> the evidence (zero callers), not on the doc's authority; do the same for anything it still names.
+> **The blocker is one dependency and it is already measured.** The venv is 1.2 GB, `pyproject.toml`
+> declares only `docling`, and 508 MB of it is `torch`. Every `docling` import is LAZY, and a venv
+> with numpy alone (22 MB) was proven to run `search` against the live index and compose a vault
+> with every gate passing. So the split is latent in the code, not a refactor.
+>
+> **Start with the one real decision, §3:** ingest cannot ship at 1.2 GB — on-demand download, drop
+> non-markdown ingest, or an optional second bundle. Everything after it is mechanical. Do not start
+> the mechanical work before that is answered.
+>
+> Read first: `Sources/App/SubstrateEngine.swift` (`discover()`), `substrate/pyproject.toml`,
+> `substrate/tools/substrate-deploy`.
 >
 > Before changing anything: `cd substrate && ./lint.sh` (16 pre-existing errors, not yours),
 > `uv run python tools/fixture-signature.py out/substrate.db` (must print `4a560ce34aa6378a`,
-> 1811 chunks), `uv run pytest tests/ -q` (587), `cd Core && swift test` (245 passed, 2 skipped),
+> 1811 chunks), `uv run pytest tests/ -q` (587), `cd Core && swift test` (245 passed, 0 failures),
 > and `xcodebuild -project Scripta.xcodeproj -scheme Scripta build` (the bare `-scheme` form fails —
-> two projects in the root; and adding or deleting a file needs `xcodegen generate` first).
-> Discipline is audit → review → implement → verify, `/crosscheck` then `/adversary` — and the
-> lesson this session earned is that a new test must be MUTATION-CHECKED before you trust it.
+> two projects in the root; adding or deleting a file needs `xcodegen generate` first).
+>
+> Discipline is audit → review → implement → verify, `/crosscheck` then `/adversary`. Two rules this
+> project earned the hard way: **a new test must be mutation-checked before you trust it**, and
+> **open the app after any change to a view** — a green build says nothing about layout,
+> reachability, or a control that does nothing.
