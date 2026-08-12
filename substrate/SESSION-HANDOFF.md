@@ -83,6 +83,17 @@ invalidate it — `composeAfterRecording` was ALREADY re-listing the roster on t
 the list simply was not told. The Boundary Principle, in the wiring rather than the logic, for the
 third time this session.
 
+**Two dead MCP servers removed from the Claude Code config** (2026-08-12). `scripta` pointed at
+`build/Debug/Scripta.app/Contents/MacOS/scripta-mcp` and `calltranscriber` at a `.app` that no
+longer exists — both failing `ENOENT`, both corpses of the Swift server Phase 3 deleted
+(`adfe04e`). **`substrate` is the only one, and it is correctly named**: the engine is the product,
+which is Doc 4's whole thesis. The `scripta` SKILL was rewritten with them — it described eight
+tools of that dead server, and Doc 4 §5 records where each went (six have engine equivalents, four
+were deleted rather than ported and live only in the app). Its load-bearing correction: calls are
+`conversation`-class and therefore WITHHELD from default retrieval, so every call query needs
+`include_sources: true` or the engine answers from curated notes and the silence reads as "no such
+call".
+
 **`com.ronanwood.substrate-refresh` is retired** (operator, 2026-08-12). Doc 3 §2 decided it and
 `SubstrateRefresh.swift` had sequenced removal as the operator's act once the in-app half worked.
 Nothing of Scripta's outlives Scripta now — measured: app running → 3 engine processes, quit → 0
