@@ -62,6 +62,44 @@ SERVER_NAME = "substrate"
 # and `schema.SCHEMA_VERSION` is the fact that answers it. Do not "fix" this back to a literal.
 SERVER_VERSION = f"0.{schema.SCHEMA_VERSION}.0"
 
+# WHAT THIS SERVER IS, said by the server. Every tool here carries a good description and none of
+# them can say the things that are true ACROSS tools — so those were living in the operator's
+# CLAUDE.md, which means every other client of this engine got none of them. `instructions` is the
+# one field in `initialize` that reaches a client before it has called anything.
+#
+# What earns a line here is a rule that (a) spans tools and (b) causes a WRONG CONCLUSION when
+# unknown, not merely an inefficient one. A caller who does not know about `include_sources` does
+# not get a slower answer, they get "you have no calls about that" about a corpus full of them.
+SERVER_INSTRUCTIONS = """Substrate composes the user's Obsidian vaults into named SCOPES and answers over them. A scope is
+one project's vault plus the vaults it inherits (typically a shared `core-vault`), so a scope spans
+several directories and `list_scopes` is the only way to learn which exist.
+
+Four things cause wrong conclusions if you do not know them:
+
+1. CALL TRANSCRIPTS ARE WITHHELD BY DEFAULT. Recorded calls are `document_class: conversation`, and
+   `search` and `documents` exclude that class unless you pass `include_sources: true`. Without it,
+   a question about something said on a call returns curated notes and reads as "no such call".
+   Check `filters.sources_excluded` in the reply before concluding anything is absent.
+2. ARCHIVED AND SUPERSEDED NOTES ARE EXCLUDED TOO. If the user asks about a decision they later
+   changed, the answering note is likely archived — retry with `include_archived: true` before
+   saying it was never recorded. Superseded notes are unreachable by design and surface only as the
+   `supersedes` link on whatever replaced them.
+3. AN EMPTY RESULT IS NOT AN EMPTY CORPUS. `status` reports `drift`: a note under `added` is one the
+   scope composes that the index does not hold yet. Read it before answering "you have nothing on".
+4. `refresh.frozen` IS TRI-STATE. `true` means a rebuild REFUSED and you are reading superseded
+   content; `false` means index and vault agreed; `null` means nothing checked — absent evidence,
+   not a clean bill.
+
+Every passage carries a spine — `status`, `doc_type`, `confidence`, `document_class`, `vault`,
+`supersedes`. Use it: a `conversation` passage is something someone SAID and may be reasoning they
+abandoned later in the same call, `proposed` and `inferred` are not settled, and `unstated` or
+`unjudged` mean nobody judged it rather than that it is doubtful. Say which kind you are relying on
+when it matters.
+
+Start with `status` for orientation, `search` for a question, `documents` to show what a scope
+HOLDS (there is no ranking and no query — it is the browse call), and `expand` to read the whole
+note behind a hit."""
+
 # A whole note, capped. Notes are small, but `expand` must not be a way to pull an unbounded blob
 # into a caller's context — and a cap that is silently applied is the failure this file exists to
 # avoid, so a truncated note says so as a field.
@@ -905,6 +943,7 @@ def _dispatch(msg: dict, cfg: Config) -> dict | None:
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
             "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+            "instructions": SERVER_INSTRUCTIONS,
         })
     if method in ("notifications/initialized", "initialized"):
         return None
