@@ -760,8 +760,30 @@ final class SubstrateLibraryModel: ObservableObject {
     /// app whose cwd is the engine's export would write the operator's index tree into the pinned
     /// deployment. Both land under `~/.substrate/scripta/index`, which is the disposable layer the
     /// flag's own help says to keep off cloud-sync.
+    /// True while any caller is inside `composeVault`.
+    ///
+    /// THE LOCK THE AGENT USED TO HOLD. `task`'s comment above names the hazard — two composes over
+    /// one `--clean` index root leave the loser asserting over content it did not ingest — and says
+    /// it is "the hazard the refresh agent takes a lock for". That agent is no longer run (Doc 5
+    /// §6: it cannot work from a bundle), so the lock has to exist here or not at all. `isWorking`
+    /// could not serve: it is the VISIBLE rail, and both the recording path and the refresh loop are
+    /// deliberately quiet, so neither sets it.
+    private(set) static var composeInFlight = false
+
     static func composeVault(cli: SubstrateEngine.Command, vault: URL, name: String,
                              clean: Bool) async -> SubstrateRun {
+        // DECLINED, NOT QUEUED, and the caller is told which it was. Queuing would let a refresh
+        // tick stack behind a recording's compose and run against a vault that has moved under it;
+        // declining lets each caller decide, and both already know how — a recording's compose is
+        // skipped because the refresh pass will reach that scope anyway, and a refresh pass records
+        // nothing for a scope it did not attempt rather than overwriting a live verdict.
+        guard !composeInFlight else {
+            return SubstrateRun(line: "compose \(name)", status: nil, stdout: "",
+                                stderr: "another compose is already running", launchFailure: nil,
+                                cancelled: true)
+        }
+        composeInFlight = true
+        defer { composeInFlight = false }
         // AN ALREADY-REGISTERED SCOPE KEEPS ITS OWN LOCATION, and the lookup is HERE rather than at
         // each call site so no caller can forget it. All three compose the workspace's own scope
         // now — the transcript rail and both document paths — so all three could move it.
