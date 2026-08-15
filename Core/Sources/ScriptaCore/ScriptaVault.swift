@@ -82,6 +82,11 @@ public struct ScriptaVault: Equatable {
         case unnameableScope(String)
         case nameCollidesWithExistingDirectory(String, URL)
         case vaultBelongsToAnotherWorkspace(String, String)
+        /// The slug matches a directory this app owns for its own purposes. Distinct from
+        /// `nameCollidesWithExistingDirectory` because that one is about a directory that EXISTS;
+        /// this fires whether or not it does, and saying "already exists" for a folder that is not
+        /// there sends the operator to look for something that was never the problem.
+        case nameReservedForAppData(String, String)
 
         public var errorDescription: String? {
             switch self {
@@ -97,6 +102,12 @@ public struct ScriptaVault: Equatable {
                     + "deletes a workspace by deleting its folder, so taking over a folder it did "
                     + "not create would put whatever is already in there inside a future wipe. "
                     + "Choose a different workspace name."
+            case .nameReservedForAppData(let raw, let directory):
+                return "A workspace named \"\(raw)\" would use the folder \"\(directory)\", which "
+                    + "Scripta keeps for its own data — notes, imported files and people are stored "
+                    + "there and are shared across every workspace. A workspace deletes its own "
+                    + "folder when wiped, so letting a workspace own this one would put all of that "
+                    + "inside a future wipe. Choose a different workspace name."
             case .vaultBelongsToAnotherWorkspace(let asked, let owner):
                 return "The folder a workspace named \"\(asked)\" would use already belongs to "
                     + "\"\(owner)\" — the two names reduce to the same directory. Sharing it would "
@@ -516,6 +527,33 @@ public struct ScriptaVault: Equatable {
         // path construction cannot reintroduce it quietly.
         guard directory.standardizedFileURL != root.standardizedFileURL else {
             throw VaultError.unnameableScope(scope)
+        }
+        // RESERVED BY NAME, NOT ONLY BY EXISTENCE. The guard below refuses a directory that is
+        // already there; these three are created LAZILY — `Notes/` on the first note saved,
+        // `Entities/` on the first mirror sync, `Files/` on the first document — so on a fresh
+        // install none of them exists and the guard cannot see the collision it exists to catch.
+        //
+        // That window was theoretical while capture was the only thing that wrote a vault. Doc 5
+        // made "New workspace…" write one, which is now the FIRST action a new user takes, so the
+        // window is where the product starts. Typing "Notes" there produced `<root>/notes`, which
+        // IS `<root>/Notes` on case-insensitive APFS: every workspace's knowledge notes would then
+        // be written inside a vault, composed into that one scope, and destroyed wholesale by
+        // `WorkspaceDeleter.delete`'s `removeItem(at: vault)` when that workspace was wiped.
+        //
+        // Compared on `name`, which IS the slug — it is `slug(scope)` from the top of this
+        // function, and the directory below is built from it.
+        //
+        // GRANDFATHERED, because a refusal that cannot be satisfied is worse than the collision.
+        // `Notes/` is created lazily, so a workspace could legitimately have taken that name first
+        // and be sitting on a real vault full of calls. Refusing unconditionally made that vault
+        // permanently unconstructible: capture stops writing to it and says so only in a log line,
+        // and no rename is offered because the operator is never asked. An app vault that already
+        // belongs to this workspace is therefore allowed through — the ownership guard below still
+        // holds, so it cannot be another workspace's.
+        let reserved = ["notes", "files", "entities"]
+        if reserved.contains(name),
+           !(isAppVault(directory) && workspace(ofVaultAt: directory) == scope) {
+            throw VaultError.nameReservedForAppData(scope, directory.lastPathComponent)
         }
         // A VAULT NEVER ADOPTS A DIRECTORY IT DID NOT CREATE.
         //

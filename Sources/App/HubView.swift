@@ -34,6 +34,7 @@ struct HubView: View {
     }
     @State private var creatingWorkspace = false
     @State private var newWorkspaceName = ""
+    @State private var workspaceRefusal: String?
     @State private var workspaceHovering = false
     @State private var clovisDrawerOpen = false
 
@@ -102,13 +103,33 @@ struct HubView: View {
         }
         .alert("New workspace", isPresented: $creatingWorkspace) {
             TextField("Name (e.g. Deals)", text: $newWorkspaceName)
+            // CREATES THE VAULT, which it did not until 2026-08-14 — it set `activeGroup` and
+            // nothing else, so the workspace existed only as a label until a call was recorded into
+            // it and the Library refused everything in the meantime (Doc 5). The refusal is
+            // surfaced rather than swallowed: `vault(forScope:)` throws on a name that collides
+            // with an existing directory, belongs to another workspace, or slugs to nothing, and a
+            // Create button that silently did nothing on those is the worse failure.
+            // DEFERRED BY ONE TURN. Setting the second alert's state synchronously here asks SwiftUI
+            // to present it in the same update in which this alert is dismissing, which is the
+            // standard case for the presentation being dropped — and it would drop on exactly the
+            // paths a real operator hits (a colliding name, a reserved name, another workspace's
+            // vault), leaving Create looking like it silently did nothing. Which is the failure the
+            // refusal exists to prevent.
             Button("Create") {
-                let name = newWorkspaceName.trimmingCharacters(in: .whitespaces)
-                if !name.isEmpty { model.activeGroup = name }   // becomes active; new recordings land here
+                if let refusal = model.createWorkspace(named: newWorkspaceName) {
+                    Task { @MainActor in workspaceRefusal = refusal }
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Switches you into the new workspace. Calls you record while it's active are captured into it.")
+            Text("Creates the workspace's vault and switches you into it. Calls you record while "
+                 + "it's active are captured into it, and documents you add go there too.")
+        }
+        .alert("This workspace cannot be created", isPresented: .init(
+            get: { workspaceRefusal != nil }, set: { if !$0 { workspaceRefusal = nil } })) {
+            Button("OK", role: .cancel) { workspaceRefusal = nil }
+        } message: {
+            Text(workspaceRefusal ?? "")
         }
     }
 

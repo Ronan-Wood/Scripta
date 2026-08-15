@@ -142,5 +142,21 @@ enum WorkspaceBindings {
     }
 
     /// Drop a workspace's binding entirely — for `WorkspaceDeleter`, which wipes a workspace.
-    static func forget(_ workspace: String) { bind(workspace, reads: nil) }
+    ///
+    /// ALL THREE STORES, and it used to clear two. `bind(reads: nil)` covers `workspaceReadScopes`
+    /// and `workspaceReadVaults`; `workspaceContextVaults` is the operator's explicit choice and is
+    /// the one `contextVaults` consults FIRST, so leaving it behind left a wiped workspace's list of
+    /// private vault paths sitting in plaintext defaults — exactly the residue the wipe exists to
+    /// remove.
+    ///
+    /// It became reachable rather than merely untidy when "New workspace…" started writing the vault
+    /// (Doc 5): retyping a wiped workspace's name found the surviving paths, wrote them into the new
+    /// `.substrate.toml` as `inherits`, and the engine composed the wiped workspace's private context
+    /// into the new scope — before a single call had been recorded into it.
+    static func forget(_ workspace: String) {
+        bind(workspace, reads: nil)
+        var chosen = AppSettings.workspaceContextVaults
+        chosen.removeValue(forKey: workspace)
+        AppSettings.workspaceContextVaults = chosen
+    }
 }
