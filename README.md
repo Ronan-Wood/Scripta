@@ -2,6 +2,15 @@
 
 > Private, on-device transcription for your calls and meetings. A macOS menu-bar app — no account, no cloud, nothing ever leaves your Mac.
 
+> [!IMPORTANT]
+> **This file is stale below the intro. Read [`ARCHITECTURE.md`](ARCHITECTURE.md) instead.**
+> It predates Doc 4 and describes several things that no longer exist: a bundled `scripta-mcp`
+> helper (deleted, Phase 3), an app "sandboxed in every configuration" (unsandboxed since Doc 3 §1),
+> a seven-pane hub (now five), `DocumentImporter` (deleted, Phase 4b), and a Swift `Retriever` with
+> a gated vector slot (the whole Swift retrieval stack went in Phase 6). It also never mentions the
+> substrate engine, which is now most of the system. Kept until rewritten, because it still records
+> the capture design accurately.
+
 Built to replace tools like Granola / Jamie / Fathom without the account-gating, visible meeting bots, or cloud dependency: everything runs locally, transcripts are plain Markdown in a folder you choose (ideally an Obsidian vault), and finished transcripts hand off to Claude for anything smart.
 
 ## What it does
