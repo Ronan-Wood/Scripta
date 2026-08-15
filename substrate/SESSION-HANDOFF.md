@@ -1,6 +1,9 @@
-# Session handoff — Doc 4 is done and Doc 5 is written; packaging is what is left
+# Session handoff — the engine ships inside the app; notarization is the last unknown
 
-**Reconciled against the repo 2026-08-10.** The previous version of this file was 76 commits and
+**Reconciled against the repo 2026-08-15.** Ten corrections are listed under
+*What the last handoff got wrong*; the largest is that Doc 5 was the agenda and is now two commits.
+
+**Earlier header, kept because the sections below still carry its reasoning — reconciled 2026-08-10.** The previous version of this file was 76 commits and
 12 days stale and predated Doc 4 entirely — it opened "the MCP server is built, deployed, and
 running", which is still true but now means the ENGINE's, because the Swift one was deleted. The
 corrections that mattered are listed under *What the last handoff got wrong* below; the durable
@@ -16,9 +19,12 @@ it, there is one Ask over one corpus behind a four-section shell, and `transcrip
 transcript `group:` and the second Ask are deleted rather than maintained.
 
 Nothing in Doc 4 is left. Phase 6 closed 2026-08-11 and there is one retrieval implementation.
-**Doc 5 — packaging — was written 2026-08-12** and is the next body of work: the engine ships
-inside the app bundle, and nothing Scripta needs is hand-installed. It is scoped with measured
-numbers rather than estimates (§ *Assertions*).
+
+**Doc 5 — packaging — SHIPPED 2026-08-14/15** (`5c9cfac`, `74f4aac`). The engine is built into
+`Scripta.app/Contents/Resources/substrate-engine` by a post-build phase, and a relaunched app
+spawns it — candidate 1 of `discover()` winning for the first time. Nothing Scripta needs is
+hand-installed. What is NOT done is notarization: never attempted, and the only part of the plan
+with no evidence behind it.
 
 | Doc 4 phase | state |
 |---|---|
@@ -35,42 +41,101 @@ record and was reconciled against the repo in the same pass. Read it before the 
 
 ## Open, in the order I would take them
 
-**1. Doc 5 — packaging. The only thing between this and an app someone can install.**
-`~/OneDrive/vaults/scripta-vault/03-references/doc5-packaging.md`. `SubstrateEngine.discover()`
-already prefers a bundled engine and nothing puts one there, so the app falls through to
-`~/.substrate/engine` — a hand-deployed artifact that does not exist on any other machine.
+**1. Notarization. The last unknown, and the only thing that could still invalidate bundling.**
+Never attempted. Whether Apple's notary service accepts a 1.4 GB bundle with 366 nested binaries is
+untested, and it is the one step with no evidence behind it. Blocked on one interactive command:
+`xcrun notarytool store-credentials "notary" --apple-id <id> --team-id 6CTH5M9UWZ`. Everything
+around it is verified — Developer ID on the app and all nested binaries, hardened runtime, secure
+timestamps throughout, seal valid — so a failure here should be about the submission, not the
+contents. `Distribution/RELEASING.md` is the runbook and was rewritten this session.
 
-**The blocker is one dependency.** The venv is 1.2 GB; `pyproject.toml` declares exactly one
-dependency (`docling`) and 508 MB of it is `torch`. Every `docling` import is already LAZY, so the
-split is latent in the code rather than a refactor — MEASURED: a venv with numpy alone (22 MB) ran
-`search` against the live `scripta` index and composed `demo-vault` with every gate passing. The
-whole runtime path is 22 MB; 1.18 GB exists for document ingest.
+**2. Point the `substrate` MCP at the bundled helper.** It still runs
+`~/.local/bin/substrate-mcp` (verified `claude mcp list`), which execs the working tree. Doc 5 §4.6
+wants `Scripta.app/Contents/Resources/substrate-engine/bin/substrate-mcp`, which is spawnable
+whether or not the app runs. This got MORE relevant this session: tiers 2 and 3 are now `#if DEBUG`,
+so the shim is a developer artifact the shipped app will not use.
 
-The one real product decision is §3's: on-demand download, drop non-markdown ingest, or an optional
-second bundle. Everything else is mechanical (vendor a runtime, split the extra, build step, sign
-and notarize, flip discovery).
+**3. Two dead scopes are in the registry and the refresh loop will freeze them every tick.**
+`cleantest` and `scripta-default` in `~/.substrate/scopes.toml` point at deleted scratchpads from
+earlier sessions; `status` on either FATALs. The loop correctly records `compose_failed`, which is
+honest and is also noise in a health signal. Delete the two `[scopes.*]` blocks. Not done here
+because the registry is the operator's.
 
-**2. `NoteStore` is the last holder of `group:`.** `DocumentImporter` is gone (Phase 4b), so the
-document half is closed. Notes are app-local by construction, so location cannot answer for them
-until §8's migration moves them into the vault. One change.
+**4. The workspace-creation button has never been clicked.** `AppModel.createWorkspace` builds,
+tests pass, and its guards are covered — but whether the menu item creates a vault and whether the
+refusal alert RENDERS is unverified. The refusal is the part to distrust: it presents from inside
+the dismissing alert, and an adversary reviewer argued `Task { @MainActor }` is not a real runloop
+hop and that two stacked `.alert` modifiers on one view can still drop the second. If Create
+silently does nothing on the name "Notes", that is what happened and `DispatchQueue.main.async` is
+the fix.
 
-**3. Ask is a several-second operation.** Warm, end-to-end through MCP on fresh queries: median
-5.6s. Dominated by HyDE generation, not reranking. A first query after the engine starts pays
-~23–26s of model loading, because Ollama's default `keep_alive` is 5 minutes and the engine sets
-none. **Operator has accepted this** (2026-08-10) — recorded so it is not re-opened as a bug. The
-fix, if ever wanted, is residency (`keep_alive`, or pre-warming on launch), not the arms.
+**5. `NoteStore` is the last holder of `group:`.** Unchanged and re-verified
+(`Sources/Knowledge/NoteStore.swift:10,38,45,80`). Notes are app-local by construction, so location
+cannot answer for them until §8's migration moves them into the vault. One change.
 
-**4. `reference_pins` is still the last unimplemented Doc 2 §2 feature.** Prerequisite unchanged.
+**6. Adversary findings 9–22, none blocking.** The slug-collision guard (`caseInsensitiveCompare`
+catches case, but the harm is a slug collision: "My Deals" vs "My-Deals"), the uncleared
+`newWorkspaceName`, the TOCTOU in the half-written-vault cleanup, and the low-confidence set. Listed
+in full in this session's `/adversary` output.
 
-**5. Ask lost citation→call navigation, and it is a real capability, not a rendering detail.**
-Clovis's source rows opened the call at the spoken timestamp, which they could do because a
-`ContextChunk` carried a local file path and a `startMs`. A `Passage` carries neither: its `path` is
-structural (`"Oldfield Agency Call > Summary"`) and its `id` is an expand ref. The route back exists
-— `expand(mode: "note")` returns `note.path`, a real file — so this is one round trip plus a rule
-for which passages are app-recorded calls (a curated `class: conversation` note in `cbre-vault` is
-NOT one, and routing it into the transcript reader would open a file that reader cannot show). It
-was left undone rather than half-built; the citations render with the full spine and no affordance
-that promises navigation.
+**7. Doc 5's own still-open list** — the unauthenticated loopback reads (three reviewers across two
+passes flagged it; the recorded reasoning at `server.py:1522` argues about writes and does not cover
+reads), the bundled CLI's relative write defaults, interpreter provenance, universal vs arm64, and
+the `scripta` scope rename.
+
+**8. `reference_pins` is still the last unimplemented Doc 2 §2 feature.** Re-verified: `vault.py:143`
+VALIDATES the table at parse time and the comment there says both features that would read it are
+deferred. Parsed is not implemented.
+
+**9. Ask is a several-second operation.** Unchanged, and **the operator accepted it** (2026-08-10).
+Recorded so it is not re-opened as a bug.
+
+**10. Ask lost citation→call navigation.** Unchanged from the last handoff; still a real capability
+rather than a rendering detail.
+
+## What shipped — 2026-08-13/15 (`5c9cfac`, `74f4aac`)
+
+**Doc 5, and the doc was rewritten against what was measured rather than the reverse.** Its §2/§3
+rested on "ingest is one indivisible 1.2 GB thing", which is false: `docling` is
+`docling-slim[standard]` and the weight is in two extras. Three tiers were built and run — core
+23 MB, office 160 MB (8 formats, no torch, byte-identical output), full 1.0 GB. Bundling everything
+is the operator's decision, taken knowing the alternative.
+
+**Six decisions recorded in Doc 5 with their reasoning**, four of which narrow something an earlier
+document argued for: refresh becomes an in-app compose loop; `Scripta-MAS` retired; "New workspace…"
+writes the vault; a separate `Distribution` configuration; bytecode stays (294 MB for import speed);
+the CLI's relative write defaults left alone (`out/substrate.db` is the pinned eval fixture).
+
+**The build step** (`substrate/tools/build-bundled-engine`) vendors a relocated
+python-build-standalone, builds the venv `--no-dev --compile-bytecode`, compiles the three on-device
+arms from committed Swift source, writes both shims, and signs and VERIFIES 366 Mach-O — asserting
+each carries a valid signature AND the hardened-runtime flag before it will finish.
+
+**The refresh loop replaced an agent that could not run from a bundle.** Between retiring the launchd
+job (2026-08-12) and nil-ing tier 1's `refreshAgent`, NOTHING refreshed except a finished recording.
+Measured after relaunch: all six live scopes composed into their registered databases, none frozen.
+
+**Four failures a green build does not show, each found by checking a property rather than reading
+code:**
+
+| # | failure | mechanism |
+|---|---|---|
+| 1 | the app broke its own code signature on first launch | `cp -R` reset mtimes, so CPython rewrote `.pyc` INSIDE the sealed bundle; `uv sync` also ships no bytecode, so the first `import docling` writes thousands more |
+| 2 | incremental builds shipped a broken seal | the phase ran after `CodeSign` whenever Xcode's own inputs had not moved — a hardened-runtime bundle whose seal does not match does not warn, it refuses to launch |
+| 3 | two hardening flags cancelled | `-E` makes CPython ignore every `PYTHON*` variable INCLUDING `PYTHONDONTWRITEBYTECODE`, so adding `-E` to close a `PYTHONPATH` hijack switched the bytecode guard off. `-B` survives `-E`; `-I` breaks the engine outright |
+| 4 | Developer-ID-signing unreviewable bytes | `substrate/bin/` is gitignored, so bundling it signed and notarized binaries no diff or clean clone could tie to their sources |
+
+**Three security findings, all from review rather than testing:** `WorkspaceBindings.forget` cleared
+two of three stores, missing the one `contextVaults` reads FIRST — so a wiped workspace's private
+vault paths survived and the new Create button would have written them back as `inherits`.
+`ScriptaVault`'s adoption guard only fired once the colliding directory existed, but `Notes/` is
+created lazily, so on a fresh install typing "Notes" claimed that path and a later wipe would have
+deleted every knowledge note. And the discovery ladder still reached into `$HOME` in a shipped
+build; tiers 2 and 3 are now `#if DEBUG`.
+
+**`Distribution/RELEASING.md` drove a deleted scheme, built the shipping channel as `Release`, and
+claimed "Sandbox: Yes" for an app unsandboxed since Doc 3 §1.** Rewritten. Its verification block
+could not fail — one `grep -E` with alternations exits 0 on any single match.
 
 ## What shipped after Doc 4 — 2026-08-11/12
 
@@ -286,7 +351,27 @@ Range `0a143f7..9fe7974`, 84 commits. Highlights, in dependency order:
 
 ## What the last handoff got wrong
 
-Corrections found by reconciling, not by being told:
+Corrections found by reconciling against the repo 2026-08-15, not by being told:
+
+- **"Doc 5 — packaging is the next body of work"** — shipped, `5c9cfac` + `74f4aac`.
+- **"Nothing is bundled in the app today"** (Assertions) — false. The engine is in
+  `Contents/Resources/substrate-engine` and the app spawns it.
+- **"245 Core tests pass (2 skipped)"** — **247** now; two were added for the reserved-name guard.
+- **"The deployed engine is `67948ac` or later"** — still exactly `67948ac`, now **29 commits
+  behind HEAD**, and its MEANING changed: tier 2 is `#if DEBUG`, so `~/.substrate/engine` is a
+  developer artifact the shipped app never reaches, and nothing runs its refresh agent any more.
+- **"the DEPLOYED engine is behind HEAD … `c61055d` added MCP `instructions`"** — still true and now
+  further behind. Deploying remains a decision rather than a chore.
+- **The `substrate` MCP entry** was described as correctly named and is correctly named, but it
+  still points at `~/.local/bin/substrate-mcp` — the developer shim, not the bundled helper.
+- **"~86 commits ahead of `origin/substrate-engine`"** — verified, still 86 after two commits.
+- **Two `.xcodeproj` in the repo root** — re-verified (`CallTranscriber.xcodeproj`,
+  `Scripta.xcodeproj`). The `-project` constraint holds.
+- **`com.ronanwood.substrate-refresh` retired** — re-verified, `launchctl list` shows nothing.
+- **`reference_pins`** — the claim "unimplemented" is right for the wrong reason: it IS validated at
+  parse time (`vault.py:143`); what is deferred is anything that reads it.
+
+Carried forward from 2026-08-10, still accurate:
 
 - **"there is no pytest; expect 412 assertions across 27 files"** — false. `uv run pytest tests/ -q`
   works and reports **587 passed**.
@@ -297,7 +382,44 @@ Corrections found by reconciling, not by being told:
 - The doc's mutual-block note for phases 3 and 4 was resolved the same day it was written, by
   DELETING the four entity tools rather than porting them. That closure was never recorded.
 
-## Failure patterns this session earned
+## Failure patterns this session earned — 2026-08-13/15
+
+- **Two safety mechanisms, each correct alone, that cancel when combined.** `-E` closed a
+  `PYTHONPATH` hijack and silently disabled the `PYTHONDONTWRITEBYTECODE` guard added an hour
+  earlier. Both lines read as hardening, which is why three crosscheck reviewers looked straight
+  past them; the diff-only adversary pass caught it. **When you add a second guard beside a first,
+  test the first still fires.**
+- **A number measured through a pipe is not a measurement.** Bytecode was reported as 57 MB from
+  `find … | xargs du -ck | tail -1`, where `xargs` batches and `tail -1` takes only the last batch.
+  The real figure is 294 MB — the entire 1.1→1.4 GB difference. Same shape as the piped exit code:
+  the harness, not the thing.
+- **A verification that returns the right answer for the wrong reason.** A perl filter matched every
+  line while capturing an EMPTY path, producing 363 blank strings that counted like a correct
+  answer — and I reported "exhaustive 363, predicate 363, zero missed" on the strength of comparing
+  blank lines. The conclusion happened to be right. **Check that a check can distinguish the two
+  worlds before quoting it.**
+- **A `str.replace` that does not match reports nothing.** A stale comment survived a fix because
+  the replacement string had the wrong indentation, and the adversary pass found the file asserting
+  two opposite policies. Every scripted edit now asserts its target was present.
+- **Fixing a claim can break the test that encoded the old one, and that is correct.** Giving
+  reserved names their own error broke `testAWorkspaceCannotAdoptADirectoryItDidNotCreate`. The fix
+  was to expect the right error PER NAME, not to loosen the assertion to "any error" — the two
+  refusals are not interchangeable.
+- **A fixture must reach the state the assertion objects to.** The first grandfathering test tried
+  to create a "Notes" vault through the front door, which the new guard correctly refuses. The state
+  being grandfathered can only predate the guard, so the fixture had to build it via the
+  initializer. Mutation-checked afterwards, both directions.
+- **Reviewers contradict each other, and the tie-break is a measurement.** Two adversary reviewers
+  disagreed on whether bash services an EXIT trap on an untrapped SIGTERM. It does — tested. A third
+  called `OTHER_CODE_SIGN_FLAGS: --timestamp` a blocker on the reasoning that Xcode appends
+  `--timestamp=none` after it; the post-fix build log shows zero occurrences of that flag. **Verify
+  before applying on authority; five of this session's findings were refuted with evidence.**
+- **Closing a hole can open another, in the same file, the same day.** Nil-ing tier 1's
+  `refreshAgent` was right — the agent trusted a user-writable record for its exec paths — and it
+  left the machine with no periodic refresh at all, because the launchd job had already gone. The
+  gap existed for the length of one commit and was only noticed by asking "what is next".
+
+## Failure patterns from 2026-08-10, kept
 
 - **Quoting a number without its conditions — twice, in both directions.** I reported Ask at 17s
   (a cold model load, not the stack), then reported the reranker's `expected_mrr` gain as a quality
@@ -372,6 +494,18 @@ Corrections found by reconciling, not by being told:
 
 ## Constraints that bite
 
+- **The engine is now BUILT BY THE APP, so `xcodebuild` is no longer a Swift-only step.** A change
+  under `substrate/substrate/` or to the three `tools/*.swift` arms invalidates the build
+  fingerprint and re-runs a multi-minute 1.4 GB rebuild. Unchanged inputs skip in ~3s.
+- **`Release` must never ship.** It signs with an Apple Development certificate and Xcode gives the
+  app `--timestamp=none`. `Distribution` is the shipping configuration and had to be declared at
+  PROJECT level — xcodegen synthesises only Debug and Release, and a `Distribution:` block under a
+  target's `configs:` without that declaration is silently inert.
+- **`~/.substrate/engine` is now developer-only.** Tiers 2 and 3 are `#if DEBUG`. A Release or
+  Distribution build resolves the bundled engine or reports `notInstalled`; it will not fall back.
+- **The refresh loop is the app's, and only runs while the app is open.** No launchd job, no agent.
+  A machine that has not opened Scripta for a week reads a week-old index — and `refresh.frozen`
+  will say `false`, because nothing failed, nothing ran.
 - **EVAL MUST NOT MOVE** — signature `4a560ce34aa6378a`, 1811 chunks. *Re-verified 2026-08-10:*
   `uv run python tools/fixture-signature.py out/substrate.db`.
 - **The refresh agent runs the DEPLOYED engine, but the agent SCRIPT is the repo's.**
@@ -400,18 +534,27 @@ Claims the next session may rely on without re-verifying, each with what establi
 
 | assertion | verified by |
 |---|---|
-| 587 engine tests pass | `uv run pytest tests/ -q`, 2026-08-10 |
-| 245 Core tests pass (2 skipped) | `cd Core && swift test`, 2026-08-11 |
+| 587 engine tests pass | `uv run pytest tests/ -q`, 2026-08-15 |
+| 247 Core tests pass | `cd Core && swift test`, 2026-08-15 |
+| The app spawns its OWN bundled engine | relaunch → `…/Scripta.app/Contents/Resources/substrate-engine/.venv/bin/python -B -E -s -m substrate.mcp.server`, 2026-08-15 |
+| 366 nested Mach-O signed, hardened, timestamped; seal valid | Distribution build + `codesign -dv`, 2026-08-15 |
+| Running the engine writes NOTHING into the bundle | marker file + `find -newer` → 0 files; seal still valid, 2026-08-15 |
+| A relocated tree runs (moved twice, stale `pyvenv.cfg` `home`) | `status --scope scripta` from both, 2026-08-14 |
+| The whole runtime works with NO Ollama | scratch registry, `OLLAMA_HOST=127.0.0.1:1`: compose all gates PASS; query returns passages declaring `embedder=lexical-only … DEGRADED`; `embed --model apple-nlcontextual` 26/26 in 1.0s, 2026-08-14 |
+| `compose_failed` freezes a scope and `refreshed` clears it | `refresh-record` both ways on a scratch scope, 2026-08-15 |
+| The loop composes the REGISTERED databases | all six db mtimes + `scopes.toml` `composed` at 01:20 UTC, 2026-08-15 |
+| torch imports under hardened runtime; `ctypes` closures work | signed Distribution bundle, 3.1s, returns 42 — **no `allow-jit` entitlement needed**, 2026-08-14 |
+| The Apple arms compile from committed source | `swiftc -O` each, ~1.4s, 2026-08-14 |
 | Every field the reader sees is the engine's, with `degraded` and arm-promotion pinned as rules | `MappingParityTests`, mutation-verified (3 mutations → 1/2/6 assertions) |
 | Nothing reads or writes `chunk_vectors` | `grep -rn` over `Sources Core/Sources`, 2026-08-11 |
 | The whole RUNTIME path runs on a 22 MB venv (numpy only) | built one, ran `search` on live `scripta` (2 passages, `v10:b3d2d4d6d333`) and composed `demo-vault`, all gates PASS — 2026-08-12 |
 | The deployed engine's venv is 1.2 GB, 508 MB of it `torch` | `du -sh ~/.substrate/engine/.venv`, 2026-08-12 |
 | Every `docling` import is lazy (inside a function) | `cli.py:96`, `extract/convert.py:429-436`, `extract/docling_arm.py:24-26`, 2026-08-12 |
-| Nothing is bundled in the app today | `ls Scripta.app/Contents/Resources` — fonts, icon, privacy manifest, no `substrate-engine`, 2026-08-12 |
+| ~~Nothing is bundled in the app today~~ | **SUPERSEDED 2026-08-15** by the row above — this was the state Doc 5 existed to change, kept because it dates when it was true |
 | Reading works with the app CLOSED; only refresh is tied to it | quit the app, ran `status` on `prism` through `substrate-mcp` → 321 documents, 2026-08-12 |
 | The engine dies with the app, no orphans | app running → 3 engine processes, quit → 0, relaunch → back on `:8765`, 2026-08-12 |
 | No vault declares `guard_state` — the privacy wall is OFF | `grep -rln guard_state` over every manifest, 2026-08-12 |
-| `substrate` is the only MCP server, and it answers | `claude mcp list` → `substrate ✔ connected`; `scripta` and `calltranscriber` removed (both `ENOENT`), 2026-08-12 |
+| `substrate` is the only MCP server, and it answers | `claude mcp list` → `substrate ✔ connected`, 2026-08-15 — still pointing at `~/.local/bin/substrate-mcp`, NOT the bundled helper (open item 2) |
 | The server ships `instructions` | real `initialize` handshake → 2093 chars present, 2026-08-12 |
 | Stop keeps partial text and removes an empty placeholder | `AskConversationTests`, mutation-verified |
 | Endpoint history is bounded, oldest-first, system + current turn kept | `ChatHistoryBudgetTests`, mutation-verified |
@@ -422,8 +565,8 @@ Claims the next session may rely on without re-verifying, each with what establi
 | The `cbre` scope holds a real recorded call at tier 3 | `documents(scope: "cbre", include_sources: true)` → `call-2026-08-07-1021-30ea51de`, `conversation`, 2026-08-10 |
 | Zero `DocumentImporter` references remain | `grep -rn DocumentImporter Sources Core`, 2026-08-10 |
 | The migrated document is retrievable at tier 2 of `cbre` | `browse(vault: "cbre")` → one tier-2 row, 2026-08-10 |
-| All six scopes are v10, fully embedded, `unchanged`, `frozen=false` | per-scope `status`/`query`, 2026-08-10 |
-| The deployed engine is `dc0de78`'s ancestor `67948ac` or later | `tools/substrate-deploy --show` |
+| All six live scopes composed and none frozen | per-scope `status` after the first in-app loop pass, 2026-08-15 |
+| The deployed engine is pinned at `67948ac`, 29 commits behind HEAD | `tools/substrate-deploy --show`, 2026-08-15 — and it is now DEVELOPER-ONLY: tier 2 is `#if DEBUG` and nothing runs its refresh agent |
 | No Swift MCP server exists | `SourcesMCP/` is empty; only `MCPStateFile.swift` remains, feeding `guard_state` |
 | The shipped default rerank stack has a measured number (0.708) | `test_the_shipped_default_stack_has_a_number` |
 
@@ -431,42 +574,47 @@ Claims the next session may rely on without re-verifying, each with what establi
 
 > Working on Scripta (branch `substrate-engine`, repo `~/CodeHome/CallTranscriber`; the engine is in
 > `substrate/`). Read `substrate/PRINCIPLES.md` (four laws), then `substrate/SESSION-HANDOFF.md`.
-> Doc 4 is a CLOSED decision record — all six phases shipped — so read it for why the code looks
-> like this, not for what to do next.
+> Doc 4 and Doc 5 are both CLOSED decision records — read them for why the code looks like this, not
+> for what to do next.
 >
-> First item: **Doc 5 — packaging**
-> (`~/OneDrive/vaults/scripta-vault/03-references/doc5-packaging.md`). The engine ships inside the
-> app bundle and nothing Scripta needs is hand-installed. `SubstrateEngine.discover()` ALREADY
-> prefers a bundled engine; nothing puts one there, so every artifact on this machine
-> (`~/.substrate/engine`, `~/.local/bin/substrate-mcp`) is developer scaffolding that would not
-> exist on a machine that just installed the app.
+> **Packaging shipped** (`5c9cfac`, `74f4aac`). The engine is built into
+> `Scripta.app/Contents/Resources/substrate-engine` by a post-build phase on the `Scripta` target,
+> and a relaunched app spawns it — `discover()` candidate 1 wins. Tiers 2 and 3 (`~/.substrate/engine`
+> and `~/.local/bin`) are now `#if DEBUG`, so on this machine they still resolve and in a shipped
+> build they do not.
 >
-> **The blocker is one dependency and it is already measured.** The venv is 1.2 GB, `pyproject.toml`
-> declares only `docling`, and 508 MB of it is `torch`. Every `docling` import is LAZY, and a venv
-> with numpy alone (22 MB) was proven to run `search` against the live index and compose a vault
-> with every gate passing. So the split is latent in the code, not a refactor.
+> **First item: notarization. It is the only part of the plan with no evidence behind it**, and the
+> only thing that could still invalidate bundling a 1.4 GB app with 366 nested binaries. It is
+> blocked on one interactive command the OPERATOR must run:
+> `xcrun notarytool store-credentials "notary" --apple-id <id> --team-id 6CTH5M9UWZ`. Ask before
+> assuming it exists. Everything around it is verified — Developer ID on the app and every nested
+> binary, hardened runtime, secure timestamps, seal valid. `Distribution/RELEASING.md` is the
+> runbook; build `-configuration Distribution`, never `Release`.
 >
-> **Start with the one real decision, §3:** ingest cannot ship at 1.2 GB — on-demand download, drop
-> non-markdown ingest, or an optional second bundle. Everything after it is mechanical. Do not start
-> the mechanical work before that is answered.
+> Read first: `substrate/tools/build-bundled-engine` (the whole file — it is the packaging), the
+> `Scripta` target in `project.yml`, and `Sources/App/SubstrateEngine.swift` (`discover()`). Doc 2
+> (the structural spec) lives in `~/OneDrive/vaults/core-vault/00-operator/specs/`; Doc 5 is
+> `~/OneDrive/vaults/scripta-vault/03-references/doc5-packaging.md`.
 >
-> Read first: `Sources/App/SubstrateEngine.swift` (`discover()`), `substrate/pyproject.toml`,
-> `substrate/tools/substrate-deploy`. Doc 2 (the structural spec) lives in
-> `~/OneDrive/vaults/core-vault/00-operator/specs/` — the repo has a pointer, not a copy.
+> **Three states that look like faults and are not.** The branch is 86 commits ahead of
+> `origin/substrate-engine` and unpushed — deliberate, do not push without being asked. The DEPLOYED
+> engine at `~/.substrate/engine` is pinned 29 commits behind HEAD, which is now a developer
+> artifact rather than a problem. And `refresh.frozen: false` on a stale index is honest: the loop
+> only runs while the app is open, so nothing failed because nothing ran.
 >
-> **Two states that look like faults and are not.** The branch is ~86 commits ahead of
-> `origin/substrate-engine` and unpushed — that is deliberate, do not push without being asked. And
-> the DEPLOYED engine is behind HEAD: `c61055d` added MCP `instructions` that the live server will
-> not carry until `tools/substrate-deploy` runs, which is a decision rather than a chore (deploying
-> has previously moved six live scopes onto a new schema inside one tick).
+> **One real fault worth clearing early:** `~/.substrate/scopes.toml` holds two dead scopes
+> (`cleantest`, `scripta-default`) pointing at deleted scratchpads. The refresh loop composes them
+> every tick and correctly freezes them. Deleting those two `[scopes.*]` blocks is the fix; it was
+> left because the registry is the operator's.
 >
 > Before changing anything: `cd substrate && ./lint.sh` (16 pre-existing errors, not yours),
 > `uv run python tools/fixture-signature.py out/substrate.db` (must print `4a560ce34aa6378a`,
-> 1811 chunks), `uv run pytest tests/ -q` (587), `cd Core && swift test` (245 passed, 0 failures),
-> and `xcodebuild -project Scripta.xcodeproj -scheme Scripta build` (the bare `-scheme` form fails —
-> two projects in the root; adding or deleting a file needs `xcodegen generate` first).
+> 1811 chunks), `uv run pytest tests/ -q` (587), `cd Core && swift test` (247), and
+> `xcodebuild -project Scripta.xcodeproj -scheme Scripta build` — the bare `-scheme` form still
+> fails, two `.xcodeproj` in the root, and adding or deleting a file needs `xcodegen generate` first.
 >
-> Discipline is audit → review → implement → verify, `/crosscheck` then `/adversary`. Two rules this
-> project earned the hard way: **a new test must be mutation-checked before you trust it**, and
-> **open the app after any change to a view** — a green build says nothing about layout,
-> reachability, or a control that does nothing.
+> Discipline is audit → review → implement → verify, `/crosscheck` then `/adversary`. Three rules
+> this project earned the hard way: **a new test must be mutation-checked before you trust it**;
+> **open the app after any change to a view** — a green build says nothing about layout or
+> reachability; and **verify a reviewer's claim before applying it** — five of last session's
+> findings were refuted with evidence, including two reviewers who contradicted each other.
