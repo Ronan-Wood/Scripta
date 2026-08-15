@@ -5,6 +5,16 @@ options:
     macOS: "26.0"
   createIntermediateGroups: true
 
+# DECLARED HERE OR IT DOES NOT EXIST. xcodegen synthesises only Debug and Release; a `Distribution`
+# block under a target's `configs:` without this is silently inert, which is the failure mode where
+# the shipping configuration quietly builds with development settings.
+# `Distribution: release` names the BUILD TYPE it inherits (optimisation, no DEBUG condition), not
+# the signing identity — that is stated on the target.
+configs:
+  Debug: debug
+  Release: release
+  Distribution: release
+
 # The pure core lives in a local SwiftPM package (statically linked — invisible to the bundle
 # layout and App Review). Unit tests moved with it: `swift test --package-path Core`; the eval
 # harness is its `scripta-eval` executable (`./Eval/run.sh`).
@@ -12,10 +22,16 @@ packages:
   ScriptaCore:
     path: Core
 
-# One app, two flavors sharing this template. `Scripta` (direct .dmg) bundles the MCP
-# helper; `Scripta-MAS` (App Store) must not — embedded executables have to inherit the
-# app's sandbox, which breaks external spawning by LLM clients, so the store flavor offers the
-# helper as a separate download instead. Same bundle ID: they are the same app to macOS/TCC.
+# ONE FLAVOR. `Scripta-MAS` was retired on 2026-08-14 (Doc 5): it had been unsubmittable since
+# Doc 3 §1 dropped the App Store — the app is unsandboxed because it must spawn the engine — and the
+# packaging pass left it resolving no engine at all, since it does not get the bundling phase and
+# `discover()` compiles tiers 2 and 3 out of non-Debug builds.
+#
+# It is retired rather than repaired because a target nobody builds still costs: every change to
+# this template had to reason about it, and that is exactly how it was gutted without anyone
+# noticing. The template survives the deletion because collapsing it into the target is churn with
+# no reader benefit — but it now serves one target, so a second flavor is a decision to take again
+# rather than a shape to fit into.
 targetTemplates:
   ScriptaApp:
     type: application
@@ -172,30 +188,86 @@ targetTemplates:
         # The entitlements file itself records what each surviving key is now worth and why the
         # two sandbox-only ones went; the reason the sandbox could not stay is that Doc 3 §2 makes
         # this app spawn the substrate engine, and a sandboxed app cannot launch a subprocess
-        # outside its bundle. NOTE that `Scripta-MAS` below now builds an unsandboxed app and is
-        # therefore unsubmittable — retiring that target is a separate change and is not this pass.
+        # outside its bundle. The `Scripta-MAS` target that made this a two-flavor question was
+        # retired 2026-08-14.
         CODE_SIGN_ENTITLEMENTS: Sources/App/Scripta.entitlements
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+        # DISTRIBUTION IS THE ONE THAT SHIPS, and it exists so Release does not have to.
+        #
+        # Notarization requires a Developer ID Application signature and a secure timestamp on every
+        # nested Mach-O. Automatic signing resolves an "Apple Development" certificate, which is
+        # correct for a local build and rejected at submission — so the identity is STATED here.
+        #
+        # Kept separate from Release so Release stays a LOCAL build: the phase timestamps every
+        # nested binary only for this configuration, one network round trip each. An earlier version
+        # of this comment claimed that split already avoided the tax while the script gated on
+        # `!= Debug`, so Release paid it in full — and worse, `codesign --timestamp` FAILS when the
+        # timestamp authority is unreachable, which made an offline Release build die in a signing
+        # step whose whole point was that it is the local one.
+        Distribution:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+          # THE APP'S OWN SIGNATURE NEEDS THE TIMESTAMP TOO, and Xcode does not add it: a plain
+          # `xcodebuild build` passes `--timestamp=none` in every configuration, so the 366 nested
+          # binaries carried secure timestamps (the build phase asks for them) while the bundle
+          # wrapping them did not. Notarization checks the outer signature as well, and the failure
+          # would have arrived at submission, after everything else looked correct. Verified on the
+          # Distribution build before this line existed: nested `Timestamp=Aug 14, 2026`, app none.
+          OTHER_CODE_SIGN_FLAGS: "--timestamp"
 
 targets:
   Scripta:
     templates: [ScriptaApp]
-
-  # Build with SYMROOT=build-mas so the two flavors never overwrite each other — a baked
-  # CONFIGURATION_BUILD_DIR override breaks SwiftPM module resolution (packages build to the
-  # default location; the target would look in the overridden one).
-  Scripta-MAS:
-    templates: [ScriptaApp]
-    # A stale helper from an earlier build of the retired `scripta-mcp` target can still be sitting
-    # in a reused SYMROOT or in Xcode's shared DerivedData, and Xcode never scrubs foreign files —
-    # so a MAS build could still inherit one and ship an unsandboxed executable the store refuses.
-    # The target is gone; this outlives it until the build directories have turned over.
+    # Doc 5: the engine ships inside the bundle. It sits on the target rather than the template,
+    # which mattered while `Scripta-MAS` shared that template and had to be kept off 1.4 GB of
+    # Python. With MAS retired the template serves this target alone, so the placement is no longer
+    # load-bearing — it is left here because a second flavor should have to opt IN to shipping an
+    # engine rather than inherit one.
+    #
+    # The script skips in ~3 s when its inputs are unchanged (it fingerprints uv.lock, pyproject,
+    # the interpreter and the engine tree), so this is not a per-build tax; a phase that rebuilt
+    # 1.4 GB every time is a phase someone deletes.
+    #
+    # SIGNED HERE rather than left to Xcode, which seals the bundle but does not reach individual
+    # Mach-O files under Resources — notarization refuses every one that is unsigned or lacks the
+    # hardened runtime. The script counts and reports how many it signed; this comment deliberately
+    # does not restate the number, because three different counts for the same set were quoted
+    # across this file and that script before anyone noticed they disagreed.
+    #
+    # `--timestamp` is added for the SHIPPING configuration only, and the configuration is named
+    # explicitly. The inverse rule — skip for Debug, add everywhere else — was tried first on the
+    # reasoning that a notarization requirement should default on. It made every Release build
+    # depend on Apple's timestamp authority being reachable, and a failed timestamp is a hard
+    # refusal, so working offline broke a local build.
+    #
+    # THE COST OF NAMING IT: a NEW shipping configuration must add itself here, and if it forgets,
+    # the failure is a missing timestamp discovered at submission rather than a broken local build.
+    # That trade is deliberate — but it is why `SUBSTRATE_REQUIRE_SIGNING` below keys on the same
+    # name, so at least the unsigned case cannot pass silently.
     postBuildScripts:
-      - name: Scrub any stale bundled helper (the target is retired; old build dirs may still hold one)
-        script: rm -f "$CODESIGNING_FOLDER_PATH/Contents/MacOS/scripta-mcp"
+      - name: Bundle the substrate engine (Doc 5)
+        shell: /bin/bash
         basedOnDependencyAnalysis: false
+        # DECLARED SO THE SIGNING TASK DEPENDS ON THIS ONE. Without it the phase is outside Xcode's
+        # graph: a full build happens to order it before CodeSign, but an incremental build where
+        # only the engine changed re-runs the script and SKIPS re-signing, because none of Xcode's
+        # own inputs moved. The app is then a hardened-runtime bundle whose seal no longer matches
+        # its contents, which does not warn — it refuses to launch.
+        outputFiles:
+          - $(CODESIGNING_FOLDER_PATH)/Contents/Resources/substrate-engine/.build-fingerprint
+        script: |
+          set -euo pipefail
+          ARGS=("$CODESIGNING_FOLDER_PATH/Contents/Resources/substrate-engine")
+          if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] && [ "${EXPANDED_CODE_SIGN_IDENTITY}" != "-" ]; then
+            ARGS+=(--sign "$EXPANDED_CODE_SIGN_IDENTITY")
+            if [ "${CONFIGURATION:-}" = "Distribution" ]; then ARGS+=(--timestamp); fi
+          fi
+          # The shipping configuration may not produce an unsigned engine, even quietly.
+          if [ "${CONFIGURATION:-}" = "Distribution" ]; then export SUBSTRATE_REQUIRE_SIGNING=1; fi
+          "$SRCROOT/substrate/tools/build-bundled-engine" "${ARGS[@]}"
 
   # The "Record & Register" review surface. A separate runnable app whose whole purpose is that
   # the design system can be accepted or rejected BEFORE it touches an app view.

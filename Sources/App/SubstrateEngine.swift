@@ -423,22 +423,49 @@ final class SubstrateEngine: ObservableObject {
         var searched: [String] = []
 
         // 1. THE ENGINE THAT SHIPS WITH THE APP. Doc 3 §2 says the runtime and its dependencies
-        //    ship with Scripta; nothing puts them here yet and that packaging work is not in this
-        //    pass, so today this is the slot rather than a path that resolves.
+        //    ship with Scripta, and `substrate/tools/build-bundled-engine` now puts them here as a
+        //    post-build phase on the `Scripta` target: a relocated python-build-standalone under
+        //    `runtime/`, its `.venv`, the engine package, and the two shims below.
+        //
+        //    THE WORKING DIRECTORY IS THE ENGINE ROOT, matching the pinned deployment below. It was
+        //    `bin` — harmless today, because both shims `cd` to the root themselves before exec'ing,
+        //    and precisely because it is harmless it would have survived until something relied on
+        //    cwd and then differed from every path that was ever tested.
         if let root = Bundle.main.resourceURL?.appendingPathComponent("substrate-engine") {
             let bin = root.appendingPathComponent("bin")
             let bundled = bin.appendingPathComponent("substrate-mcp")
             searched.append(bundled.path)
             if isRunnable(bundled) {
+                // NO REFRESH AGENT, BY CONSTRUCTION. `build-bundled-engine` ships no `tools/` and
+                // argues at length why: that script hard-exits on a missing `~/.local/bin/substrate`,
+                // and where it does run it composes through paths read out of a user-writable
+                // deployment record. Resolving it here anyway meant the only way this could ever be
+                // non-nil was if someone PUT a file at that path — and `SubstrateRefresh` execs
+                // whatever it resolves to, every 900s, inside a notarized unsandboxed process. The
+                // tiers below are `#if DEBUG` to close exactly that door; leaving it open on a path
+                // with no legitimate occupant would have undone that. `runPass()` already models a
+                // nil agent as `.unavailable(engine:)`, so the honest state is the reachable one.
                 return (Source(label: "bundled with Scripta", executable: bundled, arguments: [],
-                               workingDirectory: bin,
-                               cli: command(bin.appendingPathComponent("substrate"), from: bin),
-                               refreshAgent: command(
-                                   root.appendingPathComponent("tools/substrate-refresh"),
-                                   from: root)), searched)
+                               workingDirectory: root,
+                               cli: command(bin.appendingPathComponent("substrate"), from: root),
+                               refreshAgent: nil), searched)
             }
         }
 
+        // TIERS 2 AND 3 ARE DEBUG-ONLY, and packaging is what forced the line. Both resolve out of
+        // the user's HOME, which is writable by anything running as that user and — for a copy in
+        // /Applications — by any admin without an authentication prompt. Files under
+        // `Contents/Resources` are sealed into `CodeResources` and checked by `codesign --verify`,
+        // NOT by the kernel at spawn, so deleting the bundled `bin/` does not stop the app launching;
+        // it just demotes it to the next rung. Planting `~/.local/bin/substrate-mcp` — a plain 755
+        // script — then gets arbitrary code spawned inside a notarized, unsandboxed process holding
+        // this app's microphone and calendar attribution. The hardened runtime exists to prevent
+        // exactly that outcome and does not cover exec of a path we chose ourselves.
+        //
+        // Doc 5 §4.5 already calls this: `substrate-deploy` becomes a DEVELOPER tool rather than an
+        // install step. A release build resolves the bundled engine or reports `notInstalled` with
+        // the paths it searched — it does not quietly run something out of $HOME.
+        #if DEBUG
         // 2. THE PINNED DEPLOYMENT. `substrate/tools/substrate-deploy` exports one commit to
         //    ~/.substrate/engine and primes its environment with `uv sync --frozen`, so the venv's
         //    python is a direct entry point — one process, no `uv` in the middle to forward signals.
@@ -477,6 +504,7 @@ final class SubstrateEngine: ObservableObject {
                            refreshAgent: command(
                                bin.appendingPathComponent("substrate-refresh"))), searched)
         }
+        #endif
 
         return (nil, searched)
     }

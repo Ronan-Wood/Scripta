@@ -237,6 +237,10 @@ enum WorkspaceDeleter {
             // before lending the laptop", that is the residue it exists to remove. It also stops a
             // later workspace of the same name silently re-adopting a wiped one's binding.
             WorkspaceBindings.forget(group)
+            // The vault is gone, so the switcher's roster is stale. `availableGroups()` folds in
+            // vaults found on disk and caches the scan; without this the wiped workspace keeps
+            // appearing — selectable, and pointing at nothing — until the app restarts.
+            await MainActor.run { AppModel.shared.invalidateVaultWorkspaces() }
             registry.purge(group: group)
             // AND UNDER THE SLUG. `IndexBuilder` falls back to indexing and registering entities
             // under the vault's slug when no known workspace matches it — a renamed or de-listed

@@ -209,6 +209,54 @@ final class ScriptaVaultTests: XCTestCase {
         }
     }
 
+    /// THE SAME COLLISION, BEFORE THE DIRECTORY EXISTS.
+    ///
+    /// The existence-based guard below cannot see this one: `Notes/`, `Files/` and `Entities/` are
+    /// created lazily — on the first note saved, the first document added, the first mirror sync —
+    /// so on a fresh install none of them is on disk. That window was theoretical while capture was
+    /// the only thing that wrote a vault; "New workspace…" now writes one, which makes it the first
+    /// action a new user takes.
+    ///
+    /// The fixture asserts the state the check objects to — the directory must NOT exist when the
+    /// refusal fires — and the ERROR, not merely that something threw: an assertion that accepts
+    /// any error passes when an unrelated guard fires and proves nothing about this one.
+    func testAnAppOwnedNameIsRefusedEvenBeforeThatDirectoryExists() throws {
+        for name in ["Notes", "notes", "Files", "Entities", "ENTITIES"] {
+            let directory = root.appendingPathComponent(ScriptaVault.slug(name), isDirectory: true)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path),
+                           "the fixture must reach the pre-existence state, or it tests the "
+                           + "existence guard instead of this one")
+            XCTAssertThrowsError(try ScriptaVault.vault(forScope: name, under: root),
+                                 "\(name) is an app-owned directory and must not become a vault") {
+                XCTAssertEqual($0 as? ScriptaVault.VaultError,
+                               .nameReservedForAppData(name, ScriptaVault.slug(name)),
+                               "it must be refused as reserved, not as some other collision")
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path),
+                           "a refused name must not leave a directory behind")
+        }
+    }
+
+    /// AND THE REFUSAL IS GRANDFATHERED, because one that cannot be satisfied is worse.
+    ///
+    /// `Notes/` is lazy, so a workspace could have taken that name first and be sitting on a real
+    /// vault. Refusing unconditionally made that vault permanently unconstructible — capture stops
+    /// writing to it and says so only in a log line. A vault this workspace already owns resolves.
+    func testAWorkspaceThatAlreadyOwnsAReservedNameKeepsIt() throws {
+        // BUILT THROUGH THE INITIALIZER, not `vault(forScope:)`, because the guard now refuses that
+        // front door — which is the point. The state being grandfathered is one that could only
+        // have been created BEFORE the guard existed, so a fixture that tried to create it the
+        // normal way would be asserting the guard does not work.
+        let directory = root.appendingPathComponent("notes", isDirectory: true)
+        let existing = try ScriptaVault(root: directory, scope: "Notes")
+        try existing.write()
+        XCTAssertTrue(ScriptaVault.isAppVault(directory), "the fixture must reach the owned state")
+
+        let again = try ScriptaVault.vault(forScope: "Notes", under: root)
+        XCTAssertEqual(again.root.standardizedFileURL, directory.standardizedFileURL,
+                       "an app vault this workspace already owns must keep resolving")
+    }
+
     /// THE COLLISION THAT WOULD HAVE DELETED THE OPERATOR'S NOTES.
     ///
     /// `slug` lowercases and APFS is case-insensitive by default, so a workspace named "Notes"
@@ -224,8 +272,16 @@ final class ScriptaVaultTests: XCTestCase {
         // `Notes`/`Files`/`Entities` are created with their REAL casing, which is the point: the
         // slug is lowercase and APFS resolves the two to one directory. The last entry is created
         // at its slugged name, the shape any other pre-existing folder collides through.
-        for (existing, onDisk) in [("Notes", "Notes"), ("Files", "Files"), ("Entities", "Entities"),
-                                   ("Some Folder Of Mine", "some-folder-of-mine")] {
+        //
+        // THE EXPECTED REFUSAL DIFFERS BY NAME, and asserting "some error" instead would hide that.
+        // The three app-owned names are now refused earlier, by the reserved-name guard, which
+        // fires whether or not the directory is there; a folder the operator made is refused by the
+        // adoption guard, which is what this test is named for. Both are correct and they are not
+        // interchangeable — a reserved name reported as an adoption collision tells the operator to
+        // go look for a folder that may not exist.
+        for (existing, onDisk, reserved) in [("Notes", "Notes", true), ("Files", "Files", true),
+                                             ("Entities", "Entities", true),
+                                             ("Some Folder Of Mine", "some-folder-of-mine", false)] {
             let directory = root.appendingPathComponent(onDisk, isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try "mine".write(to: directory.appendingPathComponent("keep.md"),
@@ -233,8 +289,11 @@ final class ScriptaVaultTests: XCTestCase {
 
             XCTAssertThrowsError(try ScriptaVault.vault(forScope: existing, under: root),
                                  "\(existing) must not be adopted") { error in
-                guard case .nameCollidesWithExistingDirectory = error as? ScriptaVault.VaultError
-                else { return XCTFail("wrong error for \(existing): \(error)") }
+                switch error as? ScriptaVault.VaultError {
+                case .nameReservedForAppData where reserved: break
+                case .nameCollidesWithExistingDirectory where !reserved: break
+                default: XCTFail("wrong error for \(existing): \(error)")
+                }
             }
             // Case-insensitively too — that is the form that actually collides.
             XCTAssertThrowsError(try ScriptaVault.vault(forScope: existing.lowercased(), under: root))

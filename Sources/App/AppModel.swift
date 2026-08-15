@@ -123,11 +123,112 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Create a workspace's vault and switch into it. Returns `nil`, or a sentence to show.
+    ///
+    /// UNTIL 2026-08-14 NOTHING BUT CAPTURE WROTE A VAULT, and the Library said so out loud: "There
+    /// is no vault for X yet. One is written the first time a call is recorded into this workspace,
+    /// so record a call." That refusal is honest and its reasoning — one author for the layout — is
+    /// right, but it made the Library unreachable on a fresh install until a call had landed, which
+    /// is a dead end for anyone who came to index documents. Doc 5 decided the trigger, not the
+    /// author, was the part that had to change.
+    ///
+    /// SO THE AUTHOR IS STILL `ScriptaVault`. It calls the same `vault(forScope:under:inherits:)` +
+    /// `write()` pair with the same `inherits` lookup `RecordingSession` uses, so every guard that
+    /// construction applies — the slug guard, the reserved-name guard, the adoption guard, the
+    /// ownership guard — applies here unchanged.
+    ///
+    /// IT IS NOT IDENTICAL TO CAPTURE, and saying so would be a claim nothing enforces: capture maps
+    /// `""` to `ScriptaVault.defaultScope` and falls back to the flat folder when construction
+    /// throws, because the transcript is the one artefact that cannot be recreated. This refuses
+    /// `""` and surfaces the error, because a person is standing at a button. Those are different
+    /// policies over one construction, which is the part that must not fork.
+    ///
+    /// A NEW WORKSPACE HAS NO BINDING, so `contextVaults` is normally empty and the manifest starts
+    /// with no inheritance. That is not a divergence to correct: capture calls `write()` on every
+    /// recording, so the first call into this workspace refreshes the manifest with whatever binding
+    /// exists by then.
+    ///
+    /// Errors are RETURNED rather than logged, because the caller is a button. `RecordingSession`
+    /// can afford to fall back and log — the transcript is the artefact that cannot be recreated —
+    /// but a person who just typed a name and pressed Create has to be told it did not happen.
+    func createWorkspace(named raw: String) -> String? {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return "A workspace needs a name." }
+        // CASE-DIVERGENT NAMES ARE REFUSED BEFORE THEY EXIST, because the guards downstream only
+        // fire once a vault is on disk. Creating "deals" beside a calendar-mapped "Deals" that has
+        // no vault yet writes `<root>/deals` owning the name "deals" — and every later recording
+        // into "Deals" then throws `vaultBelongsToAnotherWorkspace`, falls back to the flat folder
+        // and says so only in a log line. `reconcileCalendarGroupCasing` exists because divergent
+        // casing is known to be harmful; it repairs calendar assignments and cannot repair this.
+        if let clash = availableGroups().first(where: {
+            $0.caseInsensitiveCompare(name) == .orderedSame && $0 != name
+        }) {
+            return "A workspace named \"\(clash)\" already exists. Use that name, or choose one "
+                 + "that differs by more than capitalisation."
+        }
+        let inherits = WorkspaceBindings.binding(for: name).contextVaults
+        let root = AppSettings.outputFolder
+        // Whether the directory pre-dated this call decides whether we may clean it up below.
+        let directory = root.appendingPathComponent(ScriptaVault.slug(name), isDirectory: true)
+        let preexisting = FileManager.default.fileExists(atPath: directory.path)
+        do {
+            let vault = try ScriptaVault.vault(forScope: name, under: root, inherits: inherits)
+            try vault.write()
+        } catch {
+            // A HALF-WRITTEN VAULT BURNS THE NAME PERMANENTLY. `write()` creates the transcript
+            // directory first and the manifest second, so a failure between them (a full volume, a
+            // killed process) leaves a directory that is not an app vault — and every later attempt
+            // at that name, from this button AND from capture, is refused as a collision with a
+            // directory the app did not create. Removed only when this call is what created it.
+            if !preexisting { try? FileManager.default.removeItem(at: directory) }
+            return error.localizedDescription
+        }
+        invalidateVaultWorkspaces()
+        activeGroup = name
+        return nil
+    }
+
+    /// Workspaces that have a vault on disk, cached.
+    ///
+    /// SCANNED, NOT DERIVED FROM THE INDEX, and that is the whole point — `IndexStore.groups()` is
+    /// `… FROM transcripts WHERE kind = 'call'`, so it only knows workspaces a CALL was recorded
+    /// into. A workspace created for documents has a real vault and real notes in it and zero call
+    /// rows, so it was invisible the moment the operator switched away: not selectable, not
+    /// deletable (that control is gated on the active workspace), its documents stranded.
+    ///
+    /// Cached because `availableGroups()` is evaluated inside `body` on three surfaces and this
+    /// walks the output folder.
+    ///
+    /// KEYED ON THE FOLDER, so changing the output folder cannot serve the old folder's list. The
+    /// first version relied on being told, and was told in exactly one place — the create path —
+    /// while a comment claimed it was "invalidated wherever a vault can appear or vanish". A wiped
+    /// workspace therefore stayed in the switcher for the rest of the session, and re-pointing the
+    /// output folder showed the previous corpus's workspaces. Keying removes the folder half
+    /// structurally; the delete path is told explicitly, because a vault vanishing under an
+    /// unchanged folder is not something a key can notice.
+    private var vaultWorkspacesCache: (folder: URL, names: [String])?
+
+    func invalidateVaultWorkspaces() { vaultWorkspacesCache = nil }
+
+    private func vaultWorkspaces() -> [String] {
+        let folder = AppSettings.outputFolder
+        if let cached = vaultWorkspacesCache, cached.folder == folder { return cached.names }
+        // The manifest's own name, not the directory's, so the operator's casing survives — the
+        // slug is lossy and every query site partitions on the raw name.
+        let names = ScriptaVault.vaultRoots(under: folder).vaults
+            .compactMap { ScriptaVault.workspace(ofVaultAt: $0) }
+            .filter { !$0.isEmpty }
+        vaultWorkspacesCache = (folder, names)
+        return names
+    }
+
     /// Workspaces available in the switcher: configured calendar groups ∪ groups present in the
-    /// corpus (plus the active one). "" (Ungrouped) is offered separately by the UI.
+    /// corpus ∪ workspaces with a vault on disk (plus the active one). "" (Ungrouped) is offered
+    /// separately by the UI.
     func availableGroups() -> [String] {
         var set = Set(AppSettings.calendarGroups.values.filter { !$0.isEmpty })
         IndexStore.shared?.groups().forEach { set.insert($0.name) }
+        vaultWorkspaces().forEach { set.insert($0) }
         if !activeGroup.isEmpty { set.insert(activeGroup) }
         return set.sorted()
     }

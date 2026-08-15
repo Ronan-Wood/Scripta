@@ -1,0 +1,479 @@
+#!/usr/bin/env bash
+# Build the engine that ships INSIDE Scripta.app — Doc 5 §4, steps 1-3.
+#
+#   build-bundled-engine <destination>            build if the inputs changed
+#   build-bundled-engine <destination> --force    build regardless
+#   build-bundled-engine <destination> --sign <identity> [--timestamp]
+#
+# <destination> is the engine root: Scripta.app/Contents/Resources/substrate-engine. It is what
+# `SubstrateEngine.discover()` candidate 1 looks at, and the layout below is that function's
+# expectation rather than a fresh choice:
+#
+#   substrate-engine/
+#     bin/substrate-mcp      the server Scripta spawns
+#     bin/substrate          the CLI the Library runs for ingest
+#     runtime/               a relocated python-build-standalone interpreter
+#     .venv/                 its dependencies
+#     substrate/             the engine package
+#
+# NO `tools/`, so candidate 1 resolves `refreshAgent` to nil and the app reports refresh as
+# unavailable for a bundled engine. That is a real capability gap and it is deliberate — the reason
+# is at the `rsync` below.
+#
+# NOT A DEPLOYMENT, and the distinction is load-bearing. `substrate-deploy` pins ONE COMMIT because
+# an unattended agent execs it every 900 seconds and an uncommitted schema bump once reached six
+# live scopes inside a tick. Nothing here is unattended: a build is a deliberate act by someone
+# looking at the tree, so this ships the WORKING TREE and says so. The two tools answer different
+# questions and neither replaces the other.
+set -euo pipefail
+
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+
+die() { echo "build-bundled-engine: $*" >&2; exit 1; }
+say() { echo "  $*"; }
+
+DEST= IDENTITY= FORCE= TIMESTAMP=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --force) FORCE=1; shift ;;
+    --sign) [ $# -ge 2 ] || die "--sign needs an identity"; IDENTITY=$2; shift 2 ;;
+    --timestamp) TIMESTAMP=1; shift ;;
+    -h|--help) sed -n '2,6p' "$0"; exit 0 ;;
+    -*) die "unknown option $1" ;;
+    *) [ -z "$DEST" ] || die "only one destination"; DEST=$1; shift ;;
+  esac
+done
+[ -n "$DEST" ] || die "no destination given (usage: $0 <engine-root>)"
+# TRAILING SLASHES STRIPPED, because every sibling path below is built by string concatenation.
+# `<dest>/` turns "$DEST.staging" into a directory INSIDE the live engine root, and the swap then
+# fails with "rename p to p/.previous: Invalid argument" — after `rm -rf "$DEST.staging"` has
+# already run against a path within the tree it was meant to protect. The header documents a
+# hand-invocation, so a shell tab-completed slash is the ordinary way in.
+while [ "${DEST%/}" != "$DEST" ]; do DEST=${DEST%/}; done
+[ -n "$DEST" ] || die "destination resolves to the filesystem root"
+
+[ -f "$REPO/pyproject.toml" ] && [ -f "$REPO/uv.lock" ] \
+  || die "\$0=$0 does not resolve to a substrate checkout (REPO='$REPO')"
+
+# RESOLVED AGAINST A WIDER SET THAN $PATH, and the earlier version got this exactly backwards: it
+# said Xcode hands a run-script phase a minimal PATH in which `uv` does not exist, then looked for
+# `uv` on that same PATH. It worked only because `xcodebuild` run from a terminal inherits the
+# shell's environment; Xcode launched from Finder gets /usr/bin:/bin:/usr/sbin:/sbin and the build
+# would have died on a machine that is otherwise correctly set up.
+UV=$(command -v uv 2>/dev/null || true)
+if [ -z "$UV" ]; then
+  for candidate in "$HOME/.local/bin/uv" /opt/homebrew/bin/uv /usr/local/bin/uv; do
+    [ -x "$candidate" ] && { UV=$candidate; break; }
+  done
+fi
+[ -n "$UV" ] || die "uv not found on PATH, in ~/.local/bin, /opt/homebrew/bin or /usr/local/bin"
+
+# ONLY-MANAGED, because relocatability is the whole requirement. uv would otherwise be free to
+# resolve Homebrew's python3.14, which is a framework build wired to its own absolute prefix: it
+# would build here and fail on the first machine that is not this one. python-build-standalone
+# finds its stdlib relative to the executable, which is what makes `runtime/` movable at all.
+PY_BIN=$("$UV" python find 3.14 --python-preference only-managed --no-project 2>/dev/null) \
+  || die "no uv-managed CPython 3.14. Install one: uv python install 3.14"
+PY_ROOT=$(cd "$(dirname "$PY_BIN")/.." && pwd -P)
+[ -x "$PY_ROOT/bin/python3.14" ] || die "$PY_ROOT does not look like a standalone interpreter"
+
+# ------------------------------------------------------------------ fingerprint
+#
+# The tree is ~1.4 GB and takes minutes to build. A run-script phase that rebuilt it every time
+# would make every incremental Xcode build unusable, and the usual response to that is to delete
+# the phase — so the skip is what keeps the step wired in at all. Keyed on everything that can
+# change the OUTPUT, this script included: a fingerprint that ignored its own recipe would serve a
+# stale tree after the recipe was fixed, which is the one failure a stamp must not have.
+#
+# THE SIGNING STATE IS AN INPUT, and leaving it out was the sharpest edge in the first version.
+# The documented hand-invocation takes no `--sign`, so it writes an unsigned tree AND a valid stamp;
+# the next Release build then matched the stamp, printed "nothing to do", and sealed 353 unsigned
+# Mach-O files into a hardened-runtime bundle. That does not fail loudly — it fails at notarization,
+# or later still, when library validation refuses each unsigned `.so` on a user's machine while the
+# build box stays green. Identity rotation has the same shape.
+#
+# RELATIVE paths are hashed, not stripped ones, and the difference is a real bug the first version
+# had in each direction. Hashing shasum's raw output keys the stamp on the SPELLING of the
+# invocation — Xcode's absolute "$SRCROOT/..." and a hand-run "./build-bundled-engine" each
+# invalidate the other and force a full rebuild. But cutting the path away entirely goes too far the
+# other way: filenames stop being part of the identity, so renaming a module without changing any
+# byte of its contents leaves the fingerprint identical and ships the previous filenames. Running
+# `find` from $REPO gives paths that are stable across checkouts AND still name every file.
+#
+# `-type f -o -type l` because `rsync -a` ships symlinks; `-type f` alone made them invisible here.
+#
+# `LC_ALL=C sort`, because collation is not stable across locales. A terminal runs under
+# en_US.UTF-8 and Xcode launched from Finder under C, and BSD sort orders mixed-case and punctuated
+# filenames differently between them — measured: the same tree hashed `eb6f49c9…` under C and
+# `bc7400d1…` under en_US.UTF-8. Each would invalidate the other's stamp and force a full 1.4 GB
+# rebuild, which is the ping-pong the relative-path fix above was supposed to have ended.
+fingerprint() {
+  {
+    echo "v3 $PY_ROOT sign=${IDENTITY:-none} ts=${TIMESTAMP:-none}"
+    # The arms' SOURCES, because the arms are compiled from them below. Hashing the compiled
+    # output instead would be circular, and hashing neither means editing `embed-apple.swift`
+    # leaves a stamped tree holding the previous binary.
+    shasum -a 256 "$REPO/uv.lock" "$REPO/pyproject.toml" "$0" \
+      "$REPO/tools/embed-apple.swift" "$REPO/tools/hyde-fm.swift" \
+      "$REPO/tools/rerank-fm.swift" | cut -d' ' -f1
+    ( cd "$REPO" && find substrate \( -type f -o -type l \) \
+        ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 \
+        | LC_ALL=C sort -z | xargs -0 shasum -a 256 )
+  } | shasum -a 256 | cut -d' ' -f1
+}
+
+# CHECKED BEFORE THE SKIP CAN RETURN, because the skip is what defeated the first version of this
+# guard. It lived beside the signing block, which the fingerprint match `exit 0`s past — and the
+# match is easy to hit: a tree stamped `sign=none` is exactly what the documented hand-invocation
+# produces, so a shipping build that lost its identity found that stamp, printed "nothing to do",
+# and let Xcode seal an unsigned engine. Refusing here means no path reaches the skip without an
+# identity when one is required.
+if [ "${SUBSTRATE_REQUIRE_SIGNING:-}" = "1" ] && { [ -z "$IDENTITY" ] || [ "$IDENTITY" = "-" ]; }; then
+  die "no signing identity, but this is a shipping build — refusing to produce an unsigned engine"
+fi
+
+WANT=$(fingerprint)
+STAMP="$DEST/.build-fingerprint"
+
+# What "whole" means, in one place, applied on BOTH paths below. The skip used to trust the stamp
+# alone, so a tree that lost files AFTER being stamped — a partial external delete, a repair tool,
+# the tampering the Swift discovery comment builds its threat model on — was never rebuilt and never
+# rechecked. Six `-e` tests are free; a stamp that outlives the tree it describes is not.
+REQUIRED="bin/substrate-mcp bin/substrate .venv/bin/python runtime/bin/python3.14 \
+          substrate/cli.py substrate/mcp/server.py \
+          bin/embed-apple bin/hyde-fm bin/rerank-fm"
+assert_whole() {
+  for required in $REQUIRED; do
+    [ -e "$1/$required" ] || die "$2 is incomplete — no $required"
+  done
+}
+
+# BOTH SIBLINGS SWEPT, BEFORE THE SKIP. They live beside the engine root — inside
+# `Contents/Resources` — so a run killed with SIGKILL (which no EXIT trap can service) leaves a
+# partial tree in the bundle, and every later up-to-date build returns at the check below without
+# ever reaching a cleanup placed after it. Xcode then seals and ships it: roughly double the
+# payload, with possibly-unsigned Mach-O under Resources.
+#
+# `.previous` is swept here for exactly the same reason `.staging` is. The first version removed it
+# only on the success path, which left the final multi-second `rm -rf` of a 1.4 GB tree as an
+# unguarded window — the same failure this sweep exists to prevent, one directory over.
+rm -rf "$DEST.staging" "$DEST.previous"
+
+if [ -z "$FORCE" ] && [ -f "$STAMP" ] && [ "$(head -1 "$STAMP")" = "$WANT" ]; then
+  assert_whole "$DEST" "the bundled engine"
+  say "bundled engine is current ($WANT) — nothing to do"
+  exit 0
+fi
+
+# ------------------------------------------------------------------ build into a stage
+#
+# STAGED THEN SWAPPED. A half-written engine root is worse than none: `discover()` accepts
+# candidate 1 the moment `bin/substrate-mcp` is executable, so a tree interrupted midway would be
+# preferred over the working deployment behind it and then fail at spawn. The stamp is written LAST
+# for the same reason — a tree that is present but unstamped rebuilds, a tree that is stamped is
+# whole.
+STAGE="$DEST.staging"
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+trap 'rm -rf "$STAGE"' EXIT
+
+say "vendoring $PY_ROOT"
+# `cp -Rp`, and BOTH flags are load-bearing.
+#
+# Not `-L`: bin/python and bin/python3 are symlinks to python3.14, and dereferencing them writes the
+# 18 MB interpreter three times for 36 MB of duplication.
+#
+# `-p` PRESERVES MTIMES, and without it the app breaks its own code signature on first launch.
+# CPython invalidates a .pyc by comparing the source's mtime against the header; a plain `cp` stamps
+# every .py with "now", so the interpreter's own shipped bytecode reads as stale and gets REWRITTEN
+# — inside a sealed bundle. Observed, not reasoned: `codesign --verify` went from clean to
+# "file modified: runtime/lib/python3.14/re/__pycache__/_casefix.cpython-314.pyc" after one run.
+cp -Rp "$PY_ROOT/" "$STAGE/runtime/"
+
+cp "$REPO/pyproject.toml" "$REPO/uv.lock" "$STAGE/"
+
+say "resolving dependencies (--no-dev, precompiled)"
+# --no-dev is not a tidiness flag. `uv sync --frozen` installs the dev group, which is how
+# ipykernel, jedi, debugpy and zmq — 200 MB of editor tooling — were sitting in the deployed engine.
+#
+# --compile-bytecode is the other half of the signature fix. uv ships .py without .pyc, so the first
+# `import docling` would write thousands of files into the bundle. Compiling them HERE puts them
+# inside the seal instead of breaking it.
+( cd "$STAGE" && "$UV" venv .venv --relocatable --python ./runtime/bin/python3.14 --quiet \
+    && "$UV" sync --frozen --no-dev --compile-bytecode --quiet ) \
+  || die "could not build the environment in $STAGE"
+
+# THE LINE THAT MAKES IT PORTABLE, and it is not what `--relocatable` does. That flag relativizes
+# the console scripts; `.venv/bin/python` is left an ABSOLUTE symlink into the path this ran from.
+# A bundle built here would resolve it on this machine and nowhere else — and it fails at spawn,
+# which `SubstrateEngine` reports as `notInstalled`, i.e. the ordinary "no engine yet" state rather
+# than a broken build. Verified by moving a finished tree twice and running it from both.
+ln -sf ../../runtime/bin/python3.14 "$STAGE/.venv/bin/python"
+
+say "copying the engine"
+rsync -a --exclude '__pycache__' --exclude '*.pyc' "$REPO/substrate/" "$STAGE/substrate/"
+
+# NO `tools/`, AND THE ABSENCE IS THE DECISION. An earlier version shipped the directory whole so
+# that `discover()` could resolve `tools/substrate-refresh` as candidate 1's refresh agent. That
+# agent cannot refresh a bundle and must not be handed one:
+#
+#   - It hard-exits at its own first gate — `SUBSTRATE="$HOME/.local/bin/substrate"` with
+#     `[ -x ... ] || exit 1` — so on any machine that is not this one it dies having recorded
+#     nothing, and the app shows a pass that failed every 900 s with no reason attached.
+#   - Where it DOES run, it composes through `$ENGINE`/`$UV` taken from `~/.substrate/engine.json`,
+#     so the bundled engine would serve indexes written by a different commit — the exact
+#     `schemaMismatch` split `Source` resolves both halves together to prevent.
+#   - That record is a plain user-writable file whose "signature" is an unkeyed hash of a manifest
+#     the same writer controls. Handing it to a notarized, unsandboxed app under this app's TCC
+#     attribution turns three files in $HOME into arbitrary execution inside Scripta's process tree.
+#
+# `SubstrateRefresh.runPass()` already models a missing agent as `.unavailable(engine:)`, so the
+# honest state is reachable today. Teaching the agent to refresh a bundle is real work with a real
+# decision behind it (what replaces "verify the deployment" when the engine IS the signed bundle),
+# and it is not smuggled in here.
+
+# The engine's own bytecode, for the same reason as --compile-bytecode above: whatever is not
+# compiled here is compiled on first import, into a bundle that is already sealed. `-q` because
+# compileall reports every file; a non-zero exit is a genuine syntax error and must not be ignored.
+"$STAGE/.venv/bin/python" -m compileall -q "$STAGE/substrate" >/dev/null \
+  || die "the engine package does not byte-compile"
+
+# ------------------------------------------------------------------ the two entry points
+#
+# Both `cd` to the engine root and exec the venv's python directly — one process, no `uv` in the
+# middle to forward signals, which is what lets Scripta's EOF watchdog kill the engine's process
+# group on force-quit.
+#
+# NEITHER STATES A RETRIEVAL MODEL, and that is deliberate rather than an omission.
+# `stack.DEFAULT_RERANK` is already the cross-encoder and its stack is the one with a measured
+# number (0.708). Naming a model here — as ~/.local/bin/substrate-mcp does — makes the configuration
+# stop matching a measured stack, so `expected_mrr` correctly goes null and the app has no tier to
+# render. SubstrateEngine.swift:152-171 carries the full argument.
+mkdir -p "$STAGE/bin"
+
+# THE ON-DEVICE ARMS, BUILT FROM SOURCE. `embed-apple`, `hyde-fm` and `rerank-fm` drive Apple's
+# on-device models — no server, no download, no network — and the engine reaches them by RELATIVE
+# path (`embed/engine.py:261`, `retrieve/rerank.py:208`, `retrieve/expand.py:255`), which resolves
+# against the engine root both shims `cd` into.
+#
+# Leaving them out was invisible: the defaults are Ollama models, so a machine without Ollama fell
+# all the way to lexical-only while the second-best stack — 0.593 measured against full-Ollama's
+# 0.698 — needed no install at all.
+#
+# COMPILED HERE RATHER THAN COPIED FROM `$REPO/bin`, and that is the security half. `substrate/bin/`
+# is gitignored (`.gitignore:30`) and untracked, so those binaries exist only on a build machine and
+# no diff, reviewer or clean clone can establish that they correspond to the sources beside them.
+# Copying them wholesale meant Developer-ID-signing, timestamping and notarizing bytes nobody could
+# review — anything running as the build user could drop a replacement in and it would ship inside an
+# unsandboxed process holding Scripta's microphone and calendar grants. The `.swift` sources ARE
+# committed, and each is a single self-contained file that builds in about a second.
+for arm in embed-apple hyde-fm rerank-fm; do
+  [ -f "$REPO/tools/$arm.swift" ] || die "missing source for $arm — $REPO/tools/$arm.swift"
+  swiftc -O -o "$STAGE/bin/$arm" "$REPO/tools/$arm.swift" \
+    || die "could not build $arm from $REPO/tools/$arm.swift"
+done
+
+#
+# `-B` IS THE GUARANTEE, and it has to be the FLAG rather than the environment variable, because the
+# two fixes below cancel if you use the obvious form. Everything importable is precompiled above,
+# but "precompiled" holds only while every .pyc stays valid — one file whose mtime shifts, one
+# interpreter upgrade, one `.py` touched by a repair tool — and CPython then rewrites bytecode
+# INSIDE A SEALED BUNDLE, so the app fails Gatekeeper on a machine that is not this one having
+# worked perfectly here. Refusing to write is the property; precompiling is the optimisation.
+#
+# `PYTHONDONTWRITEBYTECODE=1` DOES NOT SURVIVE `-E`. That is the whole reason `-B` is spelled out:
+# `-E` (below) makes the interpreter ignore every PYTHON* variable, this one included, so an earlier
+# version that exported the variable AND passed `-E` had switched its own guard off. Measured on the
+# shipped interpreter: env alone -> dont_write_bytecode True; env + `-E -s` -> False; `-B -E -s` ->
+# True. The export is kept only so a caller reading the shim sees the intent stated twice.
+#
+# `-E -s`, AND NOT `-I`. `-E` makes the interpreter ignore every PYTHON* variable — without it
+# `PYTHONPATH` is searched ahead of site-packages, so a planted `numpy.py` runs first, INSIDE a
+# signed unsandboxed process holding this app's microphone and calendar attribution. The hardened
+# runtime does not cover this: it strips `DYLD_*`, and a `.py` file is not signed code, so library
+# validation never sees it. Measured: `PYTHONPATH=<dir> .venv/bin/python -c "import numpy"` loads
+# `<dir>/numpy.py`.
+#
+# `-I` is the stronger flag and it BREAKS THE ENGINE, which is why it is not used: it also drops the
+# script directory from `sys.path`, and `substrate` is run from this tree rather than installed into
+# site-packages (`pyproject.toml` sets `package = false`). Measured — `-I` gives
+# `ModuleNotFoundError: No module named 'substrate'`; `-E -s` imports cleanly.
+#
+# `--registry` IS NOT PASSED. `scopes.registry_path()` already resolves explicit → $SUBSTRATE_REGISTRY
+# → `~/.substrate/scopes.toml`, and `server.py` defaults the flag to None precisely so that ladder is
+# the one definition. Restating the default here is the same mistake the `--rerank-model` note above
+# warns about, and it would pin the shipped app to the old path the day `DEFAULT_REGISTRY` moves.
+cat >"$STAGE/bin/substrate-mcp" <<'SH'
+#!/bin/bash
+# substrate MCP server over stdio. NOTHING may write to stdout but the JSON-RPC stream.
+set -euo pipefail
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$ROOT"
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP
+export PYTHONDONTWRITEBYTECODE=1
+exec "$ROOT/.venv/bin/python" -B -E -s -m substrate.mcp.server "$@"
+SH
+
+cat >"$STAGE/bin/substrate" <<'SH'
+#!/bin/bash
+# The engine's CLI, from the same tree as the server beside it — one export, one set of pinned
+# dependencies, one schema. Resolving them separately is how an index written by one and read by
+# the other produces a schemaMismatch refusal.
+set -euo pipefail
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$ROOT"
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP
+export PYTHONDONTWRITEBYTECODE=1
+exec "$ROOT/.venv/bin/python" -B -E -s -m substrate.cli "$@"
+SH
+
+chmod 755 "$STAGE/bin/substrate-mcp" "$STAGE/bin/substrate"
+
+# ------------------------------------------------------------------ sign
+#
+# Xcode signs the app bundle; it does NOT reach individual Mach-O files sitting under Resources, and
+# notarization refuses any that are unsigned or lack the hardened runtime. Measured on this tree:
+# 363 binaries, ~70 s, including a 326 MB libtorch_cpu.dylib at 1.2 s.
+if [ -n "$IDENTITY" ] && [ "$IDENTITY" != "-" ]; then
+  say "signing Mach-O binaries as $IDENTITY"
+  # Branched rather than an array of flags: macOS ships bash 3.2, where expanding an EMPTY array as
+  # "${ts[@]}" is an unbound-variable error under `set -u`. It fails only on the no-timestamp path,
+  # so an array here works from a terminal with a modern bash and dies inside Xcode.
+  # STDERR IS THE ANSWER, not noise. An earlier version sent it to /dev/null, so a refusal printed a
+  # count and a path and destroyed the one sentence that says what to do — and codesign's messages
+  # here are specific and each has a different remedy ("resource fork, Finder information, or
+  # similar detritus not allowed" → `xattr -c`; "could not be found in the keychain" → wrong
+  # identity; "errSecInternalComponent" → locked keychain). The Mach-O filter below already removes
+  # the only chatter the redirect was plausibly for.
+  sign_one() {
+    if [ -n "$TIMESTAMP" ]; then
+      codesign --force --sign "$IDENTITY" --options runtime --timestamp "$1" 2>&1
+    else
+      codesign --force --sign "$IDENTITY" --options runtime "$1" 2>&1
+    fi
+  }
+  # ENUMERATED BY WHAT THE FILE IS, NOT BY WHAT IT IS CALLED. The first version matched
+  # `*.so`/`*.dylib`/owner-executable, which has two defects the verify pass below could not cover:
+  # `-type f` binds only to the third alternative, so a `.so` DIRECTORY or symlink was enumerated
+  # and its target signed twice; and any Mach-O with neither suffix nor the exec bit was skipped
+  # silently, leaving library validation to kill the engine on a user machine while this build
+  # stayed green. Asking `file` about every regular file removes the predicate entirely.
+  #
+  # Measured: 43,579 regular files, ~35 s batched, and it finds exactly the 363 the old predicate
+  # did — so this closes a latent hole rather than a live one.
+  #
+  # Batched through one `xargs`, because 43k separate `file` calls is minutes. The `perl` filter
+  # SPLITS on the NUL that `file -0` writes after each PATH, keeping the name only when the
+  # description says Mach-O — a universal binary prints one continuation line per architecture and
+  # those carry no NUL, so `$d` is undef and they cannot be mistaken for filenames.
+  #
+  # `split` rather than a match, and that is not a style choice: `/^(.*?)\0.../` matched every line
+  # while capturing an EMPTY name, which silently produced a list of 363 blank strings that counted
+  # like a correct answer. `split /\0/, $_, 2` was verified to return the real paths.
+  #
+  # KNOWN LIMIT, stated rather than papered over: a vendored filename containing a newline would
+  # still split across records, and nothing here handles that.
+  say "enumerating Mach-O binaries"
+  binaries=$(find "$STAGE" -type f -print0 \
+    | xargs -0 file -0 2>/dev/null \
+    | perl -ne 'my ($f,$d)=split /\0/,$_,2; print "$f\n" if defined $d && $d =~ /Mach-O/') \
+    || die "could not enumerate binaries under $STAGE"
+
+  # ZERO IS A FAILURE, NOT A CLEAN RUN. `find` matching nothing exits 0, so an empty list used to
+  # walk both loops, print "signed and verified 0 binaries" and exit green — a signing step that
+  # signed nothing, reported success, and shipped.
+  [ -n "$binaries" ] || die "no Mach-O binaries found under $STAGE — the tree is not an engine"
+
+  count=0 failed=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if err=$(sign_one "$f"); then
+      count=$((count + 1))
+    else
+      failed=$((failed + 1)); echo "    FAILED to sign: $f — $err" >&2
+    fi
+  done <<EOF
+$binaries
+EOF
+  [ "$failed" -eq 0 ] || die "$failed binaries could not be signed — the bundle would not notarize"
+
+  # VERIFIED, NOT ASSUMED — and it checks BOTH halves of the property the bundle needs.
+  #
+  # `codesign --verify --strict` validates the signature and says NOTHING about the hardened
+  # runtime; a binary signed without `--options runtime` passes it cleanly. Since notarization
+  # refuses exactly that binary, asserting only the signature would be a check that reads like the
+  # guarantee and is not it, so the `flags=...(runtime)` bit is asserted separately.
+  #
+  # This pass re-walks the same list the signing loop used, which means it confirms the signing
+  # WORKED and does not independently re-discover what should have been signed. That is no longer a
+  # gap, because the list above is now exhaustive by construction rather than a name-based guess.
+  # CAPTURED, NOT PIPED, and the first version of this check got it wrong in the loudest possible
+  # way: `codesign -d -vv "$f" | grep -q runtime` makes grep exit at the first match, codesign then
+  # dies of SIGPIPE, and `set -o pipefail` reports the PIPELINE as failed — so a correctly hardened
+  # binary was read as unhardened. It flagged all 363 at once, which is the good direction to be
+  # wrong in, but it is the same "a check that cannot distinguish the two worlds" defect this
+  # script's other comments warn about.
+  hardened() {
+    case "$(codesign -d -vv "$1" 2>&1 || true)" in
+      *"flags="*"runtime"*) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+
+  unsigned=0 unhardened=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if ! codesign --verify --strict "$f" 2>/dev/null; then
+      unsigned=$((unsigned + 1)); echo "    UNSIGNED after the pass: $f" >&2
+    elif ! hardened "$f"; then
+      unhardened=$((unhardened + 1)); echo "    NO HARDENED RUNTIME: $f" >&2
+    fi
+  done <<EOF
+$binaries
+EOF
+  [ "$unsigned" -eq 0 ] || die "$unsigned binaries do not verify — the bundle would not notarize"
+  [ "$unhardened" -eq 0 ] \
+    || die "$unhardened binaries lack the hardened runtime — the bundle would not notarize"
+  say "signed and verified $count binaries"
+else
+  say "NOT signed (no identity given) — this tree will not notarize"
+fi
+
+# ------------------------------------------------------------------ assert whole, then swap
+#
+# The header promises "a tree that is stamped is whole", and until this block nothing enforced it —
+# `rsync` exits 0 on a source missing `cli.py`, and `discover()` accepts candidate 1 on
+# `bin/substrate-mcp` alone. Checked against what the app and the two shims actually reach for.
+assert_whole "$STAGE" "the staged engine"
+
+# TWO LINES, and the second one is not decoration. Line 1 is the fingerprint and the only thing the
+# skip above compares. Line 2 changes on every rebuild, which is what makes this file a build output
+# that actually MOVES: `--force` re-signs all 363 binaries while producing a byte-identical
+# fingerprint, and a declared output whose content did not change lets the build system conclude
+# nothing downstream needs redoing — including the re-seal this file is declared to trigger.
+{ echo "$WANT"; echo "built $(date -u +%Y-%m-%dT%H:%M:%SZ) pid=$$"; } >"$STAGE/.build-fingerprint"
+mkdir -p "$(dirname "$DEST")"
+
+# MOVED ASIDE, NOT DELETED IN PLACE. `rm -rf` on a 1.4 GB tree takes many seconds, and Xcode's Stop
+# button SIGTERMs the process group mid-way; whether `.build-fingerprint` is unlinked early or late
+# is readdir order. If it survived a partial delete, the next build would match the stamp, print
+# "nothing to do", and let Xcode seal and ship a gutted engine. A rename is atomic, so the stamp and
+# the tree it describes can never come apart.
+if [ -d "$DEST" ]; then mv "$DEST" "$DEST.previous"; fi
+# RESTORED ON FAILURE, which is what the `.previous` name promised and did not do. If this rename
+# failed — a full disk, a different filesystem, a permissions change — `set -e` exited, the EXIT
+# trap deleted the freshly built stage, and the bundle was left with NO engine at all. Bash does
+# service the EXIT trap on SIGTERM, so Xcode's Stop button lands inside this window rather than
+# skipping over it.
+if ! mv "$STAGE" "$DEST"; then
+  [ -d "$DEST.previous" ] && mv "$DEST.previous" "$DEST"
+  die "could not move the staged engine into place; the previous tree was restored"
+fi
+STAGE=
+trap - EXIT
+rm -rf "$DEST.previous"
+
+# `du -sh`, not `-L`: following the symlinks counts the 18 MB interpreter three times, which is how
+# this line first reported 1.2 GB for a 1.1 GB tree — a packaging step whose own size figure is
+# inflated is the last place that should happen.
+say "engine at $DEST  ($(du -sh "$DEST" | cut -f1))"
