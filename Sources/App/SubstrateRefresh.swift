@@ -114,38 +114,107 @@ final class SubstrateRefresh: ObservableObject {
         }
     }
 
-    /// One tick. Never throws, never retries: a refusal is a verdict this app is not entitled to
-    /// overrule, and the agent has already recorded it against every scope by the time it exits.
+    /// One tick: compose every registered scope, and record an outcome for each.
+    ///
+    /// THE AGENT IS NOT RUN, AND THIS IS NOT A PORT OF IT. `tools/substrate-refresh` cannot refresh
+    /// a bundled engine — it hard-exits on a missing `~/.local/bin/substrate`, and where it does run
+    /// it composes through `$ENGINE`/`$UV` read out of a user-writable deployment record, which is
+    /// arbitrary execution inside a notarized process. Doc 5 §6 decided the loop instead.
+    ///
+    /// What each of its refusals is worth here, one by one, because "we replaced it" is not an
+    /// argument:
+    ///
+    ///   * VERIFY THE DEPLOYMENT — moot. That outcome exists because a 900-second job exec'd a
+    ///     working tree and an uncommitted schema bump reached six scopes in one tick. The engine is
+    ///     now the signed bundle; there is no pin to prove and no tree to drift.
+    ///   * CHECK THE EMBEDDING DAEMON FIRST — moot for the same reason it existed. It guarded the
+    ///     window between `compose --clean` dropping the index and `embed` restoring vectors. This
+    ///     composes with `clean: false`, so no vectors are dropped and there is no window.
+    ///   * CLASSIFY DRIFT INTO THREE SHAPES — COARSENED, and stated rather than hidden: a successful
+    ///     compose is recorded `refreshed` whether or not anything changed. Both leave the scope
+    ///     verified, so the tri-state `frozen` is unaffected; what is lost is the quiet/noisy
+    ///     distinction, not a health signal.
+    ///   * RECORD AN OUTCOME ON EVERY PATH — KEPT, and it is the load-bearing one. A compose that
+    ///     fails records `compose_failed`, which is the freeze: without it the scope keeps serving
+    ///     its last healthy verdict and `refresh.frozen` reads `false` — freshness a human used to
+    ///     check becoming freshness a human assumes, which is the whole subject of PRINCIPLES.
+    ///
+    /// The per-scope verdict still belongs to the engine: this writes outcomes and re-lists, and
+    /// `refresh_state.report` is what interprets them.
     private func runPass() async {
         guard let source = SubstrateEngine.shared.serving ?? SubstrateEngine.resolved else {
             state = .unavailable(engine: "none — there is no engine on this Mac")
             return
         }
-        guard let agent = source.refreshAgent else {
+        guard let cli = source.cli else {
             state = .unavailable(engine: source.label)
             return
         }
-        // ALREADY RUNNING SOMEWHERE ELSE is a normal outcome, not a case to force. The agent takes
-        // `~/.substrate/refresh.lock` and `substrate-deploy` takes the same one; a second invocation
-        // sees it, logs that it skipped, and deliberately records NOTHING — because writing an
-        // outcome would overwrite a live pass's result with the news that a duplicate declined.
-        // Running it and letting it make that decision is the discipline; deciding here would be a
-        // second lock protocol beside the one that already exists.
+        // A ROSTER IS REQUIRED, not assumed: on the first pass nothing has listed yet, and a loop
+        // over an empty roster would silently refresh nothing while reporting a clean pass.
+        if SubstrateScopes.shared.rows.isEmpty { await SubstrateScopes.shared.listScopes() }
+        let rows = SubstrateScopes.shared.rows
+        guard !rows.isEmpty else {
+            state = .unavailable(engine: "\(source.label) — no scopes are registered")
+            return
+        }
+
         state = .running(since: Date())
-        let run = await SubstrateCLI.run(agent, [])
+        var firstFailure: SubstrateRun?
+        var last: SubstrateRun?
+        for row in rows {
+            if Task.isCancelled { break }
+            // A scope whose inheritance no longer resolves is listed WITH its fault and has no
+            // vault to compose. Recording `compose_failed` is right: it is frozen, and saying so is
+            // the difference between a scope that is broken and one that reads as fine.
+            guard row.error == nil, !row.vault.isEmpty else {
+                await record(cli: cli, scope: row.scope, outcome: "compose_failed")
+                continue
+            }
+            let vault = URL(fileURLWithPath: row.vault, isDirectory: true)
+            let run = await SubstrateLibraryModel.composeVault(cli: cli, vault: vault,
+                                                              name: row.scope, clean: false)
+            // DECLINED IS NOT FAILED. `composeVault` refuses while another compose is in flight —
+            // a recording's, or the operator's — and recording an outcome for a scope this pass did
+            // not attempt would overwrite a live verdict with the news that a duplicate stood down.
+            if run.cancelled && run.status == nil {
+                Self.log.info("skipped \(row.scope, privacy: .public) — a compose was in flight")
+                continue
+            }
+            await record(cli: cli, scope: row.scope,
+                         outcome: run.succeeded ? "refreshed" : "compose_failed")
+            if !run.succeeded, firstFailure == nil { firstFailure = run }
+            last = run
+        }
+
         guard !Task.isCancelled else {
             state = .idle
             return
         }
-        state = .finished(at: Date(), run: run)
-        Self.log.info("refresh pass exited \(run.status ?? -1)")
-        // The agent is the ONE path that sees changes this app did not make — an Obsidian edit, a
-        // Claude session writing a note. Its pass is therefore the moment an outside change becomes
-        // visible, so the browse list is invalidated here rather than waiting to be reopened.
+        // THE FIRST FAILURE IS WHAT THE CARD SHOWS, if there was one. The surface has room for a
+        // single run and reads `succeeded` off it, so showing the last would let one healthy scope
+        // at the end of the roster hide a refusal earlier in it.
+        if let representative = firstFailure ?? last {
+            state = .finished(at: Date(), run: representative)
+        }
+        Self.log.info("refresh pass composed \(rows.count) scope(s)")
+        // This pass is the ONE path that sees changes this app did not make — an Obsidian edit, a
+        // Claude session writing a note — so the browse list is invalidated here rather than
+        // waiting to be reopened.
         VaultBrowseModel.shared.corpusChanged()
-        // The verdict per scope lives on the roster, which the surface draws from. Re-listed rather
-        // than inferred: `refresh_state.report` is the only thing that knows how to read an outcome,
-        // including the freeze that is carried forward when the latest pass checked nothing.
+        // Re-listed rather than inferred: `refresh_state.report` is the only thing that knows how to
+        // read an outcome, including the freeze carried forward when a pass checked nothing.
         await SubstrateScopes.shared.listScopes()
+    }
+
+    /// Write one scope's outcome. Failing to record is itself reported, because the recorder is the
+    /// signal path: a pass whose verdict never lands leaves the scope asserting its last healthy
+    /// one, and that is the state this whole mechanism exists to make impossible.
+    private func record(cli: SubstrateEngine.Command, scope: String, outcome: String) async {
+        let run = await SubstrateCLI.run(
+            cli, ["refresh-record", "--scope", scope, "--outcome", outcome, "--quiet"])
+        if !run.succeeded {
+            Self.log.error("could not record \(outcome, privacy: .public) for \(scope, privacy: .public)")
+        }
     }
 }
