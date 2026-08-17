@@ -33,6 +33,10 @@ struct HubContent: View {
             // the sidebar reselects the section, and a `@State` model would drop a running ingest
             // — a minutes-long subprocess — the moment someone looked at another tab.
             SubstrateLibraryView(model: SubstrateLibraryModel.shared)
+        case .docs:
+            // The same `HelpView` the Help menu opens in its own window. One documentation surface,
+            // reachable two ways — a second copy of this content is how they drift.
+            HelpView()
         case .settings:
             SettingsView()
         }
