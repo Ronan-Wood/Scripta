@@ -139,6 +139,48 @@ def test_filename_derived_doc_id_collision_refused() -> None:
     raise AssertionError("expected VaultError for a filename-derived doc_id collision across vaults")
 
 
+def test_sync_conflict_copy_under_a_different_name_refused() -> None:
+    # THE CASE THE TWO TESTS ABOVE CANNOT REACH, and the one a file sync actually produces.
+    #
+    # A conflict copy lands under a DIFFERENT filename ("… (conflicted copy)", "…-MacBookPro",
+    # "….sync-conflict-…") in the SAME vault. Both notes declare no doc_id, so each derives one from
+    # filename+content — different names, different ids, no collision. Measured 2026-08-17 before
+    # the guard existed: composed clean, every gate green, two identical notes answering.
+    #
+    # Byte identity is the signal because it is convention-independent: keying on a vendor's
+    # conflict-filename shape would fail for the next tool, and Doc 2 §0 says the engine has an
+    # opinion on shape and none on location.
+    #
+    # COPIED, not re-authored through `_note` — which interpolates the filename into the heading, so
+    # two names could never produce identical bytes. A sync conflict IS a byte copy; the fixture has
+    # to be one, or it tests something that cannot happen.
+    root = _fresh_root()
+    _core(root)
+    proj = _project(root)
+    _note(proj / "02-areas", "note.md", "the note both machines edited.")
+    original = proj / "02-areas" / "note.md"
+    (proj / "02-areas" / "note-MacBook-Pro.md").write_bytes(original.read_bytes())
+    try:
+        V.resolve_scope(proj)
+    except V.VaultError as e:
+        assert "byte-identical" in str(e), f"refused for the wrong reason: {e}"
+        return
+    raise AssertionError("expected VaultError for a byte-identical sync-conflict copy")
+
+
+def test_distinct_notes_in_one_vault_still_compose() -> None:
+    # The guard must refuse duplication, not similarity. Two notes that differ by one line are
+    # ordinary content, and a guard that refused them would fail a whole scope on a resemblance —
+    # a worse failure than the one it prevents. Measured across the seven live vaults before
+    # shipping: 693 notes, zero exact-duplicate groups.
+    root = _fresh_root()
+    _core(root)
+    proj = _project(root)
+    _note(proj / "02-areas", "note.md", "the note both machines edited.")
+    _note(proj / "02-areas", "note-2.md", "the note both machines edited, plus one more line.")
+    V.resolve_scope(proj)   # must not raise
+
+
 def test_inheritance_cycle_refused() -> None:
     root = _fresh_root()
     a = root / "a-vault"
