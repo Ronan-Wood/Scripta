@@ -232,6 +232,31 @@ rsync -a --exclude '__pycache__' --exclude '*.pyc' "$REPO/substrate/" "$STAGE/su
 # decision behind it (what replaces "verify the deployment" when the engine IS the signed bundle),
 # and it is not smuggled in here.
 
+# THIRD-PARTY TEST SUITES DO NOT SHIP. 133 MB of them arrive inside the wheels — pandas alone
+# carries 36 MB, plus scipy's per-submodule suites, shapely, setuptools, mpmath — and 69 MB of that
+# is compiled bytecode for tests that can never run here. This engine's OWN tests were never in the
+# bundle (the rsync above copies the package, not `tests/`); this is other projects' tests riding
+# along in their distributions.
+#
+# Apple noticed before we did: the one warning on submission 016b3de1 was
+# `scipy/sparse/linalg/tests/propack_test_data.npz` "could not be unpacked".
+#
+# PRUNED BEFORE SIGNING, so the signing and verification passes never walk them either.
+#
+# Verified after pruning rather than assumed: the build imports numpy, scipy, pandas, torch and
+# docling and converts a document, because a package that imports from its own test tree would fail
+# here and not at build time.
+say "pruning vendored test suites"
+find "$STAGE/.venv/lib" \( -type d -name tests -o -type d -name test \) -prune -exec rm -rf {} + \
+  || die "could not prune vendored test suites"
+
+"$STAGE/.venv/bin/python" -B -E -s -c "
+import numpy, scipy, pandas, torch, docling
+from docling.document_converter import DocumentConverter
+import scipy.sparse.linalg, scipy.optimize, scipy.ndimage
+print('  imports OK after prune')
+" || die "pruning test suites broke an import — something reaches into its own test tree"
+
 # The engine's own bytecode, for the same reason as --compile-bytecode above: whatever is not
 # compiled here is compiled on first import, into a bundle that is already sealed. `-q` because
 # compileall reports every file; a non-zero exit is a genuine syntax error and must not be ignored.
