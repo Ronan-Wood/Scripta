@@ -19,6 +19,8 @@ wearing a new hat. `assert_composed` is the post-index proof that it did not hap
 
 from __future__ import annotations
 
+import hashlib
+
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -376,9 +378,30 @@ def resolve_scope(project_vault: Path) -> Scope:
     # The EFFECTIVE id is checked (not just frontmatter-declared ones): two byte-identical, same-stem
     # notes in different vaults produce one filename-derived id, and assert_composed cannot catch
     # that (the ingested-id SET has already deduped them). Refuse it here, at the source.
+    #
+    # AND THE SAME COLLISION WHERE NO ID WAS DECLARED. The guard above catches a duplicate whose
+    # doc_id is declared, because both copies carry it. It CANNOT catch the undeclared case: the id
+    # then derives from filename AND content, so a copy under a different filename gets a different
+    # id and both notes compose — measured 2026-08-17, all gates green, two near-identical notes
+    # answering the same query.
+    #
+    # That is what every file-sync tool produces on a conflict, whatever it calls the sibling
+    # ("… (conflicted copy)", "…-MacBookPro", "….sync-conflict-…"). Keying on those names would tie
+    # this engine to one vendor's convention and fail for the next; Doc 2 §0 says the engine has an
+    # opinion on shape and none on location, and a sync tool is part of location. **Byte identity is
+    # the convention-independent signal** — two files with the same bytes are one note twice, which
+    # is never intentional in a vault.
+    #
+    # EXACT ONLY, stated rather than implied: a conflict copy that was then EDITED is not caught.
+    # Near-duplicate detection needs a threshold, and a threshold that refuses a whole scope on a
+    # similarity score is a worse failure than the one it prevents. Measured before shipping this:
+    # 693 notes across all seven live vaults, zero exact-duplicate groups — so this refuses nothing
+    # that exists.
     ids: dict[str, Path] = {}
+    bodies: dict[str, Path] = {}
     for n in notes:
-        front, _ = _parse_frontmatter(_read_capped(n.path))  # size-checked before doc_id_for reads it
+        raw = _read_capped(n.path)
+        front, _ = _parse_frontmatter(raw)  # size-checked before doc_id_for reads it
         fid = front.get("doc_id", "")
         eff = fid if _DOC_ID.fullmatch(fid) else doc_id_for(n.path)
         if eff in ids:
@@ -388,6 +411,16 @@ def resolve_scope(project_vault: Path) -> Scope:
                 "the other at index time."
             )
         ids[eff] = n.path
+
+        digest = hashlib.sha256(raw.encode("utf-8", "surrogateescape")).hexdigest()
+        if digest in bodies:
+            raise VaultError(
+                f"two notes are byte-identical: {bodies[digest]} and {n.path}. That is what a file "
+                "sync leaves behind when two machines edited a note, and indexing both answers one "
+                "question with the same passage twice while hiding that a conflict happened. "
+                "Delete or merge one, then recompose."
+            )
+        bodies[digest] = n.path
 
     # The project's own manifest is re-read for its declared name. `visit` parsed it already but
     # kept only `inherits`; the file is size-capped and tiny, and reading it here keeps the name
