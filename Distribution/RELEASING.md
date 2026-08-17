@@ -53,16 +53,44 @@ grep -q 'Timestamp='                         <<<"$sig" || { echo "NO secure time
 codesign --verify --strict --verbose=2 build/Distribution/Scripta.app
 codesign --verify --deep --strict build/Distribution/Scripta.app
 
-# stage dmg (app + /Applications symlink + README), then:
+# NOTARIZE THE APP FIRST, THEN THE DMG. Two submissions, and the order is not optional:
+# a ticket is keyed to the exact bytes it was issued for, so building the dmg AFTER stapling the
+# app is what lets the app carry its own ticket — and rebuilding the dmg later would invalidate a
+# dmg ticket stapled before it. Getting this backwards produces `stapler` Error 65.
+#
+# Why the app needs its own ticket at all: users drag it out of the dmg. A ticket stapled only to
+# the dmg does not travel with the copy in /Applications, so a first launch with no network has to
+# reach Apple. Stapling the app makes it work offline.
 mkdir -p dist
-hdiutil create -volname "Scripta" -srcfolder <stage> -ov -format UDZO dist/Scripta.dmg
+ditto -c -k --keepParent build/Distribution/Scripta.app dist/Scripta-app.zip
+xcrun notarytool submit dist/Scripta-app.zip --keychain-profile notary --wait
+xcrun stapler staple build/Distribution/Scripta.app        # the ticket the user's copy carries
+
+# Now the dmg, built FROM the stapled app.
+rm -rf dist/stage && mkdir -p dist/stage
+cp -R build/Distribution/Scripta.app dist/stage/
+ln -s /Applications dist/stage/Applications
+hdiutil create -volname "Scripta" -srcfolder dist/stage -ov -format UDZO dist/Scripta.dmg
 xcrun notarytool submit dist/Scripta.dmg --keychain-profile notary --wait
 xcrun stapler staple dist/Scripta.dmg
+
+# What "shipped" looks like. `spctl` on the APP is the check that matters — a dmg is not what
+# Gatekeeper judges at launch.
+xcrun stapler validate build/Distribution/Scripta.app
+spctl -a -vvv build/Distribution/Scripta.app     # expect: accepted / source=Notarized Developer ID
 ```
 
-**Expect notarization to be the slow, uncertain step.** Nobody has run it against this bundle yet:
-1.4 GB with 366 nested binaries is well outside the usual shape, and it is the one part of the
-packaging plan with no evidence behind it. The nested binaries are signed and timestamped by the
+**Known rejections, both hit on 2026-08-17 and both fixed in `project.yml`:**
+
+| symptom | cause |
+|---|---|
+| `The executable requests the com.apple.security.get-task-allow entitlement` | Xcode injects the debug entitlement at signing time. It is NOT in `Scripta.entitlements`, so it is invisible in the repo — only `codesign -d --entitlements` on the built app shows it. Fixed by `CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO` on the Distribution config |
+| `stapler` **Error 65** | stapling a dmg that was rebuilt after its ticket was issued. Follow the order above |
+
+**Notarization is proven.** Submission `c3eeb612` was **Accepted** on 2026-08-17 — 1.4 GB, 366
+nested binaries, ~15 minutes end to end, dominated by the upload. Every nested binary passed; the
+single rejection before it was the entitlement in the table above, not the size or the contents.
+Budget ~15 minutes per submission and two submissions per release. The nested binaries are signed and timestamped by the
 build phase (`substrate/tools/build-bundled-engine`), which also verifies every one carries a valid
 signature and the hardened-runtime flag before it will finish — so a failure here should be about
 the submission, not the contents.
