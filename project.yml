@@ -210,6 +210,16 @@ targetTemplates:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: ""
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "Developer ID Application"
+          # NO DEBUG ENTITLEMENT. Xcode injects `com.apple.security.get-task-allow` — which lets a
+          # debugger attach — into the signed entitlements unless this is off. It is not in
+          # `Scripta.entitlements`; it arrives at signing time, so it is invisible in the source and
+          # shows up only in `codesign -d --entitlements` on the built app.
+          #
+          # Notarization refuses it outright, and that is the whole point: a shipped app a debugger
+          # can attach to defeats the hardened runtime this configuration exists to enable. Measured
+          # — submission 016b3de1 was rejected for exactly this, with every one of the 366 nested
+          # binaries passing clean.
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
           # THE APP'S OWN SIGNATURE NEEDS THE TIMESTAMP TOO, and Xcode does not add it: a plain
           # `xcodebuild build` passes `--timestamp=none` in every configuration, so the 366 nested
           # binaries carried secure timestamps (the build phase asks for them) while the bundle
