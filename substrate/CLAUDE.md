@@ -39,16 +39,37 @@ Non-negotiables from that file:
   manifest, domain, capability). **Reserved:** `status` = the note lifecycle only
   (active / complete / archived / superseded); the retrieval-stack state is `capability`.
 
-## The refresh agent runs a DEPLOYED engine, not this tree
+## Refresh is IN-APP now — there is no launchd agent
 
-`com.ronanwood.substrate-refresh` used to exec this working tree every 900 seconds, and on
-2026-08-03 an uncommitted schema bump reached all six live scopes inside one tick. It now runs an
-export of one commit at `~/.substrate/engine`, proven file-by-file before it composes anything.
+**`com.ronanwood.substrate-refresh` was retired 2026-08-12.** No plist is installed and
+`launchctl list` shows nothing. This section described it in the present tense for five days after
+it was removed, and on 2026-08-17 a session asserted "the deployed-engine agent under launchd runs
+today" straight out of this file — having verified the retirement itself hours earlier. **A stale
+`CLAUDE.md` is worse than a stale doc: it is loaded into every session before anyone looks at the
+machine.**
 
-**Editing this repo does not change what the refresh runs. Neither does committing.** Only
+What composes today: `SubstrateRefresh` drives `bin/substrate compose` per scope on a timer while
+Scripta is open, plus the recording and Library paths. All go through
+`SubstrateLibraryModel.composeVault`, which serializes them **in-process only** — a CLI invocation
+is a separate process and is not covered. `~/.substrate/refresh.lock` still exists and
+`tools/substrate-deploy` still takes it, but its counterparty retired with the agent, so it now
+guards against nothing.
+
+**The consequence to know:** vaults refresh only while the app is open. A week without opening
+Scripta means a week-old index — and `refresh.frozen` reads `false`, because nothing failed;
+nothing ran.
+
+### The deployment pin still matters, for a different reason
+
+`~/.substrate/engine` is still a real thing: `discover()` tier 2. It is now DEBUG-only (Doc 5), so
+a shipped app never reaches it, but a developer build does.
+
+**Editing this repo does not change what that engine serves. Neither does committing.** Only
 `tools/substrate-deploy` does — and the pin sitting behind HEAD is the normal state of a repo being
-worked in, not a fault. When the deployment cannot be proven the agent refuses the whole tick and
-records `engine_unverified` for every scope; `tools/substrate-deploy --show` says why.
+worked in, not a fault. `tools/substrate-deploy --show` says how far behind it is.
+
+The reason for a pinned export rather than running `$REPO` is worth keeping even though the agent
+is gone: on 2026-08-03 an uncommitted schema bump reached all six live scopes inside one tick.
 
 Do not "simplify" this back into running `$REPO` directly. `tools/deployment.py` carries the
 argument for the pin over the two cheaper guards (refuse-if-dirty, refuse-if-uncommitted) that were
