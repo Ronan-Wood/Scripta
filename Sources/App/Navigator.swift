@@ -20,11 +20,21 @@ import Foundation
 ///
 /// `library` sits beside `ask` because they are the two directions of one relationship — Ask reads
 /// a composed scope, the Library writes one and now also browses it.
+/// `docs` IS BACK IN THE SIDEBAR, and the reason it left still holds — which is why it is in
+/// `secondary` rather than beside the four. Doc 4 §2 moved it to the Help menu because a
+/// documentation row competed with the surfaces a reader actually works in, and `NSApp.helpMenu` is
+/// where macOS has taught people to look.
+///
+/// What that argument missed is that this is an `LSUIElement` app. The menu bar carries Scripta's
+/// menus only while one of its windows has focus, so "look in the Help menu" is advice you can only
+/// follow if you already know to look there. Measured the hard way: the operator who built the app
+/// could not find its documentation. ⌘? still works and the Help menu keeps its entry; this is the
+/// visible affordance beside Settings, which is the other place people hunt.
 enum HubSection: String, CaseIterable {
-    case home, ask, calls, library, settings
+    case home, ask, calls, library, docs, settings
 
     static let primary: [HubSection] = [.home, .ask, .calls, .library]
-    static let secondary: [HubSection] = [.settings]
+    static let secondary: [HubSection] = [.docs, .settings]
 
     var title: String {
         switch self {
@@ -32,6 +42,7 @@ enum HubSection: String, CaseIterable {
         case .ask: return "Ask"
         case .calls: return "Calls"
         case .library: return "Library"
+        case .docs: return "Docs"
         case .settings: return "Settings"
         }
     }
@@ -42,6 +53,7 @@ enum HubSection: String, CaseIterable {
         case .ask: return "bubble.left.and.bubble.right"
         case .calls: return "doc.text"
         case .library: return "books.vertical"
+        case .docs: return "questionmark.circle"
         case .settings: return "gearshape"
         }
     }
