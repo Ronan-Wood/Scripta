@@ -225,17 +225,58 @@ The cheapest form of the check is vocabulary agreement between parsers: if one c
 and another ignores it, that is alias drift and it will default silently. That test catches the bug
 before the bug is written.
 
-### The known second instance, not yet fixed
+### The known second instance — FIXED, and the entry outlived the defect
 
 Doc 2 §3b calls the markdown→raw pointer **"system-contract provenance"** — `raw`, `raw_sha256`,
 `raw_location` in a source's `_meta.md`, whose stated purpose is that the regeneration path cannot
-be lost. It is written correctly in the real DDIA `_meta.md`. **Neither parser reads it and no
-column holds it.** A retrieved passage carries `source_sha256` — of the passage FILE, not of the
-source PDF — so it answers a different question than the one a reader would assume, which is why
-this one survives inspection.
+be lost. This section used to read: *"Neither parser reads it and no column holds it."* That was a
+different subclass from the alias drift — not "declared, valid, silently defaulted" but "declared in
+the spec, never implemented at all."
 
-This is a different subclass from the alias drift: not "declared, valid, silently defaulted" but
-"declared in the spec, never implemented at all." Both are invisible; they need different fixes.
+**Both halves stopped being true at schema v6 (2026-07-24), and this entry did not.** Verified
+2026-08-17: `vault.py:231-232` reads both keys from `_meta.md`, `reconcile.py:94` carries
+`raw_location` through, `index_store.py:405` writes it, and `schema.py:152-153` holds the columns.
+Live data agrees — 3 of 61 documents in the `scripta` scope carry a `raw_location` today.
+
+**The correction is the lesson.** A retracted-defect entry is a claim like any other, and this one
+sat in the document whose fourth law is about claims with nothing behind them, asserting a gap that
+had been closed for three weeks. It survived because nothing fails when a *known-issues* entry goes
+stale: the code got better and the paragraph describing it did not, which is the same shape as a
+docstring written last and never rechecked. **A fixed defect must be closed out where it was
+recorded, or the record becomes the defect.**
+
+Kept rather than deleted because the pointer's PURPOSE is now load-bearing in a way it was not when
+this was written: a mobile ingest arm would extract with weaker tools than the Mac's, and
+`raw_location` is what lets the Mac find the original and re-extract it later. An unimplemented
+pointer would have made that upgrade impossible and the loss silent — extraction without a route
+back is a one-way door, which is what "system contract" meant all along.
+
+### A live instance, opened the day the last one closed — 2026-08-17
+
+`refresh.attempted` is on every envelope (`WirePayloads.swift:149`) and **no consumer reads it.**
+`render.py:468` says so deliberately: *"A consumer that wants an interval compares `attempted`
+against…"* — the engine declines to compute age and leaves it to the caller. No caller does.
+
+That was harmless while an unattended agent guaranteed a 900-second cadence: `frozen: false` meant
+"index and vault agreed", checked recently by construction. **`com.ronanwood.substrate-refresh` was
+retired 2026-08-12 and refresh moved in-app, so cadence now depends on the app being open.** The
+same `false` now means "agreed as of whenever Scripta last ran", which may be a week ago.
+
+Nothing lies. The tri-state is honest per its own definition — `frozen: null` covers *attempted and
+inconclusive*, and a scope nobody attempted keeps its last real verdict rather than inventing one.
+What changed is that **the verdict's freshness stopped being implied by the mechanism and became a
+number nobody reads.** The producer knows; the value crosses; the consumer ignores it.
+
+This is the third law rather than the first, and the distinction matters for the fix: the value is
+not missing and not dropped in parsing — it is *arriving and unconsumed*, which no assertion can
+catch because every assertion downstream sees a well-formed envelope.
+
+**Open question rather than a decided fix:** should age be part of the verdict — a fourth state, or
+`frozen` becoming a function of `attempted` — or does it stay metadata that surfaces are obliged to
+render? Making it a verdict risks a scope reading as broken because its owner went on holiday. The
+same shape shows up beside it: `~/.substrate/refresh.lock` is still taken by `tools/substrate-deploy`
+and its only counterparty retired with the agent, so a declared coordination value now has no
+reader at all.
 
 ---
 
