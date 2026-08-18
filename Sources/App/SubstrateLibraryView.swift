@@ -28,7 +28,7 @@ struct SubstrateLibraryView: View {
         VStack(alignment: .leading, spacing: 0) {
             lensPicker
             switch model.lens {
-            case .add: column
+            case .add, .status: column
             // WHOLE, WITH ITS OWN GATE, rather than reaching past it for the console inside. The
             // two gates are the same four cards and the duplication is the point: each surface
             // keeps the reasoning it documents about waiting for the engine, so neither inherits
@@ -85,10 +85,15 @@ private struct LibraryConsole: View {
                 case .idle:
                     EmptyView()
                 }
-                LibraryDocumentRail(model: model)
-                LibraryTranscriptRail(model: model)
-                LibraryScopeRail()
-                LibraryRefreshRail()
+                // THE JOB STRIP ABOVE IS ON BOTH, because both lenses start jobs — Add composes
+                // what it just wrote, and Status has "Compose and register" and "Refresh now".
+                if model.lens == .add {
+                    LibraryAddRail(model: model)
+                } else {
+                    LibraryTranscriptRail(model: model)
+                    LibraryScopeRail()
+                    LibraryRefreshRail()
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(maxWidth: .infinity)
@@ -101,38 +106,152 @@ private struct LibraryConsole: View {
 
 // MARK: - Bringing a document in
 
-private struct LibraryDocumentRail: View {
+/// WHAT ARE YOU ADDING, THEN WHERE, THEN THE FIELDS FOR IT.
+///
+/// The page used to open on a document drop target with a class axis and a domains field beside it,
+/// which asked the operator to answer a document's questions before establishing that a document was
+/// what they had. Notes were not on this page at all — they were behind a button on the reading
+/// surface, which is the last place someone goes to WRITE.
+///
+/// IT IS THE WHOLE PAGE NOW. Call transcripts, scopes and refresh used to sit underneath it — the
+/// state of what is ALREADY here, which is a different question from adding to it — and they moved
+/// to the Status lens. They were not folded into the chooser either: a chooser listing them would
+/// have been a table of contents for the screen rather than a list of things you can add.
+private struct LibraryAddRail: View {
     @ObservedObject var model: SubstrateLibraryModel
+    @State private var kind = AddKind.document
+    @State private var draft = NoteDraft()
+    @State private var noteRefusal: String?
+
+    /// The things this page can add. Recording a call is not among them — a call arrives by being
+    /// recorded; UPLOADING one you already have is a different act, and is `.transcript`. Where a
+    /// recorded call lands is configured under Status.
+    private enum AddKind: String, CaseIterable, Identifiable {
+        case document, transcript, note
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .document: return "A document"
+            case .transcript: return "A call transcript"
+            case .note: return "A note"
+            }
+        }
+
+        var hint: String {
+            switch self {
+            case .document:
+                return "A PDF, Word or Markdown file, read into passages you can ask about."
+            case .transcript:
+                // WHY IT IS ITS OWN KIND rather than a document with a class picked: filed with the
+                // calls, and withheld from answers by default the same way they are.
+                return "A recording from somewhere else. Filed with your calls and kept out of "
+                     + "answers by default, like they are."
+            case .note:
+                return "Something you write yourself."
+            }
+        }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Gap.s10) {
-            LibrarySectionHeader(
-                title: "Documents",
-                // CORRECTED with the destination: this said the document lands in a standalone
-                // `scripta-library` vault every workspace could query. It now lands in THIS
-                // workspace's vault, walled like its calls — and moving it somewhere shared is a
-                // deliberate promotion rather than what happens by default.
-                note: "Extracted by the engine and added to this workspace's vault under "
-                    + "`10-reference/`, then composed so it is queryable. It stays in "
-                    + "\(model.workspace.isEmpty ? "this workspace" : model.workspace) — sharing a "
-                    + "document across workspaces is a separate, deliberate step.")
-            LibraryDropTarget(model: model)
-            switch model.surface {
-            case .unasked, .asking:
-                LibraryProbing()
-            case .noCLI(let engine):
-                LibraryNote(id: "no-cli", marker: "no CLI", tone: Ink.danger,
-                            text: "The engine answering is \(engine), and there is no `substrate` "
-                                + "command beside it. Ingest is a subprocess and never a transport "
-                                + "call (Doc 3 §3), so the Library has nothing to run — Ask is "
-                                + "unaffected.")
-            case .known(let surface):
-                LibraryReaders(model: model, surface: surface)
+        VStack(alignment: .leading, spacing: Gap.s12) {
+            LibrarySectionHeader(title: "Add", note: nil)
+            kindField
+            switch kind {
+            case .document: fileFields(tier: .reference)
+            case .transcript: fileFields(tier: .transcript)
+            case .note: noteFields
             }
         }
         .padding(Metrics.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .surface(Ink.layer)
+        .alert("This note could not be written", isPresented: .init(
+            get: { noteRefusal != nil }, set: { if !$0 { noteRefusal = nil } })) {
+            Button("OK", role: .cancel) { noteRefusal = nil }
+        } message: {
+            Text(noteRefusal ?? "")
+        }
+    }
+
+    private var kindField: some View {
+        VStack(alignment: .leading, spacing: Gap.s4) {
+            Text("What are you adding?").typeface(Register.micro, Ink.textSecondary)
+            Picker("", selection: $kind) {
+                ForEach(AddKind.allCases) { Text($0.label).tag($0) }
+            }
+            .labelsHidden()
+            .pickerStyle(.radioGroup)
+            Text(kind.hint).proseText(Register.proseSm, Ink.textHelper)
+        }
+    }
+
+    // MARK: - A file (a document, or a transcript from somewhere else)
+
+    @ViewBuilder private func fileFields(tier: SubstrateLibrary.PromotionTier) -> some View {
+        Text(destinationSentence(tier)).proseText(Register.proseSm, Ink.textHelper)
+            .frame(maxWidth: Metrics.formMaxWidth, alignment: .leading)
+        LibraryDropTarget(model: model)
+            .frame(maxWidth: Metrics.formMaxWidth, alignment: .leading)
+        switch model.surface {
+        case .unasked, .asking:
+            LibraryProbing()
+        case .noCLI(let engine):
+            LibraryNote(id: "no-cli", marker: "no CLI", tone: Ink.danger,
+                        text: "The engine that is running has no `substrate` command beside it, so "
+                            + "there is nothing to extract with. Asking still works.")
+        case .known(let surface):
+            // A TRANSCRIPT ASKS NOTHING ELSE. Its class is decided by what it is, so the axis that
+            // exists to stop a document being mislabelled has no question to put — offering it
+            // would let someone file a conversation as a published reference.
+            if tier == .transcript {
+                LibraryDomainsField(model: model)
+                    .frame(maxWidth: Metrics.formMaxWidth, alignment: .leading)
+            } else {
+                LibraryReaders(model: model, surface: surface)
+                    .frame(maxWidth: Metrics.formMaxWidth, alignment: .leading)
+            }
+            LibraryFileAddButton(model: model, tier: tier)
+        }
+    }
+
+    private func destinationSentence(_ tier: SubstrateLibrary.PromotionTier) -> String {
+        let here = model.workspace.isEmpty ? "this workspace" : model.workspace
+        switch tier {
+        case .reference:
+            return "Goes into \(here). Other workspaces will not see it."
+        case .transcript:
+            return "Filed with \(here)'s calls, and withheld from answers by default the same way "
+                 + "they are — ask for calls explicitly to reach it."
+        }
+    }
+
+    // MARK: - A note
+
+    @ViewBuilder private var noteFields: some View {
+        NoteDraftFields(draft: $draft, workspace: model.workspace,
+                        sharedVaultName: AppSettings.sharedVault?.lastPathComponent)
+        // NO STANDING "you must fill this in" LINE. It sat under the button before anyone had done
+        // anything, which is nagging rather than helping — the disabled button already says the
+        // form is incomplete, and the title field is the only empty one it can be about.
+        HStack(spacing: Gap.s8) {
+            ActionButton(title: "Add note", glyph: .add, rank: .primary, action: addNote)
+                .disabled(!draft.isWritable || model.isWorking)
+            Spacer(minLength: Gap.s4)
+        }
+        .frame(maxWidth: Metrics.formMaxWidth, alignment: .leading)
+    }
+
+    /// CLEARED ONLY ON SUCCESS, like the sheet — a refused note keeps everything typed into it.
+    private func addNote() {
+        if let reason = model.createNote(title: draft.title, docType: draft.docType,
+                                         body: draft.body, destination: draft.destination,
+                                         confidence: draft.resolvedConfidence,
+                                         domains: draft.resolvedDomains) {
+            noteRefusal = reason
+        } else {
+            draft = NoteDraft()
+        }
     }
 }
 
@@ -214,7 +333,8 @@ private struct LibraryReaders: View {
             LibraryVerdictRow(model: model, surface: surface)
             LibraryClassRow(model: model, surface: surface)
             LibraryDomainsField(model: model)
-            LibraryAddRow(model: model)
+            // The Add button is NOT here any more — `LibraryAddRail` owns it, because it is the only
+            // caller that knows which tier the file is being added at.
         }
     }
 }
@@ -304,8 +424,26 @@ private struct LibraryClassRow: View {
     @ObservedObject var model: SubstrateLibraryModel
     let surface: SubstrateCLI.IngestSurface
 
+    /// PLAIN LANGUAGE FOR THE ENGINE'S WORDS, keyed by them rather than replacing them. The chip
+    /// keeps the engine's token because that token is written into the document's frontmatter and
+    /// the operator will meet it again in the corpus; relabelling the control would leave them
+    /// looking up a word this screen invented.
+    ///
+    /// A DICTIONARY WITH A FALLBACK, not a fixed list, so the "asked, not assumed" property of this
+    /// screen survives: the classes come from `substrate formats` at the point of use, and one this
+    /// build has never heard of still gets a chip — just without a gloss.
+    private static let glosses = [
+        "reference-frozen": "Published and finished — a book, a paper, a report that will not be "
+            + "revised. Passages are quoted as settled.",
+        "reference-versioned": "Something that gets revised — a spec, a standard, living docs. The "
+            + "version matters, and a later one supersedes this.",
+        "conversation": "A record of people talking. Withheld from answers by default, because "
+            + "what someone said mid-discussion is not a conclusion.",
+    ]
+
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s4) {
+            Text("What kind of document is it?").typeface(Register.micro, Ink.textSecondary)
             HStack(spacing: Gap.s6) {
                 EnvelopeMarkerLabel(name: "class")
                 if !model.classRequired {
@@ -325,14 +463,24 @@ private struct LibraryClassRow: View {
         }
     }
 
+    /// WHAT THE CURRENT CHOICE MEANS, not why the control is shaped this way. The rationale it
+    /// replaced — that an absent class used to default to `reference-frozen` and so ~88% of a corpus
+    /// claimed to be a published edition — is a real and load-bearing fact, but it is a fact about
+    /// this codebase's history. It belongs in the comment above, where it now lives, rather than in
+    /// front of someone trying to file a PDF.
     private var sentence: String {
-        if model.classRequired {
-            return "This format requires one, and nothing is preselected: an undeclared class used "
-                + "to default to reference-frozen, which is the value a reader trusts."
+        if let chosen = model.documentClass {
+            return Self.glosses[chosen]
+                ?? "This engine names a class this build has no description for. It is passed "
+                 + "through as you picked it."
         }
-        return "Undeclared is the engine's own default here — an extension says what the container "
-            + "is, not what the document is. It stores as `unclassified`, is retrieved by default, "
-            + "and is drawn as undeclared rather than as a weaker claim."
+        if model.classRequired {
+            return "This format needs you to choose. Nothing is preselected on purpose — the wrong "
+                 + "guess here makes a draft look like a published source."
+        }
+        return "Leaving it undeclared is the normal answer, and the engine's own default. A file "
+             + "extension says what the container is, not what the document is. It stays fully "
+             + "searchable either way."
     }
 }
 
@@ -341,28 +489,51 @@ private struct LibraryDomainsField: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s4) {
-            InputField(prompt: "Domains, comma-separated — optional", text: $model.domains,
-                       glyph: .tag)
-            Text("`domains` is what retrieval filters on, and nothing in the engine refuses a note "
-                 + "that declares none — so Scripta always writes `\(SubstrateLibrary.baseDomain)` "
-                 + "underneath whatever you add. Anything unslugifiable is dropped by the engine's "
-                 + "own parser, silently, which is why they are put into its shape before writing.")
+            Text("What subjects is it about? — optional")
+                .typeface(Register.micro, Ink.textSecondary)
+            InputField(prompt: "e.g. databases, hiring", text: $model.domains, glyph: .tag)
+            // WHAT IT BUYS THEM, then the one mechanical fact they can act on. The paragraph this
+            // replaced explained that unslugifiable domains are dropped silently by the engine's
+            // parser and that Scripta pre-shapes them to avoid it — true, and a thing this code
+            // does, not a thing the operator does.
+            Text("Used to narrow answers when you ask across several workspaces. Comma-separated. "
+                 + "Scripta files everything here under `\(SubstrateLibrary.baseDomain)` as well, "
+                 + "so a document is never left with no subject at all.")
                 .proseText(Register.proseSm, Ink.textHelper)
         }
     }
 }
 
-private struct LibraryAddRow: View {
+private struct LibraryFileAddButton: View {
     @ObservedObject var model: SubstrateLibraryModel
+    let tier: SubstrateLibrary.PromotionTier
 
     var body: some View {
-        HStack(spacing: Gap.s8) {
-            ActionButton(title: "Add to the library", glyph: .add, rank: .primary,
-                         action: model.addDocument)
-                .disabled(!ready)
-            Spacer(minLength: Gap.s4)
+        VStack(alignment: .leading, spacing: Gap.s4) {
+            HStack(spacing: Gap.s8) {
+                ActionButton(title: tier == .transcript ? "Add transcript" : "Add document",
+                             glyph: .add, rank: .primary,
+                             action: { model.addDocument(tier: tier) })
+                    .disabled(!ready)
+                Spacer(minLength: Gap.s4)
+            }
+            // WHY IT IS OFF, WHENEVER IT IS OFF. A disabled primary button with no explanation is
+            // the control this codebase keeps writing cards to apologise for — and the two reasons
+            // it disables are both fixable by the operator in the same breath.
+            if let blocked {
+                Text(blocked).proseText(Register.proseSm, Ink.textHelper)
+            }
         }
         .padding(.top, Gap.s2)
+    }
+
+    private var blocked: String? {
+        if model.isWorking { return "Waiting for the job above to finish." }
+        if model.document == nil { return "Choose or drop a document first." }
+        if tier != .transcript, model.classRequired, model.documentClass == nil {
+            return "This format needs a kind — pick one above."
+        }
+        return nil
     }
 
     /// Enabled even for a file the engine's table refuses, and that is deliberate. The table is a
@@ -371,7 +542,7 @@ private struct LibraryAddRow: View {
     /// refusal note above buys is that the operator knows before they press it.
     private var ready: Bool {
         guard !model.isWorking, model.document != nil else { return false }
-        return !model.classRequired || model.documentClass != nil
+        return tier == .transcript || !model.classRequired || model.documentClass != nil
     }
 }
 
@@ -565,6 +736,11 @@ private struct LibraryScopeRail: View {
 
 private struct LibraryScopeLine: View {
     let row: WireScopeRow
+    /// FOLDED BY DEFAULT, EVEN WHEN BROKEN. The engine's refusal is long by design — it explains a
+    /// partly-rewritten index and what to run — and drawing it inline put two identical
+    /// six-line paragraphs on a screen someone opened to add a note. A broken scope still SAYS it is
+    /// broken on its one line; the paragraph is one click away for whoever is actually fixing it.
+    @State private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s4) {
@@ -572,19 +748,28 @@ private struct LibraryScopeLine: View {
                 Pill(text: row.scope, style: VaultScopeHealth.style(row, selected: false))
                 Text(row.refresh.outcome ?? "unrecorded")
                     .typeface(Register.monoMicro, tone)
+                if hasDetail {
+                    Button(expanded ? "Hide detail" : "Why") { expanded.toggle() }
+                        .buttonStyle(.link)
+                        .typeface(Register.monoMicro, Ink.textHelper)
+                }
                 Spacer(minLength: Gap.s4)
                 Text(SubstrateCLI.abbreviated(row.vault))
                     .typeface(Register.monoMicro, Ink.textHelper).lineLimit(1)
             }
-            // The engine's own sentence about this scope's maintenance, not a paraphrase. It is
-            // absent exactly when there is nothing to say, which under rule 3 is what healthy
-            // looks like.
-            if let note = row.refresh.note {
-                Text(note).proseText(Register.proseSm, Ink.textHelper)
-                    .padding(.leading, EnvelopeMarker.indent)
+            if expanded {
+                // The engine's own sentence about this scope's maintenance, not a paraphrase.
+                if let note = row.refresh.note {
+                    Text(note).proseText(Register.proseSm, Ink.textHelper)
+                        .padding(.leading, EnvelopeMarker.indent)
+                }
+                if let health = VaultScopeHealth.note(for: row) { VaultScopeNote(note: health) }
             }
-            if let health = VaultScopeHealth.note(for: row) { VaultScopeNote(note: health) }
         }
+    }
+
+    private var hasDetail: Bool {
+        row.refresh.note != nil || VaultScopeHealth.note(for: row) != nil
     }
 
     /// Tri-state, drawn as three things. `noBasis` is ABSENT EVIDENCE and must not take the colour
