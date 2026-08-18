@@ -35,6 +35,9 @@ struct HubView: View {
     @State private var creatingWorkspace = false
     @State private var newWorkspaceName = ""
     @State private var workspaceRefusal: String?
+    /// The existing scope a new workspace would collide with, held while the operator decides
+    /// whether to connect to it. Nil at every other moment.
+    @State private var adoptable: WireScopeRow?
     @State private var workspaceHovering = false
     @State private var clovisDrawerOpen = false
 
@@ -116,7 +119,12 @@ struct HubView: View {
             // vault), leaving Create looking like it silently did nothing. Which is the failure the
             // refusal exists to prevent.
             Button("Create") {
-                if let refusal = model.createWorkspace(named: newWorkspaceName) {
+                // ASKED BEFORE CREATED, when something already answers to this name. Deferred by
+                // one turn for the same reason the refusal below is — a sheet or alert whose state
+                // is set while this one dismisses is routinely dropped.
+                if let existing = model.vaultAlreadyNamed(newWorkspaceName) {
+                    Task { @MainActor in adoptable = existing }
+                } else if let refusal = model.createWorkspace(named: newWorkspaceName) {
                     Task { @MainActor in workspaceRefusal = refusal }
                 }
             }
@@ -125,12 +133,47 @@ struct HubView: View {
             Text("Creates the workspace's vault and switches you into it. Calls you record while "
                  + "it's active are captured into it, and documents you add go there too.")
         }
+        // THE MIGRATION'S LOOSE END, CAUGHT AT THE ONE MOMENT IT CAN STILL BE TIED. A curated vault
+        // and a workspace vault can both declare the same scope name; before this, whichever
+        // composed first won the registry and the other became a vault nothing served — silently,
+        // and only discovered by recording a call into it. See `AppModel.vaultAlreadyNamed`.
+        .alert("There is already a \"\(adoptable?.scope ?? "")\" vault",
+               isPresented: .init(get: { adoptable != nil },
+                                  set: { if !$0 { adoptable = nil } }), presenting: adoptable) { row in
+            Button("Connect to it") {
+                let vault = URL(fileURLWithPath: row.vault, isDirectory: true)
+                adoptable = nil
+                if let refusal = model.createWorkspace(named: newWorkspaceName, inheriting: vault) {
+                    Task { @MainActor in workspaceRefusal = refusal }
+                }
+            }
+            // SEPARATE, AND NOT THE DEFAULT. Creating anyway is a real thing to want — two unrelated
+            // things can share a word — but it is the choice that produced the state this alert
+            // exists to prevent, so it is not the button the return key presses.
+            Button("Create separately") {
+                adoptable = nil
+                if let refusal = model.createWorkspace(named: newWorkspaceName) {
+                    Task { @MainActor in workspaceRefusal = refusal }
+                }
+            }
+            Button("Cancel", role: .cancel) { adoptable = nil }
+        } message: { row in
+            Text("The scope \"\(row.scope)\" already answers from \(abbreviated(row.vault)).\n\n"
+                 + "Connect to it and this workspace reads those notes, and your calls and "
+                 + "documents are added alongside them. Create it separately and the two share a "
+                 + "name without sharing anything else — which is how a vault ends up composed by "
+                 + "nothing.")
+        }
         .alert("This workspace cannot be created", isPresented: .init(
             get: { workspaceRefusal != nil }, set: { if !$0 { workspaceRefusal = nil } })) {
             Button("OK", role: .cancel) { workspaceRefusal = nil }
         } message: {
             Text(workspaceRefusal ?? "")
         }
+    }
+
+    private func abbreviated(_ path: String) -> String {
+        path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
 
     private func closeClovisDrawer() {
