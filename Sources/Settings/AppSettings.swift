@@ -28,6 +28,7 @@ enum AppSettings {
         static let workspaceReadScopes = "workspaceReadScopes"
         static let workspaceReadVaults = "workspaceReadVaults"
         static let workspaceContextVaults = "workspaceContextVaults"
+        static let sharedVault = "sharedVaultPath"
         static let summarizeEnabled = "summarizeEnabled"
         static let notesMergeEnabled = "notesMergeEnabled"
         static let promptForDetails = "promptForDetails"
@@ -319,6 +320,29 @@ enum AppSettings {
     static var workspaceContextVaults: [String: [String]] {
         get { (defaults.dictionary(forKey: Keys.workspaceContextVaults) as? [String: [String]]) ?? [:] }
         set { defaults.set(newValue, forKey: Keys.workspaceContextVaults) }
+    }
+
+    /// The vault every scope inherits — where a note written for ALL contexts goes.
+    ///
+    /// UNSET BY DEFAULT AND DELIBERATELY SO. There is no plausible guess: Doc 2 §0 says the engine
+    /// has an opinion on shape and none on location, and a default of `~/OneDrive/vaults/core-vault`
+    /// would be this app developing an opinion on where an operator keeps their files. Until it is
+    /// set, the shared destination is offered and refuses with a message naming this setting, which
+    /// is a better first encounter than a hidden control.
+    ///
+    /// A PATH, NOT A BOOKMARK. The app is unsandboxed (see `Scripta.entitlements`), so a stored path
+    /// is a working grant across launches — and a security-scoped bookmark would not be: one written
+    /// under a sandbox resolves as NSCocoaErrorDomain 259 outside it, which is why
+    /// `ContainerPreferences` carries the output folder forward by path and leaves its bookmark
+    /// behind.
+    static var sharedVault: URL? {
+        get {
+            guard let path = defaults.string(forKey: Keys.sharedVault), !path.isEmpty else {
+                return nil
+            }
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        set { defaults.set(newValue?.path ?? "", forKey: Keys.sharedVault) }
     }
 
     /// The workspace the user is currently in. Retrieval is hard-scoped to it (secure by default) —

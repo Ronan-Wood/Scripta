@@ -42,6 +42,8 @@ struct SettingsView: View {
     @State private var category: SettingsCategory = .general
 
     @State private var outputPath: String = AppSettings.outputFolder.path
+    @State private var sharedVaultPath: String = AppSettings.sharedVault?.path ?? ""
+    @State private var sharedVaultRefusal: String?
     @State private var terms: [String] = AppSettings.domainVocabulary
     @State private var newTerm: String = ""
     @State private var summarizeEnabled: Bool = AppSettings.summarizeEnabled
@@ -100,6 +102,12 @@ struct SettingsView: View {
             Button("Allow") { AppSettings.endpointLANConfirmed = true; runEndpointTest() }
         } message: {
             Text("\(endpointURLText) is on your local network. The app will connect to it directly. Public internet addresses are never allowed.")
+        }
+        .alert("That folder is not a vault", isPresented: .init(
+            get: { sharedVaultRefusal != nil }, set: { if !$0 { sharedVaultRefusal = nil } })) {
+            Button("OK", role: .cancel) { sharedVaultRefusal = nil }
+        } message: {
+            Text(sharedVaultRefusal ?? "")
         }
     }
 
@@ -274,6 +282,40 @@ struct SettingsView: View {
             Text("Output")
         } footer: {
             Text("Point this at an Obsidian vault or synced folder to get multi-device access for free. Knowledge notes live in a Notes/ subfolder alongside your transcripts.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        Section {
+            LabeledContent("Shared vault") {
+                HStack(spacing: 8) {
+                    Text(sharedVaultPath.isEmpty ? "Not set" : abbreviate(sharedVaultPath))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                    Button("Choose…", action: chooseSharedVault)
+                    if !sharedVaultPath.isEmpty {
+                        Button("Clear") {
+                            AppSettings.sharedVault = nil
+                            sharedVaultPath = ""
+                        }
+                    }
+                }
+            }
+            if let status = sharedVaultStatus {
+                Text(status.text)
+                    .font(.caption)
+                    .foregroundStyle(status.warning ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("Shared knowledge")
+        } footer: {
+            // WHAT IT COSTS, NOT JUST WHAT IT DOES. This vault is inherited by every scope, so
+            // anything written here is in every answer the app ever gives — which is the reason to
+            // use it and the reason to be sparing with it.
+            Text("The vault every workspace inherits — where a note goes when it should be true "
+                 + "everywhere, not just in one workspace. New note offers it as a destination. "
+                 + "Leave it unset if you keep all your notes per-workspace.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -755,8 +797,61 @@ struct SettingsView: View {
         )
     }
 
-    private var prettyPath: String {
-        outputPath.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+    private var prettyPath: String { abbreviate(outputPath) }
+
+    private func abbreviate(_ path: String) -> String {
+        path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+    }
+
+    /// ACCEPTS ANY DIRECTORY, AND REPORTS WHETHER ANYTHING INHERITS IT. It does not check for a
+    /// `.substrate.toml`, and the first version did — which refused the one directory this setting
+    /// exists for.
+    ///
+    /// A ROOT VAULT HAS NO MANIFEST. `vault.resolve_vaults` says so outright: "core-vault has no
+    /// manifest (it is the root) so recursion bottoms out there". A manifest is how a vault declares
+    /// what it INHERITS, so the vault at the bottom of the chain has nothing to declare and no file
+    /// to declare it in. Testing for one tests whether the directory is a PROJECT vault, which is
+    /// the opposite of what belongs here.
+    ///
+    /// The condition that actually decides whether this setting works is different and is reported
+    /// by `sharedVaultStatus`: some composed scope has to INHERIT this vault, or a note written
+    /// into it composes nowhere. That is the engine's answer, not a fact about the folder, so it is
+    /// shown as live status under the control rather than enforced at the moment of picking — a
+    /// vault can legitimately be chosen before anything inherits it.
+    private func chooseSharedVault() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = "Choose"
+        panel.message = "Pick the vault your workspaces inherit — usually the one named core-vault."
+        if !sharedVaultPath.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: sharedVaultPath)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        AppSettings.sharedVault = url
+        sharedVaultPath = url.path
+    }
+
+    /// Which composed scopes inherit the chosen vault — the only thing that decides whether a note
+    /// written there is ever served.
+    ///
+    /// Silent when the roster has not been listed yet: an engine that is still starting is not
+    /// evidence that nothing inherits this vault, and drawing "nothing inherits it" during startup
+    /// would be a healthy state rendered as a fault.
+    private var sharedVaultStatus: (text: String, warning: Bool)? {
+        guard !sharedVaultPath.isEmpty else { return nil }
+        let rows = SubstrateScopes.shared.rows
+        guard !rows.isEmpty else { return nil }
+        let name = URL(fileURLWithPath: sharedVaultPath).standardizedFileURL.lastPathComponent
+        let inheritors = rows.filter { $0.sources?.contains(name) ?? false }.map(\.scope).sorted()
+        if inheritors.isEmpty {
+            return ("No composed scope inherits \(name) yet, so a note written there would not be "
+                    + "found. Add it to a vault's `inherits` and compose that scope.", true)
+        }
+        return ("Inherited by \(inheritors.joined(separator: ", ")) — a note written here is "
+                + "recomposed into each of them.", false)
     }
 
     // MARK: - Actions
