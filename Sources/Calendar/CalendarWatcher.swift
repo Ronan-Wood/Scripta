@@ -57,10 +57,20 @@ final class CalendarWatcher {
         }
     }
 
-    /// Upcoming events within the next `hours` (max 12) that carry a Zoom/Teams/Meet link, from
-    /// the watched calendars (all, if none are explicitly chosen). Served from the cached 12h
-    /// fetch when fresh; narrower windows filter the cache.
-    func upcomingCalls(within hours: Int = 12) -> [UpcomingCall] {
+    /// Upcoming events that carry a Zoom/Teams/Meet link, from the watched calendars (all, if none
+    /// are explicitly chosen). Served from the cached fetch when fresh; a narrower window filters
+    /// the cache rather than re-reading the store.
+    ///
+    /// THE HORIZON IS A SETTING NOW, and it was twelve hours hard-coded twice — once in the fetch
+    /// and again as `min(hours, 12)` here, which silently clamped every caller. A meeting tomorrow
+    /// morning was invisible to the app whose job is to record it, and asking for more got you
+    /// twelve hours without saying so.
+    ///
+    /// - Parameter hours: narrow the window for a caller that wants only what is imminent (the menu
+    ///   bar's "next call" asks for one hour). `nil` means the whole configured horizon. A value
+    ///   LONGER than the horizon is clamped to it, because the cache behind this only holds that
+    ///   much — returning fewer events than asked for is correct; pretending otherwise is not.
+    func upcomingCalls(within hours: Int? = nil) -> [UpcomingCall] {
         guard isAuthorized else { return [] }
 
         let now = Date()
@@ -72,12 +82,27 @@ final class CalendarWatcher {
             cached = (now, calls)
         }
 
-        let end = now.addingTimeInterval(TimeInterval(min(hours, 12)) * 3600)
+        let horizon = Self.horizon
+        let span = hours.map { min(TimeInterval($0) * 3600, horizon) } ?? horizon
+        let end = now.addingTimeInterval(span)
         return calls.filter { $0.start >= now && $0.start <= end }
     }
 
+    /// How far ahead the store is read. One place, so the fetch and the filter cannot disagree —
+    /// which is exactly how the old `min(hours, 12)` outlived the window it was clamping to.
+    /// Drop the cached fetch so the next read goes to the store.
+    ///
+    /// NEEDED BECAUSE THE CACHE OUTLIVES THE SETTING. The cached list was fetched over whatever
+    /// horizon was configured at the time, so widening the window would show nothing new until the
+    /// cache expired, and narrowing it would keep serving events now out of range.
+    func invalidateCache() { cached = nil }
+
+    private static var horizon: TimeInterval {
+        TimeInterval(AppSettings.calendarLookaheadDays) * 86_400
+    }
+
     private func fetchUpcomingCalls(from now: Date) -> [UpcomingCall] {
-        let end = now.addingTimeInterval(12 * 3600)
+        let end = now.addingTimeInterval(Self.horizon)
 
         let watched = Set(AppSettings.watchedCalendarIDs)
         let all = store.calendars(for: .event)

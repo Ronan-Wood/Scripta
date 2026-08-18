@@ -44,6 +44,7 @@ struct SettingsView: View {
     @State private var outputPath: String = AppSettings.outputFolder.path
     @State private var sharedVaultPath: String = AppSettings.sharedVault?.path ?? ""
     @State private var sharedVaultRefusal: String?
+    @State private var calendarLookahead: Int = AppSettings.calendarLookaheadDays
     @State private var terms: [String] = AppSettings.domainVocabulary
     @State private var newTerm: String = ""
     @State private var summarizeEnabled: Bool = AppSettings.summarizeEnabled
@@ -482,6 +483,20 @@ struct SettingsView: View {
                     if enabling { enableCalendar() }
                 }
             if calendarEnabled {
+                Picker("Look ahead", selection: $calendarLookahead) {
+                    Text("1 day").tag(1)
+                    Text("3 days").tag(3)
+                    Text("1 week").tag(7)
+                    Text("2 weeks").tag(14)
+                    Text("1 month").tag(30)
+                }
+                .onChange(of: calendarLookahead) { _, days in
+                    AppSettings.calendarLookaheadDays = days
+                    // The cached fetch was taken over the OLD window; without this, widening the
+                    // horizon shows nothing new until the cache expires and narrowing it keeps
+                    // showing what is now out of range.
+                    CalendarWatcher.shared.invalidateCache()
+                }
                 if calendarAuthorized {
                     if calendars.isEmpty {
                         Text("No calendars found.").foregroundStyle(.secondary)
