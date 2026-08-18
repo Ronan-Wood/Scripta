@@ -719,3 +719,69 @@ final class VaultDiscoverySafetyTests: XCTestCase {
     }
 
 }
+
+/// The migration's loose end: a curated vault and a workspace vault can each declare the same scope
+/// name, both correctly. Measured on the operator's machine 2026-08-17 — `school` had a curated
+/// vault registered as the scope AND an app vault registered nowhere, inheriting nothing, so a call
+/// recorded into it would have composed into a scope resolving elsewhere.
+final class WorkspaceVaultConflictTests: XCTestCase {
+    private let output = URL(fileURLWithPath: "/Users/x/OneDrive/Scripta", isDirectory: true)
+
+    func testACuratedVaultOfTheSameNameIsFound() {
+        let hit = ScriptaVault.conflictingScope(
+            forWorkspaceNamed: "School",
+            registered: [("school", "/Users/x/OneDrive/vaults/school-vault"),
+                         ("prism", "/Users/x/OneDrive/vaults/prism-vault")],
+            outputFolder: output)
+        XCTAssertEqual(hit?.scope, "school")
+        XCTAssertEqual(hit?.vault, "/Users/x/OneDrive/vaults/school-vault")
+    }
+
+    /// THE CASE THAT WOULD MAKE A WORKSPACE OFFER TO CONNECT TO ITSELF. A scope already pointing at
+    /// the directory this name would create IS this workspace's own vault, correctly registered —
+    /// the working state, not a conflict.
+    func testAWorkspacesOwnAlreadyRegisteredVaultIsNotAConflict() {
+        XCTAssertNil(ScriptaVault.conflictingScope(
+            forWorkspaceNamed: "CBRE",
+            registered: [("cbre", "/Users/x/OneDrive/Scripta/cbre")],
+            outputFolder: output))
+        // Even spelled with a trailing slash, which is how a path read back from TOML can arrive.
+        XCTAssertNil(ScriptaVault.conflictingScope(
+            forWorkspaceNamed: "CBRE",
+            registered: [("cbre", "/Users/x/OneDrive/Scripta/cbre/")],
+            outputFolder: output))
+    }
+
+    func testAnUnrelatedNameFindsNothing() {
+        XCTAssertNil(ScriptaVault.conflictingScope(
+            forWorkspaceNamed: "Deals",
+            registered: [("school", "/Users/x/OneDrive/vaults/school-vault")],
+            outputFolder: output))
+    }
+
+    /// Matching is on the SLUG, because that is the name the vault will declare. Case and
+    /// surrounding punctuation collapse, so every spelling that would create ONE directory has to
+    /// find the SAME conflict — otherwise "SCHOOL" walks past the alert that "School" gets.
+    ///
+    /// Note the example: `slug("C.B.R.E.")` is `"c-b-r-e"`, NOT `"cbre"` — each separator emits a
+    /// hyphen. `ScriptaVault.workspace(ofVaultAt:)`'s comment claims that pair collapses to one
+    /// directory and it does not; the real collapsing cases are case divergence and a shared
+    /// 48-character prefix. Left as found rather than corrected here.
+    func testMatchingIsOnTheSlugNotTheTypedName() {
+        for spelling in ["SCHOOL", "school", " School "] {
+            XCTAssertEqual(ScriptaVault.conflictingScope(
+                forWorkspaceNamed: spelling,
+                registered: [("school", "/Users/x/OneDrive/vaults/school-vault")],
+                outputFolder: output)?.scope, "school", "spelling \(spelling)")
+        }
+    }
+
+    /// An empty roster is an engine that has not listed yet, not proof of no conflict — the caller
+    /// treats nil as "nothing to ask about", so this must not invent one either.
+    func testAnUnnameableWorkspaceAndAnEmptyRosterBothFindNothing() {
+        XCTAssertNil(ScriptaVault.conflictingScope(forWorkspaceNamed: "日本語",
+                                                   registered: [("", "/x")], outputFolder: output))
+        XCTAssertNil(ScriptaVault.conflictingScope(forWorkspaceNamed: "School",
+                                                   registered: [], outputFolder: output))
+    }
+}

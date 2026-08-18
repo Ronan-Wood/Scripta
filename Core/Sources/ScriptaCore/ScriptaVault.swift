@@ -385,7 +385,13 @@ public struct ScriptaVault: Equatable {
     /// Living notes — the operator's own words about this workspace. Tier 3: project thinking, not
     /// durable operator knowledge. Promotion to a core vault is deliberate and manual (Doc 4 §7),
     /// so nothing in the capture path can write above this tier.
-    public var notes: URL { root.appendingPathComponent("02-areas", isDirectory: true) }
+    public var notes: URL { root.appendingPathComponent(Self.notesFolderName, isDirectory: true) }
+
+    /// NAMED ONCE because `NoteWriter` writes into it too, and two literals for one folder is how a
+    /// writer and a reader end up pointing at different directories with nothing failing. Derived
+    /// from `NoteDestination` rather than restated: that enum has to know the folder anyway, since
+    /// the folder is what `vault._tier_for` reads the note's TIER off.
+    public static let notesFolderName = NoteDestination.workspace.folderName
 
     /// Ingested documents, one directory per source. Tier 2 via `_tier_for`.
     public var references: URL { root.appendingPathComponent("10-reference", isDirectory: true) }
@@ -596,6 +602,33 @@ public struct ScriptaVault: Equatable {
         // `workspace`. Passing the slug here set both from one value and put a slug
         // where the display name belonged.
         return try ScriptaVault(root: directory, scope: scope, inherits: inherits)
+    }
+
+    /// Which already-composed scope would collide with a workspace of this name, if any.
+    ///
+    /// PURE, AND TAKES THE ROSTER RATHER THAN FETCHING IT, so the decision can be tested without an
+    /// engine — `AppModel.vaultAlreadyNamed` supplies the live rows. What it encodes is the shape
+    /// the migration left behind: a curated vault and a workspace vault can each declare the same
+    /// scope name, both correctly, and whichever composes first takes the registry while the other
+    /// becomes a vault nothing serves.
+    ///
+    /// - Parameters:
+    ///   - registered: `(scope, vault path)` for every composed scope.
+    ///   - outputFolder: where a workspace of this name WOULD be created. A row already pointing
+    ///     there is this workspace's own vault, not a conflict — the case that would otherwise make
+    ///     an existing workspace offer to connect to itself.
+    public static func conflictingScope(forWorkspaceNamed raw: String,
+                                        registered: [(scope: String, vault: String)],
+                                        outputFolder: URL) -> (scope: String, vault: String)? {
+        let slug = slug(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !slug.isEmpty else { return nil }
+        let wouldCreate = outputFolder.appendingPathComponent(slug, isDirectory: true)
+            .standardizedFileURL
+        return registered.first { row in
+            row.scope == slug
+                && URL(fileURLWithPath: row.vault, isDirectory: true).standardizedFileURL
+                    != wouldCreate
+        }
     }
 
     /// Lowercase ASCII slug — the shape a scope name and a directory name can both be, so the two
