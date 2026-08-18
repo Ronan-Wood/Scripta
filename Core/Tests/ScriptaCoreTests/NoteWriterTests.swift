@@ -230,6 +230,113 @@ final class NoteWriterTests: XCTestCase {
             "a refused note must not leave a folder behind")
     }
 
+    // MARK: - What the readers can read back
+
+    /// THE REGRESSION TEST FOR A FOURTH WRITER THAT INVENTED ITS OWN ESCAPING. Nothing unescapes:
+    /// both frontmatter readers strip the outer quotes and stop. Backslash-escaping a quote put
+    /// literal backslashes in the corpus and broke the title/H1 parity this writer guarantees.
+    func testAQuotedTitleSurvivesTheReadersRatherThanBeingEscaped() throws {
+        let root = vault()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let url = try NoteWriter.write(intoVaultAt: root, title: "He said \"no\" twice",
+                                       docType: "explanation", body: "x")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(text.contains("\\"), "no backslash escapes — nothing unescapes them\n\n\(text)")
+        guard let front = Frontmatter.split(text)?.frontmatter,
+              let line = front.components(separatedBy: "\n").first(where: { $0.hasPrefix("title:") })
+        else { return XCTFail("no title line\n\n\(text)") }
+        // What a reader actually gets back, doing what both readers do: strip the outer quotes.
+        let readBack = line.replacingOccurrences(of: "title:", with: "")
+            .trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        XCTAssertEqual(readBack, "He said 'no' twice")
+        XCTAssertEqual(text.components(separatedBy: "\n").first { $0.hasPrefix("# ") },
+                       "# He said \"no\" twice")
+    }
+
+    /// A NEWLINE IN A TITLE MUST NOT BECOME A FRONTMATTER LINE. Pasting a two-line title otherwise
+    /// forges a key — or emits a line with no colon, which stops the block being frontmatter and
+    /// refuses the whole scope at the next compose. On the shared destination that is every
+    /// inheriting scope at once, and this type cannot delete what it wrote.
+    func testANewlineInATitleCannotForgeAFrontmatterKey() throws {
+        let root = vault()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let url = try NoteWriter.write(intoVaultAt: root,
+                                       title: "Real title\ndoc_id: forged\nstatus: archived",
+                                       docType: "decision", body: "x")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        guard let front = Frontmatter.split(text)?.frontmatter else {
+            return XCTFail("frontmatter no longer parses — the block was broken\n\n\(text)")
+        }
+        // PER LINE, not per substring. The value stays inside one quoted scalar and the readers
+        // partition on the FIRST colon, so `doc_id:` sitting inside the title is inert — an ugly
+        // title, not a forged key. Asserting on the substring failed here for that reason, which is
+        // the assertion being wrong rather than the writer.
+        let keys = front.components(separatedBy: "\n")
+            .compactMap { $0.split(separator: ":", maxSplits: 1).first.map(String.init) }
+            .filter { !$0.hasPrefix(" ") }
+        XCTAssertFalse(keys.contains("doc_id"), "forged key reached the file\n\n\(front)")
+        XCTAssertEqual(keys.filter { $0 == "status" }.count, 1,
+                       "status declared more than once\n\n\(front)")
+        XCTAssertEqual(front.components(separatedBy: "\n").filter { !$0.isEmpty }.count, 3,
+                       "the title must occupy exactly one line\n\n\(front)")
+        XCTAssertTrue(front.contains("status: \(NoteSpine.status)"), front)
+    }
+
+    /// The engine drops an unslugifiable domain silently, and `domains` is what cross-scope
+    /// filtering runs on — so a note filed under "R&D" would quietly stop being reachable that way.
+    func testDomainsAreShapedTheWayTheEnginesParserRequires() throws {
+        let root = sharedVault()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let url = try NoteWriter.write(intoVaultAt: root, destination: .shared, title: "Shaping",
+                                       docType: "reference", confidence: "stated",
+                                       domains: ["R&D", "hiring (2026)", "  ", "ops"], body: "x")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.contains("domains: [r-d, hiring-2026, ops]"), text)
+    }
+
+    /// THE FILE THAT CAUSED THE COLLISION MUST SURVIVE IT. The first version cleaned up
+    /// unconditionally on any write error, which unlinked what it was refusing to overwrite — in a
+    /// hand-curated vault, with no backup and no trash.
+    ///
+    /// A DANGLING SYMLINK, because that is the only way to reach the catch deterministically.
+    /// Placing a real file is caught by the `fileExists` pre-check and never reaches the write at
+    /// all — the first version of this test did exactly that, passed, and mutation-checking caught
+    /// it: restoring the destructive delete failed nothing. `fileExists` FOLLOWS the link and
+    /// reports false, while `O_EXCL` sees the link itself and returns EEXIST (516), which is the
+    /// same door the real race comes through when a sync client materialises a file mid-write.
+    func testLosingTheWriteRaceDoesNotDestroyWhatWasAlreadyThere() throws {
+        let root = vault()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent(ScriptaVault.notesFolderName, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let link = folder.appendingPathComponent("racy.md")
+        try FileManager.default.createSymbolicLink(
+            atPath: link.path, withDestinationPath: folder.appendingPathComponent("gone.md").path)
+
+        XCTAssertThrowsError(try NoteWriter.write(intoVaultAt: root, title: "Racy",
+                                                  docType: "explanation", body: "mine")) { error in
+            XCTAssertEqual(error as? NoteWriter.Failure, .alreadyExists("racy.md"))
+        }
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: link.path),
+                        "what was already at the target was destroyed by the failure path")
+    }
+
+    /// The ordinary collision — a real file — is still caught by the pre-check, with the same
+    /// refusal. Both doors, one answer.
+    func testAnOrdinaryCollisionIsStillCaughtBeforeTheWrite() throws {
+        let root = vault()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try NoteWriter.write(intoVaultAt: root, title: "Taken", docType: "explanation", body: "a")
+        XCTAssertThrowsError(try NoteWriter.write(intoVaultAt: root, title: "Taken",
+                                                  docType: "explanation", body: "b")) { error in
+            XCTAssertEqual(error as? NoteWriter.Failure, .alreadyExists("taken.md"))
+        }
+    }
+
     // MARK: - The shared destination
 
     /// A shared vault, and NOTE THAT IT HAS NO MANIFEST — because a real one does not. The engine's

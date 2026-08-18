@@ -137,7 +137,22 @@ public enum NoteWriter {
         // a truncated one. `notes.py` takes the same O_EXCL trade and answers it the same way.
         do {
             try Data(contents.utf8).write(to: url, options: .withoutOverwriting)
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+                                        && error.code == NSFileWriteFileExistsError {
+            // THE LOSER OF THE RACE MUST NOT DELETE THE WINNER. This is the case the exclusive
+            // write exists to catch: something appeared at the target between the check above and
+            // this line. The first version cleaned up unconditionally here, which UNLINKED that
+            // file — proven executable, and the target is `00-operator/` inside a hand-curated
+            // vault under a sync client, so the realistic trigger is OneDrive materialising a note
+            // or the operator creating one in Obsidian a moment earlier. No backup, no trash, and
+            // the message said only "already exists" about a file that no longer did.
+            //
+            // Nothing was written, so there is nothing to clean up. Report it as the collision it
+            // is, in the same words the pre-check uses.
+            throw Failure.alreadyExists("\(slug).md")
         } catch {
+            // A GENUINELY PARTIAL WRITE — out of space, a vanishing volume. Here the file IS ours
+            // and a truncated note would compose as a truncated one, so it goes.
             try? FileManager.default.removeItem(at: url)
             throw error
         }
@@ -166,8 +181,13 @@ public enum NoteWriter {
         // OMITTED WHEN EMPTY, not written as `domains: []`. An empty list is a declared claim that
         // this note belongs to no subject at all, and `domains` is what cross-scope filtering runs
         // on — the absent case and the empty case answer differently.
-        let cleaned = domains.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                             .filter { !$0.isEmpty }
+        // SLUGGED, NOT JUST TRIMMED. The engine's list parser drops anything that fails
+        // `[A-Za-z0-9][A-Za-z0-9._/-]{0,63}` SILENTLY, so `R&D, hiring (2026)` composes green and
+        // stores `hiring` or nothing — on the tier every scope inherits, where `domains` is what
+        // cross-scope filtering runs on. `SubstrateLibrary.promote` shapes them before writing for
+        // exactly this reason and says so; this path did neither, which also left it a second
+        // unescaped frontmatter line (no quotes here at all) that a newline could break out of.
+        let cleaned = domains.map { ScriptaVault.slug($0) }.filter { !$0.isEmpty }
         if !cleaned.isEmpty {
             front.append("domains: [\(cleaned.joined(separator: ", "))]")
         }
@@ -176,11 +196,32 @@ public enum NoteWriter {
         return text
     }
 
-    /// A double-quoted YAML scalar. Quoted ALWAYS rather than only when it looks necessary: a title
-    /// beginning `[`, containing `: `, or reading `yes` each parse as something other than a string,
-    /// and deciding which titles need it per-title is the check that gets one case wrong.
+    /// A frontmatter scalar THE READERS CAN ACTUALLY READ BACK.
+    ///
+    /// It does not escape, because nothing unescapes. Both readers are line parsers that strip the
+    /// outer quotes and stop: `markdown/reader.py` partitions on the first `:` and trims `"`,
+    /// `Frontmatter.swift` trims `"` and spaces. The first version here backslash-escaped `"` and
+    /// `\\` the way a real YAML emitter would, so a note titled `He said "no"` was written as
+    /// `title: "He said \\"no\\""` and read back as `He said \\"no\\` — mangled permanently, in
+    /// the corpus and in the title/H1 parity this file claims to keep.
+    ///
+    /// A CONTROL BYTE IS THE DANGEROUS CASE, not a quote. A newline in a title ends the line and the
+    /// rest becomes a new frontmatter key — a forged `doc_id:`, or a line with no colon at all,
+    /// which stops the block being frontmatter and takes the WHOLE SCOPE down at the next compose
+    /// (`refusing to index a partial scope`). On the shared destination that is every inheriting
+    /// scope at once, and this type cannot delete the note it wrote.
+    ///
+    /// So: control bytes to spaces, an embedded `"` turned into `'` rather than escaped, and the
+    /// result quoted. This is `TranscriptWriter.sanitizeScalar`'s rule, which
+    /// `SubstrateLibraryVault.scalar` and `ScriptaVault.tomlString` also implement — three writers
+    /// that had already solved this before a fourth was written that did not.
     private static func yaml(_ value: String) -> String {
-        "\"" + value.replacingOccurrences(of: "\\", with: "\\\\")
-                    .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        let cleaned = String(value.map { character in
+            character.isNewline || (character.asciiValue.map { $0 < 0x20 } ?? false)
+                ? " " : character
+        })
+        .replacingOccurrences(of: "\"", with: "'")
+        .trimmingCharacters(in: .whitespaces)
+        return "\"\(cleaned)\""
     }
 }
