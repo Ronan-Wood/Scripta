@@ -31,20 +31,17 @@ struct NoteDraft {
 }
 
 /// The note form. Bindings rather than state, so the owner decides where a draft lives and how long
-/// it survives — a sheet discards it on dismiss; the Add page keeps it while you go and find
-/// something else.
+/// it survives: the sheet holds its own and discards it on dismiss, while the Add page's draft lives
+/// on `SubstrateLibraryModel` so leaving the lens does not throw away what was typed.
 struct NoteDraftFields: View {
     @Binding var draft: NoteDraft
     let workspace: String
     /// `nil` when Settings names no shared vault. The destination is still OFFERED — the control
     /// then says what to do about it, which teaches more than a control that is not there.
     let sharedVaultName: String?
-    /// Whether to draw the destination chooser. Off for a caller that has already asked.
-    var showsDestination = true
-
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s12) {
-            if showsDestination { destinationField }
+            destinationField
             titleField
             typeField
             if draft.destination.declaresJudgement { judgementFields }
@@ -52,7 +49,8 @@ struct NoteDraftFields: View {
         }
         // A MEASURE, NOT THE WINDOW. Every field here ran the full width of a 2000pt window in the
         // first version — a title field a metre long and a body box to match, which is unreadable
-        // and reads as an unfinished form. `listMaxWidth` is the same cap the reading surfaces use.
+        // and reads as an unfinished form. `formMaxWidth` is SHORTER than the prose cap: a field is
+        // filled from the left, so width past the longest expected value is empty space.
         .frame(maxWidth: Metrics.formMaxWidth, alignment: .leading)
     }
 

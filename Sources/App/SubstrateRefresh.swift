@@ -172,8 +172,8 @@ final class SubstrateRefresh: ObservableObject {
                 continue
             }
             let vault = URL(fileURLWithPath: row.vault, isDirectory: true)
-            let run = await SubstrateLibraryModel.composeVault(cli: cli, vault: vault,
-                                                              name: row.scope, clean: false)
+            let run = (await SubstrateLibraryModel.composeVault(cli: cli, vault: vault,
+                                                                name: row.scope, clean: false)).run
             // DECLINED IS NOT FAILED. `composeVault` refuses while another compose is in flight —
             // a recording's, or the operator's — and recording an outcome for a scope this pass did
             // not attempt would overwrite a live verdict with the news that a duplicate stood down.

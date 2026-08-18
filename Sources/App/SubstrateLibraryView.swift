@@ -119,45 +119,13 @@ private struct LibraryConsole: View {
 /// have been a table of contents for the screen rather than a list of things you can add.
 private struct LibraryAddRail: View {
     @ObservedObject var model: SubstrateLibraryModel
-    @State private var kind = AddKind.document
-    @State private var draft = NoteDraft()
     @State private var noteRefusal: String?
-
-    /// The things this page can add. Recording a call is not among them — a call arrives by being
-    /// recorded; UPLOADING one you already have is a different act, and is `.transcript`. Where a
-    /// recorded call lands is configured under Status.
-    private enum AddKind: String, CaseIterable, Identifiable {
-        case document, transcript, note
-        var id: String { rawValue }
-
-        var label: String {
-            switch self {
-            case .document: return "A document"
-            case .transcript: return "A call transcript"
-            case .note: return "A note"
-            }
-        }
-
-        var hint: String {
-            switch self {
-            case .document:
-                return "A PDF, Word or Markdown file, read into passages you can ask about."
-            case .transcript:
-                // WHY IT IS ITS OWN KIND rather than a document with a class picked: filed with the
-                // calls, and withheld from answers by default the same way they are.
-                return "A recording from somewhere else. Filed with your calls and kept out of "
-                     + "answers by default, like they are."
-            case .note:
-                return "Something you write yourself."
-            }
-        }
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s12) {
             LibrarySectionHeader(title: "Add", note: nil)
             kindField
-            switch kind {
+            switch model.addKind {
             case .document: fileFields(tier: .reference)
             case .transcript: fileFields(tier: .transcript)
             case .note: noteFields
@@ -177,12 +145,12 @@ private struct LibraryAddRail: View {
     private var kindField: some View {
         VStack(alignment: .leading, spacing: Gap.s4) {
             Text("What are you adding?").typeface(Register.micro, Ink.textSecondary)
-            Picker("", selection: $kind) {
-                ForEach(AddKind.allCases) { Text($0.label).tag($0) }
+            Picker("", selection: $model.addKind) {
+                ForEach(SubstrateLibraryModel.AddKind.allCases) { Text($0.label).tag($0) }
             }
             .labelsHidden()
             .pickerStyle(.radioGroup)
-            Text(kind.hint).proseText(Register.proseSm, Ink.textHelper)
+            Text(model.addKind.hint).proseText(Register.proseSm, Ink.textHelper)
         }
     }
 
@@ -229,14 +197,14 @@ private struct LibraryAddRail: View {
     // MARK: - A note
 
     @ViewBuilder private var noteFields: some View {
-        NoteDraftFields(draft: $draft, workspace: model.workspace,
+        NoteDraftFields(draft: $model.noteDraft, workspace: model.workspace,
                         sharedVaultName: AppSettings.sharedVault?.lastPathComponent)
         // NO STANDING "you must fill this in" LINE. It sat under the button before anyone had done
         // anything, which is nagging rather than helping — the disabled button already says the
         // form is incomplete, and the title field is the only empty one it can be about.
         HStack(spacing: Gap.s8) {
             ActionButton(title: "Add note", glyph: .add, rank: .primary, action: addNote)
-                .disabled(!draft.isWritable || model.isWorking)
+                .disabled(!model.noteDraft.isWritable || model.isWorking)
             Spacer(minLength: Gap.s4)
         }
         .frame(maxWidth: Metrics.formMaxWidth, alignment: .leading)
@@ -244,13 +212,14 @@ private struct LibraryAddRail: View {
 
     /// CLEARED ONLY ON SUCCESS, like the sheet — a refused note keeps everything typed into it.
     private func addNote() {
+        let draft = model.noteDraft
         if let reason = model.createNote(title: draft.title, docType: draft.docType,
                                          body: draft.body, destination: draft.destination,
                                          confidence: draft.resolvedConfidence,
                                          domains: draft.resolvedDomains) {
             noteRefusal = reason
         } else {
-            draft = NoteDraft()
+            model.noteDraft = NoteDraft()
         }
     }
 }

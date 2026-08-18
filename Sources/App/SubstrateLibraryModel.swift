@@ -136,6 +136,43 @@ final class SubstrateLibraryModel: ObservableObject {
     /// extension it does not recognise, offered rather than left in a refusal message.
     @Published var forceMarkdown = false
 
+    /// The Add page's note draft, and which kind is selected.
+    ///
+    /// ON THE MODEL FOR THE REASON `lens` IS. These were `@State` on the rail, whose identity is
+    /// destroyed both by the lens switch and by `HubContent` rebuilding the pane on every sidebar
+    /// reselect — so typing a note body, clicking Status to check the engine, and coming back lost
+    /// the body. This codebase has already paid for that hazard three times and written it down
+    /// each time (`lens` itself, `AskModel`, `CallsLensModel`); a fourth was not needed.
+    @Published var noteDraft = NoteDraft()
+    @Published var addKind = AddKind.document
+
+    /// The things the Add page can add. Recording a call is not among them — a call arrives by
+    /// being recorded; UPLOADING one you already have is a different act, and is `.transcript`.
+    enum AddKind: String, CaseIterable, Identifiable {
+        case document, transcript, note
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .document: return "A document"
+            case .transcript: return "A call transcript"
+            case .note: return "A note"
+            }
+        }
+
+        var hint: String {
+            switch self {
+            case .document:
+                return "A PDF, Word or Markdown file, read into passages you can ask about."
+            case .transcript:
+                return "A recording from somewhere else. Filed with your calls and kept out of "
+                     + "answers by default, like they are."
+            case .note:
+                return "Something you write yourself."
+            }
+        }
+    }
+
     /// The transcript rail's input. ONE value, because the workspace is the binding (Doc 3 §7) and
     /// everything else about the export is a consequence of it.
     ///
@@ -506,10 +543,10 @@ final class SubstrateLibraryModel: ObservableObject {
         // 3. COMPOSE. Without this the document is a file in a folder: present, unfindable, and
         //    indistinguishable from one that was never added.
         await progress(.composing)
-        let composed = await composeVault(cli: cli, vault: target.root, name: target.scope,
+        let composedOutcome = await composeVault(cli: cli, vault: target.root, name: target.scope,
                                           clean: false)
         return AddOutcome(extraction: extraction, surfaceFailure: nil, promoted: promoted,
-                          vault: target, promoteFailure: nil, composed: composed)
+                          vault: target, promoteFailure: nil, composed: composedOutcome.run)
     }
 
     /// The rail's rendering of `performAdd` — a step-by-step card.
@@ -599,9 +636,15 @@ final class SubstrateLibraryModel: ObservableObject {
                 // to the vault's own `10-reference/`, so nothing outside the directory this app
                 // writes documents into can be passed to it.
                 let vault = try ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder)
-                let references = vault.references.standardizedFileURL.path
+                // EITHER PROMOTION DIRECTORY. It was `10-reference/` alone, which made this remedy
+                // unreachable for an uploaded transcript — and the orphan row that offers it is
+                // drawn unconditionally, so the one state it exists for (a source on disk, in no
+                // index, refusing every later compose) ended in `outsideTheLibrary` for exactly the
+                // kind this session added.
+                let allowed = Set(SubstrateLibrary.PromotionTier.allDirectories(in: vault)
+                    .map(\.standardizedFileURL.path))
                 let target = source.standardizedFileURL
-                guard target.deletingLastPathComponent().path == references else {
+                guard allowed.contains(target.deletingLastPathComponent().path) else {
                     throw SubstrateLibrary.LibraryError.outsideTheLibrary(source)
                 }
                 try FileManager.default.removeItem(at: target)
@@ -631,7 +674,7 @@ final class SubstrateLibraryModel: ObservableObject {
             let composed = await Self.composeVault(cli: cli,
                                          vault: vault?.root ?? AppSettings.outputFolder,
                                          name: vault?.scope ?? "library", clean: true)
-            steps.append(Step(id: "compose", title: "Recompose the scope", run: composed,
+            steps.append(Step(id: "compose", title: "Recompose the scope", run: composed.run,
                               appFailure: nil, skipped: false))
             finish(title: title, steps: steps)
         }
@@ -705,10 +748,9 @@ final class SubstrateLibraryModel: ObservableObject {
                                    done: [written]))
             let composed = await Self.composeVault(cli: cli, vault: vault.root,
                                                    name: vault.scope, clean: false)
-            var steps = [written, Step(id: "compose", title: "Compose the scope", run: composed,
+            var steps = [written, Step(id: "compose", title: "Compose the scope", run: composed.run,
                                        appFailure: nil, skipped: false)]
-            steps.append(await Self.embedStep(cli: cli, scope: vault.scope,
-                                              composeSucceeded: composed.succeeded))
+            steps.append(Self.embedStep(scope: vault.scope, composed: composed))
             finish(title: jobTitle, steps: steps)
         }
         return nil
@@ -773,9 +815,8 @@ final class SubstrateLibraryModel: ObservableObject {
                     cli: cli, vault: URL(fileURLWithPath: row.vault, isDirectory: true),
                     name: row.scope, clean: false)
                 steps.append(Step(id: "compose-\(row.scope)", title: "Compose \(row.scope)",
-                                  run: composed, appFailure: nil, skipped: false))
-                steps.append(await Self.embedStep(cli: cli, scope: row.scope,
-                                                  composeSucceeded: composed.succeeded))
+                                  run: composed.run, appFailure: nil, skipped: false))
+                steps.append(Self.embedStep(scope: row.scope, composed: composed))
             }
             finish(title: jobTitle, steps: steps)
         }
@@ -794,21 +835,22 @@ final class SubstrateLibraryModel: ObservableObject {
     /// SKIPPED WHEN THE COMPOSE FAILED, rather than run anyway. A failed compose left the previous
     /// index in place; embedding against it would report vectors for content the operator believes
     /// was just added.
-    private static func embedStep(cli: SubstrateEngine.Command, scope: String,
-                                  composeSucceeded: Bool) async -> Step {
+    private static func embedStep(scope: String, composed: ComposeOutcome) -> Step {
         let title = "Vector the new passages"
-        guard composeSucceeded else {
+        guard composed.run.succeeded else {
             return Step(id: "embed-\(scope)", title: title, run: nil, appFailure: nil, skipped: true)
         }
-        guard let database = registeredDatabase(named: scope) else {
+        // REPORTS WHAT `composeVault` ALREADY DID rather than running its own. The database was
+        // looked up here once through `registeredDatabase`, which reads the cached scope roster —
+        // and a compose that has just REGISTERED a scope is absent from that cache until `finish`
+        // re-lists it, which happens after this. So the first note into a new workspace, the case
+        // the whole path exists for, reported "the engine did not register a database" about a
+        // scope registered a second earlier.
+        guard let run = composed.embed else {
             return Step(id: "embed-\(scope)", title: title, run: nil,
-                        appFailure: "The engine did not register a database for \(scope), so its "
-                                  + "new passages could not be vectored.", skipped: false)
+                        appFailure: "The compose reported no database for \(scope), so its new "
+                                  + "passages could not be vectored.", skipped: false)
         }
-        // A FAILURE HERE IS REPORTED, NOT FATAL. The note is composed and lexically findable; a
-        // down embedder makes it harder to find, not absent. Reporting it is what lets the operator
-        // see why an answer they expected did not come back.
-        let run = await SubstrateCLI.run(cli, ["embed", "--db", database.path])
         return Step(id: "embed-\(scope)", title: title, run: run, appFailure: nil, skipped: false)
     }
 
@@ -918,7 +960,7 @@ final class SubstrateLibraryModel: ObservableObject {
         // what capture put there, so a stale ingest directory is the one way a deleted call comes
         // back — and `assert_composed` would refuse the next compose over it anyway, after the
         // operator had already deleted it for a reason.
-        let composed = await Self.composeVault(cli: cli, vault: vault, name: name, clean: true)
+        let composed = (await Self.composeVault(cli: cli, vault: vault, name: name, clean: true)).run
         finish(title: title,
                steps: [Step(id: "compose", title: "Compose and register the scope", run: composed,
                             appFailure: nil, skipped: false)])
@@ -960,17 +1002,35 @@ final class SubstrateLibraryModel: ObservableObject {
     /// deliberately quiet, so neither sets it.
     private(set) static var composeInFlight = false
 
+    /// What one compose did, and WHERE. The database is returned rather than looked up again: this
+    /// method already resolved it (including the fallback path for a scope the registry has never
+    /// seen), and the only other way to learn it is `registeredDatabase`, which reads a roster this
+    /// call has just invalidated. A first note into a new workspace registers the scope here and is
+    /// still absent from that cached roster, so re-deriving it produced "the engine did not register
+    /// a database for X" about a scope registered a second earlier.
+    struct ComposeOutcome {
+        let run: SubstrateRun
+        /// Nil only when the compose was declined before a database was chosen.
+        let database: URL?
+        /// The embed that followed a successful compose. Nil when the compose failed or was
+        /// declined — there was nothing new to vector, and embedding against a surviving old index
+        /// would report vectors for content the operator believes was just added.
+        let embed: SubstrateRun?
+    }
+
     static func composeVault(cli: SubstrateEngine.Command, vault: URL, name: String,
-                             clean: Bool) async -> SubstrateRun {
+                             clean: Bool) async -> ComposeOutcome {
         // DECLINED, NOT QUEUED, and the caller is told which it was. Queuing would let a refresh
         // tick stack behind a recording's compose and run against a vault that has moved under it;
         // declining lets each caller decide, and both already know how — a recording's compose is
         // skipped because the refresh pass will reach that scope anyway, and a refresh pass records
         // nothing for a scope it did not attempt rather than overwriting a live verdict.
         guard !composeInFlight else {
-            return SubstrateRun(line: "compose \(name)", status: nil, stdout: "",
-                                stderr: "another compose is already running", launchFailure: nil,
-                                cancelled: true)
+            return ComposeOutcome(
+                run: SubstrateRun(line: "compose \(name)", status: nil, stdout: "",
+                                  stderr: "another compose is already running", launchFailure: nil,
+                                  cancelled: true),
+                database: nil, embed: nil)
         }
         composeInFlight = true
         defer { composeInFlight = false }
@@ -994,7 +1054,27 @@ final class SubstrateLibraryModel: ObservableObject {
                          "--index-root", indexRoot.path,
                          "--db", database.path]
         if clean { arguments.append("--clean") }
-        return await SubstrateCLI.run(cli, arguments)
+        let run = await SubstrateCLI.run(cli, arguments)
+
+        // THE EMBED LIVES HERE, at the one chokepoint every compose in this app goes through, and
+        // not on the callers. It was bolted onto the two note paths first, which made whether a
+        // passage is semantically findable depend on WHICH BUTTON added it — a PDF, an uploaded
+        // transcript, a recorded call and every refresh tick all composed and never vectored.
+        // Measured 2026-08-18: `cbre` was serving 1341/1381, forty chunks reachable only by exact
+        // word match, with every step reporting success.
+        //
+        // NON-FATAL, and deliberately so. A down embedder makes content harder to find, not absent
+        // — the lexical arm still answers — so this reports and never fails the compose. That
+        // matters today: the operator's embedding model lives on an external drive that is
+        // currently throwing I/O errors, and a compose that failed because of it would be a working
+        // index reported as broken.
+        let embed: SubstrateRun?
+        if run.succeeded {
+            embed = await SubstrateCLI.run(cli, ["embed", "--db", database.path])
+        } else {
+            embed = nil
+        }
+        return ComposeOutcome(run: run, database: database, embed: embed)
     }
 
     /// The scope compose says it registered. READ FROM THE ENGINE'S OWN LINE rather than derived
@@ -1017,8 +1097,16 @@ final class SubstrateLibraryModel: ObservableObject {
         // registration, which is what an unverified one is worth. This is the single gate rather
         // than a second condition in the card, because compose is always the last step: a report
         // whose compose succeeded has no failure after it to contradict.
-        let composed = steps.first { $0.id == "compose" }?.run
-        let scope = composed?.succeeded == true ? Self.registeredScope(in: composed) : nil
+        // ANY COMPOSE STEP, not one literally named "compose". `createSharedNote` composes several
+        // scopes and ids them `compose-<scope>`, so an exact-match lookup found none of them — a
+        // shared note that landed cleanly in six scopes set no `scope`, drew no "it is answering in
+        // Ask now" confirmation, and never called `corpusChanged()`. `VaultBrowseView` declines to
+        // reload its listing precisely BECAUSE this callback exists, so the browser the note was
+        // written from stayed stale. A contract carried in a string id is one a new caller breaks
+        // without noticing; matching the prefix is the smallest thing that makes it hold.
+        let composes = steps.filter { $0.id == "compose" || $0.id.hasPrefix("compose-") }
+        let composed = composes.first { $0.run?.succeeded == true }?.run
+        let scope = Self.registeredScope(in: composed)
         job = .finished(Report(title: title, steps: steps, scope: scope, orphaned: orphaned))
         // ONLY WHEN A COMPOSE ACTUALLY LANDED. `scope` is non-nil exactly when compose succeeded and
         // named one, so a refused or failed job does not invalidate a list that is still correct.

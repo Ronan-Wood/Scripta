@@ -33,8 +33,9 @@ public enum NoteSpine {
     /// is the distinction `classes.py` was rewritten to preserve.
     ///
     /// A SHARED note declares both, because the tier every scope inherits is ranked and filtered on
-    /// them, and because that is what every note already in core-vault carries.
-    public static let declaredFields = ["status", "doc_type"]
+    /// them, and because that is what every note already in core-vault carries. `NoteWriter.document`
+    /// is the single place that decides which fields are emitted; a constant restating them here
+    /// was a second statement of one rule with only one of them load-bearing.
 
     /// The engine's `spine.CONFIDENCES` plus its declared no-claim token, which is a legal value and
     /// not a member of the judged set. Offered only on the shared destination.

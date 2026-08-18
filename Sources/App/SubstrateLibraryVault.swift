@@ -160,12 +160,18 @@ enum SubstrateLibrary {
     ///   withholding that keeps calls out of default retrieval is keyed on the class a transcript
     ///   carries and the tier its location gives it.
     /// Where a promoted source lands, and therefore what tier it is.
-    enum PromotionTier {
+    enum PromotionTier: CaseIterable {
         /// `10-reference/` — an external document read into passages. Tier 2.
         case reference
         /// `_sources/transcripts/` — a conversation, filed exactly where a recorded call goes so an
         /// uploaded one is indistinguishable from one this app captured. Tier 3.
         case transcript
+
+        /// Every directory this app promotes into — what a sweep has to cover, so a source at the
+        /// wrong tier cannot survive by sitting in the other one.
+        static func allDirectories(in vault: ScriptaVault) -> [URL] {
+            allCases.map { $0.directory(in: vault) }
+        }
 
         func directory(in vault: ScriptaVault) -> URL {
             switch self {
@@ -196,7 +202,19 @@ enum SubstrateLibrary {
         // to write, and BOTH answer. Removed first rather than after, so the refusal — if the old
         // copy cannot be removed — arrives before anything has been written and the operator is
         // asked to clear it by hand instead of being left with two.
-        for stale in staleSources(named: name, for: ingested.origin, in: vault.references) {
+        // BOTH PROMOTION DIRECTORIES, not just this tier's. `sourceDirectoryName` is a pure
+        // function of the ORIGIN, so the same file promoted at both tiers produces the same
+        // directory name in two places — and the `!= named` filter then excluded the other tier's
+        // copy from the sweep in both directions. Adding `standup.txt` as a document and then
+        // correcting it to a transcript (a correction the new kind chooser invites) left
+        // `10-reference/standup-<d>/` AND `_sources/transcripts/standup-<d>/` both live and both
+        // composed: the same content answering twice, with the tier-2 copy retrieved by default,
+        // defeating the withholding the transcript tier exists to provide. If both ran under the
+        // same class the two `document.md` files are byte-identical, which the engine refuses the
+        // whole scope over.
+        for stale in staleSources(named: name, for: ingested.origin,
+                                  in: PromotionTier.allDirectories(in: vault),
+                                  keeping: tier.directory(in: vault)) {
             try manager.removeItem(at: stale)
         }
         try manager.createDirectory(at: passages, withIntermediateDirectories: true)
@@ -242,13 +260,19 @@ enum SubstrateLibrary {
     /// refusal: the very next thing `promote` does is create a directory inside it, so a genuinely
     /// unreadable one fails loudly a line later, and refusing here would turn a first-ever promote
     /// (no `10-reference/` yet) into an error.
+    /// - Parameter keeping: the directory the new copy is being written into. Only there does the
+    ///   same-named directory survive, because that is the one about to be rewritten; a same-named
+    ///   directory in the OTHER tier is a stale copy at the wrong tier and must go.
     private static func staleSources(named: String, for origin: URL,
-                                     in references: URL) -> [URL] {
+                                     in directories: [URL], keeping destination: URL) -> [URL] {
         let suffix = "-\(digest(origin.standardizedFileURL.path))"
-        let entries = (try? FileManager.default.contentsOfDirectory(
-            at: references, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
-        return entries.filter {
-            $0.lastPathComponent.hasSuffix(suffix) && $0.lastPathComponent != named
+        return directories.flatMap { directory -> [URL] in
+            let here = directory.standardizedFileURL == destination.standardizedFileURL
+            let entries = (try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+            return entries.filter {
+                $0.lastPathComponent.hasSuffix(suffix) && !(here && $0.lastPathComponent == named)
+            }
         }
     }
 

@@ -225,11 +225,18 @@ final class AppModel: ObservableObject {
         // manifest write is built from, and a vault present on disk but absent from the binding is
         // one the next regeneration would drop — the manifest and the app disagreeing about what
         // this workspace reads, with the file winning until something rewrites it.
-        if let adopted {
+        if adopted != nil {
+            // THE SAME LIST THE MANIFEST GOT, not just the adopted one. `contextVaults` returns the
+            // STORED list when non-empty and only falls back to `inheritsVault` otherwise — so for
+            // a workspace already bound in Ask, `inherits` here is [bound, adopted] while storing
+            // `[adopted]` alone flipped it from fallback mode to explicit mode with a strict
+            // subset. The next `ScriptaVault.write()` (every recording, every note) then sees a
+            // non-empty `inherits`, skips the already-exists early return, and regenerates the
+            // manifest WITHOUT the bound vault — the exact destruction `write()`'s own comment
+            // forbids, with the scope silently ceasing to serve a whole vault.
             var chosen = AppSettings.workspaceContextVaults
-            var paths = chosen[name] ?? []
-            if !paths.contains(adopted.path) { paths.append(adopted.path) }
-            chosen[name] = paths
+            var seen = Set<String>()
+            chosen[name] = inherits.map(\.standardizedFileURL.path).filter { seen.insert($0).inserted }
             AppSettings.workspaceContextVaults = chosen
         }
         invalidateVaultWorkspaces()

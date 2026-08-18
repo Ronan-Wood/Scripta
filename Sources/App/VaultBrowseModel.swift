@@ -346,6 +346,18 @@ final class VaultBrowseModel: ObservableObject {
     /// for. An inherited `core-vault` note is not this app's to remove and must not look like it is.
     func isRemovable(_ document: VaultDocument) -> Bool {
         let own = ScriptaVault.slug(AppSettings.activeGroup)
+        // TIER 2 ONLY, and widening it to 3 is the mistake to avoid. `_tier_for` puts `02-areas`
+        // AND `_sources/transcripts` both at tier 3, so `tier == 3` would draw a Remove control on
+        // every hand-written note and every recorded call — and `remove(source:)`, correctly
+        // constrained to the directories this app PROMOTES into, would refuse for the notes. That
+        // is the refusing affordance this rule exists to prevent, reintroduced while trying to
+        // extend it.
+        //
+        // KNOWN GAP: an uploaded transcript is therefore still not removable from this surface.
+        // Telling one apart from a recorded call needs the source path, which `VaultDocument`
+        // deliberately does not carry — a browse would otherwise hand back the operator's whole
+        // directory layout in one call. `remove(source:)` DOES accept it, so the orphan-recovery
+        // row after a failed compose works; only the browser affordance is missing.
         return !own.isEmpty && document.vault == own && document.tier == 2
     }
 
