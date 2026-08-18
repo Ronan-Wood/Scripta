@@ -151,7 +151,37 @@ final class AppModel: ObservableObject {
     /// Errors are RETURNED rather than logged, because the caller is a button. `RecordingSession`
     /// can afford to fall back and log — the transcript is the artefact that cannot be recreated —
     /// but a person who just typed a name and pressed Create has to be told it did not happen.
-    func createWorkspace(named raw: String) -> String? {
+    /// A composed scope that ALREADY answers to the name this workspace would take, from somewhere
+    /// other than the folder the workspace would be created in.
+    ///
+    /// THE MIGRATION LEFT TWO THINGS CLAIMING ONE NAME. A curated vault at `vaults/school-vault`
+    /// declares `name = "school"`; creating a workspace called "School" writes `<output>/school`
+    /// declaring `name = "school"` as well. Both are real vaults, both are correct on their own, and
+    /// nothing connected them — so the registry resolved the race to whichever composed first and
+    /// the loser became a vault nothing serves. Measured on this machine 2026-08-17: `cbre` had been
+    /// wired up by hand and worked; `school` had not, and its workspace vault was registered
+    /// nowhere, inheriting nothing. A call recorded into it would have composed into a scope that
+    /// resolves elsewhere.
+    ///
+    /// The engine's roster is the authority, not a directory scan: a scope is a thing the engine
+    /// registered, and asking the filesystem "does a folder with a similar name exist" would both
+    /// miss vaults kept outside the usual place and invent conflicts where no scope exists.
+    ///
+    /// Nil when the roster has not been listed — an engine still starting is not evidence of no
+    /// conflict, and the caller treats nil as "nothing to ask about" rather than "verified clear".
+    func vaultAlreadyNamed(_ raw: String) -> WireScopeRow? {
+        let rows = SubstrateScopes.shared.rows
+        guard let hit = ScriptaVault.conflictingScope(
+            forWorkspaceNamed: raw,
+            registered: rows.map { (scope: $0.scope, vault: $0.vault) },
+            outputFolder: AppSettings.outputFolder) else { return nil }
+        return rows.first { $0.scope == hit.scope && $0.vault == hit.vault }
+    }
+
+    /// - Parameter inheriting: a vault the new workspace should read, on top of whatever its binding
+    ///   already names. This is what `vaultAlreadyNamed` is resolved into once the operator has said
+    ///   yes — connecting the two rather than letting them compete for the name.
+    func createWorkspace(named raw: String, inheriting adopted: URL? = nil) -> String? {
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return "A workspace needs a name." }
         // CASE-DIVERGENT NAMES ARE REFUSED BEFORE THEY EXIST, because the guards downstream only
@@ -166,7 +196,15 @@ final class AppModel: ObservableObject {
             return "A workspace named \"\(clash)\" already exists. Use that name, or choose one "
                  + "that differs by more than capitalisation."
         }
-        let inherits = WorkspaceBindings.binding(for: name).contextVaults
+        // THE ADOPTED VAULT IS ADDED, NOT SUBSTITUTED, and deduped by resolved path so saying yes to
+        // a vault the binding already names cannot list it twice — `assert_composed` counts a note
+        // once, but a manifest naming one vault twice is a file the operator has to reason about.
+        var inherits = WorkspaceBindings.binding(for: name).contextVaults
+        if let adopted, !inherits.contains(where: {
+            $0.standardizedFileURL == adopted.standardizedFileURL
+        }) {
+            inherits.append(adopted)
+        }
         let root = AppSettings.outputFolder
         // Whether the directory pre-dated this call decides whether we may clean it up below.
         let directory = root.appendingPathComponent(ScriptaVault.slug(name), isDirectory: true)
@@ -182,6 +220,17 @@ final class AppModel: ObservableObject {
             // directory the app did not create. Removed only when this call is what created it.
             if !preexisting { try? FileManager.default.removeItem(at: directory) }
             return error.localizedDescription
+        }
+        // RECORDED IN THE BINDING TOO, not only in the manifest. `contextVaults` is what every later
+        // manifest write is built from, and a vault present on disk but absent from the binding is
+        // one the next regeneration would drop — the manifest and the app disagreeing about what
+        // this workspace reads, with the file winning until something rewrites it.
+        if let adopted {
+            var chosen = AppSettings.workspaceContextVaults
+            var paths = chosen[name] ?? []
+            if !paths.contains(adopted.path) { paths.append(adopted.path) }
+            chosen[name] = paths
+            AppSettings.workspaceContextVaults = chosen
         }
         invalidateVaultWorkspaces()
         activeGroup = name
