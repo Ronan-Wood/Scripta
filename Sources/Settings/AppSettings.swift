@@ -29,6 +29,7 @@ enum AppSettings {
         static let workspaceReadVaults = "workspaceReadVaults"
         static let workspaceContextVaults = "workspaceContextVaults"
         static let sharedVault = "sharedVaultPath"
+        static let calendarLookaheadDays = "calendarLookaheadDays"
         static let summarizeEnabled = "summarizeEnabled"
         static let notesMergeEnabled = "notesMergeEnabled"
         static let promptForDetails = "promptForDetails"
@@ -320,6 +321,25 @@ enum AppSettings {
     static var workspaceContextVaults: [String: [String]] {
         get { (defaults.dictionary(forKey: Keys.workspaceContextVaults) as? [String: [String]]) ?? [:] }
         set { defaults.set(newValue, forKey: Keys.workspaceContextVaults) }
+    }
+
+    /// How far ahead the calendar is read, in days.
+    ///
+    /// IT WAS TWELVE HOURS, HARD-CODED, and `upcomingCalls` additionally clamped every request to
+    /// `min(hours, 12)` — so nothing could see tomorrow, and a meeting scheduled for the next
+    /// morning was invisible to the app that exists to record it. A day is the minimum useful
+    /// horizon and a week is the one a person plans on.
+    ///
+    /// CLAMPED TO A SANE RANGE rather than trusted: `predicateForEvents` over an unbounded span is
+    /// a search of the whole store, and a stored 0 (or a garbage value from a hand-edited defaults
+    /// plist) would silently mean "no upcoming calls exist" — an empty list that looks like an
+    /// empty calendar.
+    static var calendarLookaheadDays: Int {
+        get {
+            let stored = defaults.integer(forKey: Keys.calendarLookaheadDays)
+            return stored == 0 ? 7 : min(max(stored, 1), 60)
+        }
+        set { defaults.set(min(max(newValue, 1), 60), forKey: Keys.calendarLookaheadDays) }
     }
 
     /// The vault every scope inherits — where a note written for ALL contexts goes.
