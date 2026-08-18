@@ -49,9 +49,27 @@ private struct VaultBrowseConsole: View {
     /// The document a delete is pending on. Held as the whole value because removing one resolves
     /// its source directory through `expand` — the listing deliberately carries no absolute path.
     @State private var removing: VaultDocument?
+    /// Whether the new-note sheet is up. Held here rather than in the listing because the listing is
+    /// rebuilt from a fresh `Listing` value on every reload, and a sheet whose presentation state
+    /// lives in a view that gets replaced closes itself under the operator mid-typing.
+    @State private var writingNote = false
 
     var body: some View {
         content
+            .sheet(isPresented: $writingNote) {
+                NewNoteSheet(workspace: SubstrateLibraryModel.shared.workspace,
+                             sharedVaultName: AppSettings.sharedVault?.lastPathComponent) { draft in
+                    let refusal = SubstrateLibraryModel.shared.createNote(
+                        title: draft.title, docType: draft.docType, body: draft.body,
+                        destination: draft.destination, confidence: draft.resolvedConfidence,
+                        domains: draft.resolvedDomains)
+                    // The listing is NOT reloaded here. `createNote` composes on a background task
+                    // and `finish` calls `corpusChanged()` when it lands — reloading now would
+                    // re-list a scope the note has not been composed into yet and show the operator
+                    // a vault their note is missing from.
+                    return refusal
+                }
+            }
             // ADOPT ON APPEAR, LOAD ON THE TOKEN. Two modifiers because they answer two questions:
             // opening this screen must re-read the binding (a rebind made in Ask changes the scope
             // without changing the workspace), and the load must be keyed on something the loading
@@ -141,7 +159,8 @@ private struct VaultBrowseConsole: View {
         case .listed(let listing):
             VaultBrowseListing(listing: listing, model: model,
                                open: { reading = $0 }, confirmRemove: { removing = $0 },
-                               reload: { Task { await model.load() } })
+                               reload: { Task { await model.load() } },
+                               newNote: model.scopeOverride == nil ? { writingNote = true } : nil)
         }
     }
 }
@@ -222,6 +241,17 @@ private struct VaultBrowseListing: View {
     /// with the state they need.
     let confirmRemove: (VaultDocument) -> Void
     let reload: () -> Void
+    /// Opens the note sheet, which the console owns for the same reason it owns the remove dialog:
+    /// the presentation state has to outlive this view's `listing` value, and that value is replaced
+    /// wholesale on every reload.
+    ///
+    /// NIL WHEN THIS SCREEN IS SHOWING SOMEONE ELSE'S SCOPE. The scope picker can point this surface
+    /// at any composed scope — `prism`, `research`, a colleague's vault — while the only vault the
+    /// app may write is the active workspace's own. Offering Create there would write the note
+    /// somewhere the operator is not looking and leave the list they ARE looking at unchanged. Not
+    /// offered rather than offered-and-refused, which is the rule `isRemovable` states for the
+    /// delete control one screen over.
+    let newNote: (() -> Void)?
     /// Vaults the reader has folded away. BY NAME, not by index, so collapsing `core-vault` and then
     /// changing the filter does not silently fold whichever group slid into that position.
     @State private var collapsed: Set<String> = []
@@ -317,6 +347,9 @@ private struct VaultBrowseListing: View {
             Spacer(minLength: Gap.s8)
             // The list re-reads on every appearance now, so this is for the case that does not
             // involve leaving: a compose finishing, or a call landing, while the screen is open.
+            if let newNote {
+                ActionButton(title: "New note", glyph: .add, rank: .secondary, action: newNote)
+            }
             ActionButton(title: "Refresh", glyph: .refresh, rank: .tertiary, action: reload)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

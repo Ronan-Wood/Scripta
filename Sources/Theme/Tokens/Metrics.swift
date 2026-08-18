@@ -40,6 +40,10 @@ enum Metrics {
     /// the line the eye was on; lists get more because their scan is vertical.
     static let proseMaxWidth: CGFloat = 720
     static let listMaxWidth: CGFloat = 900
+    /// Forms are capped SHORTER than prose. A field is scanned by its label and filled from the
+    /// left, so width past the longest expected value is empty space that makes a control look
+    /// unfinished — and a full-window text field reads as a bug rather than as a big input.
+    static let formMaxWidth: CGFloat = 560
 
     /// Line-height multiples. Consumed via `Typeface.lineSpacing`, which converts them into the
     /// extra leading SwiftUI actually wants — do not hand them to `.lineSpacing` directly.

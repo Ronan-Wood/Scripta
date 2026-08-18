@@ -1,5 +1,6 @@
 import Foundation
 import ScriptaCore
+import ScriptaShared
 import SubstrateKit
 
 /// The Library: bringing something into the engine, all the way to queryable.
@@ -98,13 +99,19 @@ final class SubstrateLibraryModel: ObservableObject {
     /// ON THE MODEL, NOT THE VIEW, and it moved here for the reason its previous host recorded:
     /// `HubContent` rebuilds this pane every time the sidebar reselects the section, so a `@State`
     /// lens silently resets to Add on the way back.
+    /// THREE LENSES, AND `add` MEANS ONLY ADD. It used to carry the scope roster, the refresh record
+    /// and the transcript-vault settings underneath the one form anybody opened it for — so adding a
+    /// note put a page of engine diagnostics, two identical six-line compose refusals among them, in
+    /// front of someone who had come to type a sentence. Those are the state of what is ALREADY
+    /// here, which is a different question from adding to it, and they now have their own lens.
     enum Lens: String, CaseIterable, Identifiable {
-        case vault, add
+        case vault, add, status
         var id: String { rawValue }
         var title: String {
             switch self {
             case .vault: return "Vault"
             case .add: return "Add"
+            case .status: return "Status"
             }
         }
     }
@@ -341,7 +348,12 @@ final class SubstrateLibraryModel: ObservableObject {
     // MARK: - The document rail
 
     /// Bring one document all the way in: extract it, put it in the vault, compose the scope.
-    func addDocument() {
+    /// - Parameter tier: `.transcript` uploads a conversation into the same directory a recorded
+    ///   call lands in, and FORCES `class: conversation` with it. The two must move together: the
+    ///   folder gives the passages their tier and the class is what keeps them out of default
+    ///   retrieval, so a transcript filed in the right place while declaring itself a reference
+    ///   would still arrive uninvited in every query.
+    func addDocument(tier: SubstrateLibrary.PromotionTier = .reference) {
         guard !isWorking, let document, case .known(let asked) = surface,
               let cli = SubstrateEngine.shared.serving?.cli else { return }
         // REFUSED BEFORE THE INGEST, NOT AFTER IT. A document lands in the workspace's vault, and
@@ -362,7 +374,7 @@ final class SubstrateLibraryModel: ObservableObject {
                 scope: nil, orphaned: nil))
             return
         }
-        let chosen = documentClass
+        let chosen = tier == .transcript ? SubstrateLibrary.conversationClass : documentClass
         let typed = domains
         let markdown = forceMarkdown
         // CAPTURED WITH ITS NEIGHBOURS. `workspace` was the one input read INSIDE the task, after a
@@ -373,7 +385,8 @@ final class SubstrateLibraryModel: ObservableObject {
         let intoWorkspace = workspace
         task = Task { [weak self] in
             await self?.runAdd(cli: cli, file: document, surface: asked, forceMarkdown: markdown,
-                               docClass: chosen, domains: typed, workspace: intoWorkspace)
+                               docClass: chosen, domains: typed, workspace: intoWorkspace,
+                               tier: tier)
         }
     }
 
@@ -429,6 +442,7 @@ final class SubstrateLibraryModel: ObservableObject {
     static func performAdd(
         cli: SubstrateEngine.Command, file: URL, surface asked: SubstrateCLI.IngestSurface,
         forceMarkdown: Bool, docClass: String?, domains: String, workspace: String,
+        tier: SubstrateLibrary.PromotionTier = .reference,
         progress: @escaping @MainActor (AddPhase) -> Void
     ) async -> AddOutcome {
         // 1. EXTRACT INTO STAGING, never straight into the vault. `compose` refuses the entire
@@ -482,7 +496,7 @@ final class SubstrateLibraryModel: ObservableObject {
             promoted = try SubstrateLibrary.promote(
                 SubstrateLibrary.Ingested(out: out, origin: file,
                                           domains: domains.split(separator: ",").map(String.init)),
-                into: target)
+                into: target, tier: tier)
         } catch {
             return AddOutcome(extraction: extraction, surfaceFailure: nil, promoted: nil,
                               vault: nil, promoteFailure: error.localizedDescription,
@@ -506,13 +520,14 @@ final class SubstrateLibraryModel: ObservableObject {
     /// stopped the run — which is what makes a failed add legible rather than just short.
     private func runAdd(cli: SubstrateEngine.Command, file: URL,
                         surface asked: SubstrateCLI.IngestSurface, forceMarkdown: Bool,
-                        docClass: String?, domains: String, workspace: String) async {
+                        docClass: String?, domains: String, workspace: String,
+                        tier: SubstrateLibrary.PromotionTier) async {
         let title = "Adding \(file.lastPathComponent)"
         var done: [Step] = []
 
         let outcome = await Self.performAdd(
             cli: cli, file: file, surface: asked, forceMarkdown: forceMarkdown,
-            docClass: docClass, domains: domains, workspace: workspace
+            docClass: docClass, domains: domains, workspace: workspace, tier: tier
         ) { [weak self] phase in
             guard let self else { return }
             let step: String
@@ -620,6 +635,181 @@ final class SubstrateLibraryModel: ObservableObject {
                               appFailure: nil, skipped: false))
             finish(title: title, steps: steps)
         }
+    }
+
+    // MARK: - Writing a note by hand
+
+    /// Write one hand-authored note into this workspace's vault and compose so it can be found.
+    ///
+    /// THE THIRD WRITER, and the one with an author. Capture writes calls, the library rail writes
+    /// ingested documents, and both stamp every field themselves. This one supplies the spine so the
+    /// operator does not have to know it — measured 2026-08-17, a note written by hand into a blank
+    /// vault is refused twice before it composes, and the app named neither field it wanted.
+    ///
+    /// NOT `--clean`. A note is additive: nothing was removed, so no ingest directory is stale, and
+    /// `--clean` would wipe and rebuild the whole index root to add one file.
+    ///
+    /// - Returns: a refusal to show the operator, or `nil` when the note was written. Compose
+    ///   failures are NOT returned — the note is on disk by then, and the rail reports the compose
+    ///   the same way it reports every other one.
+    func createNote(title: String, docType: String, body: String,
+                    destination: NoteDestination = .workspace,
+                    confidence: String? = nil, domains: [String] = []) -> String? {
+        guard !isWorking else {
+            return "Another library job is running. Wait for it to finish, then add the note."
+        }
+        guard let cli = SubstrateEngine.shared.serving?.cli else {
+            return "The engine is not running yet, so the note could not be composed. Wait for it "
+                 + "to start and try again."
+        }
+        if destination == .shared {
+            return createSharedNote(cli: cli, title: title, docType: docType,
+                                    confidence: confidence, domains: domains, body: body)
+        }
+        // THE VAULT IS CREATED IF IT IS NOT THERE, which is the whole first-run case. A workspace
+        // that has never recorded a call has no vault on disk, and that is exactly the operator this
+        // path exists for — refusing them here would rebuild the dead end it was written to remove.
+        // `createWorkspace`'s hazard applies unchanged: `write()` makes the transcripts directory
+        // first and the manifest second, so a failure between them burns the name for every later
+        // attempt. Cleaned up only when this call is what created the directory.
+        let root = AppSettings.outputFolder
+        let directory = root.appendingPathComponent(ScriptaVault.slug(workspace), isDirectory: true)
+        let preexisting = FileManager.default.fileExists(atPath: directory.path)
+        let vault: ScriptaVault
+        do {
+            let inherits = WorkspaceBindings.binding(for: workspace).contextVaults
+            vault = try ScriptaVault.vault(forScope: workspace, under: root, inherits: inherits)
+            try vault.write()
+        } catch {
+            if !preexisting { try? FileManager.default.removeItem(at: directory) }
+            return error.localizedDescription
+        }
+
+        let url: URL
+        do {
+            url = try NoteWriter.write(intoVaultAt: vault.root, title: title,
+                                       docType: docType, body: body)
+        } catch {
+            // The vault may have just been created for a note that then failed to write. Left in
+            // place deliberately: it is a valid empty workspace vault, and removing it would also
+            // remove one that existed before this call.
+            return error.localizedDescription
+        }
+
+        task = Task { [weak self] in
+            guard let self else { return }
+            let jobTitle = "Adding \(url.lastPathComponent)"
+            let written = Step(id: "write", title: "Write the note into the vault", run: nil,
+                               appFailure: nil, skipped: false)
+            job = .running(Running(title: jobTitle, step: "Composing", started: Date(),
+                                   done: [written]))
+            let composed = await Self.composeVault(cli: cli, vault: vault.root,
+                                                   name: vault.scope, clean: false)
+            var steps = [written, Step(id: "compose", title: "Compose the scope", run: composed,
+                                       appFailure: nil, skipped: false)]
+            steps.append(await Self.embedStep(cli: cli, scope: vault.scope,
+                                              composeSucceeded: composed.succeeded))
+            finish(title: jobTitle, steps: steps)
+        }
+        return nil
+    }
+
+    /// Write into the vault every scope inherits, then bring all of them back into agreement.
+    ///
+    /// THE COMPOSE SET IS THE POINT. A workspace note touches one scope; a shared note is inherited
+    /// by every scope that names this vault, and each keeps its OWN index. Composing only the active
+    /// workspace would leave a note the operator wrote "for everything" answering in exactly one
+    /// place — visible from one context, missing from five, with every gate reporting PASS. That is
+    /// the silently-narrowed state the engine refuses everywhere else, arrived at by omission.
+    ///
+    /// The set is taken from the ENGINE's roster rather than from a list here: `sources` is each
+    /// scope's resolved inheritance, so a scope that stops inheriting the shared vault drops out of
+    /// this automatically, and one that starts inheriting it is picked up without being registered
+    /// anywhere in the app.
+    private func createSharedNote(cli: SubstrateEngine.Command, title: String, docType: String,
+                                  confidence: String?, domains: [String], body: String) -> String? {
+        guard let root = AppSettings.sharedVault else {
+            return NoteWriter.Failure.noSharedVault.localizedDescription
+        }
+        let url: URL
+        do {
+            url = try NoteWriter.write(intoVaultAt: root, destination: .shared, title: title,
+                                       docType: docType, confidence: confidence,
+                                       domains: domains, body: body)
+        } catch {
+            return error.localizedDescription
+        }
+
+        // The vault's own directory name, which is how a manifest names an inherited vault and so
+        // how `sources` reports it.
+        let vaultName = root.standardizedFileURL.lastPathComponent
+        let affected = SubstrateScopes.shared.rows.filter { row in
+            row.indexPresent && (row.sources?.contains(vaultName) ?? false)
+        }
+
+        task = Task { [weak self] in
+            guard let self else { return }
+            let jobTitle = "Adding \(url.lastPathComponent) to \(vaultName)"
+            var steps = [Step(id: "write", title: "Write the note into \(vaultName)", run: nil,
+                              appFailure: nil, skipped: false)]
+            // NAMED, NOT COUNTED, when there are none. An empty roster here means the note is on
+            // disk and no index has it — which reads as success unless the report says otherwise.
+            guard !affected.isEmpty else {
+                return finish(title: jobTitle, steps: steps + [
+                    Step(id: "compose", title: "Compose the scopes that inherit it", run: nil,
+                         appFailure: "No composed scope inherits \(vaultName), so the note is "
+                                   + "written but nothing serves it yet. Compose a scope that "
+                                   + "inherits this vault.", skipped: false)])
+            }
+            for row in affected {
+                guard !Task.isCancelled else {
+                    return finish(title: jobTitle, steps: steps + [
+                        Step(id: "stopped", title: "Compose the remaining scopes", run: nil,
+                             appFailure: nil, skipped: true)])
+                }
+                job = .running(Running(title: jobTitle, step: "Composing \(row.scope)",
+                                       started: Date(), done: steps))
+                let composed = await Self.composeVault(
+                    cli: cli, vault: URL(fileURLWithPath: row.vault, isDirectory: true),
+                    name: row.scope, clean: false)
+                steps.append(Step(id: "compose-\(row.scope)", title: "Compose \(row.scope)",
+                                  run: composed, appFailure: nil, skipped: false))
+                steps.append(await Self.embedStep(cli: cli, scope: row.scope,
+                                                  composeSucceeded: composed.succeeded))
+            }
+            finish(title: jobTitle, steps: steps)
+        }
+        return nil
+    }
+
+    /// Vector the chunks the compose just added.
+    ///
+    /// WITHOUT THIS A NEW NOTE IS LEXICAL-ONLY. Chunks are content-addressed, so a new note is new
+    /// chunks and new chunks have no vectors — the note answers a query that happens to use its
+    /// words and is invisible to one that uses different ones. Nothing in this app ran `embed`
+    /// before 2026-08-17: only `tools/substrate-refresh` did, which is not running while the app is
+    /// (Doc 5 §6, the agent is retired). So every note written here stayed half-indexed until an
+    /// operator ran a command they had no reason to know about.
+    ///
+    /// SKIPPED WHEN THE COMPOSE FAILED, rather than run anyway. A failed compose left the previous
+    /// index in place; embedding against it would report vectors for content the operator believes
+    /// was just added.
+    private static func embedStep(cli: SubstrateEngine.Command, scope: String,
+                                  composeSucceeded: Bool) async -> Step {
+        let title = "Vector the new passages"
+        guard composeSucceeded else {
+            return Step(id: "embed-\(scope)", title: title, run: nil, appFailure: nil, skipped: true)
+        }
+        guard let database = registeredDatabase(named: scope) else {
+            return Step(id: "embed-\(scope)", title: title, run: nil,
+                        appFailure: "The engine did not register a database for \(scope), so its "
+                                  + "new passages could not be vectored.", skipped: false)
+        }
+        // A FAILURE HERE IS REPORTED, NOT FATAL. The note is composed and lexically findable; a
+        // down embedder makes it harder to find, not absent. Reporting it is what lets the operator
+        // see why an answer they expected did not come back.
+        let run = await SubstrateCLI.run(cli, ["embed", "--db", database.path])
+        return Step(id: "embed-\(scope)", title: title, run: run, appFailure: nil, skipped: false)
     }
 
     // MARK: - The transcript rail
