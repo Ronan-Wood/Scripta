@@ -8,6 +8,10 @@ Two review passes ran over this work: `/crosscheck` (3 reviewers, findings appli
 `/adversary` (2 reviewers, diff-only, report-only — **nothing from it has been applied**).
 This document is mostly the adversary output plus what I found verifying it.
 
+**§0 is different and comes first: a crash the operator hit trying to actually use the app.** It
+is not from this work and not from either review — it is a real crash report, analysed here
+because it outranks everything else.
+
 ---
 
 ## Read this first: what the work is
@@ -26,6 +30,71 @@ workspace whose name collides with a composed scope stops and offers to connect.
 Verification state: **276 Swift tests**, **589 engine tests**, lint 16 (pre-existing),
 fixture `4a560ce34aa6378a` / 1811 chunks, all six live scopes fully vectored, app builds
 and launches.
+
+---
+
+## 0. TOP — the app crashes while recording (stack overflow in the audio path)
+
+**This happened in real use.** The operator tried to record and the app died. It outranks
+everything else in this document.
+
+`Sources/Recording/SystemAudioCapture.swift:106` → `Sources/Transcription/LiveTranscriber.swift:101`
+
+```
+Exception:  EXC_BAD_ACCESS (SIGBUS), KERN_PROTECTION_FAILURE
+Region:     Stack Guard  16fc24000-16fc28000     <- the guard page, i.e. stack overflow
+Thread 9:   com.ronanwood.Scripta.systemAudio
+Uptime:     2h50m (launched 11:41:46, crashed 14:32:06 on 2026-08-18)
+Build:      the Debug build from this session's commits (pid 18812)
+```
+
+**Not a memory bug — a stack overflow from 6,619 levels of closure recursion.** The trace is one
+call walking a chain of wrapped closures to reach a single leaf:
+
+```
+SystemAudioCapture.stream(_:didOutputSampleBuffer:of:)   :106   <- bottom of the chain
+  thunk (@in_guaranteed AVAudioPCMBuffer) -> (@out ())      |
+  thunk (@guaranteed AVAudioPCMBuffer) -> ()                | x 6,619
+  ...                                                       |
+LiveTranscriber.makeFeed closure                          :101   <- the actual work, at the top
+```
+
+`makeFeed`'s closure is **not** recursive — it is the innermost frame and it is fine. The 6,619
+wrappers are built *around* it.
+
+### Ruled out by reading the code
+
+Nothing composes handlers. Every assignment is a plain `=`:
+`RecordingSession.swift:357-358`, `CaptureSession.swift:65`, and `LiveTranscriber.feed` is a
+`private(set) var` set once at `:62`. Grepped for `old` / `previous` / `existing` capture
+patterns around `onBuffer` — none exist.
+
+### Hypotheses, ranked — NOT confirmed
+
+1. **Reabstraction-thunk accumulation through `OSAllocatedUnfairLock`.** Both `onBuffer`
+   properties (`SystemAudioCapture.swift:35`, `MicrophoneCapture.swift:48`) store the closure
+   inside a **generic** box, so every store reabstracts to `@in_guaranteed -> @out` and every
+   load reabstracts back — **exactly the alternating pair in the trace**. Any read-then-restore
+   round trip would add one pair permanently. The site that does that was not found; that is the
+   gap in this hypothesis, and finding it would confirm the whole thing.
+2. **The live-start path runs many times per session.** `RecordingSession.swift:328` loops over
+   tracks and `liveStartTask` is rebuilt; if it re-runs on device change, permission change or
+   analyzer restart, ~6,600 passes over three hours is plausible. Best explanation of the
+   **count**, where (1) is the best explanation of the **shape**. They are not exclusive.
+3. Mic and system paths wired into one chain via `CaptureSession.swift:65`.
+4. A retained old `LiveTranscriber` whose feed is still installed while a new one layers on —
+   `liveTranscribers.append(live)` accumulates.
+
+### The cheapest decisive experiment
+
+Log a monotonic assignment counter, or the chain depth, at every `onBuffer` **write**; run a long
+system-audio recording; see whether it climbs. One run separates (1)+(2) from (3) and (4).
+
+### Scope note
+
+**Unrelated to this session's six commits** — none of them touch audio, capture or transcription.
+Do not look for it in the note/Add-page work. It is listed first because it is a crash in the
+app's core function, reproduced by ordinary use.
 
 ---
 
@@ -335,14 +404,17 @@ Worth reading before trusting anything above.
 
 ## 16. Suggested order
 
-1. §1 — narrow `remove(source:)` to `<slug>-<8 hex>` **directories**. Do not revert; do not
+1. **§0 — the recording crash.** It is the only item here reached by ordinary use of the app,
+   and the app cannot do its main job while it stands. Start with the counter experiment; do not
+   start by rewriting the capture wiring.
+2. §1 — narrow `remove(source:)` to `<slug>-<8 hex>` **directories**. Do not revert; do not
    touch `staleSources`.
-2. §2 — one sanitised title for both frontmatter and H1, then fix the two tests that encode the
+3. §2 — one sanitised title for both frontmatter and H1, then fix the two tests that encode the
    divergence.
-3. §5 — make `performAdd` and `SubstrateRefresh` surface the embed result; delete or use
+4. §5 — make `performAdd` and `SubstrateRefresh` surface the embed result; delete or use
    `ComposeOutcome.database`.
-4. §3, §6, §7, §8, §9 — in any order.
-5. §13 — reproduce against a copied registry before deciding.
-6. §10 — sweep the low items together.
+5. §3, §6, §7, §8, §9 — in any order.
+6. §13 — reproduce against a copied registry before deciding.
+7. §10 — sweep the low items together.
 
 Everything in §1–§10 is **unfixed**. Nothing from the adversary pass has been applied.
