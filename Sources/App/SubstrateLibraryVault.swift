@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import ScriptaCore
+import ScriptaShared
 
 /// The vaults Scripta owns, and the only ones it writes.
 ///
@@ -97,6 +98,12 @@ enum SubstrateLibrary {
     /// compose.
     static let baseDomain = "library"
 
+    /// The class an uploaded transcript is filed under — TAKEN FROM `TranscriptSpine`, not restated,
+    /// because a recorded call already declares it and an uploaded one must be indistinguishable
+    /// from a recorded one. It is the class default retrieval withholds; a second literal here is a
+    /// second place for that to stop being true.
+    static let conversationClass = TranscriptSpine.documentClass
+
 
     // MARK: - Promoting one ingest into the vault
 
@@ -145,7 +152,31 @@ enum SubstrateLibrary {
     ///
     /// No manifest is written here: `ScriptaVault.write()` owns that, and a second writer for one
     /// file is how the two come to disagree about `inherits`.
-    static func promote(_ ingested: Ingested, into vault: ScriptaVault) throws -> URL {
+    /// - Parameter tier: which of the vault's directories the source lands in. THE FOLDER IS THE
+    ///   TIER (`vault._tier_for`), so this is not a filing preference: `10-reference/` makes the
+    ///   passages tier-2 reference, `_sources/transcripts/` makes them the same tier-3 conversation
+    ///   material a recorded call produces. An uploaded transcript filed as reference would be
+    ///   quoted as a settled source and would arrive uninvited in every query, because the
+    ///   withholding that keeps calls out of default retrieval is keyed on the class a transcript
+    ///   carries and the tier its location gives it.
+    /// Where a promoted source lands, and therefore what tier it is.
+    enum PromotionTier {
+        /// `10-reference/` — an external document read into passages. Tier 2.
+        case reference
+        /// `_sources/transcripts/` — a conversation, filed exactly where a recorded call goes so an
+        /// uploaded one is indistinguishable from one this app captured. Tier 3.
+        case transcript
+
+        func directory(in vault: ScriptaVault) -> URL {
+            switch self {
+            case .reference: return vault.references
+            case .transcript: return vault.transcripts
+            }
+        }
+    }
+
+    static func promote(_ ingested: Ingested, into vault: ScriptaVault,
+                        tier: PromotionTier = .reference) throws -> URL {
         let document = ingested.out.appendingPathComponent("document.md")
         let front = frontmatter(of: document)
         guard let title = front["title"], !title.isEmpty else {
@@ -155,7 +186,7 @@ enum SubstrateLibrary {
         }
 
         let name = sourceDirectoryName(origin: ingested.origin)
-        let source = vault.references.appendingPathComponent(name, isDirectory: true)
+        let source = tier.directory(in: vault).appendingPathComponent(name, isDirectory: true)
         let passages = source.appendingPathComponent("passages", isDirectory: true)
 
         let manager = FileManager.default
