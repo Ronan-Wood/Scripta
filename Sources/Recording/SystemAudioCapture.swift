@@ -1,4 +1,5 @@
 import AVFoundation
+import ScriptaCore
 import ScreenCaptureKit
 import OSLog
 import os
@@ -31,12 +32,13 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
     var onLevel: ((Float) -> Void)?
 
     /// Per-buffer PCM on the capture queue, for live transcription of the system track. Locked
-    /// because live transcription attaches it after capture is already running.
+    /// because live transcription attaches it after capture is already running — see `AudioCallbackBox`
+    /// for why the lock cannot hold the closure itself.
     var onBuffer: ((AVAudioPCMBuffer) -> Void)? {
-        get { bufferCallback.withLock { $0 } }
-        set { bufferCallback.withLock { $0 = newValue } }
+        get { bufferCallback.callback }
+        set { bufferCallback.callback = newValue }
     }
-    private let bufferCallback = OSAllocatedUnfairLock<((AVAudioPCMBuffer) -> Void)?>(initialState: nil)
+    private let bufferCallback = AudioCallbackBox()
 
     init(outputURL: URL) {
         self.outputURL = outputURL
@@ -103,7 +105,7 @@ final class SystemAudioCapture: NSObject, SCStreamDelegate, SCStreamOutput {
         }
 
         // Live transcript + meter, when the system track is the live source.
-        onBuffer?(pcm)
+        bufferCallback.callIfSet(pcm)
         if let onLevel { onLevel(Self.peak(of: pcm)) }
     }
 
