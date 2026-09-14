@@ -82,17 +82,19 @@ private struct ImportJobRow: View {
                 ProgressView().controlSize(.small)
             case .done:
                 Image(systemName: "checkmark.circle.fill").font(.system(size: 14)).foregroundStyle(Carbon.success)
+            case .addedWithoutVectors:
+                Image(systemName: "exclamationmark.circle.fill").font(.system(size: 14)).foregroundStyle(Carbon.warningText)
             case .failed:
                 Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 14)).foregroundStyle(Carbon.danger)
             }
             VStack(alignment: .leading, spacing: 1) {
                 Text(job.filename).font(CarbonFont.medium(13)).foregroundStyle(Carbon.textPrimary).lineLimit(1)
                 Text(statusText).font(CarbonFont.label(11))
-                    .foregroundStyle(job.isFailed ? Carbon.danger : Carbon.textHelper)
+                    .foregroundStyle(statusTint)
                     .lineLimit(2)
             }
             Spacer()
-            if case .failed = job.state {
+            if job.needsDismissal {
                 Button { model.dismissImportJob(job.id) } label: {
                     Image(systemName: "xmark").font(.system(size: 10, weight: .medium)).foregroundStyle(Carbon.iconSecondary)
                         .frame(width: 20, height: 20).contentShape(Rectangle())
@@ -106,10 +108,22 @@ private struct ImportJobRow: View {
         .overlay { RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Carbon.borderSubtle, lineWidth: 1) }
     }
 
+    private var statusTint: Color {
+        switch job.state {
+        case .failed: return Carbon.danger
+        case .addedWithoutVectors: return Carbon.warningText
+        case .processing, .done: return Carbon.textHelper
+        }
+    }
+
     private var statusText: String {
         switch job.state {
         case .processing: return "Analyzing on-device…"
         case .done: return "Added — searchable everywhere"
+        // THE SENTENCE COMES FROM `AddOutcome.warning`, not from here. It used to be written twice
+        // — once there and once in this view — for one state, so a reworded explanation would land
+        // in whichever copy the next person happened to open.
+        case .addedWithoutVectors(let message): return message
         case .failed(let message): return message
         }
     }

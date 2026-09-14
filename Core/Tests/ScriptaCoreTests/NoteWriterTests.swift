@@ -251,8 +251,11 @@ final class NoteWriterTests: XCTestCase {
             .trimmingCharacters(in: .whitespaces)
             .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
         XCTAssertEqual(readBack, "He said 'no' twice")
+        // THE SAME VALUE, which this assertion used to deny. It asserted the H1 kept the raw double
+        // quotes while the frontmatter carried singles — encoding the divergence as intended, so the
+        // one invariant `document(title:…)` is built around was contradicted by its own test.
         XCTAssertEqual(text.components(separatedBy: "\n").first { $0.hasPrefix("# ") },
-                       "# He said \"no\" twice")
+                       "# He said 'no' twice")
     }
 
     /// A NEWLINE IN A TITLE MUST NOT BECOME A FRONTMATTER LINE. Pasting a two-line title otherwise
@@ -283,6 +286,19 @@ final class NoteWriterTests: XCTestCase {
         XCTAssertEqual(front.components(separatedBy: "\n").filter { !$0.isEmpty }.count, 3,
                        "the title must occupy exactly one line\n\n\(front)")
         XCTAssertTrue(front.contains("status: \(NoteSpine.status)"), front)
+
+        // AND NOT INTO THE BODY EITHER, which checking only the frontmatter let through. The H1 was
+        // written from the RAW title, so the tail of a pasted multi-line title landed in the note as
+        // prose — not a forged key, but content the operator never wrote, in a file this type
+        // cannot go back and edit. One line of heading, and the rest of the note is the body given.
+        guard let body = Frontmatter.split(text)?.body else {
+            return XCTFail("no body\n\n\(text)")
+        }
+        let headings = body.components(separatedBy: "\n").filter { $0.hasPrefix("# ") }
+        XCTAssertEqual(headings, ["# Real title doc_id: forged status: archived"],
+                       "the whole title belongs on the heading line\n\n\(body)")
+        XCTAssertFalse(body.contains("\ndoc_id: forged"),
+                       "the title's tail leaked into the body\n\n\(body)")
     }
 
     /// The engine drops an unslugifiable domain silently, and `domains` is what cross-scope

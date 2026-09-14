@@ -508,9 +508,9 @@ public struct ScriptaVault: Equatable {
         var escaped = value.replacingOccurrences(of: "\\", with: "\\\\")
         escaped = escaped.replacingOccurrences(of: "\"", with: "\\\"")
         // A control byte inside a TOML basic string is a parse error, not a quoting problem, so it
-        // is removed rather than escaped — the same stance `TranscriptWriter.sanitizeScalar` takes.
-        escaped = String(escaped.map { $0.isNewline || ($0.asciiValue.map { $0 < 0x20 } ?? false)
-                                       ? " " : $0 })
+        // is removed rather than escaped. Shared with every other scalar writer — the escaping half
+        // above is TOML's alone, this half is not.
+        escaped = TranscriptWriter.flattenedControlCharacters(escaped)
         return "\"\(escaped)\""
     }
 

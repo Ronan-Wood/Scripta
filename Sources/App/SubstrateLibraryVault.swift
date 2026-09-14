@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import ScriptaCore
 import ScriptaShared
@@ -64,30 +63,11 @@ enum SubstrateLibrary {
     /// safe as well as sufficient — it also clears what an app that quit mid-extraction left.
     static func stagingRun(for file: URL) -> URL {
         try? FileManager.default.removeItem(at: staging)
-        let readable = slug(file.deletingPathExtension().lastPathComponent)
+        let readable = ScriptaVault.slug(file.deletingPathExtension().lastPathComponent)
         return staging.appendingPathComponent(
             "\(readable.isEmpty ? "document" : readable)-\(UUID().uuidString.prefix(8).lowercased())",
             isDirectory: true)
     }
-
-    /// The transcript vault for one Scripta workspace. One vault per workspace, because Doc 3 §4
-    /// makes the SCOPE NAME the privacy wall between them.
-    ///
-    /// A NAME WITH NO SLUG STILL GETS ITS OWN DIRECTORY. The fallback was the literal `unnamed`, so
-    /// every workspace whose name carries no ASCII letter or digit — "研究", "———", an emoji — named
-    /// one shared vault, which is the privacy wall failing open on the exact input the rest of the
-    /// system refuses (`ScriptaVault.init` throws `unnameableScope`,
-    /// `ScriptaVault` throws `unnameableScope`). Callers refuse such a workspace before they get
-    /// here — `SubstrateLibraryModel.composeWorkspace` does, in its own words — and this makes the
-    /// path harmless rather than merely unreached, since a returned `URL?` cannot be given while
-    /// `WorkspaceBinding.transcriptVault` is declared non-optional.
-    static func transcriptVault(workspace: String) -> URL {
-        let name = slug(workspace)
-        return root.appendingPathComponent("transcripts", isDirectory: true)
-            .appendingPathComponent(name.isEmpty ? "unnamed-\(digest(workspace))" : name,
-                                    isDirectory: true)
-    }
-
 
     /// The domain every library document carries.
     ///
@@ -218,11 +198,21 @@ enum SubstrateLibrary {
             try manager.removeItem(at: stale)
         }
         try manager.createDirectory(at: passages, withIntermediateDirectories: true)
+        // THE MARKER GOES DOWN AS SOON AS THE DIRECTORY EXISTS, before the content copy. It is what
+        // authorises this directory's later deletion, so a promote that dies at the copy below must
+        // not leave a directory wearing the promoted name with no proof of who made it —
+        // `remove(source:)` would then refuse the very orphan the operator is trying to clear.
+        //
+        // NOT "before anything that can throw", which an earlier comment here claimed: the
+        // `createDirectory` above throws, and so does this write. The window is now one write wide
+        // instead of spanning the copy, which is as narrow as ordering alone can make it — closing
+        // it entirely would mean writing the whole source to a temporary and renaming it in.
+        try meta(title: title, domains: ingested.domains, origin: ingested.origin)
+            .write(to: source.appendingPathComponent(PromotedSource.markerFile),
+                   atomically: true, encoding: .utf8)
         let note = passages.appendingPathComponent("document.md")
         if manager.fileExists(atPath: note.path) { try manager.removeItem(at: note) }
         try manager.copyItem(at: document, to: note)
-        try meta(title: title, domains: ingested.domains, origin: ingested.origin)
-            .write(to: source.appendingPathComponent("_meta.md"), atomically: true, encoding: .utf8)
         try vault.write()
         return source
     }
@@ -238,7 +228,7 @@ enum SubstrateLibrary {
     /// a path-derived doc_id makes about its own key, and it holds here for the
     /// same reason.
     ///
-    /// The readable half used to be `slug(title)`, and `title` is the ENGINE'S — the document's own
+    /// The readable half used to be `ScriptaVault.slug(title)`, and `title` is the ENGINE'S — the document's own
     /// first heading, read back out of the artefact `ingest` wrote. So the key was stable and the
     /// NAME WAS NOT: editing the heading (or re-adding under a `--doc-class` whose policy names the
     /// document differently) produced a second directory for one origin, and the comment above
@@ -247,8 +237,7 @@ enum SubstrateLibrary {
     /// digest makes. The title still declares itself inside the note; it no longer decides where the
     /// note lives.
     private static func sourceDirectoryName(origin: URL) -> String {
-        let readable = slug(origin.deletingPathExtension().lastPathComponent)
-        return "\(readable.isEmpty ? "document" : readable)-\(digest(origin.standardizedFileURL.path))"
+        PromotedSource.directoryName(origin: origin)
     }
 
     /// Source directories in `references` that were written for the same origin and are not `named`.
@@ -265,28 +254,28 @@ enum SubstrateLibrary {
     ///   directory in the OTHER tier is a stale copy at the wrong tier and must go.
     private static func staleSources(named: String, for origin: URL,
                                      in directories: [URL], keeping destination: URL) -> [URL] {
-        let suffix = "-\(digest(origin.standardizedFileURL.path))"
+        let suffix = PromotedSource.digestSuffix(origin: origin)
         return directories.flatMap { directory -> [URL] in
             let here = directory.standardizedFileURL == destination.standardizedFileURL
             let entries = (try? FileManager.default.contentsOfDirectory(
                 at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+            // AUTHORSHIP HERE TOO. This list is handed straight to `removeItem`, so it is the
+            // second destructive path in this file and had none of the guard the first one grew.
+            // The digest suffix is a SHA of one absolute path and a coincidental match is
+            // vanishingly unlikely — but "unlikely" is what the name check alone offered on the
+            // other path, and this is the same question with the same answer available.
             return entries.filter {
-                $0.lastPathComponent.hasSuffix(suffix) && !(here && $0.lastPathComponent == named)
+                $0.lastPathComponent.hasSuffix(suffix)
+                    && !(here && $0.lastPathComponent == named)
+                    && PromotedSource.isAuthoredDirectory(at: $0)
             }
         }
-    }
-
-    /// Eight hex characters of a SHA-256 — enough to key one operator's documents apart, short
-    /// enough to leave the readable half of a directory name readable.
-    private static func digest(_ text: String) -> String {
-        String(SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }
-            .joined().prefix(8))
     }
 
     /// The three values, each with the argument that chose it, written into the vault where the
     /// next reader will find them.
     private static func meta(title: String, domains: [String], origin: URL) -> String {
-        let all = ([baseDomain] + domains.map { slug($0) }).filter { !$0.isEmpty }
+        let all = ([baseDomain] + domains.map { ScriptaVault.slug($0) }).filter { !$0.isEmpty }
         var seen = Set<String>()
         let unique = all.filter { seen.insert($0).inserted }
         return """
@@ -298,7 +287,7 @@ enum SubstrateLibrary {
         domains: [\(unique.joined(separator: ", "))]
         ---
 
-        # Source metadata — written by Scripta
+        \(PromotedSource.authorshipLine)
 
         The document beside this was extracted by the substrate engine, which declared its own
         `title`, `class` and `source_sha256`. Those are not restated here: this file carries only
@@ -354,35 +343,14 @@ enum SubstrateLibrary {
 
     // MARK: - Shapes the engine's parsers accept
 
-    /// Lowercase ASCII slug — the shape `markdown/reader._DOMAIN` admits, and the one
-    /// `ScriptaVault.slug` produces. A domain that does not match is DROPPED SILENTLY by the
-    /// engine's list parser, so anything the operator types is put into this shape before it is
-    /// written rather than discovered missing at query time.
-    static func slug(_ text: String, limit: Int = 48) -> String {
-        var out = ""
-        var pendingSeparator = false
-        for character in text.lowercased() {
-            if character.isASCII, character.isLetter || character.isNumber {
-                if pendingSeparator, !out.isEmpty { out.append("-") }
-                pendingSeparator = false
-                out.append(character)
-            } else {
-                pendingSeparator = true
-            }
-            if out.count >= limit { break }
-        }
-        while out.hasSuffix("-") { out.removeLast() }
-        return out
-    }
-
     /// A frontmatter scalar the engine's own parser reads back unchanged — the rules
     /// the engine's own frontmatter reader requires: quote a value containing a colon (nothing else marks
     /// where the value begins), leave one that already contains a quote alone (the parser does no
     /// unescaping), and never emit a control byte, because a frontmatter line with no colon stops
     /// the block being treated as frontmatter AT ALL and turns the whole spine into body text.
     private static func scalar(_ value: String) -> String {
-        let cleaned = String(value.map { $0.isNewline || ($0.asciiValue.map { $0 < 0x20 } ?? false)
-                                        ? " " : $0 })
+        // The control-byte half is shared; the conditional quoting below is this writer's own.
+        let cleaned = TranscriptWriter.flattenedControlCharacters(value)
             .trimmingCharacters(in: .whitespaces)
         if cleaned.contains("\"") { return cleaned }
         if cleaned.contains(":") || cleaned.isEmpty { return "\"\(cleaned)\"" }
@@ -392,6 +360,7 @@ enum SubstrateLibrary {
     enum LibraryError: LocalizedError {
         case artefactWithoutTitle(URL)
         case outsideTheLibrary(URL)
+        case notThisAppsSource(URL)
 
         var errorDescription: String? {
             switch self {
@@ -400,10 +369,31 @@ enum SubstrateLibrary {
                     + "promoted into the vault — the next compose would refuse the whole library "
                     + "over it."
             case .outsideTheLibrary(let url):
-                return "\(url.lastPathComponent) is not a document in this workspace's library, so "
-                    + "it will not be removed. Only directories directly inside the vault's "
-                    + "`10-reference/` are this rail's to delete — everything else in that folder "
-                    + "is yours."
+                // NAMES THE RULE THE GUARD ACTUALLY ENFORCES. It described `10-reference/` alone
+                // long after the guard covered both promotion directories, and never mentioned the
+                // shape check at all — so the two conditions most likely to refuse a real operator
+                // action were the two the refusal did not state.
+                return "\(url.lastPathComponent) is not a source this app added, so it will not "
+                    + "be removed. This rail deletes only DIRECTORIES it wrote itself: inside the "
+                    + "vault's `10-reference/` or `_sources/transcripts/`, named the way a promoted "
+                    + "source is named, and carrying the metadata file this app writes. A file, or "
+                    + "anything reached through a link out of those folders, is refused here even "
+                    + "if its name matches. Everything else in those folders is yours."
+            case .notThisAppsSource(let url):
+                // A DIFFERENT REFUSAL FROM `outsideTheLibrary`, because it is a different fact and
+                // the operator's next move differs. This one is in the right place and wears the
+                // right name — it just is not ours, so the message says what was looked for rather
+                // than repeating the naming rule the directory already satisfies.
+                // NAMES WHAT WAS LOOKED FOR, NOT WHAT WAS FOUND. `isAuthoredDirectory` answers one
+                // bit, and a missing `_meta.md`, an unreadable one and one without the line are all
+                // that same bit — so a message asserting the file exists and lacked the line would
+                // be describing a state the guard never established.
+                return "\(url.lastPathComponent) is named the way this app names a source, but it "
+                    + "does not carry this app's `\(PromotedSource.markerFile)` marker — the file "
+                    + "is missing, unreadable, or does not contain the line this app writes into "
+                    + "every source it creates (\"\(PromotedSource.authorshipLine)\"). The file "
+                    + "alone is the ENGINE's convention, which is why its presence is not enough. "
+                    + "Delete it by hand if you meant to, then recompose this workspace."
             }
         }
     }

@@ -533,7 +533,7 @@ private struct LibraryTranscriptRail: View {
             // `transcripts/<slug>`, and a name with no ASCII letter or digit has no slug — so what
             // this row used to draw was a directory the export will never write to, for a workspace
             // the engine refuses. Naming the refusal is the only thing here that is true.
-            if SubstrateLibrary.slug(named).isEmpty {
+            if ScriptaVault.slug(named).isEmpty {
                 LibraryNote(id: "unnameable", marker: "no destination", tone: Ink.warning,
                             text: "A vault directory and a scope name are ASCII letters and digits, "
                                 + "and this workspace's name reduces to neither — so there is "
@@ -639,13 +639,13 @@ private struct LibraryWorkspaceRow: View {
                 InputField(prompt: "Workspace name", text: $model.workspace, glyph: .people)
                 ActionButton(title: "Compose and register", glyph: .arrowRight, rank: .primary,
                              action: model.composeWorkspace)
-                    .disabled(model.isWorking || SubstrateLibrary.slug(named).isEmpty)
+                    .disabled(model.isWorking || ScriptaVault.slug(named).isEmpty)
             }
             if named.isEmpty {
                 Text("The ungrouped workspace has no name, and the scope name is the wall between "
                      + "workspaces — so this one needs a name before it can have a scope.")
                     .proseText(Register.proseSm, Ink.textHelper)
-            } else if SubstrateLibrary.slug(named).isEmpty {
+            } else if ScriptaVault.slug(named).isEmpty {
                 // NAMED AND UNNAMEABLE ARE DIFFERENT STATES. "研究", "———" and an emoji are all
                 // non-empty and all slugify to nothing, so the sentence above would have read as
                 // wrong to someone looking at a name they had just typed. The engine refuses this

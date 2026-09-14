@@ -434,12 +434,23 @@ final class AppModel: ObservableObject {
         let id = UUID()
         let filename: String
         var state: State
-        enum State: Equatable { case processing, done, failed(String) }
-        var isFailed: Bool { if case .failed = state { return true }; return false }
+        /// `addedWithoutVectors` IS NOT A FAILURE AND IS NOT `done`. The document is in the vault
+        /// and the scope composed — it is findable — but the embed did not run, so only the lexical
+        /// arm answers and a query worded differently from the text will miss it. Reporting that as
+        /// `done` claims "searchable everywhere", which is the specific thing that is not true.
+        enum State: Equatable { case processing, done, addedWithoutVectors(String), failed(String) }
+        /// This row has something the operator needs to read, so it waits to be dismissed rather
+        /// than clearing itself. False for `done`, which is equally finished and says nothing.
+        var needsDismissal: Bool {
+            if case .failed = state { return true }
+            if case .addedWithoutVectors = state { return true }
+            return false
+        }
     }
 
-    /// In-flight and recently-finished imports. Done jobs self-remove; failed jobs stay until
-    /// dismissed so the reason is visible.
+    /// In-flight and recently-finished imports. A clean `done` row self-removes; anything carrying
+    /// something to read — a failure, or an add whose passages were not vectored — stays until
+    /// dismissed.
     @Published var importJobs: [ImportJob] = []
 
     /// Bring a dropped document in through the ENGINE, and report it inline.
@@ -486,11 +497,34 @@ final class AppModel: ObservableObject {
         guard outcome.succeeded else {
             return setJob(job.id, .failed(outcome.failure ?? "The document was not added."))
         }
-        setJob(job.id, .done)
+        // SHOWN, NOT ONLY LOGGED. This path has a surface — one row — and it was claiming "Added —
+        // searchable everywhere" over passages with no vectors. A log the operator will never open
+        // is the same silence the whole embed-reporting change exists to end; it stays as the
+        // durable record, and the row is what actually tells them.
+        if outcome.composed?.embedFailed == true {
+            // THE VAULT'S SCOPE, falling back to the workspace this add was given — which is what
+            // `runAdd` does too. The fallback only fires when no vault resolved, and then the two
+            // paths are naming the only thing either of them knows.
+            let scope = outcome.vault?.scope ?? activeGroup
+            SubstrateLibraryModel.log.error("""
+                embed failed after adding a document to \(scope, privacy: .public) — it is \
+                composed but its passages are not vectored
+                """)
+            // `warning` is non-nil exactly when `embedFailed` is true, which is this branch — so a
+            // `??` fallback here would be a second, unreachable copy of an operator-facing sentence.
+            setJob(job.id, outcome.warning.map(ImportJob.State.addedWithoutVectors) ?? .done)
+        } else {
+            setJob(job.id, .done)
+        }
+        // THE NOTIFICATION STILL FIRES. The document IS added and IS findable — the lexical arm
+        // answers — so withholding it would be a worse lie than the one being fixed.
         NotificationManager.shared.notifyDocumentReady(
             title: url.deletingPathExtension().lastPathComponent,
             revealing: outcome.promoted ?? url)
-        // Let the "done" row linger briefly, then clear it.
+        // A clean "done" row lingers briefly, then clears itself. One carrying a warning waits to be
+        // dismissed, the same way a failure does: a row that vanishes after four seconds is a row
+        // the operator can miss entirely.
+        guard case .done = importJobs.first(where: { $0.id == job.id })?.state else { return }
         try? await Task.sleep(nanoseconds: 4_000_000_000)
         importJobs.removeAll { $0.id == job.id }
     }
