@@ -172,8 +172,14 @@ public enum NoteWriter {
     static func document(title: String, docType: String, confidence: String? = nil,
                          domains: [String] = [], body: String) -> String {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        // ONE SANITISED VALUE, USED IN BOTH PLACES. The frontmatter was sanitised and the heading
+        // was emitted from the RAW title, so the parity this file is built around was false for any
+        // title carrying a quote or a control byte — and a pasted multi-line title put its tail into
+        // the note BODY as prose, content the operator never meant to write. The frontmatter block
+        // stayed intact throughout, which is why it read as harmless and why the tests passed.
+        let clean = sanitized(title)
         var front = [
-            "title: \(yaml(title))",
+            "title: \"\(clean)\"",
             "status: \(NoteSpine.status)",
             "doc_type: \(docType)",
         ]
@@ -191,12 +197,18 @@ public enum NoteWriter {
         if !cleaned.isEmpty {
             front.append("domains: [\(cleaned.joined(separator: ", "))]")
         }
-        var text = "---\n" + front.joined(separator: "\n") + "\n---\n\n# \(title)\n"
+        var text = "---\n" + front.joined(separator: "\n") + "\n---\n\n# \(clean)\n"
         if !trimmed.isEmpty { text += "\n\(trimmed)\n" }
         return text
     }
 
-    /// A frontmatter scalar THE READERS CAN ACTUALLY READ BACK.
+    /// A title THE READERS CAN ACTUALLY READ BACK — and, because the caller uses this one value
+    /// twice, the heading too.
+    ///
+    /// IT RETURNS THE VALUE, NOT A QUOTED SCALAR, and that is the point rather than a detail. It
+    /// used to emit `"…"` ready to paste into the frontmatter, which meant the heading could not use
+    /// it and was written from the raw title instead. Quoting is the frontmatter's business and
+    /// happens at the one line that builds the frontmatter.
     ///
     /// It does not escape, because nothing unescapes. Both readers are line parsers that strip the
     /// outer quotes and stop: `markdown/reader.py` partitions on the first `:` and trims `"`,
@@ -211,17 +223,19 @@ public enum NoteWriter {
     /// (`refusing to index a partial scope`). On the shared destination that is every inheriting
     /// scope at once, and this type cannot delete the note it wrote.
     ///
-    /// So: control bytes to spaces, an embedded `"` turned into `'` rather than escaped, and the
-    /// result quoted. This is `TranscriptWriter.sanitizeScalar`'s rule, which
-    /// `SubstrateLibraryVault.scalar` and `ScriptaVault.tomlString` also implement — three writers
-    /// that had already solved this before a fourth was written that did not.
-    private static func yaml(_ value: String) -> String {
-        let cleaned = String(value.map { character in
-            character.isNewline || (character.asciiValue.map { $0 < 0x20 } ?? false)
-                ? " " : character
-        })
-        .replacingOccurrences(of: "\"", with: "'")
-        .trimmingCharacters(in: .whitespaces)
-        return "\"\(cleaned)\""
+    /// So: control bytes to spaces, and an embedded `"` turned into `'` rather than escaped — which
+    /// is `TranscriptWriter.sanitizeScalar`, and this now CALLS it rather than restating it.
+    ///
+    /// IT DID NOT ALWAYS. This was written as a fourth copy while `sanitizeScalar` mapped only
+    /// `\r\n`, `\n` and `\r` — so the two agreed on the quote and disagreed on eight characters
+    /// (`U+000B`, `U+000C`, `U+001C`–`U+001E`, `U+0085`, `U+2028`, `U+2029`), every one of which
+    /// `str.splitlines()` treats as a break. The copy was the correct one, which is the trap: the
+    /// duplicate looked harmless because it was RIGHT, and the divergence was a live scope-refusal
+    /// on the transcript path rather than a style difference. `sanitizeScalar` was fixed and this
+    /// became a call. The other two writers stay separate on purpose — `ScriptaVault.tomlString`
+    /// ESCAPES the quote because a TOML reader unescapes, and `SubstrateLibraryVault.scalar`
+    /// decides quoting per value — so what is shared is the control-byte half, not the whole rule.
+    private static func sanitized(_ value: String) -> String {
+        TranscriptWriter.sanitizeScalar(value)
     }
 }

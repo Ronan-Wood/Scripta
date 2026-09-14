@@ -172,18 +172,43 @@ final class SubstrateRefresh: ObservableObject {
                 continue
             }
             let vault = URL(fileURLWithPath: row.vault, isDirectory: true)
-            let run = (await SubstrateLibraryModel.composeVault(cli: cli, vault: vault,
-                                                                name: row.scope, clean: false)).run
+            let composed = await SubstrateLibraryModel.composeVault(cli: cli, vault: vault,
+                                                                    name: row.scope, clean: false)
+            let run = composed.run
             // DECLINED IS NOT FAILED. `composeVault` refuses while another compose is in flight —
             // a recording's, or the operator's — and recording an outcome for a scope this pass did
             // not attempt would overwrite a live verdict with the news that a duplicate stood down.
-            if run.cancelled && run.status == nil {
+            if composed.declined {
                 Self.log.info("skipped \(row.scope, privacy: .public) — a compose was in flight")
                 continue
             }
-            await record(cli: cli, scope: row.scope,
-                         outcome: run.succeeded ? "refreshed" : "compose_failed")
-            if !run.succeeded, firstFailure == nil { firstFailure = run }
+            // `embed_failed` IS THE ENGINE'S OWN WORD FOR THIS, and this loop had never used it: it
+            // recorded `refreshed` for any compose that exited 0, so a scope that recomposed and
+            // could not vector reported a fully healthy pass.
+            //
+            // THE DIFFERENCE IS `success`, NOT THE FREEZE, and an earlier version of this comment
+            // claimed the freeze. Both outcomes are `frozen: False` and both therefore clear
+            // `frozen_since` (`refresh_state.record`, "cleared by every outcome implying compose
+            // SUCCEEDED") — correctly, because current content with no vectors IS an index that
+            // agrees with its vault. What `refreshed` wrongly asserted is `success: True`, which
+            // advances `succeeded` — the timestamp that says when this scope was last left
+            // verified. So the damage was a scope aging silently while claiming to be current,
+            // not a freeze being lifted.
+            let outcome: String
+            if !run.succeeded {
+                outcome = "compose_failed"
+            } else if composed.embedFailed {
+                outcome = "embed_failed"
+            } else {
+                outcome = "refreshed"
+            }
+            await record(cli: cli, scope: row.scope, outcome: outcome)
+            // The card has room for ONE run, and an embed that failed is a failure worth showing
+            // when nothing worse came before it.
+            if firstFailure == nil {
+                if !run.succeeded { firstFailure = run }
+                else if composed.embedFailed { firstFailure = composed.embed }
+            }
             last = run
         }
 

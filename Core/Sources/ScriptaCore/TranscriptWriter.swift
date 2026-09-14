@@ -103,15 +103,55 @@ public enum TranscriptWriter {
     }
 
     /// The one YAML scalar sanitizer (writer + metadata editor). Values are emitted inside
-    /// double quotes on a single key line, so stripping quotes and newlines is what keeps a
+    /// double quotes on a single key line, so stripping quotes and line breaks is what keeps a
     /// value — including one containing `---` — from escaping its line. Parsers must split
     /// frontmatter on delimiter LINES (see `Frontmatter`), never on the `---` substring.
+    ///
+    /// "LINE BREAK" IS THE READER'S DEFINITION, NOT `\n`. This replaced `\r\n`, `\n` and `\r` by
+    /// name and let eight other characters through — `U+000B`, `U+000C`, `U+001C`–`U+001E`,
+    /// `U+0085`, `U+2028`, `U+2029` — every one of which Python's `str.splitlines()` treats as a
+    /// break, and `str.splitlines()` is what the engine's frontmatter reader splits the block with.
+    /// One of those in a title (`U+2028` and `U+0085` arrive routinely in text pasted from Word or
+    /// a browser, and `TranscriptMetadataEditor` feeds operator-typed titles straight here) forges
+    /// a frontmatter line, and a line with no colon stops the block being frontmatter at all —
+    /// which refuses the whole scope at the next compose, over a recorded call, the artefact this
+    /// codebase calls unrecreatable.
+    ///
+    /// So the predicate is structural: anything Swift calls a newline, plus the C0 range. That is
+    /// `NoteWriter.sanitized`'s rule, and this is now the one implementation of it — the note
+    /// writer was the only one of the four scalar writers that had it right, and it had it right
+    /// because it was written after this gap was found rather than before.
+    ///
+    /// TAB GOES TOO, and it is the one character where "one rule" beat a defensible exception. A
+    /// tab is not a line break to any reader here and a tab inside a quoted scalar is legal, so
+    /// keeping it would have been fine — but the note writer spaces it, and two sanitizers that
+    /// agree on ten characters and differ on the eleventh is exactly the divergence that has to be
+    /// re-derived by every reader who compares them.
     public static func sanitizeScalar(_ text: String) -> String {
-        text.replacingOccurrences(of: "\"", with: "'")
-            .replacingOccurrences(of: "\r\n", with: " ")
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
+        flattenedControlCharacters(text)
+            .replacingOccurrences(of: "\"", with: "'")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Every line break and control character replaced by a space — THE HALF ALL FOUR SCALAR
+    /// WRITERS SHARE, written once.
+    ///
+    /// The four differ on quoting and they should: `tomlString` escapes because a TOML reader
+    /// unescapes, `SubstrateLibraryVault.scalar` decides quoting per value, and this substitutes.
+    /// What none of them may do is emit a line break, because every reader on both sides splits
+    /// frontmatter into LINES — and that half was copied verbatim into three files while the fourth
+    /// carried a weaker version for months. Copies of a rule agree until they do not, and the way
+    /// this one stopped agreeing was eight characters wide and refused a whole scope.
+    ///
+    /// `isNewline` IS THE POINT, not `\n`. It covers `U+000B`, `U+000C`, `U+0085`, `U+2028` and
+    /// `U+2029`, which Python's `str.splitlines()` — what the engine's frontmatter reader uses —
+    /// treats as breaks and a `\n`-only rule does not. The C0 test then catches `U+001C`–`U+001E`,
+    /// which `splitlines()` also breaks on and which `isNewline` alone misses.
+    public static func flattenedControlCharacters(_ text: String) -> String {
+        String(text.map { character in
+            character.isNewline || (character.asciiValue.map { $0 < 0x20 } ?? false)
+                ? " " : character
+        })
     }
 
     /// Renders spoken segments and manual notes as one chronological stream. A note is emitted as

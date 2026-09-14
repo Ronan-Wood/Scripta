@@ -18,6 +18,13 @@ enum Carbon {
     static let danger           = dyn(0xDA1E28, 0xFA4D56)          // --c-danger (Record)
     static let success          = dyn(0x24A148, 0x42BE65)          // --c-success
     static let warning          = dyn(0xF1C21B, 0xF1C21B)          // --c-warning
+    /// `warning` FOR TEXT. The yellow above is the same swatch in both appearances, which is fine
+    /// behind a glyph or a fill and fails as body text: measured 1.53:1 on `layer` in light mode
+    /// against the 4.5:1 `ContrastGateTests` requires, while its siblings in the same rows clear it
+    /// (`danger` 4.55, `textHelper` 4.57). Dark mode is 8.99:1 and keeps the bright swatch; only
+    /// light needs the darker one. Same pairing `Ink.warning` already uses — yellow60 / yellow30 —
+    /// which is the token the contrast gate covers.
+    static let warningText      = dyn(0x8E6A00, 0xF1C21B)
     static let warningSoft      = dynA(0xF1C21B, 0.18, 0xF1C21B, 0.16)
     static let orange           = dyn(0xEA580C, 0xFF8B4D)          // --c-orange ("Them")
     static let orangeSoft       = dynA(0xEA580C, 0.14, 0xFF8B4D, 0.16)

@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import ScriptaCore
 import ScriptaShared
 import SubstrateKit
@@ -21,6 +22,11 @@ import SubstrateKit
 @MainActor
 final class SubstrateLibraryModel: ObservableObject {
     static let shared = SubstrateLibraryModel()
+
+    /// For the paths with no surface to report on — `composeAfterRecording` writes no `job` by
+    /// design, and the drop path's `ImportJob` has no per-step row — so a failure they do not log
+    /// is a failure nothing records.
+    static let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Library")
 
     // MARK: - What the engine accepts
 
@@ -46,7 +52,8 @@ final class SubstrateLibraryModel: ObservableObject {
         let run: SubstrateRun?
         /// The app's own failure, for a step it performed itself.
         let appFailure: String?
-        /// Not reached, because an earlier step failed. Drawn as absence, never as success.
+        /// This step did not run. Usually because an earlier one failed; also, on the removal rail,
+        /// because there was nothing left to do. Drawn as absence, never as success or as failure.
         let skipped: Bool
 
         var failed: Bool {
@@ -453,10 +460,38 @@ final class SubstrateLibraryModel: ObservableObject {
         let promoted: URL?
         let vault: ScriptaVault?
         let promoteFailure: String?
-        /// Nil when an earlier step failed or the task was stopped between steps.
-        let composed: SubstrateRun?
+        /// The WHOLE compose outcome, embed included. Nil when an earlier step failed or the task
+        /// was stopped between steps.
+        ///
+        /// It was `SubstrateRun` — the compose alone — which is how this path came to drop the embed
+        /// result: there was nowhere to put it. Carrying the outcome rather than one of its halves
+        /// is what lets `runAdd` report the same embed step the note paths do.
+        let composed: ComposeOutcome?
 
-        var succeeded: Bool { composed?.succeeded == true }
+        /// KEYED ON THE COMPOSE, not on the embed. A down embedder makes a document harder to find,
+        /// not absent — the lexical arm still answers — so it is never a failed add. That is the
+        /// same call `composeVault` makes about fatality.
+        ///
+        /// A caller that reads only this reports a clean add over passages with no vectors, so
+        /// `warning` exists beside it and answers that half.
+        var succeeded: Bool { composed?.run.succeeded == true }
+
+        /// Something the operator should know that did NOT stop the add.
+        ///
+        /// SEPARATE FROM `failure` BECAUSE THEY ARE DIFFERENT QUESTIONS, and the engine draws the
+        /// same line rather than this being a local convention: `refresh_state` records
+        /// `embed_failed` as `success: False, frozen: False` — the pass did not fully succeed, AND
+        /// the index still agrees with its vault. `succeeded` here answers "was the document
+        /// added", which is yes; this answers "is there anything wrong with it", which is also yes.
+        /// The two used to disagree only because the second question had nowhere to be asked, so a
+        /// caller had to know to reach into `composed?.embedFailed` — and the one that did not know
+        /// reported success.
+        var warning: String? {
+            guard composed?.embedFailed == true else { return nil }
+            return "It was added and the scope composed, but its passages were not vectored — so it "
+                 + "is found by exact wording only until this workspace is recomposed with the "
+                 + "embedding model reachable."
+        }
 
         /// The first thing that went wrong, in the order the steps run — for a caller with one
         /// line to say it in.
@@ -467,10 +502,10 @@ final class SubstrateLibraryModel: ObservableObject {
                                                  : extraction.stderr
             }
             if let promoteFailure { return promoteFailure }
-            if let composed, !composed.succeeded {
-                return composed.stderr.isEmpty
+            if let composed, !composed.run.succeeded {
+                return composed.run.stderr.isEmpty
                     ? "It was added to the vault but the scope would not compose, so it is not "
-                      + "findable yet." : composed.stderr
+                      + "findable yet." : composed.run.stderr
             }
             return succeeded ? nil : "The document was not added."
         }
@@ -546,14 +581,14 @@ final class SubstrateLibraryModel: ObservableObject {
         let composedOutcome = await composeVault(cli: cli, vault: target.root, name: target.scope,
                                           clean: false)
         return AddOutcome(extraction: extraction, surfaceFailure: nil, promoted: promoted,
-                          vault: target, promoteFailure: nil, composed: composedOutcome.run)
+                          vault: target, promoteFailure: nil, composed: composedOutcome)
     }
 
     /// The rail's rendering of `performAdd` — a step-by-step card.
     ///
     /// Every line here is UI. The pipeline itself moved to `performAdd` so the drop path could run
     /// the same one (Doc 4 Phase 4b); what is left is the mapping from "what happened" to the four
-    /// `Step`s this surface shows, including the two that report as SKIPPED when an earlier step
+    /// `Step`s this surface shows, including the three that report as SKIPPED when an earlier step
     /// stopped the run — which is what makes a failed add legible rather than just short.
     private func runAdd(cli: SubstrateEngine.Command, file: URL,
                         surface asked: SubstrateCLI.IngestSurface, forceMarkdown: Bool,
@@ -584,6 +619,19 @@ final class SubstrateLibraryModel: ObservableObject {
                      skipped: false)])
         }
 
+        // THE EMBED IS A STEP NOW, so each path that stops after the pipeline began draws it as
+        // skipped. A card showing three steps when the add fails and four when it works reads as
+        // two different pipelines, and the skipped rows are what make a stopped run legible rather
+        // than just short — the reason the compose row is already drawn this way. Built by
+        // `embedStep` like the success row, so both spellings of this step come from one place: a
+        // hand-copied title and a second id scheme is the divergence `finish`'s own comment warns
+        // about.
+        //
+        // NOT THE SURFACE REFUSAL ABOVE, which returns the ingest row alone and no skipped rows at
+        // all. That one never reached the engine, so there is no pipeline to report the shape of —
+        // it is deliberately the short card, and this comment claimed otherwise for a while.
+        let embedSkipped = Self.embedStep(scope: outcome.vault?.scope ?? workspace, composed: nil)
+
         done.append(Step(id: "ingest", title: "Extract", run: outcome.extraction,
                          appFailure: nil, skipped: false))
         guard outcome.extraction?.succeeded == true else {
@@ -591,7 +639,8 @@ final class SubstrateLibraryModel: ObservableObject {
                 Step(id: "promote", title: "Add to the library vault", run: nil, appFailure: nil,
                      skipped: true),
                 Step(id: "compose", title: "Compose and register the scope", run: nil,
-                     appFailure: nil, skipped: true)])
+                     appFailure: nil, skipped: true),
+                embedSkipped])
         }
 
         done.append(Step(id: "promote", title: "Add to the library vault", run: nil,
@@ -599,19 +648,27 @@ final class SubstrateLibraryModel: ObservableObject {
         guard outcome.promoteFailure == nil else {
             return finish(title: title, steps: done + [
                 Step(id: "compose", title: "Compose and register the scope", run: nil,
-                     appFailure: nil, skipped: true)])
+                     appFailure: nil, skipped: true),
+                embedSkipped])
         }
 
         // A compose that never ran is a stop between the steps, not a failure of the compose.
         guard let composed = outcome.composed else {
             return finish(title: title, steps: done + [
                 Step(id: "compose", title: "Compose and register the scope", run: nil,
-                     appFailure: nil, skipped: true)])
+                     appFailure: nil, skipped: true),
+                embedSkipped])
         }
-        done.append(Step(id: "compose", title: "Compose and register the scope", run: composed,
+        done.append(Step(id: "compose", title: "Compose and register the scope", run: composed.run,
                          appFailure: nil, skipped: false))
+        // THE EMBED THIS ADD ALREADY RAN, finally reported. `composeVault` has embedded on every
+        // path since the two note paths stopped doing it themselves — but this one took `.run` and
+        // discarded the rest, so a document added while the embedder was unreachable showed three
+        // green steps over passages findable only by exact word match. Nothing said so, on the rail
+        // built to say what happened.
+        done.append(Self.embedStep(scope: outcome.vault?.scope ?? workspace, composed: composed))
         finish(title: title, steps: done,
-               orphaned: composed.succeeded ? nil : outcome.promoted)
+               orphaned: composed.run.succeeded ? nil : outcome.promoted)
     }
 
     /// Take one source back out of the library and recompose without it.
@@ -633,23 +690,107 @@ final class SubstrateLibraryModel: ObservableObject {
                 // until documents were promoted into the workspace vault it only ever operated
                 // inside `~/.substrate` — a folder this app owns outright. It now operates inside
                 // the OPERATOR'S output folder, where a wrong URL deletes their work. Constrained
-                // to the vault's own `10-reference/`, so nothing outside the directory this app
-                // writes documents into can be passed to it.
+                // to the vault's own promotion directories, and within them to the directory shape
+                // `promote` writes — both halves below, because neither holds on its own.
                 let vault = try ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder)
                 // EITHER PROMOTION DIRECTORY. It was `10-reference/` alone, which made this remedy
                 // unreachable for an uploaded transcript — and the orphan row that offers it is
                 // drawn unconditionally, so the one state it exists for (a source on disk, in no
                 // index, refusing every later compose) ended in `outsideTheLibrary` for exactly the
                 // kind this session added.
+                // RESOLVED, NOT STANDARDISED, ON BOTH SIDES. `standardizedFileURL` collapses `.`
+                // and `..` lexically and deliberately does NOT resolve symlinks — while
+                // `removeItem` follows every intermediate component the kernel gives it. So a
+                // symlinked ancestor (`10-reference`, `_sources`, or the output folder itself)
+                // made the parent STRING match while the delete landed in another tree entirely.
+                // Resolving both sides compares what the filesystem will actually walk. A vault
+                // that legitimately lives behind a symlink still matches, because both sides
+                // resolve to the same real path.
+                //
+                // The final component is resolved on the ALLOWED side only. `target` keeps its own
+                // last component unresolved, because a promoted source that IS a symlink must stay
+                // removable as a link — resolving it would compare the thing it points at.
                 let allowed = Set(SubstrateLibrary.PromotionTier.allDirectories(in: vault)
-                    .map(\.standardizedFileURL.path))
-                let target = source.standardizedFileURL
-                guard allowed.contains(target.deletingLastPathComponent().path) else {
+                    .map { $0.resolvingSymlinksInPath().path })
+                let standardized = source.standardizedFileURL
+                let target = standardized.deletingLastPathComponent()
+                    .resolvingSymlinksInPath()
+                    .appendingPathComponent(standardized.lastPathComponent, isDirectory: true)
+                // THE PARENT IS NOT ENOUGH, and widening it to both tiers is what made that matter.
+                // `_sources/transcripts/` is now an allowed parent AND the directory capture writes
+                // recorded calls into, so a parent-only guard admitted a call to a recursive,
+                // trashless unlink. All four clauses below are the answer — the target must BE a
+                // promoted source this app wrote: a directory carrying
+                // the `<slug>-<8 hex>` name `promote` writes AND the marker file it leaves inside.
+                guard allowed.contains(target.deletingLastPathComponent().path),
+                      PromotedSource.isDirectoryName(target.lastPathComponent)
+                else {
                     throw SubstrateLibrary.LibraryError.outsideTheLibrary(source)
                 }
-                try FileManager.default.removeItem(at: target)
-                steps.append(Step(id: "delete", title: "Remove from the library vault", run: nil,
-                                  appFailure: nil, skipped: false))
+                // `lstat`, NOT `fileExists`. The stat has to answer "is there an entry here",
+                // and `fileExists` answers "is there a reachable TARGET here" — it follows
+                // symlinks, so a DANGLING one reads as absent. That matters because absent is now
+                // the skip-and-recompose branch: a dangling symlink wearing a promoted name would
+                // be reported as already removed, finish green, and still be sitting there for the
+                // recompose to trip over — the exact orphan the operator pressed the button to
+                // clear. `lstat` describes the entry itself, which is also what `removeItem` acts
+                // on (it unlinks a symlink rather than following it).
+                //
+                // A STAT THAT FAILS FOR ANY OTHER REASON IS A REFUSAL, not an absence. ONLY
+                // `NSFileReadNoSuchFileError` means "already gone". A permissions failure means we
+                // cannot tell, and guessing "gone" there reports a live source as cleared and then
+                // recomposes around it. Measured 2026-08-19: a live directory under an unreadable
+                // parent throws 257 while genuine absence throws 260 — and `fileExists` returns
+                // false for BOTH, which is why an earlier version of this that fell back to it
+                // distinguished nothing and contradicted this very comment.
+                let exists: Bool
+                do {
+                    let entry = try FileManager.default.attributesOfItem(atPath: target.path)
+                    // A REGULAR FILE wearing a promoted directory's name is the containment case:
+                    // `promote` only ever writes directories, so a file of that name is not
+                    // something this rail wrote. A SYMLINK IS ADMITTED, deliberately — the stat is
+                    // lstat-like, so this is the link itself, and `removeItem` unlinks a link
+                    // without following it. Removing it therefore clears an orphan entry and
+                    // cannot touch whatever it points at, inside the vault or outside it.
+                    let type = entry[.type] as? FileAttributeType
+                    guard type == .typeDirectory || type == .typeSymbolicLink else {
+                        throw SubstrateLibrary.LibraryError.outsideTheLibrary(source)
+                    }
+                    // AUTHORSHIP, NOT RESEMBLANCE — the last thing the guard checks and the only
+                    // one that is evidence rather than inference. The name proves the SHAPE
+                    // `promote` writes, which an operator's own directory can wear by accident:
+                    // `my-notes-2026abcd`, `backup-20250101` and `photos-20240704` all pass every
+                    // other clause. And the presence of `_meta.md` proves nothing either — that is
+                    // the ENGINE's per-source convention, so a hand-built source has one too. What
+                    // identifies ours is the line `promote` writes INSIDE it; see
+                    // `PromotedSource.isAuthoredDirectory`, which owns both halves. A symlink is
+                    // exempt because it has no inside to look in — removing one unlinks the link
+                    // and cannot touch what it points at.
+                    if type == .typeDirectory {
+                        guard PromotedSource.isAuthoredDirectory(at: target) else {
+                            throw SubstrateLibrary.LibraryError.notThisAppsSource(source)
+                        }
+                    }
+                    exists = true
+                } catch let error as NSError where error.domain == NSCocoaErrorDomain
+                                                && error.code == NSFileReadNoSuchFileError {
+                    exists = false
+                }
+                // ABSENT IS NOT A FAILURE, AND IT IS NOT AN EARLY RETURN EITHER. An absent target
+                // used to reach `removeItem` and die there on file-not-found, which stopped the
+                // job at the delete step and SKIPPED THE RECOMPOSE — the half that actually
+                // matters. "The source is gone and the index may still answer from it" is the
+                // ORPHAN STATE this rail exists to clear, so failing there stranded the operator
+                // in exactly the condition they pressed the button to escape. The removal is a
+                // means; the `--clean` recompose below is the remedy. So an absent target is the
+                // removal having already happened, and the recompose runs.
+                //
+                // `skipped` HERE MEANS "NOTHING TO REMOVE", not "an earlier step stopped the run" —
+                // the other sense it carries on this rail. Both render as "not run", which is
+                // true of this step either way, and neither counts as a failure.
+                if exists { try FileManager.default.removeItem(at: target) }
+                steps.append(Step(id: "delete", title: "Remove from the library vault",
+                                  run: nil, appFailure: nil, skipped: !exists))
             } catch {
                 return finish(title: title, steps: [
                     Step(id: "delete", title: "Remove from the library vault", run: nil,
@@ -676,6 +817,10 @@ final class SubstrateLibraryModel: ObservableObject {
                                          name: vault?.scope ?? "library", clean: true)
             steps.append(Step(id: "compose", title: "Recompose the scope", run: composed.run,
                               appFailure: nil, skipped: false))
+            // This recompose is `--clean`: the index root is wiped and rebuilt, so the embed after
+            // it is doing real work rather than a no-op, and a failure here leaves the whole scope
+            // — not just the removed source's neighbours — reachable by exact word match only.
+            steps.append(Self.embedStep(scope: vault?.scope ?? "library", composed: composed))
             finish(title: title, steps: steps)
         }
     }
@@ -835,9 +980,13 @@ final class SubstrateLibraryModel: ObservableObject {
     /// SKIPPED WHEN THE COMPOSE FAILED, rather than run anyway. A failed compose left the previous
     /// index in place; embedding against it would report vectors for content the operator believes
     /// was just added.
-    private static func embedStep(scope: String, composed: ComposeOutcome) -> Step {
+    /// - Parameter composed: `nil` for a run that stopped before composing at all, which draws the
+    ///   same skipped row a failed compose does. Taken here rather than spelled out again at each
+    ///   early return: the title and the id are this function's to know, and a second builder for
+    ///   one row is how the rail comes to call the same step two different things.
+    private static func embedStep(scope: String, composed: ComposeOutcome?) -> Step {
         let title = "Vector the new passages"
-        guard composed.run.succeeded else {
+        guard let composed, composed.run.succeeded else {
             return Step(id: "embed-\(scope)", title: title, run: nil, appFailure: nil, skipped: true)
         }
         // REPORTS WHAT `composeVault` ALREADY DID rather than running its own. The database was
@@ -846,10 +995,16 @@ final class SubstrateLibraryModel: ObservableObject {
         // re-lists it, which happens after this. So the first note into a new workspace, the case
         // the whole path exists for, reported "the engine did not register a database" about a
         // scope registered a second earlier.
+        //
+        // UNREACHABLE, WRITTEN DOWN RATHER THAN FORCE-UNWRAPPED. `composeVault` embeds exactly when
+        // the compose succeeded, which the guard above has already established. If that ever stops
+        // holding, an unvectored scope reporting green is the outcome this whole path exists to
+        // prevent, so it reads as a failure rather than as a skip.
         guard let run = composed.embed else {
             return Step(id: "embed-\(scope)", title: title, run: nil,
-                        appFailure: "The compose reported no database for \(scope), so its new "
-                                  + "passages could not be vectored.", skipped: false)
+                        appFailure: "\(scope) composed but no embed was attempted, so its new "
+                                  + "passages may only be findable by exact word match.",
+                        skipped: false)
         }
         return Step(id: "embed-\(scope)", title: title, run: run, appFailure: nil, skipped: false)
     }
@@ -884,7 +1039,7 @@ final class SubstrateLibraryModel: ObservableObject {
         // of this value already refuses it: `ScriptaVault.init` throws `unnameableScope`,
         // `TranscriptGroupRepair.assign` refuses the repair. Refused here for the reason
         // `addDocument` states: nothing is spent.
-        guard !SubstrateLibrary.slug(name).isEmpty else {
+        guard !ScriptaVault.slug(name).isEmpty else {
             job = .finished(Report(
                 title: "Composing \(name.isEmpty ? "this workspace" : name)",
                 steps: [Step(id: "workspace", title: "Name the workspace", run: nil,
@@ -937,14 +1092,56 @@ final class SubstrateLibraryModel: ObservableObject {
     func composeAfterRecording() {
         let name = AppSettings.activeGroup.trimmingCharacters(in: .whitespacesAndNewlines)
         let scope = name.isEmpty ? ScriptaVault.defaultScope : name
-        guard !isWorking, !SubstrateLibrary.slug(scope).isEmpty,
+        let slugged = ScriptaVault.slug(scope)
+        guard !isWorking, !slugged.isEmpty,
               let cli = SubstrateEngine.shared.serving?.cli,
               let vault = ScriptaVault.existingVault(forScope: scope,
                                                      under: AppSettings.outputFolder).vault
         else { return }
         Task { [weak self] in
-            _ = await Self.composeVault(cli: cli, vault: vault,
-                                        name: SubstrateLibrary.slug(scope), clean: true)
+            let composed = await Self.composeVault(cli: cli, vault: vault, name: slugged,
+                                                   clean: true)
+            // QUIET IS NOT SILENT, and this path had taken it to mean silent. It deliberately writes
+            // no `job` — a recording finishing must not replace a report the operator is reading —
+            // but it also discarded the whole outcome, so every call recorded during an embedder
+            // outage became findable by exact word match only, with nothing anywhere saying so. The
+            // log is the surface a path with no surface has.
+            //
+            // ALL THREE OUTCOMES, WORST FIRST. Logging only the embed covered the LEAST damaging
+            // one: a failed compose leaves the call out of the index entirely, and a DECLINED
+            // compose never attempted it — and declined is not the rare case here, because
+            // `composeInFlight` is exactly what a refresh tick or an operator's add holds while a
+            // recording is ending. A refresh pass reaches the scope within the quarter hour either
+            // way, so this is a record of what happened rather than the remedy.
+            // THE STDERR IS `.private`, AND ONLY THE STDERR. `compose` prints one line per failing
+            // note as `<absolute path>: <reason>`, and the note that most often fails right after a
+            // recording is THAT RECORDING — so a `.public` stderr writes the call's full path, and
+            // therefore its title and date, into a system log that survives in sysdiagnose bundles.
+            // The scope name stays public so the line is still greppable for triage.
+            if composed.declined {
+                // DECLINED IS NOT AN ERROR, and logging it as one said something false. Another
+                // compose held the lock; this one never ran, so nothing is known to be wrong and
+                // the index still holds whatever it held. `SubstrateRefresh` treats the identical
+                // condition as `.info` "skipped", and the refresh pass reaches this scope anyway.
+                Self.log.info("""
+                    compose declined after recording into \(slugged, privacy: .public) — another \
+                    compose was in flight; the refresh pass will reach this scope
+                    """)
+            } else if !composed.run.succeeded {
+                // THE WHOLE SCOPE, not just this call. This compose is `--clean`: it wipes the
+                // index root and rebuilds it, so a failure part-way leaves everything that scope
+                // answers from in doubt, not only the recording that triggered it.
+                Self.log.error("""
+                    compose failed after recording into \(slugged, privacy: .public) — this is a \
+                    --clean rebuild, so the whole scope may be unindexed, not just the new call; \
+                    \(composed.run.stderr, privacy: .private)
+                    """)
+            } else if composed.embedFailed {
+                Self.log.error("""
+                    embed failed after recording into \(slugged, privacy: .public) — the call is \
+                    composed but its passages are not vectored
+                    """)
+            }
             // The corpus just gained a call. The browse list is told rather than left to notice.
             VaultBrowseModel.shared.corpusChanged()
             // The roster now reports a scope whose index moved, and the tier chips are drawn from
@@ -955,15 +1152,16 @@ final class SubstrateLibraryModel: ObservableObject {
 
     private func runCompose(cli: SubstrateEngine.Command, vault: URL, workspace: String) async {
         let title = "Composing \(workspace)"
-        let name = SubstrateLibrary.slug(workspace)
+        let name = ScriptaVault.slug(workspace)
         // `--clean`, because a call deleted in the app must stop answering. The vault holds only
         // what capture put there, so a stale ingest directory is the one way a deleted call comes
         // back — and `assert_composed` would refuse the next compose over it anyway, after the
         // operator had already deleted it for a reason.
-        let composed = (await Self.composeVault(cli: cli, vault: vault, name: name, clean: true)).run
+        let composed = await Self.composeVault(cli: cli, vault: vault, name: name, clean: true)
         finish(title: title,
-               steps: [Step(id: "compose", title: "Compose and register the scope", run: composed,
-                            appFailure: nil, skipped: false)])
+               steps: [Step(id: "compose", title: "Compose and register the scope",
+                            run: composed.run, appFailure: nil, skipped: false),
+                       Self.embedStep(scope: name, composed: composed)])
     }
 
     /// Where a scope's index ALREADY lives, when it is already registered.
@@ -1002,20 +1200,36 @@ final class SubstrateLibraryModel: ObservableObject {
     /// deliberately quiet, so neither sets it.
     private(set) static var composeInFlight = false
 
-    /// What one compose did, and WHERE. The database is returned rather than looked up again: this
-    /// method already resolved it (including the fallback path for a scope the registry has never
-    /// seen), and the only other way to learn it is `registeredDatabase`, which reads a roster this
-    /// call has just invalidated. A first note into a new workspace registers the scope here and is
-    /// still absent from that cached roster, so re-deriving it produced "the engine did not register
-    /// a database for X" about a scope registered a second earlier.
+    /// What one compose did, and what the embed after it did.
+    ///
+    /// BOTH HALVES ARE THE OUTCOME. Whether a scope composed and whether its passages are
+    /// semantically findable are separate facts, and a caller that reports only `run` reports a
+    /// green step over a scope answering lexically — which is the precise failure that moving the
+    /// embed into `composeVault` was meant to end. It ended it for two of the seven callers; of the
+    /// other five, four took `.run` and dropped this on the floor and one discarded the outcome
+    /// wholesale.
+    ///
+    /// The resolved database used to be carried here as well, for a stale-roster lookup in
+    /// `embedStep` that stopped existing once the embed's own result was returned. It was written
+    /// and never read by anything, so it is gone rather than kept for a reader that never came.
     struct ComposeOutcome {
         let run: SubstrateRun
-        /// Nil only when the compose was declined before a database was chosen.
-        let database: URL?
-        /// The embed that followed a successful compose. Nil when the compose failed or was
-        /// declined — there was nothing new to vector, and embedding against a surviving old index
-        /// would report vectors for content the operator believes was just added.
+        /// The embed that followed a successful compose. Nil EXACTLY when `run` did not succeed —
+        /// the compose failed, or was declined — because there was nothing new to vector and
+        /// embedding against a surviving old index would report vectors for content the operator
+        /// believes was just added.
         let embed: SubstrateRun?
+
+        /// The compose worked and the embed did not: current content, no vectors. The one state
+        /// that reported as success everywhere it was not explicitly checked for.
+        var embedFailed: Bool { run.succeeded && embed?.succeeded != true }
+
+        /// `composeVault` stood down because another compose held the lock — it did not run and did
+        /// not fail. DECODED HERE, ONCE. This is a private contract between `composeVault` and its
+        /// callers with no compiler link between the places that spell it, so hand-copying
+        /// `cancelled && status == nil` is how a decline silently becomes a failure in a log or a
+        /// recorded outcome.
+        var declined: Bool { run.cancelled && run.status == nil }
     }
 
     static func composeVault(cli: SubstrateEngine.Command, vault: URL, name: String,
@@ -1030,7 +1244,7 @@ final class SubstrateLibraryModel: ObservableObject {
                 run: SubstrateRun(line: "compose \(name)", status: nil, stdout: "",
                                   stderr: "another compose is already running", launchFailure: nil,
                                   cancelled: true),
-                database: nil, embed: nil)
+                embed: nil)
         }
         composeInFlight = true
         defer { composeInFlight = false }
@@ -1074,7 +1288,7 @@ final class SubstrateLibraryModel: ObservableObject {
         } else {
             embed = nil
         }
-        return ComposeOutcome(run: run, database: database, embed: embed)
+        return ComposeOutcome(run: run, embed: embed)
     }
 
     /// The scope compose says it registered. READ FROM THE ENGINE'S OWN LINE rather than derived
