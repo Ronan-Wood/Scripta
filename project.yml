@@ -200,7 +200,7 @@ targetTemplates:
         CFBundleIconFile: AppIcon
         LSUIElement: true
         LSMinimumSystemVersion: "26.0"
-        NSHumanReadableCopyright: "© 2026 Ronan Wood. Licensed under the GNU GPL v3, with no warranty."
+        NSHumanReadableCopyright: "© 2026 Ronan Wood. Licensed under the GNU GPL, version 3 or later, with no warranty."
         NSMicrophoneUsageDescription: "Scripta records your microphone alongside call audio so your side of the conversation is transcribed. Audio is processed on-device and deleted after transcription."
         NSCalendarsFullAccessUsageDescription: "Scripta reads your upcoming events to show which calls have Zoom/Teams/Meet links. It never modifies your calendar and never auto-starts recording."
         NSSpeechRecognitionUsageDescription: "Scripta transcribes your recordings on-device using Apple's speech recognition. Audio is processed locally and never sent anywhere."

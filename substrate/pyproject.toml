@@ -3,6 +3,7 @@ name = "substrate"
 version = "0.1.0"
 description = "Language-neutral knowledge substrate engine — structure-aware ingestion + retrieval"
 requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
 dependencies = [
     "docling",
     # The default PDF reader's text layer (`substrate/extract/pdftext_arm.py`). docling pins it too,
