@@ -22,9 +22,23 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from substrate.paths import ARTIFACTS, configure, internal_cache_footprint  # noqa: E402
+from substrate.paths import configure, internal_cache_footprint, models_folder  # noqa: E402
 
-configure()  # MUST run before docling is imported — HF reads cache env at import time
+# Read before the full parser exists, because configure() MUST run before docling is imported — HF
+# reads its cache env at import time.
+# NOT required here, and NOT the place that reports a bad one: `--help` has to reach the real parser
+# below, and a folder that is not a models folder deserves argparse's own error rather than a
+# traceback out of module scope.
+_early = argparse.ArgumentParser(add_help=False)
+_early.add_argument("--docling-models", metavar="DIR")
+_chosen = _early.parse_known_args()[0].docling_models
+MODELS = None
+if _chosen:
+    try:
+        MODELS = models_folder(_chosen)
+    except ValueError as _e:
+        sys.exit(f"probe_docling: {_e}")
+    configure(MODELS)
 
 from importlib.metadata import version as _pkg_version  # noqa: E402
 
@@ -46,7 +60,7 @@ def all_content_layers():
 
 
 def build_converter() -> DocumentConverter:
-    opts = PdfPipelineOptions(artifacts_path=str(ARTIFACTS))
+    opts = PdfPipelineOptions(artifacts_path=str(MODELS))
     opts.do_ocr = False          # both inputs have real text layers
     opts.do_table_structure = True
     return DocumentConverter(
@@ -151,6 +165,8 @@ def report(name: str, res: dict) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pdf", required=True)
+    ap.add_argument("--docling-models", required=True, metavar="DIR",
+                    help="folder holding docling's layout and table models")
     ap.add_argument("--pages", default="1-40")
     ap.add_argument("--out", required=True)
     ap.add_argument("--name", default="")
@@ -161,7 +177,7 @@ def main() -> None:
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"docling {_pkg_version('docling')}  artifacts={ARTIFACTS}")
+    print(f"docling {_pkg_version('docling')}  models={MODELS}")
     print(f"reading {pdf.name} pages {start}-{end}")
 
     res = probe(pdf, (start, end), out)

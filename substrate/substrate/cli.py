@@ -27,7 +27,7 @@ from pathlib import Path
 
 from substrate import classes, identity, render, scopes
 from substrate.checks import document_checks, partition_check_failures
-from substrate.paths import ARTIFACTS, configure, internal_cache_footprint
+from substrate.paths import ModelsFolderError, configure, internal_cache_footprint, models_folder
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -42,8 +42,9 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
     Three arms behind one command, chosen by `extract.convert.spec_for`:
 
-      * **pdf** — the original batched Docling extractor, byte-for-byte unchanged, and still the
-        only arm that REQUIRES `--doc-class`. Reached by a `.pdf` path or by `--pdf`.
+      * **pdf** — the PDF's own text layer, with Apple's recognizer for scanned pages, or docling's
+        batched extractor when `--docling-models` names its models. Still the only arm that
+        REQUIRES `--doc-class`. Reached by a `.pdf` path or by `--pdf`.
       * **markdown / text** — the stdlib reader, no Docling, no torch. Reached by `.md`/`.txt` or
         by `--md` (which forces this arm regardless of extension, as `ingest-md` always has).
       * **converted** — DOCX/PPTX/XLSX/HTML/CSV/VTT/AsciiDoc/LaTeX/email/EPUB/image, converted to
@@ -76,6 +77,20 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             print(f"FATAL (format): {e}", file=sys.stderr)
             return 2
 
+    # The models folder is checked only for a format that uses it: a .docx needs no weights, so an
+    # unplugged models drive must not stop one from importing.
+    models = None
+    if spec.uses_models and args.docling_models:
+        try:
+            models = models_folder(args.docling_models)
+        except ModelsFolderError as e:
+            # A PREFERENCE, NOT AN ASSERTION. Model weights usually live on an external drive, and
+            # refusing every import while it is unplugged is worse than reading the document without
+            # them — which is what happens when no folder is named at all. Loud on stderr, and
+            # run.json records which reader actually ran.
+            print(f"WARNING (models): {e}", file=sys.stderr)
+            print(f"WARNING (models): reading {src.name} without them.", file=sys.stderr)
+
     if spec.arm == "pdf":
         if not args.doc_class:
             print("FATAL: --doc-class is required for PDF and only for PDF. The other formats "
@@ -84,16 +99,18 @@ def cmd_ingest(args: argparse.Namespace) -> int:
                   f"and relaxing that is a separate decision. Choose one of "
                   f"{sorted(classes.DECLARABLE_CLASSES)}.", file=sys.stderr)
             return 2
-        return _ingest_pdf(args, src)
+        return _ingest_pdf(args, src, models)
     if spec.arm in ("markdown", "text"):
         return _ingest_markdown_file(args, src, spec)
-    return _ingest_converted(args, src, spec)
+    return _ingest_converted(args, src, spec, models)
 
 
-def _ingest_pdf(args: argparse.Namespace, pdf: Path) -> int:
-    configure()
+def _ingest_pdf(args: argparse.Namespace, pdf: Path, models: Path | None) -> int:
+    # Before any import below can reach docling: HuggingFace reads its cache env at import time.
+    if models is not None:
+        configure(models)
     from substrate.chunk.chunker import chunk
-    from substrate.extract.docling_arm import DoclingExtractor
+    from substrate.extract.pdftext_arm import PdfReadError, TextLayerExtractor
     from substrate.markdown.emit import emit, frontmatter
 
     out = Path(args.out).expanduser()
@@ -105,11 +122,21 @@ def _ingest_pdf(args: argparse.Namespace, pdf: Path) -> int:
         pages = (int(a), int(b))
 
     t0 = time.monotonic()
-    print(f"artifacts : {ARTIFACTS}")
+    if models is not None:
+        from substrate.extract.docling_arm import DoclingExtractor
+
+        extractor = DoclingExtractor(models, batch_pages=args.batch)
+        print(f"reader    : docling, with the models in {models}")
+    else:
+        extractor = TextLayerExtractor()
+        print("reader    : the PDF's own text layer; Apple's recognizer for pages without one")
     print(f"ingesting : {pdf.name}  class={args.doc_class}")
 
-    extractor = DoclingExtractor(batch_pages=args.batch)
-    doc = extractor.extract(pdf, args.doc_class, pages=pages)
+    try:
+        doc = extractor.extract(pdf, args.doc_class, pages=pages)
+    except PdfReadError as e:
+        print(f"\nFATAL (read): {e}", file=sys.stderr)
+        return 2
 
     try:
         meta = classes.apply(doc)
@@ -134,7 +161,10 @@ def _ingest_pdf(args: argparse.Namespace, pdf: Path) -> int:
         "pages": doc.source_pages,
         "elapsed_s": round(time.monotonic() - t0, 1),
         "class": meta,
-        "extract": doc.extract_confidence,
+        # The reader beside its statistics, so reconcile records which one built this index rather than
+        # defaulting to docling, which stopped being the only PDF reader.
+        "extract": {**doc.extract_confidence, "extractor": doc.extractor,
+                    "extractor_arm": doc.extractor_arm, "layout_model": doc.layout_model},
         "emit": estats,
         "chunk": cstats,
         "coverage": round(cstats["sum_chunk_chars"] / max(len(body), 1), 4),
@@ -238,7 +268,7 @@ def _ingest_markdown_file(args: argparse.Namespace, src: Path, spec) -> int:
     return 0
 
 
-def _ingest_converted(args: argparse.Namespace, src: Path, spec) -> int:
+def _ingest_converted(args: argparse.Namespace, src: Path, spec, models: Path | None) -> int:
     """A non-PDF, non-markdown document → Docling markdown → the SAME gate-enforcing ingest body.
 
     The markdown is a temporary derivative and is thrown away: `document.md` in the output dir is
@@ -246,6 +276,7 @@ def _ingest_converted(args: argparse.Namespace, src: Path, spec) -> int:
     agreement. Identity does NOT travel with the temp file — see `models.SourceOrigin`.
     """
     from substrate.extract import convert
+    from substrate.extract.apple_arm import AppleReaderUnavailable
     from substrate.extract.base import doc_id_for, sha256_file
     from substrate.markdown.ingest import CoverageError, UnretrievableError, ingest_markdown
     from substrate.models import SourceOrigin
@@ -253,10 +284,13 @@ def _ingest_converted(args: argparse.Namespace, src: Path, spec) -> int:
 
     out = Path(args.out).expanduser()
     try:
-        conv = convert.to_markdown(src, spec)
+        conv = convert.to_markdown(src, spec, models=models)
     except convert.ConversionRefused as e:
         print(f"\nFATAL (conversion): {e}", file=sys.stderr)
         return 3
+    except AppleReaderUnavailable as e:
+        print(f"\nFATAL (converter): {e}", file=sys.stderr)
+        return 2
     # The two ways the CONVERTER, rather than the document, is what is wrong. Both exit 2 and both
     # follow the precedent already in `convert.REFUSED`: ".odt … needs the `odfdo` package, which is
     # not installed in this venv" is an exit-2 refusal today, so "docling itself is not installed"
@@ -285,7 +319,7 @@ def _ingest_converted(args: argparse.Namespace, src: Path, spec) -> int:
         sha256=sha256_file(src),
         doc_id=doc_id_for(src),
         extractor=conv.extractor,
-        extractor_arm=f"docling-{spec.token}",
+        extractor_arm=conv.arm,
         pages=conv.pages,
         title=src.stem,
         stats=conv.stats,
@@ -564,7 +598,9 @@ def cmd_rechunk(args: argparse.Namespace) -> int:
         blocks=blocks, title=cls.get("title"), version=cls.get("version"),
         version_date=cls.get("version_date"),
         extractor=run.get("extract", {}).get("extractor", ""),
-        extractor_arm="docling", layout_model="docling-layout-heron",
+        # Defaults as reconcile reads them: a run.json from before the reader was recorded is docling's.
+        extractor_arm=run.get("extract", {}).get("extractor_arm", "docling"),
+        layout_model=run.get("extract", {}).get("layout_model", "docling-layout-heron"),
     )
 
     override = None
@@ -1750,7 +1786,11 @@ def main(argv: list[str] | None = None) -> int:
     ing.add_argument("--doc-class", default=None, choices=sorted(classes.DECLARABLE_CLASSES))
     ing.add_argument("--out", required=True)
     ing.add_argument("--pages", default=None, help="e.g. 1-40 (PDF only)")
-    ing.add_argument("--batch", type=int, default=100, help="(PDF only)")
+    ing.add_argument("--batch", type=int, default=100, help="(PDF only, with --docling-models)")
+    ing.add_argument("--docling-models", default=None, metavar="DIR",
+                     help="a folder holding docling's layout and table models. Optional: without it, "
+                          "or when the folder is not there, a PDF is read from its own text layer and "
+                          "an image or a scanned page by Apple's on-device recognizer")
     ing.set_defaults(func=cmd_ingest)
 
     fmts = sub.add_parser("formats",

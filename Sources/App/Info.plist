@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.2.0</string>
+	<string>0.3.0</string>
 	<key>CFBundleVersion</key>
-	<string>2</string>
+	<string>3</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSApplicationCategoryType</key>
@@ -33,12 +33,20 @@
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Scripta reads your upcoming events to show which calls have Zoom/Teams/Meet links. It never modifies your calendar and never auto-starts recording.</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>© 2026 Ronan Wood</string>
+	<string>© 2026 Ronan Wood. Licensed under the GNU GPL v3, with no warranty.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Only used if you connect a local AI server on your own network (e.g. Ollama). The app never talks to the internet.</string>
+	<string>Only used if you connect a local AI server on your own network (e.g. Ollama). Your recordings and transcripts never leave your Mac; separately, Scripta can check GitHub for app updates if you allow it.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Scripta records your microphone alongside call audio so your side of the conversation is transcribed. Audio is processed on-device and deleted after transcription.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Scripta transcribes your recordings on-device using Apple's speech recognition. Audio is processed locally and never sent anywhere.</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/Ronan-Wood/Scripta/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>bqhcg5HlyMhLQD9itDe33GeZqhybpx3vBlVf9kKXjyg=</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 </dict>
 </plist>

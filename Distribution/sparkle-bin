@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Prints THIS checkout's Sparkle tools directory, or fails saying why.
+#
+# Read from Xcode's build settings rather than searched for under DerivedData: another Scripta
+# checkout has a folder of its own, and possibly another Sparkle. `sed` rather than
+# `awk '{print $3}'`, so a path with a space in it stays one path. No `head`: under pipefail a
+# reader that exits early can kill the writer with SIGPIPE and fail a pipeline that found its line.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+settings=$(xcodebuild -project Scripta.xcodeproj -scheme Scripta -configuration Distribution \
+  -showBuildSettings 2>/dev/null || true)
+BD=$(printf '%s\n' "$settings" | sed -n 's/^ *BUILD_DIR = //p')
+BD=${BD%%$'\n'*}
+[ -n "$BD" ] || { echo "sparkle-bin: could not read build settings; run xcodegen generate first" >&2; exit 1; }
+BIN="$(dirname "$(dirname "$BD")")/SourcePackages/artifacts/sparkle/Sparkle/bin"
+[ -x "$BIN/generate_appcast" ] \
+  || { echo "sparkle-bin: no Sparkle tools at $BIN; build the app once so Xcode fetches the package" >&2; exit 1; }
+printf '%s\n' "$BIN"

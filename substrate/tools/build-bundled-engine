@@ -115,9 +115,13 @@ fingerprint() {
     # leaves a stamped tree holding the previous binary.
     shasum -a 256 "$REPO/uv.lock" "$REPO/pyproject.toml" "$0" \
       "$REPO/tools/embed-apple.swift" "$REPO/tools/hyde-fm.swift" \
-      "$REPO/tools/rerank-fm.swift" | cut -d' ' -f1
+      "$REPO/tools/rerank-fm.swift" "$REPO/tools/extract-apple.swift" | cut -d' ' -f1
     ( cd "$REPO" && find substrate \( -type f -o -type l \) \
         ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 \
+        | LC_ALL=C sort -z | xargs -0 shasum -a 256 )
+    # The vendored license texts, because they are copied into the tree below: changing one must
+    # rebuild, or the bundle keeps the old text under a current stamp.
+    ( cd "$REPO" && find third_party_licenses -type f -print0 \
         | LC_ALL=C sort -z | xargs -0 shasum -a 256 )
   } | shasum -a 256 | cut -d' ' -f1
 }
@@ -141,7 +145,7 @@ STAMP="$DEST/.build-fingerprint"
 # rechecked. Six `-e` tests are free; a stamp that outlives the tree it describes is not.
 REQUIRED="bin/substrate-mcp bin/substrate .venv/bin/python runtime/bin/python3.14 \
           substrate/cli.py substrate/mcp/server.py \
-          bin/embed-apple bin/hyde-fm bin/rerank-fm"
+          bin/embed-apple bin/hyde-fm bin/rerank-fm bin/extract-apple"
 assert_whole() {
   for required in $REQUIRED; do
     [ -e "$1/$required" ] || die "$2 is incomplete — no $required"
@@ -251,11 +255,138 @@ find "$STAGE/.venv/lib" \( -type d -name tests -o -type d -name test \) -prune -
   || die "could not prune vendored test suites"
 
 "$STAGE/.venv/bin/python" -B -E -s -c "
-import numpy, scipy, pandas, torch, docling
+import numpy, scipy, pandas, torch, docling, ocrmac, cv2
 from docling.document_converter import DocumentConverter
 import scipy.sparse.linalg, scipy.optimize, scipy.ndimage
 print('  imports OK after prune')
 " || die "pruning test suites broke an import — something reaches into its own test tree"
+
+# NO GPL MEDIA LIBRARIES. OpenCV's macOS wheel carried a GPL-3.0-or-later FFmpeg with x264 and x265,
+# which v0.2.0 shipped without their source. `pyproject.toml` now excludes RapidOCR and the prebuilt
+# OpenCV, and compiles OpenCV itself with FFmpeg off for docling's TableFormer; image OCR runs on Apple
+# Vision (`ocrmac`, imported above). This refuses the tree if anything brings those libraries back. Captured into a variable rather than piped
+# into `grep -q`, so an early-exiting reader cannot turn a match into a pass.
+say "checking for GPL media libraries"
+gpl_media=$(find "$STAGE" \( -name 'libavcodec*' -o -name 'libavformat*' -o -name 'libx264*' \
+  -o -name 'libx265*' -o -name 'libpostproc*' -o -name 'librubberband*' -o -name 'libvidstab*' \) -print)
+[ -z "$gpl_media" ] || die "GPL media libraries are in the engine: $gpl_media"
+
+# EVERY MACH-O LINKS ONLY MACOS OR THE BUNDLE. A source-built dependency links whatever optional library
+# the building Mac has, by absolute path: a Homebrew libavif would make `cv2` import fine here and fail
+# to load on every Mac without it. A load path must be under /System/ or /usr/lib/, or relative to the
+# bundle (@rpath, @loader_path, @executable_path). Found with `file`, not by suffix, for the same reason
+# the signing pass below does.
+# BUILD-MACHINE RPATHS ARE DELETED FIRST, because `@rpath/...` is only as bundled as the rpath list
+# that resolves it. Shipped wheels carry rpaths into the machine that built them — a CI runner's conda
+# env (torchvision), a Homebrew gcc (scipy), a Pillow build tree — and building OpenCV from source
+# adds one into this Mac's uv cache. None resolves anything here: torch's libraries are already loaded
+# under their own `@rpath` install names by the time torchvision asks for them. They are dead weight
+# pointing off the machine, signed and notarized along with everything else, and on a Mac where such a
+# path happens to exist they are where dyld looks first.
+# EVERY MACH-O IN THE TREE, ONCE EACH. `file` prints an extra line per architecture of a fat binary
+# — `<path> (for architecture arm64):` — and those are not paths: measured on this bundle, 61 of 343
+# lines named a file that does not exist, and every tool below then ran against nothing.
+machos() {
+  find "$STAGE" -type f ! -path '*.dSYM/*' -print0 \
+    | xargs -0 file -F $'\t' 2>/dev/null \
+    | awk -F'\t' 'index($2, "Mach-O") {print $1}' \
+    | grep -v ' (for architecture '
+}
+
+say "deleting rpaths that point outside the bundle"
+while IFS= read -r macho; do
+  while IFS= read -r rp; do
+    case "$rp" in
+      @loader_path*|@executable_path*) continue ;;
+    esac
+    install_name_tool -delete_rpath "$rp" "$macho" 2>/dev/null \
+      || die "could not delete rpath $rp from ${macho#"$STAGE"/}"
+    # RE-SIGNED IMMEDIATELY, ad-hoc. Editing a Mach-O invalidates its signature, and on Apple
+    # Silicon the kernel KILLS any process that loads an invalidated binary — the import check
+    # below died with SIGKILL until this line existed. The signing pass at the end replaces this
+    # with the real identity when the build has one.
+    codesign --force --sign - "$macho" >/dev/null 2>&1 \
+      || die "could not re-sign ${macho#"$STAGE"/} after deleting its rpath"
+  # `sort -u`: `otool -l` repeats the load commands once per architecture of a fat binary, and the
+  # second `-delete_rpath` of the same path fails.
+  done < <(otool -l "$macho" 2>/dev/null | awk '/LC_RPATH/{f=1} f && /^ *path /{print $2; f=0}' | sort -u)
+done < <(machos)
+
+# The imports are re-checked HERE rather than trusted, because deleting an rpath is the one step that
+# can break a load path the tree needed — and, before the re-signing above, the one that made every
+# import die with SIGKILL.
+"$STAGE/.venv/bin/python" -B -E -s -c "import numpy, scipy, pandas, torch, torchvision, docling, ocrmac, cv2" \
+  >/dev/null 2>&1 || die "an import broke after deleting build-machine rpaths"
+
+say "checking every binary links only macOS or bundled libraries"
+foreign=""
+while IFS= read -r macho; do
+  # TWO THINGS `otool -L` PRINTS THAT ARE NOT DEPENDENCIES, and both were read as one by the first
+  # version of this check, which failed the build on 206 of them. A universal binary repeats a
+  # `path (architecture arm64):` header per slice — only the tab-indented lines are dependencies. And
+  # a dylib's own install name is printed first among them: pyobjc's and lxml's extensions carry
+  # theirs, and the bundled interpreter keeps the absolute path it was built at. `otool -D` names it.
+  # `|| true` because most of these have NO install name: `grep` then selects nothing and exits 1,
+  # which `set -e` turns into a silent build failure with the check's own message never printed.
+  own=$(otool -D "$macho" 2>/dev/null | grep -v ':$' | sort -u) || true
+  while IFS= read -r dep; do
+    case "$dep" in
+      /System/*|/usr/lib/*|@rpath/*|@loader_path/*|@executable_path/*) continue ;;
+    esac
+    printf '%s\n' "$own" | grep -qxF "$dep" && continue
+    foreign="$foreign
+  ${macho#"$STAGE"/} -> $dep"
+  done < <(otool -L "$macho" 2>/dev/null | grep '^	' | awk '{print $1}')
+  # An `@rpath/` dependency is only bundled if every rpath that could resolve it is, so the rpath list
+  # is checked too — the step above should have left nothing here to find.
+  while IFS= read -r rp; do
+    case "$rp" in
+      @loader_path*|@executable_path*) continue ;;
+    esac
+    foreign="$foreign
+  ${macho#"$STAGE"/} -> rpath $rp"
+  done < <(otool -l "$macho" 2>/dev/null | awk '/LC_RPATH/{f=1} f && /^ *path /{print $2; f=0}' | sort -u)
+done < <(machos)
+[ -z "$foreign" ] || die "binaries link libraries outside macOS and the bundle:$foreign"
+
+# EVERY BUNDLED PACKAGE CARRIES ITS LICENSE TEXT. MIT, BSD and Apache-2.0 require the text to go with a
+# binary distribution, and a handful of wheels ship without one. Those texts are vendored in
+# `third_party_licenses/`, named by package and version, and copied into the package's
+# `dist-info/licenses/`. A package still without one fails the build, and an upgraded package no longer
+# matches its vendored name, so a stale text is replaced on purpose rather than shipped by accident.
+say "checking every bundled package carries its license text"
+missing=""
+for info in "$STAGE"/.venv/lib/python*/site-packages/*.dist-info; do
+  found=$(find "$info" \( -iname 'LICEN[CS]E*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) -print)
+  [ -z "$found" ] || continue
+  name=$(sed -n '/^Name: /{s///p;q;}' "$info/METADATA" | tr 'A-Z_.' 'a-z--')
+  version=$(sed -n '/^Version: /{s///p;q;}' "$info/METADATA")
+  vendored="$REPO/third_party_licenses/$name-$version.txt"
+  if [ -f "$vendored" ]; then
+    mkdir -p "$info/licenses" && cp "$vendored" "$info/licenses/LICENSE"
+  else
+    missing="$missing $name-$version"
+  fi
+done
+[ -z "$missing" ] || die "no license text, and none vendored in third_party_licenses/, for:$missing"
+
+# OPENCV'S THIRD-PARTY NOTICE IS REPLACED. The one inside the package describes OpenCV's prebuilt
+# wheels, FFmpeg and libvpx among a dozen libraries this source build does not contain, so shipping it
+# would misstate what is in the bundle. The vendored notice covers what `pyproject.toml`'s build
+# compiles in, and is named by version, so an OpenCV upgrade stops here until it is regenerated.
+say "replacing OpenCV's third-party notice with the one for this build"
+cv_info=""
+for candidate in "$STAGE"/.venv/lib/python*/site-packages/opencv_python_headless-*.dist-info; do
+  [ -d "$candidate" ] && cv_info=$candidate
+done
+[ -n "$cv_info" ] || die "OpenCV is not in the engine, so its notice cannot be replaced"
+cv_version=$(sed -n '/^Version: /{s///p;q;}' "$cv_info/METADATA")
+cv_notice="$REPO/third_party_licenses/opencv-python-headless-$cv_version-third-party.txt"
+[ -f "$cv_notice" ] || die "no OpenCV notice for $cv_version in third_party_licenses/ (see its README)"
+for target in "$cv_info/LICENSE-3RD-PARTY.txt" "$(dirname "$cv_info")/cv2/LICENSE-3RD-PARTY.txt"; do
+  [ -f "$target" ] || die "OpenCV's notice is not where this step expects it: $target"
+  cp "$cv_notice" "$target"
+done
 
 # The engine's own bytecode, for the same reason as --compile-bytecode above: whatever is not
 # compiled here is compiled on first import, into a bundle that is already sealed. `-q` because
@@ -279,7 +410,9 @@ mkdir -p "$STAGE/bin"
 # THE ON-DEVICE ARMS, BUILT FROM SOURCE. `embed-apple`, `hyde-fm` and `rerank-fm` drive Apple's
 # on-device models — no server, no download, no network — and the engine reaches them by RELATIVE
 # path (`embed/engine.py:261`, `retrieve/rerank.py:208`, `retrieve/expand.py:255`), which resolves
-# against the engine root both shims `cd` into.
+# against the engine root both shims `cd` into. `extract-apple` is the fourth and differs twice: it
+# drives Vision's document recognizer rather than a model, and `extract/apple_arm.py` finds it from
+# the package's own location, because a document can be ingested from any working directory.
 #
 # Leaving them out was invisible: the defaults are Ollama models, so a machine without Ollama fell
 # all the way to lexical-only while the second-best stack — 0.593 measured against full-Ollama's
@@ -292,7 +425,7 @@ mkdir -p "$STAGE/bin"
 # review — anything running as the build user could drop a replacement in and it would ship inside an
 # unsandboxed process holding Scripta's microphone and calendar grants. The `.swift` sources ARE
 # committed, and each is a single self-contained file that builds in about a second.
-for arm in embed-apple hyde-fm rerank-fm; do
+for arm in embed-apple hyde-fm rerank-fm extract-apple; do
   [ -f "$REPO/tools/$arm.swift" ] || die "missing source for $arm — $REPO/tools/$arm.swift"
   swiftc -O -o "$STAGE/bin/$arm" "$REPO/tools/$arm.swift" \
     || die "could not build $arm from $REPO/tools/$arm.swift"

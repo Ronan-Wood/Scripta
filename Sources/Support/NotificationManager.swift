@@ -35,6 +35,31 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         post(title: "Document added", body: title, revealing: url)
     }
 
+    /// A recording start was refused because the app is about to quit to install an update. A
+    /// banner, not an alert: a modal alert would block the main run loop and hold up the very quit it
+    /// is explaining. No category and no path, so tapping it does nothing.
+    func notifyRecordingRefusedForUpdate() {
+        postPlain(title: "Recording didn't start",
+                  body: "Scripta is restarting to install an update. Start recording again once it reopens.")
+    }
+
+    /// An update install was refused because a recording is in progress. Refusing aborts Sparkle's
+    /// install, so without this its window would disappear with no reason given.
+    func notifyUpdateNotInstalledDuringRecording() {
+        postPlain(title: "Update not installed",
+                  body: "A recording is in progress, so Scripta didn't restart. Choose Check for Updates… after the call.")
+    }
+
+    /// A banner with no category and no path, so tapping it does nothing.
+    private func postPlain(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
     private func post(title: String, body: String, revealing url: URL) {
         let content = UNMutableNotificationContent()
         content.title = title

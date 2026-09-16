@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainMenu.install(settingsTarget: self, settingsAction: #selector(openSettings),
                          helpAction: #selector(openHelp))
         menuController = MenuController()
+        AppUpdater.shared.start()
 
         if case .blocked(let plist) = carried { presentSettingsUnreachableAlert(plist) }
         presentFirstRunIfNeeded()

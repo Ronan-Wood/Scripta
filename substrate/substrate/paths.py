@@ -1,54 +1,71 @@
-"""Model-artifact paths, pinned to the external SSD.
+"""Where docling's model weights are, when the operator has chosen a folder for them.
 
-Model weights never land on the internal disk. If the drive is not mounted we exit
-non-zero rather than fall back — macOS will happily create /Volumes/ExtremeSSD as a
-plain directory on the boot volume and silently fill it.
+NOTHING HERE IS A FIXED LOCATION AND NOTHING HERE CREATES A DIRECTORY. A PDF is read from its own text
+layer and an image or a scanned page by Apple's on-device recognizer (`extract/pdftext_arm.py`,
+`extract/apple_arm.py`), and neither needs weights, so a Mac with nothing installed reads documents.
+docling's layout and table models are an optional upgrade, better on tables and complex layouts: the
+operator names a folder holding them (`substrate ingest --docling-models DIR`, which Scripta's
+Settings passes), and `models_folder` checks it before anything loads.
 
-configure() must run BEFORE docling is imported: HuggingFace reads its cache env at
-import time.
+This module used to pin the weights to one external drive by name and exit when it was not mounted,
+so every PDF and image import failed on any Mac but the one it was written on.
+
+`configure()` must run BEFORE docling is imported: HuggingFace reads its cache env at import time.
 """
 
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
-DRIVE = Path("/Volumes/ExtremeSSD")
-ARTIFACTS = DRIVE / "docling-models"
-
-# Deliberately NOT the drive's 380 GB huggingface_cache/. Docling's weights live inside
-# ARTIFACTS so they survive that cache being wiped during HF decommissioning. After the
-# one-time prefetch nothing here contacts HuggingFace again.
-HF_CACHE = ARTIFACTS / ".hf"
+# The two model repositories docling's PDF pipeline loads, laid out as `docling-tools models download
+# layout tableformer -o DIR` writes them. Checked by name, so a wrong folder is refused here in a
+# sentence rather than deep inside a model load.
+LAYOUT_MODELS = "docling-project--docling-layout-heron"
+TABLE_MODELS = "docling-project--docling-models"
 
 
-def is_real_mount(p: Path) -> bool:
-    """True only for an actual mount point — not a same-named directory on the boot volume."""
-    return p.is_dir() and os.path.ismount(p)
+class ModelsFolderError(ValueError):
+    """The named models folder cannot be used. An input problem: nothing was read."""
 
 
-def require_drive() -> None:
-    if not is_real_mount(DRIVE):
-        sys.exit(
-            f"FATAL: {DRIVE} is not a mounted volume.\n"
-            "Model weights must never land on the internal disk.\n"
-            "Mount ExtremeSSD and retry."
+def models_folder(value: str | os.PathLike[str]) -> Path:
+    """The operator's docling models folder, checked. Raises ModelsFolderError.
+
+    NEVER CREATED. A missing folder is almost always an unplugged drive or a moved folder; creating it
+    would turn that into a failed model load later, and under /Volumes into a same-named directory on
+    the boot disk that fills silently.
+    """
+    path = Path(value).expanduser()
+    if not path.is_dir():
+        raise ModelsFolderError(
+            f"the docling models folder {path} is not there. If it is on an external drive, connect "
+            "the drive; otherwise choose the folder again, or clear the setting to read documents "
+            "without models."
         )
+    missing = [name for name in (LAYOUT_MODELS, TABLE_MODELS) if not (path / name).is_dir()]
+    if missing:
+        raise ModelsFolderError(
+            f"{path} is not a docling models folder: it has no {' or '.join(missing)}. "
+            "`docling-tools models download layout tableformer -o DIR` creates one."
+        )
+    return path.resolve()
 
 
-def configure(offline: bool = True) -> dict[str, str]:
-    """Point every model-download mechanism at the drive. Returns the env it set."""
-    require_drive()
-    ARTIFACTS.mkdir(parents=True, exist_ok=True)
-    HF_CACHE.mkdir(parents=True, exist_ok=True)
+def configure(models: Path, offline: bool = True) -> dict[str, str]:
+    """Point docling and HuggingFace at the operator's models folder. Returns the env it set.
 
+    OFFLINE, so nothing is fetched: the folder holds the weights, or the load fails and says so. The
+    HuggingFace cache is named inside the same folder rather than left at its default under the home
+    directory, so nothing docling touches lands on the internal disk by default.
+    """
+    hf = models / ".hf"
     env = {
-        "DOCLING_ARTIFACTS_PATH": str(ARTIFACTS),
-        "HF_HOME": str(HF_CACHE),
+        "DOCLING_ARTIFACTS_PATH": str(models),
+        "HF_HOME": str(hf),
         # Set explicitly: docling has a known issue where weights land in BOTH
         # artifacts_path and ~/.cache when only HF_HOME is set.
-        "HF_HUB_CACHE": str(HF_CACHE / "hub"),
+        "HF_HUB_CACHE": str(hf / "hub"),
         # exFAT has no symlinks; HF falls back to copying. Expected, not a bug.
         "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
     }

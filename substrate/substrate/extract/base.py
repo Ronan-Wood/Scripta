@@ -7,10 +7,22 @@ extractor choice stays empirical. Both must produce `Document`/`Block` and nothi
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Protocol
 
 from substrate.models import Document
+
+# The list markers an extractor recognises, and STRIPS: a `Block` of kind LIST_ITEM holds its text
+# without its marker, because `markdown/emit.py` renders one as `- {text}` and `markdown/reader.py`
+# strips it on the way in. A reader that keeps the marker emits `- - item`, and that body is what
+# chunks are cut from. Wider than the markdown reader's rule, because a PDF or a recognized page
+# carries typographic bullets and lettered clauses that markdown has no syntax for.
+LIST_MARKER = re.compile(
+    r"^\s*(?:[\u2022\u25cf\u25e6\u25aa\u2013*+-]"
+    r"|\((?:\d{1,3}|[a-z]|[ivx]{1,5})\)"
+    r"|(?:\d{1,3}|[A-Za-z])[.)])\s+"
+)
 
 
 class Extractor(Protocol):

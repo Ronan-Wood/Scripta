@@ -91,7 +91,7 @@ class FormatSpec:
     extensions: tuple[str, ...]
     arm: str                        # "pdf" | "markdown" | "text" | "docling"
     docling_format: str | None      # InputFormat value; None for the two native arms
-    needs_models: bool              # requires the pinned artifacts (paths.configure)
+    uses_models: bool               # docling's models when --docling-models names them; runs without
     probe: str | None               # raw-text probe id, or None when none exists
     note: str
 
@@ -102,7 +102,8 @@ class FormatSpec:
 
 PDF = FormatSpec(
     "pdf", (".pdf",), "pdf", "pdf", True, None,
-    "The original arm. Batched page conversion, furniture adjudication, inferred heading levels.",
+    "Its own text layer, with Apple's recognizer for pages that are only an image; docling's layout "
+    "and table models when --docling-models names them. Furniture adjudication, inferred heading levels.",
 )
 MARKDOWN = FormatSpec(
     "markdown", (".md", ".markdown"), "markdown", None, False, None,
@@ -142,8 +143,9 @@ _CONVERTED = (
                "reading would report loss on a correct conversion."),
     FormatSpec("image", (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"), "docling",
                "image", True, None,
-               "OCR (RapidOCR, CPU). The pixels are the only reading there is, so there is no "
-               "independent probe — the non-empty gate is the whole guarantee."),
+               "Apple's on-device document recognizer; docling with Apple Vision OCR and table structure "
+               "when --docling-models names its models. The pixels are the only reading there is, so "
+               "there is no independent probe — the non-empty gate is the whole guarantee."),
 )
 
 ACCEPTED: tuple[FormatSpec, ...] = (PDF, MARKDOWN, TEXT) + _CONVERTED
@@ -220,6 +222,7 @@ class Conversion:
     pages: int | None
     extractor: str
     stats: dict = field(default_factory=dict)
+    arm: str = ""                   # run.json["extractor_arm"]: which reader produced the markdown
 
 
 # ---------------------------------------------------------------------------
@@ -409,40 +412,84 @@ def verify_conversion(
     return cov, missing, probe
 
 
-def to_markdown(src: Path, spec: FormatSpec, *, log=print) -> Conversion:
+def _apple_markdown(src: Path, spec: FormatSpec, *, log=print) -> Conversion:
+    """An image read by Apple's on-device recognizer, with no models. Raises ConversionRefused.
+
+    `AppleReaderUnavailable` passes through rather than becoming a refusal: a reader missing from the
+    engine says nothing about the file, the same split the CLI already draws for a docling that will
+    not import.
+    """
+    from substrate.extract import apple_arm
+
+    t0 = time.monotonic()
+    log(f"converting: {src.name}  format={spec.token}  (Apple's document recognizer)")
+    try:
+        data = apple_arm.read(src)
+    except apple_arm.AppleReaderUnavailable:
+        raise
+    except apple_arm.AppleReaderError as e:
+        raise ConversionRefused(
+            f"{spec.token}: Apple's document recognizer could not read {src.name} — {e}"
+        ) from e
+    md = apple_arm.to_markdown(data)
+    elapsed = round(time.monotonic() - t0, 1)
+    cov, missing, probe = verify_conversion(src, spec, md)
+
+    stats = {
+        "converted_chars": len(md),
+        "converted_seconds": elapsed,
+        "reader": "apple-vision",
+        "ocr": True,
+        "raw_coverage": cov,
+        "raw_coverage_probe": probe.label,
+        "raw_coverage_missing": missing,
+    }
+    if probe.error:
+        stats["raw_coverage_probe_error"] = probe.error
+    return Conversion(markdown=md, pages=len(data["pages"]) or None,
+                      extractor=apple_arm.EXTRACTOR, stats=stats, arm=f"apple-{spec.token}")
+
+
+def to_markdown(src: Path, spec: FormatSpec, *, models: Path | None = None, log=print) -> Conversion:
     """Convert one non-PDF, non-markdown source to markdown. Raises ConversionRefused.
+
+    `models` is the operator's checked docling models folder (`paths.models_folder`), or None. A format
+    that uses models is read by Apple's on-device recognizer without one and by docling with one; every
+    other format ignores it, because a .docx needs no weights.
 
     Every refusal names the format, the file and the specific reason. Nothing partial is returned:
     the caller either gets markdown that cleared both gates, or an exception.
     """
     if spec.arm != "docling":
         raise ValueError(f"{spec.token} is read by the {spec.arm} arm, not converted")
+    if spec.uses_models and models is None:
+        return _apple_markdown(src, spec, log=log)
+    if spec.uses_models:
+        from substrate.paths import configure
 
-    from substrate.paths import ARTIFACTS, configure
-
-    # Only the model-backed formats require the pinned artifacts. A .docx needs no weights, so
-    # demanding the drive be mounted to read one would be a cost with no cause — and `configure`
-    # exits the process rather than raising.
-    if spec.needs_models:
-        configure()
+        configure(models)
 
     from docling.datamodel.base_models import ConversionStatus, InputFormat
     from docling.document_converter import DocumentConverter
 
     fmt = InputFormat(spec.docling_format)
     options: dict = {}
-    if spec.needs_models:
-        from docling.datamodel.pipeline_options import PdfPipelineOptions
+    if spec.uses_models:
+        from docling.datamodel.pipeline_options import OcrMacOptions, PdfPipelineOptions
         from docling.document_converter import ImageFormatOption
 
-        opts = PdfPipelineOptions(artifacts_path=str(ARTIFACTS))
+        opts = PdfPipelineOptions(artifacts_path=str(models))
         opts.do_ocr = True  # an image has no text layer to prefer; OCR is the only reading
+        # APPLE VISION, NAMED rather than left to docling's automatic choice. Its fallback, RapidOCR,
+        # needs OpenCV, whose macOS wheel carries a GPL FFmpeg; `pyproject.toml` excludes it, and
+        # naming the engine here means a stray reinstall cannot switch engines without a code change.
+        opts.ocr_options = OcrMacOptions()
         opts.do_table_structure = True
         options = {InputFormat.IMAGE: ImageFormatOption(pipeline_options=opts)}
 
     t0 = time.monotonic()
     log(f"converting: {src.name}  format={spec.token}"
-        + ("  (OCR — first run loads models)" if spec.needs_models else ""))
+        + ("  (OCR — first run loads models)" if spec.uses_models else ""))
     conv = DocumentConverter(allowed_formats=[fmt], format_options=options)
     try:
         result = conv.convert(str(src))
@@ -476,7 +523,8 @@ def to_markdown(src: Path, spec: FormatSpec, *, log=print) -> Conversion:
         "converted_chars": len(md),
         "converted_seconds": elapsed,
         "docling_status": str(result.status),
-        "ocr": spec.needs_models,
+        "reader": "docling",
+        "ocr": spec.uses_models,
         # `null` when nothing could measure it. See raw_text: absent evidence, not a pass.
         "raw_coverage": cov,
         # The probe AS IT RAN, not as the table declares it: `ooxml-w` only when it produced a
@@ -491,7 +539,7 @@ def to_markdown(src: Path, spec: FormatSpec, *, log=print) -> Conversion:
         stats["raw_coverage_probe_error"] = probe.error
 
     return Conversion(markdown=md, pages=pages, extractor=f"docling {pkg_version('docling')}",
-                      stats=stats)
+                      stats=stats, arm=f"docling-{spec.token}")
 
 
 def table() -> list[tuple[str, str, str, str]]:

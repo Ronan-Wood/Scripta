@@ -286,6 +286,10 @@ extension SubstrateCLI {
         /// `substrate formats`, verbatim, for the disclosure. The parse above is an interpretation;
         /// this is the thing itself, so a reader can check the interpretation.
         let table: String
+        /// The flag that names docling's models folder, or nil for an engine without one. Asked for
+        /// rather than assumed: an engine that predates it refuses the whole ingest over an unknown
+        /// argument.
+        let modelsFlag: String?
 
         /// The format the engine would read this file as, if it named one.
         func format(for file: URL) -> IngestFormat? {
@@ -325,9 +329,11 @@ extension SubstrateCLI {
         async let table = run(cli, ["formats"])
         async let help = run(cli, ["ingest", "--help"])
         let (formats, refused, listing) = parseFormats(await table)
-        let (positional, flags, classes) = parseIngestHelp(await help)
+        let helpRun = await help
+        let (positional, flags, classes) = parseIngestHelp(helpRun)
         return IngestSurface(usesPositionalPath: positional, inputFlags: flags, docClasses: classes,
-                             formats: formats, refused: refused, table: listing)
+                             formats: formats, refused: refused, table: listing,
+                             modelsFlag: parseModelsFlag(helpRun))
     }
 
     /// The `substrate formats` table.
@@ -391,18 +397,25 @@ extension SubstrateCLI {
 
         // A flag with an ALL-CAPS metavar that is not the destination. Kept for an engine that
         // predates the positional, and for `--md`'s "read it as markdown whatever it is named".
+        // `--docling-models DIR` has the same shape and carries a folder, not the input.
         // Deduplicated because argparse prints each flag twice — once in the usage line and once
         // in the options block — and `inputFlags.first` would otherwise depend on which came first.
         var seen = Set<String>()
         let flags = matches(in: help, pattern: "--([a-z][a-z0-9-]*)\\s+[A-Z][A-Z0-9_]*")
             .map { $0[1] }
-            .filter { $0 != "out" && $0 != "pages" && $0 != "batch" && seen.insert($0).inserted }
+            .filter { $0 != "out" && $0 != "pages" && $0 != "batch" && $0 != "docling-models"
+                && seen.insert($0).inserted }
         let classes = matches(in: help, pattern: "--doc-class\\s+\\{([^}]+)\\}")
             .first?[1]
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty } ?? []
         return (positional, flags.map { "--" + $0 }, classes)
+    }
+
+    /// `--docling-models`, when this engine's `ingest --help` names it.
+    static func parseModelsFlag(_ run: SubstrateRun) -> String? {
+        run.succeeded && run.stdout.contains("--docling-models DIR") ? "--docling-models" : nil
     }
 
     /// One indented block of an argparse help, from its heading to the next blank line.

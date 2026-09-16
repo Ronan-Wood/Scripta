@@ -29,6 +29,7 @@ enum AppSettings {
         static let workspaceReadVaults = "workspaceReadVaults"
         static let workspaceContextVaults = "workspaceContextVaults"
         static let sharedVault = "sharedVaultPath"
+        static let doclingModels = "doclingModelsPath"
         static let calendarLookaheadDays = "calendarLookaheadDays"
         static let summarizeEnabled = "summarizeEnabled"
         static let notesMergeEnabled = "notesMergeEnabled"
@@ -364,6 +365,23 @@ enum AppSettings {
         }
         set { defaults.set(newValue?.path ?? "", forKey: Keys.sharedVault) }
     }
+
+    /// A folder of docling's layout and table models, when the operator has chosen one.
+    ///
+    /// OPTIONAL, AND NEVER DOWNLOADED. Without it the engine reads a PDF's own text layer and uses
+    /// Apple's on-device recognizer for scans and images, so importing a document needs nothing
+    /// installed. With it, tables and complex layouts read better. A path, not a bookmark, for the
+    /// reason `sharedVault` gives.
+    static var doclingModels: URL? {
+        get {
+            guard let path = defaults.string(forKey: Keys.doclingModels), !path.isEmpty else {
+                return nil
+            }
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        set { defaults.set(newValue?.path ?? "", forKey: Keys.doclingModels) }
+    }
+
 
     /// The workspace the user is currently in. Retrieval is hard-scoped to it (secure by default) —
     /// the LOCAL call store always was, and since Doc 3 §7 the engine pane beside it is too, via

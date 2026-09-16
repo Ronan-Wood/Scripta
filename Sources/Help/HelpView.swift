@@ -81,6 +81,7 @@ struct HelpView: View {
                         h2("Getting started", id: "getting-started")
                         h3("Install Scripta", id: "install")
                         body14("Scripta runs on macOS 26 or later on Apple Silicon. Download the app, drag it to Applications, and grant microphone and screen-recording access on first launch. No account, no sign-in.")
+                        body14("Updates arrive in the app. On its second launch Scripta asks whether it may check for updates; if you agree, it looks at the releases page once a day and offers a newer version. Check for Updates…, in the Scripta menu or the menu-bar icon's menu, does the same on demand, and Settings → General turns the daily check on or off. An update waits for any recording to finish, and your transcripts, settings and permissions are untouched by it.")
                         h3("Permissions", id: "permissions")
                         body14("macOS asks for three, and each one is asked for at the moment it is first needed rather than up front:")
                         body14("Microphone — your side of a call. Without it, only the other participants are transcribed.")
@@ -108,7 +109,7 @@ struct HelpView: View {
                         body14("Search is holistic — one query matches spoken passages and call topics, so searching “baseball” finds a call that only ever said “home runs.” Topics are generated on-device and power concept browsing. Vocabulary terms you teach in the Library expand searches too: “TIM” also matches “tenants in the market.”")
 
                         h3("Adding documents", id: "documents")
-                        body14("The Library takes PDFs, Word, PowerPoint, Excel, web pages, plain text, subtitles and email files, extracts them on-device, and files them into the active workspace so they answer alongside your calls. Nothing is uploaded. A document that cannot be read cleanly is refused with the reason rather than filed half-extracted.")
+                        body14("The Library takes PDFs, Word, PowerPoint, Excel, web pages, plain text, subtitles, email files and images, extracts them on-device, and files them into the active workspace so they answer alongside your calls. Nothing is uploaded and nothing needs installing: a PDF is read from its own text, and Apple's text recognition reads scanned pages and images. A folder of docling's layout and table models, chosen in Settings → Local model, reads tables better. A document that cannot be read cleanly is refused with the reason rather than filed half-extracted.")
 
                         h2("Asking questions", id: "asking")
                         h3("Ask", id: "ask-basics")
@@ -252,7 +253,7 @@ struct HelpView: View {
     private var acknowledgements: some View {
         VStack(alignment: .leading, spacing: Space.x2) {
             h2("Acknowledgements", id: "acknowledgements")
-            body14("Typefaces: IBM Plex Sans and IBM Plex Mono © IBM Corp., under the SIL Open Font License 1.1. Icons: IBM Carbon, under the Apache License 2.0. Both license texts are included in the app bundle (Contents/Resources).")
+            body14("Scripta is free software under the GNU General Public License, version 3, and comes with no warranty. Typefaces: IBM Plex Sans and IBM Plex Mono © IBM Corp., under the SIL Open Font License 1.1. Icons: IBM Carbon, under the Apache License 2.0. Updates: Sparkle, under the MIT License. These license texts, and Scripta's own, are included in the app bundle (Contents/Resources).")
         }
     }
 

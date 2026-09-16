@@ -5,10 +5,55 @@ description = "Language-neutral knowledge substrate engine — structure-aware i
 requires-python = ">=3.10"
 dependencies = [
     "docling",
+    # The default PDF reader's text layer (`substrate/extract/pdftext_arm.py`). docling pins it too,
+    # but the reader that is supposed to work with nothing else installed must not depend on that.
+    "pypdfium2>=4,<6",
+    # Image OCR through Apple Vision. docling already prefers it on macOS once it is installed, and
+    # `substrate/extract/convert.py` names it explicitly as well.
+    "ocrmac>=1.0.0,<2; sys_platform == 'darwin'",
+    # OpenCV, for docling's TableFormer, which reads the tables in every PDF and image and imports `cv2`
+    # without declaring it. Built from source below; the version bound is TableFormer's own.
+    "opencv-python-headless>=4.6.0.66,<5",
 ]
 
 [tool.uv]
 package = false
+# RAPIDOCR AND THE PREBUILT OPENCV ARE EXCLUDED, not merely unused. Every prebuilt macOS OpenCV wheel,
+# headless included, bundles a GPL-3.0-or-later FFmpeg with x264 and x265, which v0.2.0 shipped without
+# their source. docling's default install pulls RapidOCR in, and RapidOCR pulls in `opencv-python`. A
+# marker that never matches keeps both out of every environment uv builds.
+override-dependencies = [
+    "rapidocr; sys_platform == 'never'",
+    "opencv-python; sys_platform == 'never'",
+]
+# OPENCV IS COMPILED HERE, WITH FFMPEG OFF, which is the only way to keep TableFormer without the GPL
+# libraries. The default module set stays in, because OpenCV's packaging requires its Python typing
+# stubs and a trimmed module list broke their generation (measured 2026-09-15).
+#
+# EVERY OPTIONAL HOST DEPENDENCY IS SWITCHED OFF BY NAME, so what ships does not depend on what happens
+# to be installed on the building Mac: AVIF, JPEG XL, SPNG, TBB and Eigen would each be picked up from
+# Homebrew if present and linked by absolute path. KleidiCV and G-API's ADE are downloads, Intel ITT is
+# compiled-in tracing nothing here uses, and Java is probed for bindings that are never built.
+# `tools/build-bundled-engine` refuses a bundle containing FFmpeg or linking outside the system and the
+# bundle, so a regression fails loudly. The first build is long; uv caches the wheel.
+no-binary-package = ["opencv-python-headless"]
+# THE BUILD TOOLS ARE PINNED to the versions that produced the verified wheel. `uv.lock` pins runtime
+# packages only, so without these a clean cache compiles native code with whatever is newest that day.
+# CMake is not pinned here: OpenCV's backend uses the system CMake when it is recent enough.
+build-constraint-dependencies = [
+    "scikit-build==0.19.1",
+    "setuptools==69.5.1",
+    "numpy==2.3.2",
+    "packaging==26.3",
+    "pip==26.2.1",
+    "ninja==1.13.2",
+]
+
+[tool.uv.extra-build-dependencies]
+opencv-python-headless = ["ninja"]
+
+[tool.uv.extra-build-variables]
+opencv-python-headless = { ENABLE_HEADLESS = "1", ENABLE_CONTRIB = "0", CMAKE_ARGS = "-DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DVIDEOIO_ENABLE_PLUGINS=OFF -DWITH_KLEIDICV=OFF -DBUILD_opencv_gapi=OFF -DWITH_ADE=OFF -DWITH_AVIF=OFF -DWITH_JPEGXL=OFF -DWITH_SPNG=OFF -DWITH_TBB=OFF -DWITH_EIGEN=OFF -DWITH_ITT=OFF -DBUILD_JAVA=OFF -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF" }
 
 [dependency-groups]
 dev = ["ipykernel", "ruff>=0.16.0"]

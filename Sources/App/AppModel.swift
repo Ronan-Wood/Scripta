@@ -95,6 +95,10 @@ final class AppModel: ObservableObject {
         didSet { syncRecordingClock() }
     }
     @Published var recordingElapsed: TimeInterval = 0
+    /// True from the moment a recording start is accepted until it is running or has failed. The
+    /// start awaits permission and an options prompt, and `recordingState` stays `.idle` throughout,
+    /// so anything that must not interrupt a recording has to read this too (`AppUpdater`).
+    @Published var isStartingRecording = false
     @Published var isPaused = false
     @Published var calls: [TranscriptMeta] = []
 

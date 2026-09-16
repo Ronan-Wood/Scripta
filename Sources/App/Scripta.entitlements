@@ -26,8 +26,9 @@
 	       device.audio-input   KEPT. TCC, not the sandbox — unaffected either way, and the
 	                            microphone prompt is still driven by NSMicrophoneUsageDescription.
 	       calendars            KEPT, same reason.
-	       network.client       KEPT. Outbound loopback only (the engine on 127.0.0.1:8765 and, when
-	                            the operator opts in, a local model server) — inert without the
+	       network.client       KEPT. Outbound only (the engine on 127.0.0.1:8765 and, when
+	                            the operator opts in, a local model server; and, once the operator allows
+	                            it, Sparkle's update check to github.com) — inert without the
 	                            sandbox but correct if the sandbox ever returns for a flavor.
 
 	     DROPPED: files.user-selected.read-write. It only ever meant anything under the sandbox, and

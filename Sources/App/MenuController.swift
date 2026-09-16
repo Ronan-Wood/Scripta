@@ -29,7 +29,9 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
     private var uiState: UIState = .idle {
         didSet { AppModel.shared.recordingState = uiState.appState }
     }
-    private var isStarting = false
+    private var isStarting = false {
+        didSet { AppModel.shared.isStartingRecording = isStarting }
+    }
     private var isTerminating = false
     private var pauseTask: Task<Void, Never>?
     private var proximityTimer: Timer?
@@ -215,6 +217,11 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
         hub.target = self
         menu.addItem(hub)
 
+        // Here as well as in the app menu: with Show in Dock off this is the only menu there is.
+        let updates = NSMenuItem(title: AppUpdater.menuTitle, action: AppUpdater.menuAction, keyEquivalent: "")
+        updates.target = AppUpdater.shared.controller
+        menu.addItem(updates)
+
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "Quit Scripta",
@@ -260,6 +267,17 @@ final class MenuController: NSObject, NSMenuDelegate, NSWindowDelegate {
     /// actually starts, so an aborted attempt can never mislabel the next recording.
     private func startRecording(tiedTo meeting: UpcomingCall? = nil) {
         guard uiState == .idle, !isStarting else { return }
+        // The app is about to quit to install an update, and that quit would stop this recording
+        // moments after it began. Refused until the app quits, that Sparkle session ends, or its grace
+        // period passes (`AppUpdater.isQuittingToInstall`), and SAID: every other way a start does
+        // nothing here is a state the UI already shows, and this is not.
+        // A beep because notifications may be off; a banner rather than an alert because an alert
+        // would hold up the quit.
+        guard !AppUpdater.shared.isQuittingToInstall else {
+            NSSound.beep()
+            NotificationManager.shared.notifyRecordingRefusedForUpdate()
+            return
+        }
         // A live capture would fight the recording for the mic — discard it (the panels are
         // state-gated complements, same rule as closeQuickNote on stop).
         discardCapture()

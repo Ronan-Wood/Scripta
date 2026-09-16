@@ -44,6 +44,7 @@ struct SettingsView: View {
     @State private var outputPath: String = AppSettings.outputFolder.path
     @State private var sharedVaultPath: String = AppSettings.sharedVault?.path ?? ""
     @State private var sharedVaultRefusal: String?
+    @State private var doclingModelsPath: String = AppSettings.doclingModels?.path ?? ""
     @State private var calendarLookahead: Int = AppSettings.calendarLookaheadDays
     @State private var terms: [String] = AppSettings.domainVocabulary
     @State private var newTerm: String = ""
@@ -86,6 +87,15 @@ struct SettingsView: View {
     @State private var rerankEnabled = AppSettings.rerankEnabled
     @State private var mirrorEnabled = AppSettings.mirrorEnabled
     @State private var visionModel = AppSettings.visionModel
+    @State private var automaticUpdates: Bool = AppUpdater.shared.automaticallyChecksForUpdates
+    @ObservedObject private var updater = AppUpdater.shared
+
+    private static var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(short) (\(build))"
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -230,6 +240,22 @@ struct SettingsView: View {
             Text("Shortcuts")
         } footer: {
             Text("Works from any app while enabled. Click a shortcut to record a new combo, then press the keys you want; Esc cancels.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+
+        Section {
+            Toggle("Check for updates automatically", isOn: $automaticUpdates)
+                .onChange(of: automaticUpdates) { _, newValue in
+                    AppUpdater.shared.automaticallyChecksForUpdates = newValue
+                }
+            LabeledContent("Version \(Self.versionString)") {
+                Button("Check Now…") { AppUpdater.shared.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+            }
+        } header: {
+            Text("Updates")
+        } footer: {
+            Text("When on, Scripta checks its GitHub releases page once a day and offers a newer version if there is one. Each check sends what any web request does — your IP address and Scripta's version — and nothing about your calls. Scripta asks before the first automatic check; Check Now works either way. An update waits for any recording to finish.")
                 .font(.caption).foregroundStyle(.secondary)
         }
 
@@ -665,7 +691,40 @@ struct SettingsView: View {
         } header: {
             Text("Local Model (advanced)")
         } footer: {
-            Text("Point the app at an OpenAI-compatible server on this Mac or your LAN (Ollama, LM Studio) and assign a bigger model per task. Apple Intelligence stays the default and the automatic fallback. Only localhost and private addresses are ever contacted — never the public internet. Setup: `brew install ollama`, then e.g. `ollama pull qwen2.5:14b` (≈9 GB, smarter) or `qwen2.5:7b` (≈4.5 GB, faster).")
+            Text("Point the app at an OpenAI-compatible server on this Mac or your LAN (Ollama, LM Studio) and assign a bigger model per task. Apple Intelligence stays the default and the automatic fallback. Only a server on localhost or a private address is accepted — public hosts are refused. Setup: `brew install ollama`, then e.g. `ollama pull qwen2.5:14b` (≈9 GB, smarter) or `qwen2.5:7b` (≈4.5 GB, faster).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        Section {
+            LabeledContent("Models folder") {
+                HStack(spacing: 8) {
+                    Text(doclingModelsPath.isEmpty ? "Not set" : abbreviate(doclingModelsPath))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                    Button("Choose…", action: chooseDoclingModels)
+                    if !doclingModelsPath.isEmpty {
+                        Button("Clear") {
+                            AppSettings.doclingModels = nil
+                            doclingModelsPath = ""
+                        }
+                    }
+                }
+            }
+            if let status = doclingModelsStatus {
+                Text(status.text)
+                    .font(.caption)
+                    .foregroundStyle(status.warning ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("Document models (optional)")
+        } footer: {
+            Text("PDFs and images are read on this Mac with nothing to install: a PDF's own text, and "
+                 + "Apple's text recognition for scans and pictures. Point this at a folder of "
+                 + "docling's layout and table models and tables and complex layouts read better. "
+                 + "Scripta never downloads them. If the folder is gone when you import something — "
+                 + "an unplugged drive — the document is read without them rather than refused.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -867,6 +926,38 @@ struct SettingsView: View {
         }
         return ("Inherited by \(inheritors.joined(separator: ", ")) — a note written here is "
                 + "recomposed into each of them.", false)
+    }
+
+    private func chooseDoclingModels() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = "Choose"
+        panel.message = "Pick the folder that holds docling's layout and table models."
+        if !doclingModelsPath.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: doclingModelsPath)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        AppSettings.doclingModels = url
+        doclingModelsPath = url.path
+    }
+
+    /// What the chosen folder means for the next import.
+    ///
+    /// PRESENCE ONLY. Whether a folder holds usable models is the engine's judgement, made at import
+    /// time and reported in its own words; restating the rule here would put it in two places and
+    /// still be a guess by the time the import runs.
+    private var doclingModelsStatus: (text: String, warning: Bool)? {
+        guard !doclingModelsPath.isEmpty else { return nil }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: doclingModelsPath, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return ("This folder is not there right now, so documents are read without models. "
+                    + "If it is on an external drive, connect the drive.", true)
+        }
+        return ("Scripta hands this folder to the engine when it imports a PDF or an image.", false)
     }
 
     // MARK: - Actions
