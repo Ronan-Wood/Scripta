@@ -6,6 +6,8 @@ Built as a local alternative to Granola, Jamie and Fathom — the difference is 
 
 [**Download the latest release →**](../../releases/latest)
 
+New here? [**Getting started**](GETTING-STARTED.md) walks through installing, your first recording, adding documents, and connecting Claude.
+
 ---
 
 ## Requirements
@@ -13,7 +15,7 @@ Built as a local alternative to Granola, Jamie and Fathom — the difference is 
 - **macOS 26 or later, Apple Silicon.** Not negotiable: Scripta is built on Apple's `SpeechTranscriber`, Foundation Models and document recognizer, which arrive in macOS 26.
 - **Apple Intelligence is optional.** Titles and summaries use it when enabled; everything else works without it.
 
-Open the `.dmg` and drag Scripta to Applications. It is signed and notarized, so it opens normally — no right-click, no "unidentified developer" warning.
+Open the `.dmg` and drag Scripta to Applications. It is signed and notarized, so it opens normally — no right-click, no "unidentified developer" warning. Updates then arrive inside the app, and Scripta asks before its first check.
 
 ## What it does
 
@@ -25,7 +27,7 @@ Open the `.dmg` and drag Scripta to Applications. It is signed and notarized, so
 
 **Answers questions over your own material.** Ask retrieves from your calls, notes and documents and cites what it used. Every answer records what actually ran, so a degraded answer says so rather than quietly being worse.
 
-**Takes your documents too.** The Library ingests PDF, Word, PowerPoint, Excel, HTML, CSV, subtitles, email and plain text — extracted on-device — and files them alongside your calls so they answer together.
+**Takes your documents too.** The Library ingests PDF, Word, PowerPoint, Excel, HTML, CSV, subtitles, email, plain text and images, and files them alongside your calls so they answer together. Extraction is on-device with nothing to install: a PDF is read from its own text, and Apple's text recognition reads scans and images. If you keep docling's layout and table models, point Settings at their folder and tables read better.
 
 **Talks to Claude.** The bundled engine is an MCP server, so Claude Code and Claude Desktop can search and reason over your corpus. Small local models do bounded jobs; a frontier model does the deep reasoning, and only when you ask it to.
 
@@ -33,8 +35,8 @@ Open the `.dmg` and drag Scripta to Applications. It is signed and notarized, so
 
 This is the point of the project, so it is specific rather than a slogan:
 
-- **No network calls except to a model server you chose.** Public hosts are refused with no override — loopback and LAN only.
-- **No account, no telemetry, no analytics.** There is no server to talk to.
+- **No network calls except to a model server you chose, and the update check if you allow it.** Model servers are loopback and LAN only — public hosts are refused with no override. The update check asks GitHub once a day whether a newer release exists; it sends your IP address and Scripta's version, and Scripta asks before the first one.
+- **No account, no telemetry, no analytics.** There is no server of ours to talk to.
 - **Raw audio and screenshots are always ephemeral.** Only text is kept.
 - **Recording is always manual.** The calendar is informational; nothing auto-records.
 - **Workspaces are a real boundary.** Retrieval, Ask and the MCP server are scoped to the active workspace, and a reply states what was withheld rather than silently omitting it.
@@ -70,7 +72,7 @@ xcodegen generate
 xcodebuild -project Scripta.xcodeproj -scheme Scripta build
 ```
 
-The build vendors a Python runtime and the engine's dependencies into the app bundle, so the first build is slow and later ones skip in seconds unless the engine changed. Nothing is downloaded at runtime.
+The build vendors a Python runtime and the engine's dependencies into the app bundle, so the first build is slow and later ones skip in seconds unless the engine changed. The first build also compiles OpenCV from source with FFmpeg switched off, because every prebuilt macOS OpenCV bundles a GPL-licensed FFmpeg; uv caches the result, so that happens once per machine. The app itself downloads nothing at runtime apart from the optional update check.
 
 Tests:
 
@@ -88,11 +90,11 @@ Signing, notarization and stapling are documented in [`Distribution/RELEASING.md
 | `Sources/` | the macOS app — capture, transcription, UI, engine supervision |
 | `Core/` | local SwiftPM package: parsing, indexing, vault layout, the engine's wire types |
 | `substrate/` | the Python engine — ingest, chunking, index, retrieval, MCP server |
-| `Distribution/` | release runbook and collateral |
+| `Distribution/` | release runbook, release scripts, and collateral |
 
 ## Status
 
-Working, and in daily use by its author. The first notarized build shipped as `v0.1.0`.
+Working, and in daily use by its author. The newest build is always on the [releases page](../../releases/latest).
 
 Known limits, stated rather than left to be discovered:
 
@@ -102,4 +104,6 @@ Known limits, stated rather than left to be discovered:
 
 ## License
 
-Not yet chosen. Until a license is added, default copyright applies and all rights are reserved.
+Scripta is free software, licensed under the [GNU General Public License, version 3](LICENSE). You may use, study, share and modify it. If you distribute it, or a modified version of it, you must do so under the same license and make the corresponding source available.
+
+Third-party components bundled in the app remain under their own licenses. They include Sparkle (MIT), IBM Plex (SIL Open Font License), the Carbon icons (Apache 2.0), the Python runtime (PSF License), and the engine's Python dependencies.
