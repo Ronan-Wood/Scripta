@@ -21,6 +21,17 @@ submittable artifact. This distinction is the whole reason the config exists, an
 previously told you to build `Release` — which is how a decision that reached `project.yml` failed
 to reach the document a human follows.
 
+## Branches
+
+One long-lived branch, `main`, protected against deletion and force-pushes. Work happens on a short
+branch named for the change, merges into `main`, and is deleted. A release is tagged from `main`, and
+the TAG is what the build comes from and what the GPL source offer points at, never a branch.
+
+No `develop`, no QA branch. Testing is a Distribution build run locally on the machine. When
+something needs wider trying, tag a pre-release: GitHub's idea of "latest" skips pre-releases, so
+`releases/latest/download/appcast.xml` keeps serving the newest stable and no installed copy is ever
+offered one.
+
 ## The version lives in `project.yml`, not in Info.plist
 
 `xcodegen generate` rewrites `Sources/App/Info.plist` from the `info.properties` block in

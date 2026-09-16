@@ -27,7 +27,11 @@ packages:
   # does the rest. 2.10 requires macOS 12, far below the 26 this app already requires.
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
-    from: "2.10.0"
+    # EXACT, not a range. This is the one dependency that can replace the whole app on someone's
+    # Mac, and `from:` would take a new minor on any resolve — including one published between the
+    # build that was reviewed and the build that gets notarized. Moving it is a deliberate edit,
+    # after reading what changed.
+    exactVersion: "2.10.0"
 
 # ONE FLAVOR. `Scripta-MAS` was retired on 2026-08-14 (Doc 5): it had been unsubmittable since
 # Doc 3 §1 dropped the App Store — the app is unsandboxed because it must spawn the engine — and the

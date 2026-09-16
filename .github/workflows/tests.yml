@@ -1,0 +1,59 @@
+# The tests, on a clean machine. This is the half a local build cannot give you: the caches, the
+# models and the built engine are all on the developer's Mac, and a runner has none of them.
+#
+# ACTIONS ARE PINNED BY COMMIT, not by tag. A tag is a moving pointer that its owner can repoint at
+# any code, and these jobs run against this repository's contents. The version each hash belongs to
+# is in the comment beside it.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only. Nothing here publishes, comments or writes to the repository.
+permissions:
+  contents: read
+
+# A newer push to the same branch makes the older run pointless.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: engine (605 tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: substrate
+    env:
+      PYTHONPATH: ${{ github.workspace }}/substrate
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      # NOT `uv sync`. The engine's full dependency set is torch, docling and an OpenCV built from
+      # source — gigabytes, and twenty minutes of compiling, for a suite that touches none of it.
+      # Measured 2026-09-16: these four packages run all 606 tests in 15 seconds from a 57 MB
+      # environment. A test that needs more than this should say so by failing here.
+      - run: uv venv --python 3.14
+      - run: uv pip install pytest pypdfium2 pillow numpy
+      - run: uv run --no-sync python -m pytest tests -q
+
+  core:
+    name: app core (307 tests)
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: Core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The package targets macOS 14 and uses no macOS 26 API, so it builds on the runner image even
+      # though the app around it requires macOS 26 and cannot be built here at all.
+      - run: swift test
