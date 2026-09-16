@@ -8,13 +8,13 @@ dependencies = [
     "docling",
     # The default PDF reader's text layer (`substrate/extract/pdftext_arm.py`). docling pins it too,
     # but the reader that is supposed to work with nothing else installed must not depend on that.
-    "pypdfium2>=4,<6",
+    "pypdfium2>=5.13.0,<6",
     # Image OCR through Apple Vision. docling already prefers it on macOS once it is installed, and
     # `substrate/extract/convert.py` names it explicitly as well.
     "ocrmac>=1.0.0,<2; sys_platform == 'darwin'",
     # OpenCV, for docling's TableFormer, which reads the tables in every PDF and image and imports `cv2`
     # without declaring it. Built from source below; the version bound is TableFormer's own.
-    "opencv-python-headless>=4.6.0.66,<5",
+    "opencv-python-headless>=5.0.0.93,<6",
 ]
 
 [tool.uv]
@@ -57,7 +57,7 @@ opencv-python-headless = ["ninja"]
 opencv-python-headless = { ENABLE_HEADLESS = "1", ENABLE_CONTRIB = "0", CMAKE_ARGS = "-DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DVIDEOIO_ENABLE_PLUGINS=OFF -DWITH_KLEIDICV=OFF -DBUILD_opencv_gapi=OFF -DWITH_ADE=OFF -DWITH_AVIF=OFF -DWITH_JPEGXL=OFF -DWITH_SPNG=OFF -DWITH_TBB=OFF -DWITH_EIGEN=OFF -DWITH_ITT=OFF -DBUILD_JAVA=OFF -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF" }
 
 [dependency-groups]
-dev = ["ipykernel", "ruff>=0.16.0"]
+dev = ["ipykernel", "ruff>=0.16.7"]
 
 [tool.ruff]
 target-version = "py310"
