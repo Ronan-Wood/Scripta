@@ -253,7 +253,7 @@ struct HelpView: View {
     private var acknowledgements: some View {
         VStack(alignment: .leading, spacing: Space.x2) {
             h2("Acknowledgements", id: "acknowledgements")
-            body14("Scripta is free software under the GNU General Public License, version 3, and comes with no warranty. Typefaces: IBM Plex Sans and IBM Plex Mono © IBM Corp., under the SIL Open Font License 1.1. Icons: IBM Carbon, under the Apache License 2.0. Updates: Sparkle, under the MIT License. These license texts, and Scripta's own, are included in the app bundle (Contents/Resources).")
+            body14("Scripta is free software under the GNU General Public License, version 3 or, at your option, any later version, and comes with no warranty. Typefaces: IBM Plex Sans and IBM Plex Mono © IBM Corp., under the SIL Open Font License 1.1. Icons: IBM Carbon, under the Apache License 2.0. Updates: Sparkle, under the MIT License. These license texts, and Scripta's own, are included in the app bundle (Contents/Resources).")
         }
     }
 

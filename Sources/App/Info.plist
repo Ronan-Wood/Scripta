@@ -33,7 +33,7 @@
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Scripta reads your upcoming events to show which calls have Zoom/Teams/Meet links. It never modifies your calendar and never auto-starts recording.</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>© 2026 Ronan Wood. Licensed under the GNU GPL v3, with no warranty.</string>
+	<string>© 2026 Ronan Wood. Licensed under the GNU GPL, version 3 or later, with no warranty.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Only used if you connect a local AI server on your own network (e.g. Ollama). Your recordings and transcripts never leave your Mac; separately, Scripta can check GitHub for app updates if you allow it.</string>
 	<key>NSMicrophoneUsageDescription</key>

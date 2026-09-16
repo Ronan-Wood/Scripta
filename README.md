@@ -104,6 +104,6 @@ Known limits, stated rather than left to be discovered:
 
 ## License
 
-Scripta is free software, licensed under the [GNU General Public License, version 3](LICENSE). You may use, study, share and modify it. If you distribute it, or a modified version of it, you must do so under the same license and make the corresponding source available.
+Scripta is free software, licensed under the [GNU General Public License, version 3](LICENSE) or, at your option, any later version. You may use, study, share and modify it. If you distribute it, or a modified version of it, you must do so under the same license and make the corresponding source available.
 
 Third-party components bundled in the app remain under their own licenses. They include Sparkle (MIT), IBM Plex (SIL Open Font License), the Carbon icons (Apache 2.0), the Python runtime (PSF License), and the engine's Python dependencies.
