@@ -1,0 +1,61 @@
+# CodeQL, on the two languages this repository actually contains.
+#
+# SCOPE IS DELIBERATE. Python covers the engine, which is where untrusted input lands: PDFs, images,
+# zip containers, HTML and the JSON a subprocess hands back. Swift covers `Core/`, which builds on a
+# runner with one SwiftPM command. The app target is NOT scanned: building it means building the
+# bundled engine, an hour of downloading and compiling for a target CodeQL analyses no better than
+# the package it already sees.
+#
+# Actions pinned by commit, for the reason the test workflow gives.
+name: code scanning
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Queries improve between pushes; a weekly run catches what a new query finds in old code.
+    - cron: "0 7 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: codeql python
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@977e6ceaea7361825998245d787fa3b4d6b9e5df # v2.27.0
+        with:
+          languages: python
+          build-mode: none
+      - uses: github/codeql-action/analyze@977e6ceaea7361825998245d787fa3b4d6b9e5df # v2.27.0
+
+  swift:
+    name: codeql swift
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@977e6ceaea7361825998245d787fa3b4d6b9e5df # v2.27.0
+        with:
+          languages: swift
+          build-mode: manual
+      - run: swift build --package-path Core
+      - uses: github/codeql-action/analyze@977e6ceaea7361825998245d787fa3b4d6b9e5df # v2.27.0
