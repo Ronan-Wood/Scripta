@@ -1,0 +1,34 @@
+# Dependency updates, weekly, as pull requests.
+#
+# WHAT THIS CANNOT SEE: Sparkle. The app's Swift dependencies are declared in `project.yml` for
+# XcodeGen, not in a `Package.swift`, and Dependabot reads the latter. Sparkle is pinned to an exact
+# version there on purpose, and moving it is a deliberate act — the updater is the one component
+# that can replace the whole app on a user's Mac.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: uv
+    directory: /substrate
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(engine)"
+    # The engine is a closed set that ships inside a signed bundle, so a version bump is a rebuild
+    # and a re-notarization. Grouped to keep that to one review rather than a dozen.
+    groups:
+      engine:
+        patterns:
+          - "*"
+
+  - package-ecosystem: swift
+    directory: /Core
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(core)"
