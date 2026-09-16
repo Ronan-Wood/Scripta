@@ -22,7 +22,9 @@ concurrency:
 
 jobs:
   engine:
-    name: engine (605 tests)
+    # THE NAME IS A CONTRACT once a rule requires this check: a required check that never reports
+    # blocks every merge. So it does not carry the test count, which changes with every test added.
+    name: engine
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -44,7 +46,7 @@ jobs:
       - run: uv run --no-sync python -m pytest tests -q
 
   core:
-    name: app core (307 tests)
+    name: app core
     runs-on: macos-15
     timeout-minutes: 20
     defaults:
