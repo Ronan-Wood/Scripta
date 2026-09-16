@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+
+import pytest
 import json
 import os
 import shlex
@@ -123,6 +125,14 @@ def _run(argv: list[str], home: Path, extra_path: str | None = None) -> subproce
     if extra_path:
         env["PATH"] = extra_path + os.pathsep + env.get("PATH", "")
     return subprocess.run(argv, env=env, capture_output=True, text=True)
+
+
+def _shim_source_arm() -> Path | None:
+    """The `SOURCE=` path the shim falls back to, read from the shim itself."""
+    for line in _SHIM.read_text().splitlines():
+        if line.startswith("SOURCE="):
+            return Path(line.split("=", 1)[1].strip().strip('"'))
+    return None
 
 
 def _log(home: Path) -> str:
@@ -483,6 +493,12 @@ def test_the_shim_falls_back_so_a_machine_with_no_deployment_still_records() -> 
     The source agent reached this way cannot compose: its first act is to verify the deployment,
     which is what is missing.
     """
+    # THE SHIM'S SECOND ARM IS AN ABSOLUTE PATH on the operator's Mac, which the shim's own comment
+    # calls the one machine-specific fact in this system. Anywhere else `exec` fails and bash exits
+    # 127, so this test has nothing to measure rather than something to report.
+    source = _shim_source_arm()
+    if source is None or not source.exists():
+        pytest.skip(f"the shim's source arm ({source}) is not on this machine")
     home = _sandbox()
     r = _run([str(_SHIM)], home)
     assert r.returncode == 1, "the fallback must carry the refusal's exit status"
