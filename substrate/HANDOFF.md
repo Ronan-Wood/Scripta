@@ -140,11 +140,16 @@ HyDE prompt (−0.086), weighted score blending.
 contain the query's content terms. Measured failure mode it fixes — reranking trades
 DEFINITIONAL answers for MECHANISTIC ones.
 
-### On-device tier — 3 Swift shims, 214 lines
+### On-device tier — 4 Swift shims, 437 lines
 
 `tools/hyde-fm.swift`, `tools/embed-apple.swift`, `tools/rerank-fm.swift`. They exist because
 **Python cannot call FoundationModels or NLContextualEmbedding — they are Swift-only.**
 Persistent stdio processes; session setup dominates per-query cost.
+
+`tools/extract-apple.swift` is the fourth and is not a model shim: it runs Vision's
+`RecognizeDocumentsRequest` over a PDF page or an image and prints the titles, paragraphs, lists and
+tables it found as JSON. One run per document, not a persistent process. It is what lets a scan or an
+image be read with no weights at all (`extract/apple_arm.py`).
 
 `rerank-fm` was built in this session — before it, the default tier was the ONLY configuration
 running with no reranker, and it is the tier reranking helps most.
@@ -193,9 +198,10 @@ Ordered by my recommendation, but the user triages.
 3. **markdown → Document reader.** The engine has only a PDF path. Vault ingestion (Doc 2)
    needs markdown → canonical `Document` → existing chunker. Est. ~100 lines, stdlib only,
    **no Docling**. This is the gate on "wire the engine to read Doc-2 vaults."
-4. **Scanned-PDF guard.** `docling_arm.py:29` sets `do_ocr = False` and there is no text-layer
-   assertion. A *fully* scanned PDF is caught by A14 (coverage 0.0) but only at `verify` time.
-   The real hole is a *partially* scanned book — image-only pages vanish while coverage stays
+4. **Scanned pages, with docling.** The default reader (`extract/pdftext_arm.py`) detects a page
+   with no text layer and sends it to Apple's recognizer, so a *partially* scanned book no longer
+   loses those pages. The hole remains on the docling arm: with `--docling-models` given,
+   `docling_arm.py` still sets `do_ocr = False`, so image-only pages vanish while coverage stays
    >0.95 and every gate goes green. Same shape as the chapter-title bug. `RapidOcr` and
    `granite-docling-258M` are downloaded and unwired.
 5. **App settings reconciliation** (Doc 3) — its defaults predate the eval.
@@ -219,7 +225,10 @@ problem, because the default ingestion path is markdown vaults, not PDFs.
   reranker, or any query that fell back to a different arm.
 * **Serial model work only.** One model at a time — concurrent runs cook the machine.
 * **All model weights on `/Volumes/ExtremeSSD`**, never the internal disk. The user keeps
-  unused models deliberately: the drive is a portable model library across machines.
+  unused models deliberately: the drive is a portable model library across machines. The engine no
+  longer pins that path: docling's models are named per run with `--docling-models DIR`
+  (`paths.py`), a missing folder is refused and never created, and without the flag PDFs and images
+  are read with no models at all.
 * User workflow: `audit → review → implement → verify`. `/crosscheck` after implementation
   (auto-applies what clears its bar), `/adversary` last before presenting (report-only).
 
@@ -282,7 +291,9 @@ substrate/
   HANDOFF.md         this file
   substrate/
     cli.py           ingest | verify | review | rechunk | index | query | embed | eval
-    extract/         docling_arm, headings, furniture, toc      ← PDF only, heavy
+    extract/         pdftext_arm, apple_arm, docling_arm, assemble,
+                     convert, headings, furniture, toc          ← the docling arm is heavy; the
+                                                                  default readers are pdfium + Vision
     chunk/           chunker, sections, outline_records          ← takes Document, stdlib
     text/            hyphens, normalize, rejoin
     markdown/        emit, frontmatter
@@ -290,7 +301,7 @@ substrate/
     embed/           engine (Ollama + Apple), cache              ← stdlib
     retrieve/        retriever, expand, rerank, rerank_cross      ← stdlib
     eval/            runner
-  tools/             hyde-fm.swift, embed-apple.swift, rerank-fm.swift
+  tools/             hyde-fm.swift, embed-apple.swift, rerank-fm.swift, extract-apple.swift
   bin/               built shims
   eval/gold.json     72 cases
   out/               ddia-2e, go-spec, paper-moral, substrate.db, vector-cache.db

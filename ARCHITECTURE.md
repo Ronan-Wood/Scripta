@@ -109,7 +109,14 @@ and enters the same ingest path, so a DOCX passes the gates the native path also
 |---|---|---|
 | native | `md` `txt` | no |
 | converted | `docx` `pptx` `xlsx` `html` `csv` `vtt` `eml` `adoc` `tex` `epub` | no |
-| model-backed | `pdf`, images (OCR) | yes — layout model, ~1 GB |
+| PDF | `pdf` | no — its own text layer through pdfium; Apple's document recognizer for scanned pages |
+| image | `png` `jpg` `tiff` `bmp` `webp` | no — Apple's document recognizer |
+
+A PDF or an image can instead go through docling with its layout and table models, which renders
+tables as tables, when `--docling-models DIR` names a folder holding them (Settings → Local model →
+Document models). The folder is checked and never created or downloaded into. The CLI refuses a
+missing folder; the app leaves the flag off, so an unplugged models drive reads documents without
+models rather than refusing them.
 
 ### Two gates that are ingestion's own
 
@@ -238,11 +245,11 @@ The engine ships **inside the app bundle**, built by a post-build phase on the `
 
 | component | size | notes |
 |---|---|---|
-| Python dependencies | 1.0 GB | `uv sync --frozen --no-dev`; the dev group was ~200 MB of editor tooling |
-| precompiled bytecode | 294 MB | 14,403 `.pyc`, bought for import speed |
-| vendored interpreter | 75 MB | relocated `python-build-standalone` |
-| on-device model arms | 172 KB | three Swift binaries, compiled from committed source at build time |
-| **engine total** | **1.4 GB** | 366 Mach-O, each signed and verified for the hardened runtime |
+| Python dependencies | 1.1 GB | `uv sync --frozen --no-dev`; the dev group was ~200 MB of editor tooling |
+| precompiled bytecode | 228 MB | 11,515 `.pyc`, bought for import speed |
+| vendored interpreter | 79 MB | relocated `python-build-standalone` |
+| on-device Swift arms | 406 KB | four binaries, compiled from committed source at build time: embeddings, query expansion, reranking, and document recognition |
+| **engine total** | **1.2 GB** | 343 Mach-O, each signed and verified for the hardened runtime (measured 2026-09-16) |
 
 Most of that weight is one dependency. The entire *runtime* path — compose, search, expand, status,
 the MCP server — runs on numpy alone, about 23 MB; the rest exists for document conversion. Three
@@ -272,7 +279,7 @@ corpora are PDF-heavy, so any split would have triggered the large download almo
 | shared Swift | local SwiftPM package | `ScriptaCore` (parsing, index, entities), `SubstrateKit` (the engine's wire vocabulary), `ScriptaShared`. Statically linked, testable without the app |
 | engine | Python 3.14 | where the document-extraction and retrieval ecosystems actually live |
 | index | SQLite + FTS5 | BM25 without a server; a rebuildable cache, never the source of truth |
-| extraction | docling (`docling-slim[standard]`) | layout-aware conversion; every import is lazy, so the runtime path never loads it |
+| extraction | pdfium · Apple's document recognizer · docling | PDFs and images need no model weights; docling converts Office and web formats, and with its optional models reads PDF layout and tables. Every import is lazy, so the runtime path never loads it |
 | embeddings | Ollama, or Apple `NLContextualEmbedding` | the on-device arm needs no install and is not gated on Apple Intelligence |
 | reranking | cross-encoder | a model trained on the relevance judgment rather than a chat model improvising one |
 | transport | JSON-RPC — stdio and loopback HTTP | one server for the app and for Claude Code; `--read-only` on the socket |
@@ -295,8 +302,10 @@ that does nothing.
 
 ## 9. Deliberate absences
 
-- **No cloud, no account, no telemetry.** The only network calls are to a model server you chose;
-  public hosts are refused with no override.
+- **No cloud, no account, no telemetry.** Two network calls exist and no others: a model server you
+  chose, which must be loopback or a private address — public hosts are refused with no override —
+  and the update check, which asks GitHub once a day whether a newer release exists and only after
+  you allow it (`SUFeedURL`, `Sources/App/Info.plist`).
 - **No auto-recording.** The calendar is informational; recording is always deliberate.
 - **No semantic diarization.** Two tracks, physical attribution, labels omitted when one side is
   silent.
@@ -306,7 +315,6 @@ that does nothing.
 - **No periodic refresh outside the app.** Indexes refresh while Scripta is open. A machine that has
   not opened it for a week reads a week-old index — and reports `frozen: false`, because nothing
   failed; nothing ran.
-- **No notarization yet.** The one part of the packaging plan with no evidence behind it.
 
 ---
 

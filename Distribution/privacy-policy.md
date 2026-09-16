@@ -1,6 +1,6 @@
 # Privacy Policy — Scripta
 
-**Effective date:** July 16, 2026
+**Effective date:** September 14, 2026
 **Contact:** ronan.wood@outlook.com
 
 <!-- Host this page publicly (GitHub Pages or any static host) and put its URL in the App
@@ -10,7 +10,8 @@
 
 Scripta collects no data. Everything the app does — recording, transcription,
 search, and AI features — happens on your Mac. There are no accounts, no analytics, no
-tracking, no crash reporting, and no servers of ours. The app makes no internet connections.
+tracking, no crash reporting, and no servers of ours. The one internet connection the app
+makes is checking GitHub for updates, and only if you allow it.
 
 ## What the app accesses, and why
 
@@ -49,6 +50,12 @@ Nothing, by default. Specifically:
   This only happens if you set the connection up, and only while the app is running.
 - **Apple on-device intelligence:** transcription and the optional titles/summaries use
   Apple frameworks that run on-device. No audio or text is sent to Apple by this app.
+- **Update checks (optional):** on its second launch the app asks whether it may check for
+  updates. If you agree, once a day it downloads a small file from the app's public GitHub
+  releases page to see whether a newer version exists. Like any web request, this tells GitHub
+  your IP address, and the request names the app and its version. Nothing else is sent, and
+  nothing about your recordings or transcripts. You can turn it off in Settings → General;
+  Check for Updates… makes the same request on demand.
 
 ## Recording consent
 
