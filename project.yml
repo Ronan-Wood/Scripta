@@ -21,6 +21,13 @@ configs:
 packages:
   ScriptaCore:
     path: Core
+  # In-app updates. EMBEDDING IS XCODE'S; SIGNING IS NOT. Code-sign-on-copy re-signs the
+  # framework's own binary and leaves its helpers with the ad-hoc signature the artifact ships
+  # with, which notarization refuses — the "Sign Sparkle's helpers" phase on the Scripta target
+  # does the rest. 2.10 requires macOS 12, far below the 26 this app already requires.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.10.0"
 
 # ONE FLAVOR. `Scripta-MAS` was retired on 2026-08-14 (Doc 5): it had been unsubmittable since
 # Doc 3 §1 dropped the App Store — the app is unsandboxed because it must spawn the engine — and the
@@ -159,18 +166,45 @@ targetTemplates:
       # `EngineEnvelope` and `ExclusionFilter` without importing anything.
       - package: ScriptaCore
         product: SubstrateKit
+      - package: Sparkle
+        product: Sparkle
     info:
       path: Sources/App/Info.plist
+      # THIS BLOCK IS THE INFO.PLIST. `xcodegen generate` rewrites the file at `path` from these
+      # properties every time it runs, and any key not named here gets xcodegen's default — which
+      # is how a version bump made in the plist itself reverted to 1.0 (1) on 2026-09-14, a
+      # minute after it was verified, and how v0.1.0 shipped reporting 1.0. Edit here, never there.
       properties:
         CFBundleDisplayName: Scripta
+        CFBundleShortVersionString: "0.3.0"
+        CFBundleVersion: "3"
+        # In-app updates (Sparkle). The feed is whatever GitHub release is marked Latest — see
+        # `AppUpdater`. The public key pairs with the private one `generate_keys` put in the
+        # release machine's login keychain on 2026-09-14; `Distribution/RELEASING.md` says how to
+        # back it up. Losing it strands every installed copy on manual updates.
+        #
+        # THE EDDSA KEY IS THE ONLY UPDATE CREDENTIAL, and it takes both keys below to make it so.
+        # Without `SUVerifyUpdateBeforeExtraction`, Sparkle falls back to accepting an archive signed
+        # with this team's Developer ID when the EdDSA check fails — so the certificate, which sits
+        # in the same keychain, would authorise an update on its own. `SURequireSignedFeed` puts the
+        # key's signature on the appcast too, so whoever can replace a release asset cannot point an
+        # installed copy at a download page of their choosing.
+        #
+        # `SUEnableAutomaticChecks` IS DELIBERATELY ABSENT. Absent, Sparkle asks on the second launch
+        # whether it may check; YES would start contacting GitHub without asking, in an app whose
+        # privacy policy says nothing leaves the Mac by default.
+        SUFeedURL: https://github.com/Ronan-Wood/Scripta/releases/latest/download/appcast.xml
+        SUPublicEDKey: bqhcg5HlyMhLQD9itDe33GeZqhybpx3vBlVf9kKXjyg=
+        SUVerifyUpdateBeforeExtraction: true
+        SURequireSignedFeed: true
         CFBundleIconFile: AppIcon
         LSUIElement: true
         LSMinimumSystemVersion: "26.0"
-        NSHumanReadableCopyright: "© 2026 Ronan Wood"
+        NSHumanReadableCopyright: "© 2026 Ronan Wood. Licensed under the GNU GPL v3, with no warranty."
         NSMicrophoneUsageDescription: "Scripta records your microphone alongside call audio so your side of the conversation is transcribed. Audio is processed on-device and deleted after transcription."
         NSCalendarsFullAccessUsageDescription: "Scripta reads your upcoming events to show which calls have Zoom/Teams/Meet links. It never modifies your calendar and never auto-starts recording."
         NSSpeechRecognitionUsageDescription: "Scripta transcribes your recordings on-device using Apple's speech recognition. Audio is processed locally and never sent anywhere."
-        NSLocalNetworkUsageDescription: "Only used if you connect a local AI server on your own network (e.g. Ollama). The app never talks to the internet."
+        NSLocalNetworkUsageDescription: "Only used if you connect a local AI server on your own network (e.g. Ollama). Your recordings and transcripts never leave your Mac; separately, Scripta can check GitHub for app updates if you allow it."
         LSApplicationCategoryType: public.app-category.productivity
         ITSAppUsesNonExemptEncryption: false
     settings:
@@ -278,6 +312,86 @@ targets:
           # The shipping configuration may not produce an unsigned engine, even quietly.
           if [ "${CONFIGURATION:-}" = "Distribution" ]; then export SUBSTRATE_REQUIRE_SIGNING=1; fi
           "$SRCROOT/substrate/tools/build-bundled-engine" "${ARGS[@]}"
+      # WHY THIS EXISTS. Xcode embeds Sparkle.framework and signs it on copy — the framework's own
+      # binary only. `Autoupdate` and `Updater.app` keep the ad-hoc signature the SwiftPM artifact
+      # ships with: no team, no timestamp. Notarization refuses both, and
+      # `codesign --verify --deep --strict` accepts both, so nothing local would say so. Measured
+      # 2026-09-14 on the first build that carried Sparkle.
+      #
+      # THE XPC SERVICES ARE DELETED, NOT SIGNED. They exist for sandboxed apps — Sparkle's
+      # sandboxing docs say an unsandboxed app may remove them — and this app is unsandboxed.
+      #
+      # ORDER IS SPARKLE'S: helpers, then the framework, never `--deep`. Xcode signs the app itself
+      # after every script phase, over what this leaves.
+      #
+      # IDEMPOTENT ON PURPOSE. Anything already carrying the right signature AND a valid seal is left
+      # alone, so an incremental build does not rewrite the framework under an app seal Xcode has
+      # decided not to recompute — the failure the engine phase above describes. The declared output
+      # is what makes the app's signing depend on this phase, the same way it does for the engine.
+      #
+      # THE SEAL IS CHECKED, NOT ONLY THE SIGNATURE. The stamp has to exist before the framework is
+      # signed, so that the seal covers it — which means a framework signing that fails (a cancelled
+      # build, the timestamp service down) leaves signed helpers, a stamp, and a stale framework
+      # signature that reads as fine. Checking the signature alone skipped it on every later build
+      # and failed the final verify until a clean build; checking the seal makes the next build redo it.
+      - name: Sign Sparkle's helpers
+        shell: /bin/bash
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(CODESIGNING_FOLDER_PATH)/Contents/Frameworks/Sparkle.framework/Versions/B/Resources/.scripta-signed
+        script: |
+          set -euo pipefail
+          FW="$CODESIGNING_FOLDER_PATH/Contents/Frameworks/Sparkle.framework"
+          STAMP="$FW/Versions/B/Resources/.scripta-signed"
+          if [ ! -d "$FW" ]; then
+            echo "error: Sparkle.framework is not in the bundle — this phase ran before Xcode embedded it"
+            exit 1
+          fi
+          CHANGED=0
+          if [ -e "$FW/Versions/B/XPCServices" ] || [ -L "$FW/XPCServices" ]; then
+            rm -rf "$FW/Versions/B/XPCServices"
+            rm -f "$FW/XPCServices"
+            CHANGED=1
+          fi
+          IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-}"
+          if [ -z "$IDENTITY" ] || [ "$IDENTITY" = "-" ]; then
+            if [ "${CONFIGURATION:-}" = "Distribution" ]; then
+              echo "error: Distribution has no signing identity to sign Sparkle's helpers with"
+              exit 1
+            fi
+            touch "$STAMP"
+            exit 0
+          fi
+          needs_sign() {
+            local info
+            /usr/bin/codesign --verify --strict "$1" >/dev/null 2>&1 || return 0
+            info=$(/usr/bin/codesign -dv --verbose=2 "$1" 2>&1) || return 0
+            grep -q 'Signature=adhoc' <<<"$info" && return 0
+            if [ "${CONFIGURATION:-}" = "Distribution" ]; then
+              grep -q 'Authority=Developer ID Application' <<<"$info" || return 0
+              grep -q 'Timestamp=' <<<"$info" || return 0
+            fi
+            return 1
+          }
+          FLAGS=(--force --sign "$IDENTITY" --options runtime)
+          if [ "${CONFIGURATION:-}" = "Distribution" ]; then FLAGS+=(--timestamp); fi
+          for item in "$FW/Versions/B/Autoupdate" "$FW/Versions/B/Updater.app"; do
+            if needs_sign "$item"; then /usr/bin/codesign "${FLAGS[@]}" "$item"; CHANGED=1; fi
+          done
+          if [ "$CHANGED" = 1 ] || [ ! -f "$STAMP" ] || needs_sign "$FW"; then
+            touch "$STAMP"
+            /usr/bin/codesign "${FLAGS[@]}" "$FW"
+          fi
+          # The shipping configuration asserts what it produced, each property checked on its own.
+          if [ "${CONFIGURATION:-}" = "Distribution" ]; then
+            for item in "$FW/Versions/B/Autoupdate" "$FW/Versions/B/Updater.app" "$FW"; do
+              info=$(/usr/bin/codesign -dv --verbose=2 "$item" 2>&1)
+              grep -q 'Authority=Developer ID Application' <<<"$info" || { echo "error: $item is not Developer ID signed"; exit 1; }
+              grep -q 'Timestamp=' <<<"$info" || { echo "error: $item has no secure timestamp"; exit 1; }
+              grep -q 'flags=[^ ]*runtime' <<<"$info" || { echo "error: $item lacks the hardened runtime"; exit 1; }
+            done
+          fi
+          /usr/bin/codesign --verify --strict "$FW"
 
   # The "Record & Register" review surface. A separate runnable app whose whole purpose is that
   # the design system can be accepted or rejected BEFORE it touches an app view.

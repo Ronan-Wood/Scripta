@@ -13,6 +13,9 @@ enum MainMenu {
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Scripta",
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let updates = NSMenuItem(title: AppUpdater.menuTitle, action: AppUpdater.menuAction, keyEquivalent: "")
+        updates.target = AppUpdater.shared.controller
+        appMenu.addItem(updates)
         appMenu.addItem(.separator())
         let settings = NSMenuItem(title: "Settings…", action: settingsAction, keyEquivalent: ",")
         settings.target = settingsTarget

@@ -939,8 +939,24 @@ private struct LibraryStepRow: View {
                 // ['title']` — and hiding it behind a disclosure would make the operator hunt for
                 // the one thing they need.
                 VaultVerbatim(text: run.transcript)
+            } else if !warnings.isEmpty {
+                // NOR DOES A WARNING ON A STEP THAT SUCCEEDED. The engine reads a document without
+                // the chosen models when their folder is gone and exits 0 saying so on stderr; behind
+                // the disclosure, that sentence is one nobody would ever go looking for, and the
+                // document reads as imported exactly as intended.
+                VaultVerbatim(text: warnings)
             }
         }
+    }
+
+    /// What a step that SUCCEEDED still needs to say. Lines the engine marks as warnings, and
+    /// nothing else: the rest of a successful transcript is behind the disclosure on purpose.
+    private var warnings: String {
+        guard !step.failed, let run = step.run else { return "" }
+        return run.stderr
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .filter { $0.hasPrefix("WARNING") }
+            .joined(separator: "\n")
     }
 
     private var marker: String {

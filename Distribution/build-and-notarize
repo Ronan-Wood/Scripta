@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Builds, signs and notarizes Scripta, then leaves a notarized, stapled dmg in dist/archive and the
+# commit it was built from in dist/commits. Distribution/RELEASING.md is the runbook.
+#
+# A SCRIPT, NOT A BLOCK TO PASTE. Pasted into zsh with `interactivecomments` off, which is zsh's
+# default, a trailing `# comment` became arguments to the command before it, and an `exit` in a guard
+# closed the terminal. The `bash -c` wrapper that avoided both could not be read by the bash 3.2
+# macOS ships. A file has none of those problems, and it can run under `set -euo pipefail`.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+fail() { echo "build-and-notarize: $*" >&2; exit 1; }
+
+# A RELEASE IS BUILT FROM A COMMIT. The tag published with it is what anyone taking the GPL source
+# will use, so the binary must be exactly that commit, with no uncommitted edits or untracked files.
+[ -z "$(git status --porcelain)" ] || fail "the working tree has uncommitted changes; commit them first"
+COMMIT=$(git rev-parse HEAD)
+
+xcodegen generate
+# Info.plist IS GENERATED from project.yml. If regenerating changes the committed file, the commit
+# does not describe the build, which is how a version bump once silently reverted.
+git diff --quiet -- Sources/App/Info.plist \
+  || fail "project.yml and the committed Info.plist disagree; commit the regenerated plist"
+
+# Removed first so a dropped SYMROOT fails loudly instead of staging a stale binary.
+rm -rf build/Distribution
+xcodebuild -project Scripta.xcodeproj -scheme Scripta -configuration Distribution build \
+  SYMROOT="$(pwd)/build"
+APP=build/Distribution/Scripta.app
+VERSION=$(defaults read "$(pwd)/$APP/Contents/Info.plist" CFBundleShortVersionString)
+[ -n "$VERSION" ] || fail "could not read the built version"
+
+# The app's OWN signature: Developer ID, hardened runtime, and a secure timestamp. CHECKED SEPARATELY,
+# because one `grep -E` with alternations exits 0 on any single match: a build missing the timestamp
+# printed two lines of three and passed.
+sig=$(codesign -dv --verbose=2 "$APP" 2>&1)
+grep -q 'Authority=Developer ID Application' <<<"$sig" || fail "the app is not Developer ID signed"
+grep -q 'flags=[^ ]*runtime' <<<"$sig" || fail "the app lacks the hardened runtime"
+grep -q 'Timestamp=' <<<"$sig" || fail "the app has no secure timestamp"
+
+# The seal, then the nested code the seal does NOT vouch for. `--verify --strict` validates the
+# CodeResources hashes and would pass correctly-hashed UNSIGNED binaries; the engine build phase
+# asserts each of its Mach-O files, and this re-checks the artifact being uploaded.
+codesign --verify --strict --verbose=2 "$APP"
+codesign --verify --deep --strict "$APP"
+
+# SPARKLE'S HELPERS, which `--deep --strict` passes even when they are ad-hoc signed.
+FW="$APP/Contents/Frameworks/Sparkle.framework"
+for item in "$FW" "$FW/Versions/B/Autoupdate" "$FW/Versions/B/Updater.app"; do
+  s=$(codesign -dv --verbose=2 "$item" 2>&1)
+  grep -q 'Authority=Developer ID Application' <<<"$s" || fail "not Developer ID signed: $item"
+  grep -q 'Timestamp=' <<<"$s" || fail "no secure timestamp: $item"
+done
+
+# NO GPL MEDIA LIBRARIES. OpenCV's macOS wheel carried a GPL-3.0-or-later FFmpeg with x264 and x265,
+# which v0.2.0 shipped without their source. OCR now runs on Apple Vision, and nothing may bring those
+# libraries back. Captured into a variable rather than piped into `grep -q`: under pipefail, a grep
+# that exits early can kill `find` with SIGPIPE, and the pipeline would then read as "no match".
+gpl_media=$(find "$APP" \( -name 'libavcodec*' -o -name 'libavformat*' -o -name 'libx264*' \
+  -o -name 'libx265*' -o -name 'libpostproc*' -o -name 'librubberband*' -o -name 'libvidstab*' \) -print)
+[ -z "$gpl_media" ] || fail "GPL media libraries are in the bundle: $gpl_media"
+
+# NOTARIZE THE APP FIRST, THEN THE DMG. A ticket is keyed to the exact bytes it was issued for, so the
+# dmg is built AFTER the app is stapled, which lets the app carry its own ticket; rebuilding the dmg
+# later would invalidate a dmg ticket stapled before it (`stapler` Error 65). The app needs its own
+# ticket because users drag it out of the dmg, and a ticket on the dmg does not travel with the copy.
+mkdir -p dist
+ditto -c -k --keepParent "$APP" dist/Scripta-app.zip
+xcrun notarytool submit dist/Scripta-app.zip --keychain-profile notary --wait
+xcrun stapler staple "$APP"
+
+# The dmg is built in dist/, NOT dist/archive. The archive is what the appcast tool signs, and a copy
+# installed by Sparkle is never judged by Gatekeeper, so a dmg enters it only after the gate below.
+DMG="dist/Scripta-$VERSION.dmg"
+rm -rf dist/stage && mkdir -p dist/stage
+cp -R "$APP" dist/stage/
+ln -s /Applications dist/stage/Applications
+hdiutil create -volname "Scripta" -srcfolder dist/stage -ov -format UDZO "$DMG"
+xcrun notarytool submit "$DMG" --keychain-profile notary --wait
+xcrun stapler staple "$DMG"
+
+# What "shipped" looks like, ASSERTED. `spctl` on the APP is the check that matters; a dmg is not what
+# Gatekeeper judges at launch.
+xcrun stapler validate "$APP" || fail "the app is not stapled"
+xcrun stapler validate "$DMG" || fail "the dmg is not stapled"
+gatekeeper=$(spctl -a -t exec -vvv "$APP" 2>&1 || true)
+grep -q 'source=Notarized Developer ID' <<<"$gatekeeper" \
+  || fail "Gatekeeper does not accept the app as notarized: $gatekeeper"
+
+mkdir -p dist/archive dist/commits
+mv "$DMG" dist/archive/
+printf '%s\n' "$COMMIT" > "dist/commits/Scripta-$VERSION.commit"
+echo "Notarized Scripta $VERSION from $COMMIT into dist/archive/Scripta-$VERSION.dmg"

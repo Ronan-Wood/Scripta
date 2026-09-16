@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Exports the Sparkle signing key into an encrypted disk image, never as a plain file.
+#
+# `generate_keys -x` writes the raw key unencrypted, readable by every process running as the user,
+# so it only ever writes onto a mounted encrypted volume, and the volume is ejected on every exit
+# path. The image is created the first time (hdiutil asks for its password) and reused after that.
+#
+# THE MOUNT POINT IS READ FROM `hdiutil attach`, not assumed. If a volume named SparkleKey is already
+# mounted, the image mounts as "SparkleKey 1", and assuming the name would export the key onto the
+# wrong volume and eject the wrong one.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+BIN=$(Distribution/sparkle-bin)
+IMAGE="$HOME/SparkleKey.dmg"
+
+if [ ! -f "$IMAGE" ]; then
+  hdiutil create -size 10m -encryption AES-256 -fs APFS -volname SparkleKey "$IMAGE"
+fi
+attached=$(hdiutil attach -nobrowse "$IMAGE")
+MOUNT=$(printf '%s\n' "$attached" | awk -F'\t' '$NF ~ /^\/Volumes\// { print $NF }')
+MOUNT=${MOUNT%%$'\n'*}
+[ -n "$MOUNT" ] || { echo "backup-sparkle-key: could not find where $IMAGE mounted" >&2; exit 1; }
+
+eject() {
+  hdiutil detach "$MOUNT" >/dev/null 2>&1 || hdiutil detach -force "$MOUNT" >/dev/null 2>&1 || true
+  if [ -d "$MOUNT" ]; then
+    echo "backup-sparkle-key: $MOUNT is STILL MOUNTED, and it holds the private key. Eject it now." >&2
+  fi
+}
+trap eject EXIT
+
+"$BIN/generate_keys" -x "$MOUNT/sparkle-private-key.pem"
+echo "Exported the key into $IMAGE. Copy that image off this machine."

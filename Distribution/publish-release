@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Generates and signs the appcast for the notarized dmg in dist/archive, tags the commit that dmg was
+# built from, and publishes the GitHub release that IS the update feed. Distribution/RELEASING.md is
+# the runbook; run Distribution/build-and-notarize first.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+fail() { echo "publish-release: $*" >&2; exit 1; }
+
+APP=build/Distribution/Scripta.app
+VERSION=$(defaults read "$(pwd)/$APP/Contents/Info.plist" CFBundleShortVersionString)
+TAG="v$VERSION"
+DMG="dist/archive/Scripta-$VERSION.dmg"
+[ -n "$VERSION" ] && [ -f "$DMG" ] \
+  || fail "no notarized dmg for version '$VERSION' in dist/archive; run Distribution/build-and-notarize"
+COMMIT=$(cat "dist/commits/Scripta-$VERSION.commit" 2>/dev/null || true)
+[ -n "$COMMIT" ] || fail "no recorded build commit for $VERSION; run Distribution/build-and-notarize"
+NOTES="dist/release-notes-$VERSION.md"
+[ -s "$NOTES" ] || fail "write this release's notes to $NOTES first"
+
+# The tools read the signing key, and a generator from a different Sparkle than the one the app
+# embeds is not something the signature checks below would notice.
+BIN=$(Distribution/sparkle-bin)
+TOOLS_V=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+  "$BIN/../Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Resources/Info.plist")
+APP_V=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+  "$APP/Contents/Frameworks/Sparkle.framework/Resources/Info.plist")
+[ -n "$TOOLS_V" ] && [ "$TOOLS_V" = "$APP_V" ] \
+  || fail "Sparkle tools '$TOOLS_V' do not match the embedded framework '$APP_V'"
+
+# Deltas come from the OLDER dmgs in dist/archive. Stale deltas are removed first so the tool does not
+# re-sign and re-list pairs this release does not offer. `find`, never a glob: the first Sparkle
+# release has no deltas at all. `--maximum-versions 1` keeps every enclosure under this release's URL.
+find dist/archive -maxdepth 1 -name '*.delta' -delete
+"$BIN/generate_appcast" dist/archive \
+  --download-url-prefix "https://github.com/Ronan-Wood/Scripta/releases/download/$TAG/" \
+  --link "https://github.com/Ronan-Wood/Scripta/releases" \
+  --maximum-versions 1 --maximum-deltas 3 \
+  -o dist/appcast.xml
+
+# generate_appcast reads the private key through a keychain prompt. DENIED, OR WITH THE KEY LOST, IT
+# STILL EXITS 0, with a warning and a feed carrying no signatures that every installed copy refuses.
+grep -q 'sparkle:edSignature=' dist/appcast.xml || fail "the appcast items are not signed"
+grep -q 'sparkle-signatures:' dist/appcast.xml || fail "the feed itself is not signed (SURequireSignedFeed)"
+# A signature says nothing about the URLs. Exactly ONE item, because `--maximum-versions` counts per
+# minimum-OS branch; its enclosure is THIS dmg; and no URL points outside THIS tag. `-F` so the dots in
+# the version match only dots.
+items=$(grep -c '<item>' dist/appcast.xml || true)
+[ "$items" = 1 ] || fail "the appcast must carry exactly one item, found $items"
+grep -q -F "releases/download/$TAG/Scripta-$VERSION.dmg" dist/appcast.xml \
+  || fail "the appcast enclosure is not Scripta-$VERSION.dmg under $TAG"
+outside=$(grep -oE 'url="[^"]+"' dist/appcast.xml | grep -v -F "releases/download/$TAG/" || true)
+[ -z "$outside" ] || fail "the appcast has URLs outside $TAG: $outside"
+
+# THE TAG IS THE COMMIT THAT WAS BUILT. An existing tag on another commit is a refusal, never a move;
+# `--verify-tag` stops GitHub creating a tag of its own on the default branch.
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+  [ "$(git rev-list -n 1 "$TAG")" = "$COMMIT" ] || fail "tag $TAG already exists on a different commit than the build"
+else
+  git tag -a "$TAG" "$COMMIT" -m "Scripta $TAG"
+fi
+git push origin "$TAG"
+
+ASSETS=("$DMG" dist/appcast.xml)
+while IFS= read -r delta; do ASSETS+=("$delta"); done < <(find dist/archive -maxdepth 1 -name '*.delta')
+gh release create "$TAG" "${ASSETS[@]}" \
+  --title "Scripta $TAG" --notes-file "$NOTES" --latest --verify-tag

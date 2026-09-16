@@ -543,6 +543,14 @@ final class SubstrateLibraryModel: ObservableObject {
         }
         arguments += ["--out", out.path]
         if let docClass { arguments += ["--doc-class", docClass] }
+        //    THE MODELS FOLDER IS PASSED AS CHOSEN, and the ENGINE decides what it is worth: it reads
+        //    the document without models, loudly, when the folder is gone or holds no models, and
+        //    records the reader it used in run.json. Checking it here instead would put the engine's
+        //    idea of a valid models folder in two places and lose the race between the check and the
+        //    subprocess anyway.
+        if let models = AppSettings.doclingModels, let flag = asked.modelsFlag {
+            arguments += [flag, models.path]
+        }
 
         await progress(.extracting)
         let extraction = await SubstrateCLI.run(cli, arguments)

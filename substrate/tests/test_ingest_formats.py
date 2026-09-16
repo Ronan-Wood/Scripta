@@ -702,7 +702,7 @@ def test_a_converter_that_cannot_run_exits_2_rather_than_tracebacking() -> None:
         for exc, expect in ((ModuleNotFoundError("No module named 'docling'"), "docling"),
                             (ValueError("'vtt' is not a valid InputFormat"), "InputFormat")):
             convert.to_markdown = raiser(exc)
-            rc, err = _captured(lambda: cli._ingest_converted(args, src, spec))
+            rc, err = _captured(lambda: cli._ingest_converted(args, src, spec, None))
             assert rc == 2, (rc, err)          # an INPUT/environment problem, not a gate
             assert expect in err, err
             assert "Traceback" not in err
