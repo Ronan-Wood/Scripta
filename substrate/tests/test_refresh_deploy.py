@@ -360,8 +360,12 @@ def test_the_agent_reaches_the_deployed_engine_and_nothing_else() -> None:
 # ---------------------------------------------------------------- deploy, end to end
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                          check=True).stdout.strip()
+    # SIGNING OFF, for scratch repositories only. `commit.gpgsign` is set machine-wide once an
+    # operator signs their commits, and these fixtures commit as `t@t` in a throwaway tree: the
+    # signer would prompt for authorisation that no test run can answer, and git exits 128. A
+    # fixture's commit attests nothing, so there is nothing to lose by not signing it.
+    return subprocess.run(["git", "-C", str(repo), "-c", "commit.gpgsign=false", *args],
+                          capture_output=True, text=True, check=True).stdout.strip()
 
 
 def test_deploying_ships_the_commit_and_not_the_working_tree() -> None:
