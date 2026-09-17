@@ -22,7 +22,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
 
-from substrate.net import require_loopback
+from substrate.net import EgressRefused, RedirectRefused, open_local, require_loopback
 
 DEFAULT_HOST = "http://127.0.0.1:11434"
 # MEASURED. qwen3-embedding is LLM-derived (built on Qwen3) rather than a BERT-family
@@ -52,6 +52,11 @@ TIMEOUT = 600
 
 class EmbeddingError(RuntimeError):
     pass
+
+
+class EmbeddingRefused(EmbeddingError):
+    """The transport refused the request (a non-loopback URL, or a redirect). Never retried: no
+    smaller input changes where a request is allowed to go."""
 
 
 class EmbeddingEngine(Protocol):
@@ -131,8 +136,12 @@ class OllamaEmbedder:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            with open_local(req, timeout=TIMEOUT) as r:
                 return json.loads(r.read())
+        except (EgressRefused, RedirectRefused) as e:
+            # Before both branches below: a refusal is neither an HTTP failure worth quoting nor a
+            # daemon that is down.
+            raise EmbeddingRefused(f"{self.host}: {e.reason}") from e
         except urllib.error.HTTPError as e:
             # MUST precede URLError: HTTPError subclasses it, so catching URLError first
             # reported every rejected request as "server unreachable" — which sent me
@@ -172,6 +181,8 @@ class OllamaEmbedder:
             if len(vecs) != len(batch):
                 raise EmbeddingError(f"expected {len(batch)} embeddings, got {len(vecs)}")
             return [_l2([float(x) for x in v]) for v in vecs]
+        except EmbeddingRefused:
+            raise
         except EmbeddingError:
             if len(batch) > 1:
                 mid = len(batch) // 2
@@ -206,6 +217,8 @@ class OllamaEmbedder:
                       f"embedded its first {limit:,} chars instead. The vector describes the "
                       f"PREFIX of this chunk, not all of it.", file=sys.stderr)
                 return _l2([float(x) for x in vecs[0]])
+            except EmbeddingRefused:
+                raise
             except EmbeddingError:
                 continue
         raise EmbeddingError(
@@ -236,7 +249,7 @@ class OllamaEmbedder:
 
     def available(self) -> bool:
         try:
-            with urllib.request.urlopen(f"{self.host}/api/tags", timeout=30) as r:
+            with open_local(f"{self.host}/api/tags", timeout=30) as r:
                 names = {m["name"].split(":")[0] for m in json.loads(r.read()).get("models", [])}
             return self.model.split(":")[0] in names
         except Exception:
