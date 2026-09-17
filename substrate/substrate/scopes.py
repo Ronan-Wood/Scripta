@@ -284,6 +284,27 @@ def foreign_owner(
     return None
 
 
+def indexes_within(root: Path, registry: str | Path | None = None) -> list[tuple[str, Path]]:
+    """Every registered db or ingest tree strictly inside `root`, as (scope name, path) — what
+    removing `root` would take with it. A scope's own ingest tree AT `root` is not inside it."""
+    return [(entry.name, held)
+            for entry in load(registry).values()
+            for held in (entry.db, entry.index_root)
+            if held is not None and is_within(held, root)]
+
+
+def is_within(path: Path, root: Path) -> bool:
+    """Whether `path` lies strictly inside `root`, each ancestor compared as a file, as
+    `_same_path` does — on a volume that ignores case, `OUT-VAULT` holds `out-vault/demo.db`.
+
+    The ancestors of the path AS WRITTEN count as well as the resolved ones: a `--db` that is a
+    symlink inside `root` resolves to somewhere outside it, and `rmtree(root)` removes the link
+    all the same."""
+    path = path.expanduser()
+    ancestors = {*path.resolve().parents, *Path(os.path.abspath(path)).parents}
+    return any(_same_path(parent, root) for parent in ancestors)
+
+
 def _same_path(a: Path, b: Path) -> bool:
     """Whether two paths name one file, however each is spelled.
 

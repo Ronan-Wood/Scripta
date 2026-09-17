@@ -522,21 +522,25 @@ def test_clean_refuses_to_delete_anything_vault_shaped() -> None:
             'name = "proj"\ninherits = ["core-vault"]\n', encoding="utf-8")
         scope = V.resolve_scope(proj)
 
-        assert "not an index root" in _refuse_destructive_clean(proj, scope), "the project vault"
-        assert _refuse_destructive_clean(core, scope), "an inherited vault"
-        assert _refuse_destructive_clean(root, scope), "a parent of a vault"
+        def refuse(target: Path) -> str:
+            return _refuse_destructive_clean(target, scope, db=root / "proj.db",
+                                             registry=root / "no-scopes.toml")
+
+        assert "not an index root" in refuse(proj), "the project vault"
+        assert refuse(core), "an inherited vault"
+        assert refuse(root), "a parent of a vault"
 
         authored = root / "authored"
         authored.mkdir()
         (authored / "mine.md").write_text("# mine\n", encoding="utf-8")
-        assert "did not write" in _refuse_destructive_clean(authored, scope), "authored markdown"
+        assert "did not write" in refuse(authored), "authored markdown"
 
         # a real index root stays deletable, or --clean is useless
         idx = root / "idx" / "proj__n__abcd1234"
         idx.mkdir(parents=True)
         (idx / "document.md").write_text("# generated\n", encoding="utf-8")
         (idx / "run.json").write_text("{}", encoding="utf-8")
-        assert _refuse_destructive_clean(root / "idx", scope) == "", "a genuine index root"
+        assert refuse(root / "idx") == "", "a genuine index root"
 
 
 if __name__ == "__main__":

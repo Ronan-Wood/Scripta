@@ -417,6 +417,94 @@ def test_compose_recomposes_its_own_registered_index() -> None:
     assert scopes.resolve("demo", reg).db == (root / "demo.db").resolve()
 
 
+def test_indexes_within_names_what_removing_a_directory_would_take() -> None:
+    root, reg = _tmp(), _registry()
+    v1, d1, i1 = _compose(root, "one")
+    scopes.record("prism", vault=v1, db=d1, index_root=i1, registry=reg)
+
+    held = {path.name for _, path in scopes.indexes_within(root, reg)}
+    assert held == {d1.name, i1.name}, held
+    assert scopes.indexes_within(i1, reg) == [], "a scope's own tree AT the root is not inside it"
+    assert scopes.indexes_within(v1, reg) == []
+
+    link = root / "linked"
+    link.symlink_to(root)
+    assert scopes.indexes_within(link, reg), "a symlink to the directory holds the same indexes"
+    upper = root.with_name(root.name.upper())
+    if upper.exists():  # a volume that ignores case
+        assert scopes.indexes_within(upper, reg), "OUT-VAULT holds out-vault's indexes"
+
+    d1.unlink()
+    assert {p.name for _, p in scopes.indexes_within(root, reg)} == held, (
+        "a registered db that is gone still names a path removing the directory would take")
+
+
+def test_indexes_within_sees_a_registered_tree_behind_a_symlink() -> None:
+    """A tree moved elsewhere and linked back resolves outside the root, but `rmtree` removes the
+    link, and the scope then no longer resolves."""
+    root, reg = _tmp(), _registry()
+    tree = root / "other-index"
+    tree.mkdir()
+    scopes.record("other", vault=_tmp(), db=_tmp() / "other.db", index_root=tree, registry=reg)
+    moved = _tmp() / "moved-index"
+    tree.rename(moved)
+    tree.symlink_to(moved)
+    assert scopes.indexes_within(root, reg), "the registered tree is reached through root"
+
+
+def test_clean_refuses_an_index_root_holding_another_scopes_index() -> None:
+    """#23: every scope's db and ingest tree sit side by side and neither looks authored, so an
+    --index-root one directory too high was removed whole, with exit 0."""
+    root, reg = _tmp(), _registry()
+    shared = root / "out-vault"
+    other_vault, db, tree = root / "other-vault", shared / "other.db", shared / "other-index"
+    other_vault.mkdir()
+    tree.mkdir(parents=True)
+    (tree / "document.md").write_text("generated", encoding="utf-8")
+    db.write_bytes(b"")
+    scopes.record("other", vault=other_vault, db=db, index_root=tree, registry=reg)
+
+    spellings = [shared]
+    if shared.with_name(shared.name.upper()).exists():  # a volume that ignores case
+        spellings.append(shared.with_name(shared.name.upper()))
+    for spelling in spellings:
+        rc, err = _compose_cli(str(_DEMO_VAULT), "--db", str(root / "own.db"),
+                               "--index-root", str(spelling), "--clean", "--registry", str(reg))
+        assert rc == 2, (spelling, rc, err)
+        assert "'other'" in err, err
+        assert db.is_file() and (tree / "document.md").is_file(), (
+            f"--clean {spelling} removed another scope's index")
+
+
+def test_clean_refuses_an_index_root_holding_its_own_db() -> None:
+    root, reg = _tmp(), _registry()
+    idx = root / "idx"
+    idx.mkdir()
+    own = idx / "demo.db"
+    own.write_bytes(b"the database this compose would write")
+    rc, err = _compose_cli(str(_DEMO_VAULT), "--db", str(own), "--index-root", str(idx),
+                           "--clean", "--registry", str(reg))
+    assert rc == 2, (rc, err)
+    assert "own --db" in err, err
+    assert own.read_bytes() == b"the database this compose would write", "--clean removed --db"
+
+
+def test_clean_refuses_an_index_root_holding_a_symlink_to_its_own_db() -> None:
+    """The link resolves outside the root, but `rmtree` removes it: compose then built a fresh,
+    unvectored db in its place and repointed the registry at it."""
+    root, reg = _tmp(), _registry()
+    idx = root / "idx"
+    idx.mkdir()
+    real = root / "outside.db"
+    real.write_bytes(b"the vectored index")
+    (idx / "demo.db").symlink_to(real)
+    rc, err = _compose_cli(str(_DEMO_VAULT), "--db", str(idx / "demo.db"),
+                           "--index-root", str(idx), "--clean", "--registry", str(reg))
+    assert rc == 2, (rc, err)
+    assert (idx / "demo.db").is_symlink(), "--clean removed the link to the db"
+    assert real.read_bytes() == b"the vectored index"
+
+
 # ---------------------------------------------------------------- path selection
 
 def test_env_var_overrides_the_default() -> None:

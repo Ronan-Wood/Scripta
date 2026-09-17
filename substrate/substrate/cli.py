@@ -431,7 +431,8 @@ def _print_ingest_result(r, out: Path) -> None:
         )
 
 
-def _refuse_destructive_clean(index_root: Path, scope) -> str:
+def _refuse_destructive_clean(index_root: Path, scope, *, db: Path,
+                              registry: str | Path | None) -> str:
     """Why `--clean` must NOT rmtree this path, or "" if it is safe to remove.
 
     `--clean` exists to drop a stale index dir, and an index dir is disposable by design. A VAULT
@@ -440,7 +441,12 @@ def _refuse_destructive_clean(index_root: Path, scope) -> str:
     the same command. Nothing stopped `--index-root ~/OneDrive/vaults/prism-vault --clean` from
     recursively deleting 272 hand-written notes.
 
-    Three refusals, cheapest first. The manifest check is the load-bearing one — a directory
+    Nor is ANOTHER SCOPE'S INDEX. Every scope keeps its db and ingest tree side by side under one
+    directory, and neither looks authored — a db is not markdown, a tree holds only `document.md`
+    — so `--index-root out-vault --clean`, one segment off the default, deleted all of them (#23).
+    Nor is this compose's own `--db`, which a directory holding it would take along.
+
+    Five refusals, cheapest first. The manifest check is the load-bearing one — a directory
     holding a `.substrate.toml` IS a vault whether or not this scope inherits it.
     """
     from substrate import vault as _v
@@ -455,6 +461,19 @@ def _refuse_destructive_clean(index_root: Path, scope) -> str:
         if root == vp or root in vp.parents or vp in root.parents:
             return (f"{root} is the same as, inside, or a parent of the vault {vp}. Refusing to "
                     f"delete it — an index root must be disposable, and a vault never is.")
+    if scopes.is_within(db, root):
+        return (f"{root} holds this compose's own --db {db}. Refusing to delete the database "
+                f"being written; keep --db outside --index-root.")
+    try:
+        held = scopes.indexes_within(root, registry)
+    except scopes.ScopeError as e:
+        return f"cannot read the scope registry to see what {root} holds: {e}"
+    if held:
+        name, path = held[0]
+        more = f", and {len(held) - 1} more registered index path(s)" if len(held) > 1 else ""
+        return (f"{root} holds the index of scope {name!r} ({path}){more}. Refusing to delete "
+                f"it — --clean removes the whole directory, and an index root holds one scope's "
+                f"ingest tree.")
     stray = [p for p in root.rglob("*.md") if p.name != "document.md"][:3]
     if stray:
         return (f"{root} holds markdown this tool did not write "
@@ -823,7 +842,8 @@ def cmd_compose(args: argparse.Namespace) -> int:
         return 2
 
     if index_root.exists() and args.clean:
-        refuse = _refuse_destructive_clean(index_root, scope)
+        refuse = _refuse_destructive_clean(index_root, scope, db=Path(args.db),
+                                           registry=args.registry)
         if refuse:
             print(f"FATAL (--clean): {refuse}", file=sys.stderr)
             return 2
