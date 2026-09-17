@@ -15,6 +15,7 @@ Runnable with plain `python tests/test_scopes.py`; discovered by pytest if added
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -231,6 +232,28 @@ def test_malformed_registry_raises_rather_than_reading_empty() -> None:
         raise AssertionError("a malformed registry must raise, not silently read as empty")
 
 
+def test_a_registry_that_cannot_be_opened_raises_rather_than_reading_empty() -> None:
+    """Only an absent file is empty. `is_file()` answered False for a registry it could not stat,
+    so an unreadable one read as "no scopes" and the compose guard had nothing to check."""
+    as_directory = _registry()
+    as_directory.mkdir()
+    unreadable = _tmp() / "locked"
+    unreadable.mkdir()
+    (unreadable / "scopes.toml").write_text("version = 1\n", encoding="utf-8")
+    unreadable.chmod(0)
+    try:
+        for reg in (as_directory, unreadable / "scopes.toml"):
+            if reg.parent == unreadable and os.access(unreadable, os.X_OK):
+                continue  # root reads it anyway; nothing to prove
+            try:
+                scopes.load(reg)
+            except scopes.ScopeError:
+                continue
+            raise AssertionError(f"{reg} could not be read and must raise, not read as empty")
+    finally:
+        unreadable.chmod(0o755)
+
+
 def test_entry_missing_required_keys_raises() -> None:
     reg = _registry()
     reg.write_text('version = 1\n\n[scopes.prism]\ncomposed = "2026-01-01T00:00:00+00:00"\n',
@@ -241,6 +264,157 @@ def test_entry_missing_required_keys_raises() -> None:
         assert "vault" in str(e) and "db" in str(e), e
     else:
         raise AssertionError("an entry with no vault/db must raise")
+
+
+# ---------------------------------------------------------------- another scope's index
+
+_DEMO_VAULT = Path(__file__).resolve().parent.parent / "vaults" / "demo-vault"
+
+
+def _compose_cli(*argv: str) -> tuple[int, str]:
+    import contextlib
+    import io
+
+    from substrate import cli
+
+    err = io.StringIO()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+        rc = cli.main(["compose", *argv])
+    return rc, err.getvalue()
+
+
+def test_foreign_owner_matches_either_index_path() -> None:
+    root, reg = _tmp(), _registry()
+    v1, d1, i1 = _compose(root, "one")
+    v2, d2, i2 = _compose(root, "two")
+    scopes.record("prism", vault=v1, db=d1, index_root=i1, registry=reg)
+
+    assert scopes.foreign_owner(vault=v2, db=d1, index_root=i2, registry=reg).name == "prism"
+    assert scopes.foreign_owner(vault=v2, db=d2, index_root=i1, registry=reg).name == "prism"
+    assert scopes.foreign_owner(vault=v2, db=d2, index_root=i2, registry=reg) is None
+
+
+def test_foreign_owner_lets_a_vault_recompose_its_own_index() -> None:
+    """Every refresh recomposes a scope into the index it already has."""
+    root, reg = _tmp(), _registry()
+    v1, d1, i1 = _compose(root, "one")
+    scopes.record("prism", vault=v1, db=d1, index_root=i1, registry=reg)
+    assert scopes.foreign_owner(vault=v1, db=d1, index_root=i1, registry=reg) is None
+
+
+def test_foreign_owner_sees_through_a_symlink() -> None:
+    """The registry stores resolved paths; `~/OneDrive` is a symlink into CloudStorage."""
+    root, reg = _tmp(), _registry()
+    v1, d1, i1 = _compose(root, "one")
+    v2, _, i2 = _compose(root, "two")
+    scopes.record("prism", vault=v1, db=d1, index_root=i1, registry=reg)
+    link = root / "linked"
+    link.symlink_to(root)
+    owner = scopes.foreign_owner(vault=v2, db=link / d1.name, index_root=i2, registry=reg)
+    assert owner is not None and owner.name == "prism"
+
+
+def test_foreign_owner_compares_files_not_spellings() -> None:
+    """`resolve()` leaves case alone and the default APFS volume ignores it, so `ONE.DB` is
+    `one.db` there. A hardlink is the same file on any filesystem."""
+    root, reg = _tmp(), _registry()
+    v1, d1, i1 = _compose(root, "one")
+    v2, _, i2 = _compose(root, "two")
+    scopes.record("prism", vault=v1, db=d1, index_root=i1, registry=reg)
+
+    hard = root / "hard.db"
+    os.link(d1, hard)
+    assert scopes.foreign_owner(vault=v2, db=hard, index_root=i2, registry=reg).name == "prism"
+
+    upper_db = d1.with_name(d1.name.upper())
+    if not upper_db.exists():
+        return  # a case-sensitive volume, as on the Linux CI runner
+    assert scopes.foreign_owner(vault=v2, db=upper_db, index_root=i2, registry=reg).name == "prism"
+    upper_vault = v1.with_name(v1.name.upper())
+    assert scopes.foreign_owner(vault=upper_vault, db=d1, index_root=i1, registry=reg) is None, (
+        "a scope's own vault, spelled in another case, must still recompose")
+
+
+def _doc_ids(db: Path) -> list[str]:
+    import sqlite3
+
+    con = sqlite3.connect(db)
+    try:
+        return sorted(row[0] for row in con.execute("SELECT doc_id FROM documents"))
+    finally:
+        con.close()
+
+
+def _another_vault_named_demo(root: Path) -> Path:
+    """What "Create separately" produced: a second vault declaring the demo vault's name, holding a
+    note of its own, so composing it into demo's index changes what that index holds."""
+    import shutil
+
+    workspace = root / "workspace"
+    shutil.copytree(_DEMO_VAULT, workspace / "demo")
+    shutil.copytree(_DEMO_VAULT.parent / "demo-core-vault", workspace / "demo-core-vault")
+    for note in (workspace / "demo").rglob("*.md"):
+        note.unlink()
+    (workspace / "demo" / "call.md").write_text(
+        "---\nstatus: active\ndoc_type: reference\n---\n\n# A recorded call\n\n"
+        + "The workspace's own content, said on a call. " * 30,
+        encoding="utf-8")
+    return workspace / "demo"
+
+
+def test_compose_refuses_a_second_vault_into_a_registered_index() -> None:
+    """The app picks a compose's --db by scope NAME, so a vault declaring a registered name was
+    built into that scope's index, and only then did registration refuse. The compose exited 0
+    with 6 of demo's 9 documents replaced (reproduced 2026-09-16 on the unguarded code)."""
+    root, reg = _tmp(), _registry()
+    db, ir = root / "demo.db", root / "demo-index"
+    rc, err = _compose_cli(str(_DEMO_VAULT), "--db", str(db), "--index-root", str(ir),
+                           "--registry", str(reg))
+    assert rc == 0, (rc, err)
+    docs, tree = _doc_ids(db), sorted(p.name for p in ir.iterdir())
+
+    rc, err = _compose_cli(str(_another_vault_named_demo(root)), "--db", str(db),
+                           "--index-root", str(ir), "--clean", "--registry", str(reg))
+    assert rc == 2, (rc, err)
+    assert "'demo'" in err and "rename its manifest `name`" in err, err
+    assert _doc_ids(db) == docs, "the other vault's notes replaced demo's"
+    assert sorted(p.name for p in ir.iterdir()) == tree, "--clean removed demo's ingest tree"
+
+
+def test_compose_refuses_to_clean_another_scopes_ingest_tree() -> None:
+    """Matched on the path, not the name: `--clean` would remove the tree under any name."""
+    root, reg = _tmp(), _registry()
+    other, db, ir = _compose(root, "other")
+    (ir / "kept").mkdir()
+    (ir / "kept" / "document.md").write_text("generated", encoding="utf-8")
+    scopes.record("elsewhere", vault=other, db=db, index_root=ir, registry=reg)
+
+    rc, err = _compose_cli(str(_DEMO_VAULT), "--db", str(root / "own.db"),
+                           "--index-root", str(ir), "--clean", "--registry", str(reg))
+    assert rc == 2, (rc, err)
+    assert (ir / "kept" / "document.md").is_file(), "--clean removed another scope's ingest tree"
+    assert not (root / "own.db").exists()
+
+
+def test_compose_refuses_when_the_registry_cannot_be_read() -> None:
+    root, reg = _tmp(), _registry()
+    reg.write_text("this is not [ valid toml\n", encoding="utf-8")
+    rc, err = _compose_cli(str(_DEMO_VAULT), "--db", str(root / "own.db"),
+                           "--index-root", str(root / "own-index"), "--registry", str(reg))
+    assert rc == 2, (rc, err)
+    assert "nothing was written" in err, err
+    assert not (root / "own.db").exists() and not (root / "own-index").exists()
+
+
+def test_compose_recomposes_its_own_registered_index() -> None:
+    """The control: the guard must not refuse the refresh path, a vault into its own index."""
+    root, reg = _tmp(), _registry()
+    argv = (str(_DEMO_VAULT), "--db", str(root / "demo.db"),
+            "--index-root", str(root / "demo-index"), "--registry", str(reg))
+    for extra in ([], ["--clean"]):
+        rc, err = _compose_cli(*argv, *extra)
+        assert rc == 0, (extra, rc, err)
+    assert scopes.resolve("demo", reg).db == (root / "demo.db").resolve()
 
 
 # ---------------------------------------------------------------- path selection
