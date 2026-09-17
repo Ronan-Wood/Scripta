@@ -795,6 +795,33 @@ def cmd_compose(args: argparse.Namespace) -> int:
     print(f"scope: {scope.project.name}  <-  {[v.name for v in scope.vaults]}")
     print(f"  {len(scope.notes)} notes across {len(scope.vaults)} vault(s)")
 
+    # BEFORE THE FIRST WRITE. Registration refuses a second vault under one name, but it runs last,
+    # after this compose has already rebuilt whatever index --db and --index-root name. An
+    # unreadable registry refuses too: a guard that passes when it cannot look is no guard.
+    try:
+        owner = scopes.foreign_owner(vault=project, db=Path(args.db), index_root=index_root,
+                                     registry=args.registry)
+    except scopes.ScopeError as e:
+        print(f"FATAL (scope registry): {e} — cannot tell whether --db or --index-root belongs "
+              f"to another scope, so nothing was written. Repair the registry rather than "
+              f"delete it: it is what says where every scope's index lives.", file=sys.stderr)
+        return 2
+    if owner is not None:
+        # THE REMEDY DEPENDS ON THE NAME. The app picks --db by scope name, so "use another --db"
+        # is advice its operator cannot follow for a vault declaring a registered name.
+        if owner.name == scope.name:
+            remedy = (f"If this is a different vault, rename its manifest `name`; if it is "
+                      f"{owner.name!r}'s vault moved, remove the stale entry from "
+                      f"{scopes.registry_path(args.registry)}.")
+        else:
+            remedy = "Compose this vault into a --db and --index-root of its own."
+        tree = f", ingest tree {owner.index_root}" if owner.index_root is not None else ""
+        print(f"FATAL (scope registry): --db or --index-root is the index of scope "
+              f"{owner.name!r} (db {owner.db}{tree}), which composes {owner.vault} — not "
+              f"{project.resolve()}. Composing here would replace that scope's index with this "
+              f"vault's notes. Nothing was written. {remedy}", file=sys.stderr)
+        return 2
+
     if index_root.exists() and args.clean:
         refuse = _refuse_destructive_clean(index_root, scope)
         if refuse:
