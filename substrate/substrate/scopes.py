@@ -128,12 +128,16 @@ def load(registry: str | Path | None = None) -> dict[str, ScopeEntry]:
     A malformed or structurally-wrong registry DOES raise: silently treating it as empty would
     report "no scopes exist" over a file that names several, and the caller would conclude the
     vaults were never composed.
+
+    ONLY AN ABSENT FILE IS EMPTY. This used to ask `is_file()` first, which on Python 3.14 answers
+    False for a registry it cannot even stat — one inside a directory it may not enter read as no
+    scopes at all, and `foreign_owner` then passed a compose with nothing to check.
     """
     path = registry_path(registry)
-    if not path.is_file():
-        return {}
     try:
         data = tomllib.loads(path.read_text("utf-8"))
+    except FileNotFoundError:
+        return {}
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
         raise ScopeError(f"cannot read scope registry {path}: {e}") from e
 
@@ -250,6 +254,50 @@ def _record_locked(path: Path, name: str, *, vault: Path, db: Path, index_root: 
         Path(tmp_name).unlink(missing_ok=True)
         raise
     return path
+
+
+def foreign_owner(
+    *,
+    vault: Path,
+    db: Path,
+    index_root: Path,
+    registry: str | Path | None = None,
+) -> ScopeEntry | None:
+    """The registered scope whose index a compose of `vault` into `db`/`index_root` would
+    overwrite, or None.
+
+    `record` refuses a second vault under one name, but only AFTER the index is built — and by then
+    the build has gone into whatever `--db` the caller passed. A caller that picks that db by scope
+    name, as the app does so an existing scope keeps its location, has already replaced the other
+    vault's index: `--clean` removed its ingest tree, and reconcile dropped every note the new tree
+    lacks. The scope then answers from the wrong vault, with every step reported as success.
+
+    Matched on the paths rather than the name, so another scope's index is refused under any name.
+    """
+    for entry in load(registry).values():
+        if _same_path(entry.vault, vault):
+            continue
+        if _same_path(entry.db, db):
+            return entry
+        if entry.index_root is not None and _same_path(entry.index_root, index_root):
+            return entry
+    return None
+
+
+def _same_path(a: Path, b: Path) -> bool:
+    """Whether two paths name one file, however each is spelled.
+
+    COMPARED AS FILES, NOT SPELLINGS. `resolve()` follows symlinks (`~/OneDrive` is one) but leaves
+    case alone, and the default APFS volume ignores case — `Demo.db` IS `demo.db` there, and a
+    guard comparing strings let a compose into it delete the other scope's ingest tree. A hardlink
+    is the same file under any spelling at all. Only where a path does not exist yet is there no
+    file to compare, and the resolved spellings stand in.
+    """
+    a, b = a.expanduser(), b.expanduser()
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return a.resolve() == b.resolve()
 
 
 def resolve(name: str, registry: str | Path | None = None) -> ScopeEntry:
