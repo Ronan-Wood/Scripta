@@ -100,12 +100,19 @@ def registry_path(explicit: str | Path | None = None) -> Path:
     The env var exists so a client launch config and a test can each point at their own registry
     without a flag — an MCP server is started by a client that may not let the user pass one.
     """
-    if explicit is not None:
-        return Path(explicit).expanduser()
-    env = os.environ.get(ENV_VAR)
-    if env:
-        return Path(env).expanduser()
-    return DEFAULT_REGISTRY
+    raw = explicit if explicit is not None else (os.environ.get(ENV_VAR) or None)
+    if raw is None:
+        return DEFAULT_REGISTRY
+    if not str(raw).strip():
+        raise ScopeError("the scope registry path is empty, which names no file.")
+    expanded = os.path.expanduser(str(raw))
+    # AN UNKNOWN `~user` IS REFUSED, not kept as written: kept, it named a file relative to the
+    # working directory that did not exist, which `load` reads as an empty registry — and every
+    # guard built on the registry then passed with nothing to check.
+    if expanded.startswith("~"):
+        raise ScopeError(f"scope registry {str(raw)!r} names a home directory that does not "
+                         f"exist.")
+    return Path(expanded)
 
 
 def _quote(value: str) -> str:
@@ -200,7 +207,7 @@ def record(
             f"have no leading or trailing whitespace. Fix the vault manifest's `name`."
         )
     path = registry_path(registry)
-    vault, db, index_root = (p.expanduser().resolve() for p in (vault, db, index_root))
+    vault, db, index_root = (real_path(p) for p in (vault, db, index_root))
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with exclusive(path):
@@ -300,9 +307,102 @@ def is_within(path: Path, root: Path) -> bool:
     The ancestors of the path AS WRITTEN count as well as the resolved ones: a `--db` that is a
     symlink inside `root` resolves to somewhere outside it, and `rmtree(root)` removes the link
     all the same."""
-    path = path.expanduser()
-    ancestors = {*path.resolve().parents, *Path(os.path.abspath(path)).parents}
+    written = Path(os.path.abspath(os.path.expanduser(path)))
+    ancestors = {*real_path(path).parents, *written.parents}
     return any(_same_path(parent, root) for parent in ancestors)
+
+
+def trees_around(root: Path, vault: Path,
+                 registry: str | Path | None = None) -> list[tuple[str, Path]]:
+    """Every ingest tree registered to ANOTHER vault that `root` lies strictly inside, as (scope
+    name, tree) — what removing `root` would take part of.
+
+    Two exemptions, both about whose directory `root` is:
+
+      * a tree registered to `vault` itself never counts; this compose's own record replaces it.
+      * a wider tree does not count when `root` is, or lies inside, a narrower registered tree
+        nested in it. That directory belongs to the narrower tree, and a tree's index is built from
+        its DIRECT children only (`reconcile`), so removing it takes nothing of the wider one's.
+        This is what keeps a scope composed inside an over-broad tree able to clean its own.
+
+    A NOTE IS NEVER A TREE. A registered "tree" holding a `document.md` is one of the wider tree's
+    ingested notes — a compose run without --clean can register itself there — so it claims
+    nothing; otherwise the next --clean would delete that note in the claimant's name.
+    """
+    trees = [e for e in load(registry).values() if e.index_root is not None]
+    around = []
+    for entry in trees:
+        tree = entry.index_root
+        if _same_path(entry.vault, vault) or not is_within(root, tree):
+            continue
+        claimed = False
+        for other in trees:
+            # Judged where it really is: a registry can be hand-edited (`~/…`), and a claimant's
+            # directory can be swapped for a link to the tree it sits in.
+            claim = real_path(other.index_root)
+            if (other is not entry and is_within(claim, tree)
+                    and not _in_a_note(claim, tree)
+                    and (_same_path(root, claim) or is_within(root, claim))):
+                claimed = True
+                break
+        if not claimed:
+            around.append((entry.name, tree))
+    return around
+
+
+def registered_vaults(
+    registry: str | Path | None = None,
+) -> tuple[list[tuple[str, Path]], list[tuple[str, str]]]:
+    """What the registered scopes compose: `(vaults, unknown)`.
+
+    `vaults` is every vault as (scope name, vault) — each project vault and the chain it inherits.
+    A chain that no longer resolves still names every vault of it that can be found.
+
+    `unknown` is (scope name, reason) for each scope whose inherited vaults cannot be known at all:
+    its manifest is missing (the vault moved, or its volume is offline) or does not parse. Its own
+    vault is still named in `vaults`. What to do about the rest is the caller's decision — the
+    registry cannot say where those vaults are.
+    """
+    from substrate import vault as _vault  # lazy: keeps this module free of the manifest reader
+
+    vaults: list[tuple[str, Path]] = []
+    unknown: list[tuple[str, str]] = []
+    for entry in load(registry).values():
+        try:
+            chain = [v.path for v in _vault.resolve_vaults(entry.vault)]
+        except (_vault.VaultError, OSError, RuntimeError, ValueError):
+            try:
+                chain = list(_vault.chain_best_effort(entry.vault))
+            except (_vault.VaultError, OSError, ValueError) as e:
+                chain = [entry.vault]
+                unknown.append((entry.name, str(e)))
+        vaults.extend((entry.name, v) for v in chain)
+    return vaults, unknown
+
+
+def nested(a: Path, b: Path) -> bool:
+    """Whether `a` and `b` are one directory, or one lies inside the other, compared as files."""
+    return _same_path(a, b) or is_within(a, b) or is_within(b, a)
+
+
+def _in_a_note(path: Path, tree: Path) -> bool:
+    """Whether `path`, or a directory between it and `tree`, is one of the tree's ingested notes.
+    A directory that cannot be looked into counts as one: unknown is not a licence to delete."""
+    for d in (path, *path.parents):
+        if _same_path(d, tree):
+            return False
+        # `os.stat`, not `exists()`: exists() reports an unreadable directory as absent on some
+        # Python versions and raises on others.
+        try:
+            # `lstat`: a dangling `document.md` symlink still marks an ingested note, and reading
+            # through it reported the note as not one.
+            os.lstat(d / "document.md")
+            return True
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except (OSError, ValueError):
+            return True
+    return False
 
 
 def _same_path(a: Path, b: Path) -> bool:
@@ -314,11 +414,24 @@ def _same_path(a: Path, b: Path) -> bool:
     is the same file under any spelling at all. Only where a path does not exist yet is there no
     file to compare, and the resolved spellings stand in.
     """
-    a, b = a.expanduser(), b.expanduser()
     try:
-        return os.path.samefile(a, b)
-    except OSError:
-        return a.resolve() == b.resolve()
+        return os.path.samefile(os.path.expanduser(a), os.path.expanduser(b))
+    except (OSError, ValueError):
+        # ValueError: a NUL in a hand-edited registry path. `stat` raises it, and it escaped the
+        # guard as a traceback on EVERY compose, not only a --clean.
+        return real_path(a) == real_path(b)
+
+
+def real_path(path: str | Path) -> Path:
+    """`path` with `~` expanded and every link followed, without raising for an unknown `~user`
+    (`Path.expanduser` does) or a symlink loop (`Path.resolve` does before Python 3.13). A guard
+    that raised on the input it judges ended in a traceback instead of a refusal."""
+    try:
+        return Path(os.path.realpath(os.path.expanduser(path)))
+    except ValueError:
+        # A NUL in the path. Nothing can resolve it; `~` is still expanded, so two rows naming one
+        # unusable location the same way still compare equal.
+        return Path(os.path.expanduser(str(path)))
 
 
 def resolve(name: str, registry: str | Path | None = None) -> ScopeEntry:

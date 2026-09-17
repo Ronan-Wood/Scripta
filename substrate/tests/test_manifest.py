@@ -505,7 +505,7 @@ def test_clean_refuses_to_delete_anything_vault_shaped() -> None:
     """`--clean` rmtree's --index-root unconditionally; a vault must never be a valid target.
 
     The vaults and the index roots sit side by side in `~/.substrate/scopes.toml`, so the two get
-    typed into the same command, and the vaults are the source of truth. Four shapes must refuse.
+    typed into the same command, and the vaults are the source of truth. Five shapes must refuse.
     """
     import tempfile
     from substrate.cli import _refuse_destructive_clean
@@ -541,6 +541,15 @@ def test_clean_refuses_to_delete_anything_vault_shaped() -> None:
         (idx / "document.md").write_text("# generated\n", encoding="utf-8")
         (idx / "run.json").write_text("{}", encoding="utf-8")
         assert refuse(root / "idx") == "", "a genuine index root"
+
+        # COMPARED AS FILES: on a volume that ignores case, a differently-cased path into a vault
+        # is that vault, and a directory there with nothing authored in it passed every check.
+        attachments = core / "attachments"
+        attachments.mkdir()
+        (attachments / "scan.pdf").write_bytes(b"%PDF-1.7")
+        upper = root / core.name.upper() / "attachments"
+        if upper.exists():  # a volume that ignores case; the Linux CI runner is not one
+            assert refuse(upper), "a case variant of a directory inside a vault"
 
 
 if __name__ == "__main__":

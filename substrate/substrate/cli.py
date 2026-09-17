@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -431,6 +432,45 @@ def _print_ingest_result(r, out: Path) -> None:
         )
 
 
+def _is_ingest_tree(root: Path) -> bool:
+    """Whether `root` holds only ingest directories this engine wrote: every child a directory with
+    a `document.md` and a `run.json`. An empty directory qualifies — there is nothing in it to lose.
+
+    JUDGED BY SHAPE, NOT BY THE REGISTRY. A registry row can name a directory that has since become
+    something else, and a plain compose registers whatever `--index-root` it was given without ever
+    running these checks; trusting the row let a `--clean` remove a vault's attachments. The app
+    also derives its index root two ways (with and without the scope roster loaded), so its own
+    trees are not always the registered spelling.
+    """
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return False
+    for child in children:
+        # EVERY stat is inside the try: `is_dir()`/`is_file()` raise on an unreadable entry before
+        # Python 3.13 and answer False after, and a guard that raises is a traceback rather than a
+        # refusal. Unreadable therefore reads as "not an ingest tree", which refuses.
+        try:
+            # A hidden FILE is not content: `.DS_Store` appears in any directory Finder has opened,
+            # and refusing over one would stop every recording's recompose. A hidden directory still
+            # has to be an ingest directory — `.obsidian/` is what a vault keeps in one.
+            if child.name.startswith(".") and child.is_file():
+                continue
+            if not child.is_dir():
+                return False
+            # `lstat`, as the note check uses: a dangling `document.md` still marks an ingested
+            # note, and the two must not disagree about what a note is.
+            os.lstat(child / "document.md")
+            os.lstat(child / "run.json")
+            # An ingest directory holds FILES. A directory inside one is something that was put
+            # there, and a vault parked two levels down is invisible to a one-level check.
+            if any(grandchild.is_dir() for grandchild in child.iterdir()):
+                return False
+        except (OSError, ValueError):
+            return False
+    return True
+
+
 def _refuse_destructive_clean(index_root: Path, scope, *, db: Path,
                               registry: str | Path | None) -> str:
     """Why `--clean` must NOT rmtree this path, or "" if it is safe to remove.
@@ -444,36 +484,85 @@ def _refuse_destructive_clean(index_root: Path, scope, *, db: Path,
     Nor is ANOTHER SCOPE'S INDEX. Every scope keeps its db and ingest tree side by side under one
     directory, and neither looks authored — a db is not markdown, a tree holds only `document.md`
     — so `--index-root out-vault --clean`, one segment off the default, deleted all of them (#23).
-    Nor is this compose's own `--db`, which a directory holding it would take along.
+    Nor is this compose's own `--db`, which a directory holding it would take along, nor a
+    directory INSIDE another scope's ingest tree, which would take part of it.
 
-    Five refusals, cheapest first. The manifest check is the load-bearing one — a directory
-    holding a `.substrate.toml` IS a vault whether or not this scope inherits it.
+    Nor is ANY registered scope's vault, or a vault it inherits: a directory with nothing authored
+    in it — attachments, `.obsidian/`, an empty folder — passes the markdown check, and only this
+    scope's own vaults used to be looked at.
+
+    Seven refusals, cheapest first: a symlinked index root; a manifest here or above; a vault this
+    scope composes; this compose's own `--db`; a vault a REGISTERED scope composes, or a scope
+    whose inherited vaults cannot be known at all; a registered index inside `root`, or a
+    registered tree around it; markdown this tool did not write.
+
+    THE ONE EXEMPTION: a scope whose chain cannot be known does not refuse a directory that is
+    itself an ingest tree (`_is_ingest_tree`), because the app recomposes with --clean after every
+    recording and would otherwise stop indexing everywhere. It must stay the narrowest branch here:
+    every refusal above it is about something the tree could BE, and is checked first.
+
+    The manifest check is the load-bearing one — a directory that holds, or sits inside one that
+    holds, a `.substrate.toml` IS a vault whether or not any scope inherits it. Every path is
+    compared as a file, not a spelling: the default APFS volume ignores case, so a string
+    comparison let a case-variant path inside a vault through.
     """
     from substrate import vault as _v
 
-    root = index_root.resolve()
-    if (root / _v.MANIFEST).exists():
-        return (f"{root} contains a {_v.MANIFEST} — that makes it a vault, not an index root. "
-                f"Refusing to delete it. Point --index-root at a disposable directory "
-                f"(the default, out-vault/index, is repo-local and gitignored).")
+    # A LINK IS REFUSED, NOT FOLLOWED: `rmtree` will not remove one, and raised a traceback after
+    # every check below had passed on the directory the link points at.
+    if index_root.is_symlink():
+        # `readlink`, not `resolve`: a looping link made resolve() raise before Python 3.13, so
+        # the refusal itself crashed.
+        return (f"{index_root} is a symlink to {index_root.readlink()}. Refusing: --clean removes "
+                f"a directory, never what a link points at. Pass the directory itself.")
+    # `real_path`, not `resolve()`: a symlink loop made resolve() raise before Python 3.13.
+    root = scopes.real_path(index_root)
+    for d in (root, *root.parents):
+        if (d / _v.MANIFEST).exists():
+            where = "contains" if d == root else f"is inside {d}, which holds"
+            return (f"{root} {where} a {_v.MANIFEST} — that makes it part of a vault, not an index "
+                    f"root. Refusing to delete it. Point --index-root at a disposable directory "
+                    f"(the default, out-vault/index, is repo-local and gitignored).")
     for v in scope.vaults:
-        vp = v.path.resolve()
-        if root == vp or root in vp.parents or vp in root.parents:
-            return (f"{root} is the same as, inside, or a parent of the vault {vp}. Refusing to "
-                    f"delete it — an index root must be disposable, and a vault never is.")
+        if scopes.nested(root, v.path):
+            return (f"{root} is the same as, inside, or a parent of the vault {v.path.resolve()}. "
+                    f"Refusing to delete it — an index root must be disposable, and a vault never "
+                    f"is.")
     if scopes.is_within(db, root):
         return (f"{root} holds this compose's own --db {db}. Refusing to delete the database "
                 f"being written; keep --db outside --index-root.")
     try:
+        vaults, unknown = scopes.registered_vaults(registry)
         held = scopes.indexes_within(root, registry)
+        around = scopes.trees_around(root, scope.project.path, registry)
     except scopes.ScopeError as e:
         return f"cannot read the scope registry to see what {root} holds: {e}"
+    for name, vault_path in vaults:
+        if scopes.nested(root, vault_path):
+            return (f"{root} is the same as, inside, or a parent of {vault_path}, a vault scope "
+                    f"{name!r} composes. Refusing to delete it — a vault is never disposable.")
+    # UNKNOWN VAULTS REFUSE EVERY TARGET BUT AN INGEST TREE. Refusing those too would stop every
+    # recording in every workspace from being indexed because one unrelated manifest broke: the app
+    # recomposes with --clean after each one, and only logs the failure. A directory whose every
+    # child is an ingest directory holds no vault to lose — which is a property of the directory,
+    # not a promise from the registry, because a plain compose registers an `--index-root` without
+    # running any of these checks.
+    if unknown and not _is_ingest_tree(root):
+        broken = "; ".join(f"{name!r} ({why})" for name, why in unknown)
+        return (f"the vaults inherited by {broken} cannot be known, so nothing says {root} is not "
+                f"one of them. Refusing to delete it until "
+                f"{'those manifests are' if len(unknown) > 1 else 'that manifest is'} fixed; an "
+                f"ingest tree can still be cleaned.")
     if held:
         name, path = held[0]
         more = f", and {len(held) - 1} more registered index path(s)" if len(held) > 1 else ""
         return (f"{root} holds the index of scope {name!r} ({path}){more}. Refusing to delete "
                 f"it — --clean removes the whole directory, and an index root holds one scope's "
                 f"ingest tree.")
+    if around:
+        name, tree = around[0]
+        return (f"{root} is inside the ingest tree of scope {name!r} ({tree}). Refusing to delete "
+                f"part of it — an index root holds one scope's ingest tree, and that one is taken.")
     stray = [p for p in root.rglob("*.md") if p.name != "document.md"][:3]
     if stray:
         return (f"{root} holds markdown this tool did not write "
@@ -511,6 +600,9 @@ def _nothing_to_destroy(path: str) -> bool:
     """
     import sqlite3
 
+    # Expanded exactly as IndexStore expands it: judging `./~/x.db` safe to drop while the store
+    # migrates `$HOME/x.db` would destroy the index this exists to protect.
+    path = os.path.expanduser(path)
     if not Path(path).exists():
         return True
     try:
@@ -640,6 +732,22 @@ def cmd_rechunk(args: argparse.Namespace) -> int:
     return 0
 
 
+def _path_arg(value: str, what: str) -> Path | None:
+    """`value` with `~` expanded, or None after a FATAL line when it names no path: empty, or an
+    unknown `~user`. zsh passes `--db=~typo/x.db` through literally, and keeping such a value as
+    written made `compose` remove its index root and ingest every note before failing to open it.
+    """
+    expanded = os.path.expanduser(value)
+    if not value.strip():
+        print(f"FATAL: {what} is empty, which names no path.", file=sys.stderr)
+        return None
+    if expanded.startswith("~"):
+        print(f"FATAL: {what} {value!r} names a home directory that does not exist.",
+              file=sys.stderr)
+        return None
+    return Path(expanded)
+
+
 def cmd_index(args: argparse.Namespace) -> int:
     from substrate.store.index_store import (
         ConfidenceError,
@@ -649,7 +757,10 @@ def cmd_index(args: argparse.Namespace) -> int:
     )
     from substrate.store.reconcile import reconcile
 
-    root = Path(args.out_root).expanduser()
+    root = _path_arg(args.out_root, "--out-root")
+    db = _path_arg(args.db, "--db")
+    if root is None or db is None:
+        return 2
     # Migration is drop-and-rebuild, so a bare `index` against an older DB silently destroyed it —
     # including `out/substrate.db`, the eval fixture, which sat six versions behind and would have
     # gone on the first invocation of `./run.sh`. Recoverable (markdown is the source of truth) but
@@ -667,7 +778,7 @@ def cmd_index(args: argparse.Namespace) -> int:
     # to stop.
     created = False
     try:
-        store_cm = IndexStore(args.db, migrate=args.migrate)
+        store_cm = IndexStore(db, migrate=args.migrate)
     except SchemaMismatch as e:
         # BOOTSTRAP IS NOT MIGRATION. `user_version` 0 means no substrate schema was ever stamped,
         # so this is a database `index` is being asked to CREATE. Refusing it left `index` unable
@@ -685,14 +796,14 @@ def cmd_index(args: argparse.Namespace) -> int:
         # database carrying rows whose stamp never landed — so that one is CHECKED. The check is an
         # allow-list over table names as well as a row count: `DROP` removes four tables, not just
         # `chunks`, and a file holding tables this engine never created belongs to someone else.
-        if e.found == -1 or (e.found == 0 and _nothing_to_destroy(args.db)):
+        if e.found == -1 or (e.found == 0 and _nothing_to_destroy(str(db))):
             # The parent may not exist on a fresh checkout — `out/` is gitignored, which is the
             # exact case this branch was written for, and `sqlite3.connect` raises rather than
             # creating it. Failing here with `unable to open database file` would have made
             # bootstrap work only where it was already going to.
             try:
-                Path(args.db).expanduser().parent.mkdir(parents=True, exist_ok=True)
-                store_cm = IndexStore(args.db, migrate=True)
+                db.parent.mkdir(parents=True, exist_ok=True)
+                store_cm = IndexStore(db, migrate=True)
             except (OSError, sqlite3.Error) as create_err:
                 # Raised INSIDE an exception handler, so without this it escapes as a chained
                 # "During handling of the above exception" traceback — out of the one code path
@@ -802,8 +913,15 @@ def cmd_compose(args: argparse.Namespace) -> int:
     )
     from substrate.store.reconcile import reconcile
 
-    project = Path(args.project_vault).expanduser()
-    index_root = Path(args.index_root).expanduser()
+    project = _path_arg(args.project_vault, "the project vault")
+    index_root = _path_arg(args.index_root, "--index-root")
+    db = _path_arg(args.db, "--db")
+    if project is None or index_root is None or db is None:
+        return 2
+    # ONE SPELLING OF THE DATABASE for every use below. zsh passes `--db=~/x.db` through literally;
+    # the guards and the registry expanded it and SQLite did not, so the compose ended in a
+    # traceback — or, with a directory named `~` in the working directory, checked and registered
+    # one file and wrote another. `_path_arg` above expanded it once, for every use below.
 
     try:
         scope = _vault.resolve_scope(project)
@@ -818,7 +936,7 @@ def cmd_compose(args: argparse.Namespace) -> int:
     # after this compose has already rebuilt whatever index --db and --index-root name. An
     # unreadable registry refuses too: a guard that passes when it cannot look is no guard.
     try:
-        owner = scopes.foreign_owner(vault=project, db=Path(args.db), index_root=index_root,
+        owner = scopes.foreign_owner(vault=project, db=db, index_root=index_root,
                                      registry=args.registry)
     except scopes.ScopeError as e:
         print(f"FATAL (scope registry): {e} — cannot tell whether --db or --index-root belongs "
@@ -841,15 +959,29 @@ def cmd_compose(args: argparse.Namespace) -> int:
               f"vault's notes. Nothing was written. {remedy}", file=sys.stderr)
         return 2
 
-    if index_root.exists() and args.clean:
-        refuse = _refuse_destructive_clean(index_root, scope, db=Path(args.db),
+    # `is_symlink()` too: `exists()` follows a link, so a dangling one skipped every refusal and
+    # crashed at the mkdir below.
+    if args.clean and (index_root.exists() or index_root.is_symlink()):
+        refuse = _refuse_destructive_clean(index_root, scope, db=db,
                                            registry=args.registry)
         if refuse:
             print(f"FATAL (--clean): {refuse}", file=sys.stderr)
             return 2
         import shutil
-        shutil.rmtree(index_root)
-    index_root.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.rmtree(index_root)
+        except OSError as e:
+            # `rmtree` removes what it can before raising, so this reports a PARTIAL removal rather
+            # than preventing one — a refusal naming the path, instead of a traceback over it.
+            print(f"FATAL (--clean): could not remove all of {index_root}: {e}", file=sys.stderr)
+            return 2
+    try:
+        index_root.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        # A path through a looping link, a file where a directory should be: a refusal, not a
+        # traceback, and nothing has been written yet.
+        print(f"FATAL (--index-root): cannot create {index_root}: {e}", file=sys.stderr)
+        return 2
 
     # Ingest every note. Collect failures rather than aborting on the first, then refuse the WHOLE
     # scope if any failed — a composed index missing notes is exactly the silent-loss shape, so it
@@ -910,7 +1042,7 @@ def cmd_compose(args: argparse.Namespace) -> int:
             print(f"    {path}: {name} — {detail}", file=sys.stderr)
         return 3
 
-    with IndexStore(args.db) as store:
+    with IndexStore(db) as store:
         announce_if_rebuilt(store)
         rep = reconcile(store, index_root)
         s = store.stats()
@@ -928,7 +1060,7 @@ def cmd_compose(args: argparse.Namespace) -> int:
         # them, so the cache is rebuilt here on every compose rather than carried — which is what
         # makes a `--clean` rebuild safe for a layer nobody would want to re-author.
         try:
-            identity_report = _resolve_identity(store, Path(args.project_vault))
+            identity_report = _resolve_identity(store, project)
         except identity.IdentityError as e:
             print(f"\nFATAL (identity): {e}", file=sys.stderr)
             return 3
@@ -955,7 +1087,7 @@ def cmd_compose(args: argparse.Namespace) -> int:
             print(f"      {path}: {name} — {detail}")
     else:
         print(f"  A22 per-note PASS  {len(ingest_dirs)} note(s) · 0 quality warnings")
-    print(f"  db: {args.db} (schema v{s['schema_version']}) · index {index_version}")
+    print(f"  db: {db} (schema v{s['schema_version']}) · index {index_version}")
 
     # Register the scope only now — after every gate passed. The registry's contract is that a
     # named scope has a composed index behind it, so recording a refused compose would hand a
@@ -963,7 +1095,7 @@ def cmd_compose(args: argparse.Namespace) -> int:
     # returning a plausible narrower result). A registry failure is reported, not fatal: the
     # index IS built, and losing the convenience mapping must not read as losing the compose.
     try:
-        reg = scopes.record(scope.name, vault=project, db=Path(args.db), index_root=index_root,
+        reg = scopes.record(scope.name, vault=project, db=db, index_root=index_root,
                             registry=args.registry)
         print(f"  scope: {scope.name!r} registered in {reg}")
     except (scopes.ScopeError, OSError) as e:
@@ -971,7 +1103,7 @@ def cmd_compose(args: argparse.Namespace) -> int:
         # through the handler whose comment promised a registry failure is "reported, not fatal" —
         # a traceback AFTER every gate had passed and the compose had printed PASS.
         print(f"\nWARNING (scope registry): {e}", file=sys.stderr)
-        print(f"  scope: {scope.name!r} NOT registered — query with --db {args.db}",
+        print(f"  scope: {scope.name!r} NOT registered — query with --db {db}",
               file=sys.stderr)
     return 0
 
