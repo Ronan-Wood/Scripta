@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from substrate.embed.engine import EmbeddingError, OllamaEmbedder  # noqa: E402
-from substrate.net import is_loopback  # noqa: E402
+from substrate.net import _AUTHORITY, is_loopback  # noqa: E402
 from substrate.retrieve.expand import HyDE, LlamaServerHyDE, MultiQuery  # noqa: E402
 from substrate.retrieve.rerank import LLMReranker  # noqa: E402
 from substrate.retrieve.rerank_cross import CrossEncoderReranker  # noqa: E402
@@ -89,6 +89,40 @@ def test_schemeless_host_rejected_with_actionable_message() -> None:
         assert "http://" in msg                                      # point at the missing scheme
     else:
         raise AssertionError("scheme-less host was accepted")
+
+
+def test_only_http_schemes_count_as_loopback() -> None:
+    # urllib also opens ftp:, file: and data: URLs, and each of these passed the hostname check.
+    assert is_loopback("https://127.0.0.1:11434")
+    for url in ("ftp://127.0.0.1:21", "file://localhost/etc/hosts", "data://localhost/x"):
+        assert not is_loopback(url), url
+
+
+def test_characters_http_client_will_not_send_fail_closed() -> None:
+    # Each read as loopback before: urlsplit deletes tab, CR and LF, and the rest sit after the
+    # authority. http.client then failed on every one (InvalidURL, a Host-header ValueError, or
+    # UnicodeEncodeError), none of which the embedder handled.
+    for url in ("http://local\thost:11434", "http://127.0.0.1:11434\n", "http://127.0.0.1\r:11434",
+                "http://127.0.0.1:11434/a b", "http://127.0.0.1:11434/\x00",
+                "http://127.0.0.1:11434/\x01", "http://127.0.0.1:11434/\x7f",
+                "http://127.0.0.1:11434/\u00e9", "http://127.0.0.1:11434?\u200b"):
+        assert not is_loopback(url), repr(url)
+
+
+def test_the_authority_must_be_exactly_a_loopback_name() -> None:
+    # On Python 3.11.4 urlsplit read each of these as ::1 while http.client dialled the DNS name
+    # around the brackets. 3.13+ refuse them inside urlsplit, so the authority pattern is pinned
+    # directly as well, which holds on any version.
+    netlocs = ("[::1].evil.example:80", "x.evil.example[::1]:80", "[::1]x.evil.example]:80",
+               "[::1]%2eevil.example:80", "[::1]]:80")
+    for netloc in netlocs:
+        assert not is_loopback(f"http://{netloc}"), netloc
+        assert not _AUTHORITY.fullmatch(netloc), netloc
+    for netloc in ("127.0.0.1", "127.0.0.1:", "LOCALHOST:11434", "[::1]:8899"):
+        assert _AUTHORITY.fullmatch(netloc), netloc
+    for url in ("http://127.0.0.1", "http://127.0.0.1:/api", "http://LOCALHOST:11434/api/embed",
+                "https://[::1]:8899/health"):
+        assert is_loopback(url), url
 
 
 def test_allowed_set_not_widened() -> None:
