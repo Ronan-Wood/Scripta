@@ -70,7 +70,7 @@ import time
 import urllib.request
 from dataclasses import dataclass, field
 
-from substrate.net import require_loopback
+from substrate.net import open_local, require_loopback
 from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
 from substrate.store.index_store import Hit
 
@@ -206,7 +206,7 @@ class CrossEncoderReranker:
 
     def available(self) -> bool:
         try:
-            with urllib.request.urlopen(f"{self.host}/api/tags", timeout=30) as r:
+            with open_local(f"{self.host}/api/tags", timeout=30) as r:
                 names = {m["name"] for m in json.loads(r.read()).get("models", [])}
             # Exact tag, since a cross-encoder's quant IS its identity here — but honour Ollama's
             # tagless == ":latest" convention, so a model named without a tag still resolves.
@@ -239,7 +239,7 @@ class CrossEncoderReranker:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            with open_local(req, timeout=TIMEOUT) as r:
                 text = _response_field(r.read(), "response")
         except _TRANSPORT_ERRORS:
             return None

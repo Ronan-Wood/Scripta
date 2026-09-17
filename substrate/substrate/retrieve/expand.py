@@ -26,7 +26,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from substrate.net import require_loopback
+from substrate.net import open_local, require_loopback
 from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
 
 # MEASURED, and bigger is NOT better. Semantic mrr by generator, 24 cases:
@@ -124,7 +124,7 @@ class HyDE:
 
     def available(self) -> bool:
         try:
-            with urllib.request.urlopen(f"{self.host}/api/tags", timeout=30) as r:
+            with open_local(f"{self.host}/api/tags", timeout=30) as r:
                 names = {m["name"] for m in json.loads(r.read()).get("models", [])}
             return self.model in names or self.model.split(":")[0] in {
                 n.split(":")[0] for n in names
@@ -151,7 +151,7 @@ class HyDE:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            with open_local(req, timeout=TIMEOUT) as r:
                 text = _response_field(r.read(), "response").strip()
         except _TRANSPORT_ERRORS:
             return query
@@ -200,7 +200,7 @@ class LlamaServerHyDE:
 
     def available(self) -> bool:
         try:
-            with urllib.request.urlopen(f"{self.host}/health", timeout=5) as r:
+            with open_local(f"{self.host}/health", timeout=5) as r:
                 return json.loads(r.read()).get("status") == "ok"
         except Exception:
             return False
@@ -223,7 +223,7 @@ class LlamaServerHyDE:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            with open_local(req, timeout=TIMEOUT) as r:
                 text = _response_field(r.read(), "content").strip()
         except _TRANSPORT_ERRORS:
             return query
@@ -391,7 +391,7 @@ class MultiQuery:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            with open_local(req, timeout=TIMEOUT) as r:
                 text = (json.loads(r.read()).get("response") or "").strip()
         except Exception:
             return []
