@@ -501,6 +501,428 @@ final class ScriptaVaultTests: XCTestCase {
         XCTAssertTrue(manifest.contains(#"\\path"#), manifest)
     }
 
+    // MARK: - A vault cannot inherit itself (#24)
+
+    /// THE DEFECT THAT FROZE A LIVE SCOPE. `AskModel.bind` stored the roster row's vault for a scope
+    /// registered to the workspace's OWN vault, `contextVaults` fell back to it, and the next
+    /// recording regenerated the manifest with `inherits = [<own directory>]`. `vault.resolve_vaults`
+    /// raises `VaultError: inheritance cycle` on that, so every refresh recorded `compose_failed` and
+    /// the scope answered from its last good index for four days without saying so.
+    ///
+    /// The guard is HERE rather than at the caller because every writer funnels through `write()`:
+    /// recording, note capture, upload promotion, workspace creation and group repair all build the
+    /// vault with `contextVaults` and call it.
+    func testAVaultDoesNotInheritItself() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        let selfInheriting = try ScriptaVault(root: vault.root, scope: "CBRE", inherits: [vault.root])
+
+        let manifest = selfInheriting.manifest()
+        XCTAssertTrue(manifest.contains("inherits = []"), manifest)
+        XCTAssertFalse(manifest.contains(vault.root.path), manifest)
+    }
+
+    /// DROPPED, NOT REFUSED, and the rest of the list survives. A refusal would take the curated
+    /// vault down with the bad entry — the workspace would compose without its notes, which is the
+    /// same silent loss of context by another route.
+    func testASelfReferenceIsDroppedAndTheOtherVaultsKept() throws {
+        let curated = root.appendingPathComponent("cbre-vault", isDirectory: true)
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        let manifest = try ScriptaVault(root: vault.root, scope: "CBRE",
+                                        inherits: [curated, vault.root]).manifest()
+
+        XCTAssertTrue(manifest.contains(curated.path), manifest)
+        XCTAssertFalse(manifest.contains("\"\(vault.root.path)\""), manifest)
+        XCTAssertFalse(manifest.contains("inherits = []"), manifest)
+    }
+
+    /// THE ENGINE COMPARES RESOLVED PATHS (`Path.resolve()` in `vault.visit`), so a guard that
+    /// compared spellings would pass a manifest the engine still refuses. The operator's vaults are
+    /// reached through symlinks — `~/Documents/SchoolVault` is one — so this is the ordinary case,
+    /// not a contrived one.
+    func testASymlinkToTheVaultIsStillTheVault() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        let link = root.appendingPathComponent("cbre-link", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: vault.root)
+
+        let manifest = try ScriptaVault(root: vault.root, scope: "CBRE", inherits: [link]).manifest()
+        XCTAssertTrue(manifest.contains("inherits = []"), manifest)
+        XCTAssertFalse(manifest.contains(link.path), manifest)
+    }
+
+    /// REPAIRED ON THE NEXT WRITE, because the guard above only protects a manifest not yet written.
+    /// An operator already holding a self-inheriting manifest is the case that matters — the live
+    /// `cbre` scope had to be hand-edited — and for them `inherits` is now empty, so `write()`'s
+    /// "never rewrite with less than it had" early return would leave the broken file in place
+    /// forever.
+    func testAnExistingSelfInheritingManifestIsRepairedAndItsOtherVaultsKept() throws {
+        let curated = root.appendingPathComponent("cbre-vault", isDirectory: true)
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        // The manifest as the defect wrote it: the curated vault, and the vault itself. Plus a key
+        // the app never emits — `manifest()` deliberately writes no `reference_domains` — standing
+        // in for whatever the operator added by hand.
+        let broken = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = []", with: """
+            reference_domains = ["lease"]
+            inherits = [
+                "\(curated.path)",
+                "\(vault.root.path)",
+            ]
+            """)
+        try broken.write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+
+        let repaired = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        XCTAssertTrue(repaired.contains(curated.path), repaired)
+        XCTAssertFalse(repaired.contains("\"\(vault.root.path)\""), repaired)
+        // Everything outside the `inherits` block survives the repair: the ownership key is what
+        // says this vault may be rewritten at all, and the guard key is the privacy wall.
+        XCTAssertTrue(repaired.contains("scripta_workspace_vault = true"), repaired)
+        XCTAssertTrue(repaired.contains("scripta_workspace = \"CBRE\""), repaired)
+        // THE ONE THAT SEPARATES A SPLICE FROM A REGENERATION: `manifest()` does not emit this key,
+        // so a repair that rewrote the whole file would silently delete it — which is precisely the
+        // destruction `write()`'s early return exists to prevent.
+        XCTAssertTrue(repaired.contains("reference_domains"), repaired)
+    }
+
+    /// A HEALTHY MANIFEST IS NOT TOUCHED. The repair reads every manifest on every recording, so a
+    /// vault with ordinary inherits must come back byte-identical — otherwise the repair is a
+    /// rewrite path that fires on every call, which is the hazard the early return exists for.
+    func testAManifestWithNoSelfReferenceIsLeftAlone() throws {
+        let curated = root.appendingPathComponent("cbre-vault", isDirectory: true)
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root, inherits: [curated])
+        try vault.write()
+        let written = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+
+        // Written once with inherits, then regenerated by a caller that has none — a note saved
+        // before the binding is read, which is how the early return gets exercised in practice.
+        try ScriptaVault.vault(forScope: "CBRE", under: root).write()
+        XCTAssertEqual(try String(contentsOf: vault.manifestURL, encoding: .utf8), written)
+    }
+
+    /// A RELATIVE ENTRY SURVIVES THE REPAIR UNCHANGED, and this is the finding that would have made
+    /// the fix worse than the bug. `_resolve_inherit` resolves a non-absolute entry against the
+    /// VAULT'S PARENT, "never the process CWD" — and every curated vault on the operator's machine
+    /// declares `inherits = ["core-vault"]` in exactly that form. Rebuilding the kept entry through
+    /// `URL(fileURLWithPath:)` would have rewritten it to `<cwd>/core-vault`, and the engine hard
+    /// fails an inherited vault that does not exist: the repair for a frozen scope would freeze it.
+    func testARelativeInheritsEntryIsKeptExactlyAsWritten() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = []", with: """
+            inherits = [
+                "core-vault",
+                "\(vault.root.path)",
+            ]
+            """)
+            .write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+
+        let repaired = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        XCTAssertTrue(repaired.contains("\"core-vault\""), repaired)
+        XCTAssertFalse(repaired.contains("\"\(vault.root.path)\""), repaired)
+    }
+
+    /// THE SELF-REFERENCE THE OPERATOR IS LIKELIEST TO HAND-WRITE. A bare name resolves against the
+    /// vault's parent, so `inherits = ["cbre"]` inside `<root>/cbre` points straight back at the
+    /// vault and `vault.visit` raises the cycle — while a comparison that resolved it against the
+    /// working directory would see two unrelated paths and repair nothing.
+    func testARelativeSelfReferenceIsRecognised() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = []", with: """
+            inherits = [
+                "cbre",
+            ]
+            """)
+            .write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+
+        let repaired = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        XCTAssertTrue(repaired.contains("inherits = []"), repaired)
+    }
+
+    /// A PATH MAY CONTAIN `]`, and the entry reader has to parse it as the one string it is. Reading
+    /// the block by scanning lines for a bracket ended the array early, and the splice then wrote a
+    /// manifest with the remainder of the old array orphaned below the new one — unparseable TOML,
+    /// so the engine refuses the scope outright. Worse than the defect being repaired.
+    func testAPathContainingABracketDoesNotTruncateTheArray() throws {
+        let awkward = root.appendingPathComponent("My [Notes]", isDirectory: true)
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = []", with: """
+            inherits = [
+                "\(vault.root.path)",
+                "\(awkward.path)",
+            ]
+            """)
+            .write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+
+        let repaired = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        XCTAssertTrue(repaired.contains(awkward.path), repaired)
+        XCTAssertFalse(repaired.contains("\"\(vault.root.path)\""), repaired)
+        // The array closes exactly once: a stray `]` is the corruption this guards.
+        XCTAssertEqual(repaired.components(separatedBy: "\n").filter {
+            $0.trimmingCharacters(in: .whitespaces) == "]"
+        }.count, 1, repaired)
+    }
+
+    /// A HAND-EDITED BLOCK IS LEFT ALONE RATHER THAN GUESSED AT — including its comments.
+    ///
+    /// Commenting an entry out instead of deleting it is the natural hand edit, and a reader that
+    /// took every quoted string in the block as an entry would COMPOSE the disabled vault back into
+    /// a scope holding call transcripts, destroying the note saying why it was disabled in the same
+    /// write. The repair only recognises the shape the app itself writes; anything else keeps its
+    /// self-reference and waits for the operator, which is the direction this must fail in.
+    func testABlockCarryingACommentIsNotRewritten() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        let handEdited = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = []", with: """
+            inherits = [
+                # "/Users/x/vaults/private-old",  disabled 2026-09-01, do not re-add
+                "\(vault.root.path)",
+            ]
+            """)
+        try handEdited.write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+
+        let after = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        XCTAssertEqual(after, handEdited, "a hand-edited block must be left exactly as it was")
+        XCTAssertTrue(after.contains("do not re-add"), after)
+        // The disabled vault is still on a COMMENT line — never promoted to a live entry, which is
+        // the harm: a vault the operator switched off composing back into a scope of call
+        // transcripts, with the note explaining why deleted in the same write.
+        let disabled = after.components(separatedBy: "\n").first { $0.contains("private-old") }
+        XCTAssertEqual(disabled?.trimmingCharacters(in: .whitespaces).first, "#", after)
+        // And the self-reference is untouched rather than half-repaired: this manifest waits for the
+        // operator. `declaredInherits` still stops the app from ever writing one itself.
+        XCTAssertTrue(after.contains("\"\(vault.root.path)\""), after)
+    }
+
+    /// CASE-DIVERGENT SPELLINGS NAME ONE DIRECTORY on a case-insensitive volume, which is the macOS
+    /// default, and the roster hands back whatever casing is on disk.
+    ///
+    /// WHICH BRANCH OF `isSameDirectory` ANSWERS IS NOT ASSERTED, deliberately: measured 2026-09-18,
+    /// `resolvingSymlinksInPath()` canonicalises the on-disk casing on APFS, so the path comparison
+    /// usually settles this before the `fileResourceIdentifier` fallback is reached. That fallback
+    /// is defence for the shapes path canonicalisation does NOT fold together — firmlinks, a volume
+    /// reached through two mount points — which no portable test can construct here. This asserts
+    /// the behaviour the guard promises, not the route it takes to get there.
+    func testTheVaultIsRecognisedThroughADifferentCasing() throws {
+        let probe = root.appendingPathComponent("case-probe", isDirectory: true)
+        try FileManager.default.createDirectory(at: probe, withIntermediateDirectories: true)
+        guard FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("CASE-PROBE", isDirectory: true).path)
+        else { throw XCTSkip("case-sensitive volume; the identity fallback has nothing to catch") }
+
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        let shouted = root.appendingPathComponent("CBRE", isDirectory: true)
+
+        let manifest = try ScriptaVault(root: vault.root, scope: "CBRE",
+                                        inherits: [shouted]).manifest()
+        XCTAssertTrue(manifest.contains("inherits = []"), manifest)
+    }
+
+    /// A VAULT THAT IS NOT THERE IS NOT THIS ONE. `isSameDirectory` returns false when it cannot
+    /// resolve either side, so a stale `inherits` entry is left in the manifest for the engine to
+    /// report rather than silently swallowed as a self-reference.
+    func testAnAbsentInheritedVaultIsNotMistakenForThisOne() throws {
+        let gone = root.appendingPathComponent("never-created", isDirectory: true)
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+
+        let manifest = try ScriptaVault(root: vault.root, scope: "CBRE", inherits: [gone]).manifest()
+        XCTAssertTrue(manifest.contains(gone.path), manifest)
+    }
+
+    /// THE REPAIR IS A ONE-SHOT, NOT A REWRITE LOOP. It runs on the early-return path, which means
+    /// every recording and every note saved into an existing vault — so a repair that changed the
+    /// file each time would rewrite a cloud-synced manifest on every call, and the second pass is
+    /// the one that proves it converged.
+    func testRepairingIsIdempotent() throws {
+        let curated = root.appendingPathComponent("cbre-vault", isDirectory: true)
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = []", with: """
+            inherits = [
+                "\(curated.path)",
+                "\(vault.root.path)",
+            ]
+            """)
+            .write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+        let once = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        try vault.write()
+        XCTAssertEqual(try String(contentsOf: vault.manifestURL, encoding: .utf8), once)
+        XCTAssertTrue(once.contains(curated.path), once)
+    }
+
+    /// AN ESCAPE THE READER DOES NOT FULLY DECODE MUST NOT BE RE-ENCODED. `soleTomlString` keeps the
+    /// backslash on anything but `\"` and `\\`, so decoding `"a\tb"` and writing it back through
+    /// `tomlString` would escape that backslash and yield `"a\\tb"` — a different, nonexistent path,
+    /// in an entry that had nothing to do with the self-reference. The engine hard-fails an inherited
+    /// vault that does not exist, so the repair would freeze the scope it is there to unfreeze.
+    func testAKeptEntryIsWrittenBackByteForByte() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = []", with: """
+            inherits = [
+                "/vaults/a\\tb",
+                "\(vault.root.path)",
+            ]
+            """)
+            .write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+
+        let repaired = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        XCTAssertTrue(repaired.contains(#""/vaults/a\tb""#), repaired)
+        XCTAssertFalse(repaired.contains(#"a\\tb"#), repaired)
+    }
+
+    /// A QUOTE AND A BACKSLASH STILL ROUND-TRIP, which is what keeps the verbatim rule from being a
+    /// licence to emit anything: these two ARE decoded, and the raw form re-emits them unchanged.
+    func testAKeptEntryWithQuotedAndEscapedCharactersSurvives() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = []", with: """
+            inherits = [
+                "/vaults/a \\"quoted\\" \\\\path",
+                "\(vault.root.path)",
+            ]
+            """)
+            .write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+
+        let repaired = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        XCTAssertTrue(repaired.contains(#""/vaults/a \"quoted\" \\path""#), repaired)
+        XCTAssertFalse(repaired.contains("\"\(vault.root.path)\""), repaired)
+    }
+
+    /// THE REPAIR IS A REWRITE, so it is gated on the key that grants permission to rewrite. The
+    /// factory already refuses a directory this app did not create, but the guard standing one call
+    /// away in another function is the shape that made `vaultBelongsToAnotherWorkspace` necessary.
+    func testAVaultWhoseOwnershipWasRevokedIsNotRepaired() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        // The documented escape hatch: remove the ownership line by hand and the app leaves it be.
+        let disowned = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "scripta_workspace_vault = true\n", with: "")
+            .replacingOccurrences(of: "inherits = []", with: """
+            inherits = [
+                "\(vault.root.path)",
+            ]
+            """)
+        try disowned.write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+
+        XCTAssertEqual(try String(contentsOf: vault.manifestURL, encoding: .utf8), disowned)
+    }
+
+    /// TOP-LEVEL `inherits`, NOT ANY `inherits`. TOML puts every key after a `[table]` header inside
+    /// that table, and the engine reads the top-level one — so a whole-file scan would splice a
+    /// foreign tool's array in a manifest that has one and no top-level entry of its own.
+    func testATablesInheritsIsNotMistakenForTheVaults() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        let withTable = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = []", with: """
+            [other_tool]
+            inherits = [
+                "\(vault.root.path)",
+            ]
+            """)
+        try withTable.write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+
+        XCTAssertEqual(try String(contentsOf: vault.manifestURL, encoding: .utf8), withTable)
+    }
+
+    /// A CRLF MANIFEST IS STILL REPAIRED. Splitting on `\n` leaves `\r` on every line, and
+    /// `.whitespaces` does not include it — so a shape test using it alone would match nothing and
+    /// the repair would silently never run on a file that came back through a sync path.
+    func testACRLFManifestIsRepaired() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = []", with: """
+            inherits = [
+                "\(vault.root.path)",
+            ]
+            """)
+            .replacingOccurrences(of: "\n", with: "\r\n")
+            .write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+
+        let repaired = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        XCTAssertFalse(repaired.contains("\"\(vault.root.path)\""), repaired)
+        XCTAssertTrue(repaired.contains("inherits = []"), repaired)
+    }
+
+    /// A BLANK LINE CARRIES NOTHING, so it does not block the repair the way a comment does — there
+    /// is no operator intent in it to destroy.
+    func testABlankLineInsideTheArrayDoesNotBlockTheRepair() throws {
+        let curated = root.appendingPathComponent("cbre-vault", isDirectory: true)
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = []", with: """
+            inherits = [
+                "\(curated.path)",
+
+                "\(vault.root.path)",
+            ]
+            """)
+            .write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+
+        let repaired = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        XCTAssertTrue(repaired.contains(curated.path), repaired)
+        XCTAssertFalse(repaired.contains("\"\(vault.root.path)\""), repaired)
+    }
+
+    /// AN EMPTY ENTRY IS GARBAGE, NOT A VAULT. `appendingPathComponent("")` returns the receiver, so
+    /// `""` resolves to the directory holding every workspace — kept as a legitimate inherit, it
+    /// would compose all of them into one scope. The block is left alone rather than rewritten
+    /// around it.
+    func testAnEmptyEntryLeavesTheBlockAlone() throws {
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: root)
+        try vault.write()
+        let malformed = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = []", with: """
+            inherits = [
+                "",
+                "\(vault.root.path)",
+            ]
+            """)
+        try malformed.write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        try vault.write()
+
+        XCTAssertEqual(try String(contentsOf: vault.manifestURL, encoding: .utf8), malformed)
+    }
+
     // MARK: - Against the real engine
 
     /// THE GATE THIS TYPE EXISTS FOR: a vault Swift wrote composes, and the engine agrees about the
@@ -643,6 +1065,72 @@ final class ScriptaVaultTests: XCTestCase {
         // Both vaults present in one scope — the whole point. `A-compose` reports per-vault counts.
         XCTAssertTrue(text.contains("'curated'"), "the inherited vault did not compose:\n\(text)")
         XCTAssertTrue(text.contains("'cbre'"), "the workspace vault did not compose:\n\(text)")
+    }
+
+    /// THE FREEZE, ASSERTED AGAINST THE ENGINE THAT CAUSED IT (#24).
+    ///
+    /// Every assertion above is Swift reading its own manifest, and all of them would pass while the
+    /// engine still refused the scope — which is exactly how this shipped: the manifest looked
+    /// plausible, `substrate compose` raised `VaultError: inheritance cycle`, and the only symptom
+    /// was `compose_failed` in a refresh record nobody reads during a call.
+    ///
+    /// On the code before the guard this fails the way the live scope did: compose exits non-zero
+    /// naming the cycle.
+    func testAWorkspaceVaultHandedItsOwnDirectoryStillComposes() throws {
+        let engine = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".substrate/engine", isDirectory: true)
+        let python = engine.appendingPathComponent(".venv/bin/python")
+        guard FileManager.default.isExecutableFile(atPath: python.path) else {
+            throw XCTSkip("no deployed engine at \(engine.path)")
+        }
+
+        let curated = root.appendingPathComponent("curated", isDirectory: true)
+        let notes = curated.appendingPathComponent("02-areas", isDirectory: true)
+        try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
+        try """
+        ---
+        title: A curated note
+        status: active
+        doc_type: reference
+        confidence: stated
+        domains: [work]
+        ---
+
+        # A curated note
+
+        The lease review is due before the quarter closes.
+        """.write(to: notes.appendingPathComponent("lease.md"), atomically: true, encoding: .utf8)
+
+        // WHAT `contextVaults` HANDED IT: the curated vault, and — through the Ask scope control
+        // binding a workspace to the scope registered to its own vault — its own directory.
+        let vaults = root.appendingPathComponent("vaults", isDirectory: true)
+        let own = vaults.appendingPathComponent("cbre", isDirectory: true)
+        let vault = try ScriptaVault.vault(forScope: "CBRE", under: vaults, inherits: [curated, own])
+        try vault.write()
+        XCTAssertEqual(vault.root.standardizedFileURL, own.standardizedFileURL,
+                       "precondition: the second inherit really is this vault's own directory")
+
+        let process = Process()
+        process.executableURL = python
+        process.currentDirectoryURL = engine
+        process.arguments = ["-m", "substrate.cli", "compose", vault.root.path,
+                             "--index-root", root.appendingPathComponent("idx3").path,
+                             "--db", root.appendingPathComponent("cycle.db").path,
+                             "--registry", root.appendingPathComponent("scopes3.toml").path]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(data: data, encoding: .utf8) ?? ""
+
+        XCTAssertEqual(process.terminationStatus, 0,
+                       "the engine refused a vault this type wrote:\n\(text)")
+        XCTAssertFalse(text.contains("inheritance cycle"), text)
+        // AND THE CURATED VAULT SURVIVED THE GUARD — dropping the whole list would compose the
+        // workspace without its notes, which is the same loss by another route.
+        XCTAssertTrue(text.contains("'curated'"), "the inherited vault did not compose:\n\(text)")
     }
 }
 
