@@ -422,6 +422,70 @@ def test_versionless_database_with_content_still_refuses() -> None:
     assert _chunks(db) == 1, "and must still be there"
 
 
+def test_a_tilde_db_is_judged_where_it_is_opened() -> None:
+    """zsh passes `--db=~/x.db` through literally. The store opens `$HOME/x.db`, so the emptiness
+    check must look there too: judging a missing `./~/x.db` safe to drop would let the migrating
+    open destroy the real one."""
+    import os
+
+    home = Path(tempfile.mkdtemp())
+    db = home / "versionless.db"
+    with IndexStore(str(db)) as s:
+        doc = Document(doc_id="d0", source_path="/d0.md", source_sha256="s" * 8, source_pages=1,
+                       document_class="reference-frozen", title="d0", status="active")
+        ch = Chunk(chunk_id="d0#c0", doc_id="d0", kind="passage", text="body",
+                   path=["Root", "d0"], level=2, n_chars=4, document_class="reference-frozen")
+        s.upsert(doc, [ch], markdown_path="/d0.md", markdown_mtime=0.0, markdown_sha256="m" * 8)
+    con = sqlite3.connect(db)
+    con.execute("PRAGMA user_version=0")
+    con.commit()
+    con.close()
+
+    saved = os.environ.get("HOME")
+    os.environ["HOME"] = str(home)
+    try:
+        rc = cli.main(["index", "--db=~/versionless.db", "--out-root", tempfile.mkdtemp()])
+    finally:
+        if saved is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = saved
+    assert rc == 2, rc
+    assert _chunks(str(db)) == 1, "the real index behind ~ was dropped"
+
+
+def test_index_refuses_a_db_that_names_nothing() -> None:
+    """An empty --db built the index in SQLite's private temporary database and reported success;
+    an unknown `~user` raised a traceback from the handler meant to fail cleanly."""
+    for value in ("", "~nosuchuser_zz/x.db"):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = cli.main(["index", f"--db={value}", "--out-root", tempfile.mkdtemp()])
+        assert rc == 2, (value, rc)
+    for flag in ("--out-root=", "--out-root=~nosuchuser_zz/x"):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = cli.main(["index", "--db", str(Path(tempfile.mkdtemp()) / "x.db"), flag])
+        assert rc == 2, (flag, rc)
+    try:
+        IndexStore("", migrate=False)
+    except SchemaMismatch as e:
+        assert e.found == -2, e.found
+    else:
+        raise AssertionError("an empty path must not open a database")
+
+
+def test_an_unknown_tilde_user_reaches_the_ordinary_refusal() -> None:
+    """`Path.expanduser` raises for an unknown `~user`; the store and the emptiness check keep it
+    as written, so the open fails the way any unopenable path does."""
+    odd = "~nosuchuser_zz/x.db"
+    assert cli._nothing_to_destroy(odd) is True
+    try:
+        IndexStore(odd, migrate=False)
+    except SchemaMismatch as e:
+        assert e.found == -1, e.found
+    else:
+        raise AssertionError("an unopenable path must refuse")
+
+
 def test_migrate_flag_actually_rebuilds() -> None:
     """The anti-tautology guard: `--migrate` must still WORK. Without this, a `--migrate` that
     refused everything would pass every other test in this file."""

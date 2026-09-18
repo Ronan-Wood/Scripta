@@ -13,6 +13,7 @@ left half-indexed with a fresh mtime that would suppress re-indexing.
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import struct
 import json
@@ -313,7 +314,15 @@ class IndexStore:
         that destroys what it diagnoses is the wrong shape. A read open refuses instead, naming
         both versions, and leaves the data for `compose` to rebuild deliberately.
         """
-        self.path = str(path)
+        # `~` expanded here, where every command's --db ends up: zsh passes `--db=~/x.db` through
+        # literally, and SQLite does not expand it. `os.path` rather than `Path`, which raises for
+        # an unknown `~user`; such a path is kept as written and fails the open like any other.
+        self.path = os.path.expanduser(str(path))
+        if not self.path:
+            # SQLite reads "" as a private temporary database, so an index built there "succeeded"
+            # and was gone when the connection closed.
+            raise SchemaMismatch("an empty path names no database file.", found=-2,
+                                 expected=schema.SCHEMA_VERSION)
         # A non-migrating open must not CREATE what it was asked to read. `schema.connect` is a
         # plain `sqlite3.connect`, which makes the file before any version can be read — so a
         # typo'd `--db` silently materialised an empty database and then refused with "has no

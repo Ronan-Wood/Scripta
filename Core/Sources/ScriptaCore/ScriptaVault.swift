@@ -144,7 +144,7 @@ public struct ScriptaVault: Equatable {
     /// anyone pressed delete, at which point `WorkspaceDeleter` would remove the vault entire.
     ///
     /// The engine already refuses on exactly this signal and reaches the opposite conclusion from
-    /// it: `cli._refuse_destructive_clean` says "a directory holding a `.substrate.toml` IS a vault
+    /// it: `cli._refuse_index_root` says "a directory holding a `.substrate.toml` IS a vault
     /// whether or not this scope inherits it — refusing to delete it". A manifest is evidence of
     /// value, not of ownership, and this side was reading it as the latter.
     /// Where a call goes when its workspace names nothing.
