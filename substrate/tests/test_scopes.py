@@ -612,9 +612,13 @@ def test_a_tree_stays_protected_whatever_else_is_registered_inside_it() -> None:
 
 
 def test_a_note_directory_registered_as_a_tree_claims_nothing() -> None:
-    """Two steps, no stale registry: a compose without --clean into another scope's note directory
-    registers itself there, and the same command with --clean then deleted that note in its own
-    name — the narrower "tree" claimed the wider one."""
+    """The narrower "tree" must not claim the wider one: a row naming a note directory of another
+    scope's tree once turned that tree's protection off, and the note was removed in its name.
+
+    The row is planted by hand because the two-step reproduction no longer runs — step one, the
+    plain compose into that note directory, is refused now. The row itself is still reachable: the
+    registry is a hand-editable file, and it holds rows written before that refusal existed.
+    """
     root, reg = _tmp(), _registry()
     tree = root / "a-index"
     note = tree / "a-vault__note__abcd1234"
@@ -622,15 +626,250 @@ def test_a_note_directory_registered_as_a_tree_claims_nothing() -> None:
     (note / "document.md").write_text("generated", encoding="utf-8")
     _vault_dir(root / "a-vault", "a")
     scopes.record("a", vault=root / "a-vault", db=root / "a.db", index_root=tree, registry=reg)
+    scopes.record("c", vault=_DEMO_VAULT, db=root / "d.db", index_root=note, registry=reg)
 
-    argv = (str(_DEMO_VAULT), "--db", str(root / "d.db"), "--index-root", str(note),
-            "--registry", str(reg))
-    rc, err = _compose_cli(*argv)
-    assert rc == 0, (rc, err)
-    rc, err = _compose_cli(*argv, "--clean")
+    rc, err = _compose_cli(str(_DEMO_VAULT), "--db", str(root / "d.db"), "--index-root", str(note),
+                           "--registry", str(reg), "--clean")
     assert rc == 2, (rc, err)
     assert "ingest tree of scope 'a'" in err, err
     assert (note / "document.md").is_file(), "--clean removed another scope's note"
+
+
+def test_a_plain_compose_is_checked_where_a_clean_would_be() -> None:
+    """The checks ran under --clean alone, so a plain compose wrote its ingest tree into whatever
+    it was handed and REGISTERED it — which is how a registry comes to name a tree inside a vault,
+    and how a scope ends up registered over its siblings' indexes with its own --clean refused
+    from then on. Four shapes, none of them deleting anything, all of them refused."""
+    import shutil
+
+    root, reg = _tmp(), _registry()
+    # A COPY of the demo vault, so a guard that fails writes its ingest tree into a temp directory
+    # rather than into the repo's fixture.
+    mine, mine_core = root / "mine" / "demo", root / "mine" / "demo-core-vault"
+    shutil.copytree(_DEMO_VAULT, mine)
+    shutil.copytree(_DEMO_VAULT.parent / "demo-core-vault", mine_core)
+    (mine_core / "attachments").mkdir(exist_ok=True)
+
+    shared = root / "out-vault"
+    other_vault = _vault_dir(root / "other-vault", "other")
+    db, tree = shared / "other.db", shared / "other-index"
+    note = tree / "other-vault__note__abcd1234"
+    note.mkdir(parents=True)
+    (note / "document.md").write_text("gen", encoding="utf-8")
+    db.write_bytes(b"")
+    scopes.record("other", vault=other_vault, db=db, index_root=tree, registry=reg)
+    # An inherited vault carries no manifest of its own, so only the registry names it.
+    inherited = root / "other-core-vault"
+    (inherited / "attachments").mkdir(parents=True)
+    (inherited / "attachments" / "spec.pdf").write_bytes(b"not regenerable")
+    (other_vault / ".substrate.toml").write_text(
+        'name = "other"\ninherits = ["other-core-vault"]\n', encoding="utf-8")
+
+    targets = [
+        ("inside a vault this scope inherits", mine_core / "attachments"),
+        ("inside a registered scope's inherited vault", inherited / "attachments"),
+        ("over another scope's db and tree", shared),
+        ("inside another scope's ingest tree", note),
+    ]
+    for i, (what, target) in enumerate(targets):
+        before = reg.read_text(encoding="utf-8")
+        rc, err = _compose_cli(str(mine), "--db", str(root / f"d{i}.db"),
+                               "--index-root", str(target), "--registry", str(reg))
+        assert rc == 2, (what, rc, err)
+        assert "FATAL (--index-root)" in err, (what, err)
+        assert "delete" not in err, f"{what} was refused as a deletion: {err}"
+        assert reg.read_text(encoding="utf-8") == before, f"{what} was registered anyway"
+        assert not list(target.glob("*__*__*")), f"{what} took an ingest tree"
+        assert not (root / f"d{i}.db").exists(), f"{what} wrote a database"
+    assert (inherited / "attachments" / "spec.pdf").is_file()
+    assert (note / "document.md").is_file()
+
+
+def test_a_scope_is_never_refused_in_its_own_name() -> None:
+    """Running the registry checks on a plain compose made a scope refuse ITSELF: its own db or its
+    own previously-registered tree, sitting under the root it was composing into, counted as "an
+    index this root holds". Nothing was being deleted, and there was no way out — the refusal reads
+    the registry row, and only a compose that can still run rewrites it.
+
+    Both shapes, then the two things the exemption must NOT loosen: another scope's row inside the
+    root still refuses, and --clean still counts the scope's own rows, because rmtree takes them.
+    """
+    root, reg = _tmp(), _registry()
+    idx = root / "idx"
+    argv = (str(_DEMO_VAULT), "--db", str(idx / "demo.db"), "--index-root", str(idx),
+            "--registry", str(reg))
+    for again in ("first", "again"):
+        rc, err = _compose_cli(*argv)
+        assert rc == 0, ("its own --db under its own index root", again, rc, err)
+
+    # --db OUTSIDE the root throughout. With it inside, the "holds this compose's own --db"
+    # refusal returns before `indexes_within` is ever reached, and the --clean assertion below
+    # would pass on a check that has nothing to do with the exemption it claims to pin.
+    #
+    # A FRESH REGISTRY PER VERB, because `record` REPLACES this scope's row: after the plain
+    # compose at the wider root there is no longer anything of demo's registered inside it, so
+    # running both in sequence would prove nothing about what --clean counts.
+    for verb in ("plain", "--clean"):
+        root, reg = _tmp(), _registry()
+        index, db = root / "index", root / "demo.db"
+        rc, err = _compose_cli(str(_DEMO_VAULT), "--db", str(db),
+                               "--index-root", str(index / "demo"), "--registry", str(reg))
+        assert rc == 0, (verb, rc, err)
+        wider = (str(_DEMO_VAULT), "--db", str(db), "--index-root", str(index),
+                 "--registry", str(reg))
+        if verb == "plain":
+            rc, err = _compose_cli(*wider)
+            assert rc == 0, ("its own registered tree under the root it moved to", rc, err)
+        else:
+            # The removal really would take the tree registered inside, and that row is its own.
+            rc, err = _compose_cli(*wider, "--clean")
+            assert rc == 2, ("--clean stopped counting the scope's own rows", rc, err)
+            assert "holds the index of scope 'demo'" in err, ("refused elsewhere", err)
+
+    # And another scope's row inside the root is refused as before, exemption or not.
+    other = _vault_dir(root / "other-vault", "other")
+    scopes.record("other", vault=other, db=index / "other.db", index_root=index / "other",
+                  registry=reg)
+    rc, err = _compose_cli(*wider)
+    assert rc == 2, ("the exemption dropped another scope's rows too", rc, err)
+    assert "'other'" in err, err
+
+
+def test_a_plain_compose_still_builds_where_an_index_belongs() -> None:
+    """The control for the refusals above: the paths the app and the refresh loop actually use —
+    a directory that does not exist yet, then the scope's own registered tree — must still compose
+    with and without --clean, beside another scope registered as a sibling."""
+    root, reg = _tmp(), _registry()
+    shared = root / "out-vault"
+    # THE OPERATOR'S ACTUAL LAYOUT: every scope's db and `<name>-index` tree inside ONE directory.
+    # This used to build `other` via `_compose(root, ...)`, which put it in the PARENT of `shared`
+    # — nothing registered was anywhere near `shared/demo-index`, so the control passed trivially
+    # and the one shape most likely to be broken by widening `indexes_within`/`trees_around` to
+    # plain composes went untested.
+    other_vault = _vault_dir(root / "other-vault", "other")
+    other_db, other_tree = shared / "other.db", shared / "other-index"
+    other_tree.mkdir(parents=True)
+    other_db.write_bytes(b"")
+    scopes.record("other", vault=other_vault, db=other_db, index_root=other_tree, registry=reg)
+    argv = (str(_DEMO_VAULT), "--db", str(shared / "demo.db"),
+            "--index-root", str(shared / "demo-index"), "--registry", str(reg))
+    # First into a directory that does not exist, then over the tree it just registered, then the
+    # same again with --clean: the three states the app and the refresh loop cycle through.
+    for label, extra in (("first", []), ("recompose", []), ("recompose --clean", ["--clean"])):
+        rc, err = _compose_cli(*argv, *extra)
+        assert rc == 0, (label, rc, err)
+    assert scopes.resolve("demo", reg).index_root == (shared / "demo-index").resolve()
+
+
+def test_a_plain_compose_does_not_write_into_a_vault_a_broken_chain_orphaned() -> None:
+    """The unknowable-chain branch is the ONLY check that sees an inherited vault whose owner no
+    longer resolves — such a vault carries no manifest, so the manifest check is blind to it, and
+    `registered_vaults` names it nowhere. Gating it on `--clean` let a plain compose write ingest
+    directories into the operator's attachments folder and register the vault as its index root.
+
+    Gating it additionally on "the directory already exists" still let it through, because a
+    compose CREATES the path it is handed: `--index-root <that vault>/anything` produced the same
+    nine directories, and an empty directory there did too. All three shapes are refused now, and
+    the only exemption left is a directory that IS an ingest tree.
+    """
+    root, reg = _tmp(), _registry()
+    # Demo's own tree, built while the registry is still clean — the exemption is about shape, so
+    # it has to be a real tree to prove anything.
+    mine_tree = root / "mine-index"
+    argv = (str(_DEMO_VAULT), "--db", str(root / "mine.db"), "--index-root", str(mine_tree),
+            "--registry", str(reg))
+    rc, err = _compose_cli(*argv)
+    assert rc == 0, (rc, err)
+
+    other_vault = _vault_dir(root / "other-vault", "other")
+    inherited = root / "other-core-vault"
+    kept = inherited / "attachments" / "spec.pdf"
+    kept.parent.mkdir(parents=True)
+    kept.write_bytes(b"not regenerable")
+    (other_vault / ".substrate.toml").write_text(
+        'name = "other"\ninherits = ["other-core-vault"]\n', encoding="utf-8")
+    scopes.record("other", vault=other_vault, db=root / "other.db",
+                  index_root=root / "other-index", registry=reg)
+    (other_vault / ".substrate.toml").write_text('name = "other\n', encoding="utf-8")
+
+    vaults, unknown = scopes.registered_vaults(reg)
+    assert [n for n, _ in unknown] == ["other"], (vaults, unknown)
+    assert not any(_p.name == "other-core-vault" for _, _p in vaults), (
+        "the fixture no longer orphans the inherited vault, so nothing here is exercised")
+
+    empty = inherited / "empty-dir"
+    empty.mkdir()
+    shapes = {
+        "an existing directory in the orphaned vault": kept.parent,
+        "a path in it that does not exist yet": inherited / "new-subdir",
+        "an EMPTY directory in it": empty,
+        # The stated cost of the rule: no new index root anywhere while a manifest is unreadable.
+        "a fresh directory with nothing to do with it": root / "fresh-index",
+    }
+    for what, target in shapes.items():
+        before = reg.read_text(encoding="utf-8")
+        rc, err = _compose_cli(str(_DEMO_VAULT), "--db", str(root / "d.db"),
+                               "--index-root", str(target), "--registry", str(reg))
+        assert rc == 2, (what, rc, err)
+        assert "'other'" in err, (what, err)
+        # A compose that removes nothing must not be refused in the language of removal — and this
+        # branch was the one that still said "delete" after every other message was converted.
+        assert "delete" not in err, f"{what} was refused as a deletion: {err}"
+        assert reg.read_text(encoding="utf-8") == before, f"{what} was registered anyway"
+        assert not (target.exists() and list(target.glob("*__*__*"))), (
+            f"{what} took an ingest tree")
+    assert sorted(p.name for p in kept.parent.iterdir()) == ["spec.pdf"]
+    assert sorted(p.name for p in empty.iterdir()) == []
+    assert not (inherited / "new-subdir").exists(), "the refusal created the directory anyway"
+
+    # THE ONE EXEMPTION, still live: a directory that already IS an ingest tree, either verb.
+    for extra in ([], ["--clean"]):
+        rc, err = _compose_cli(*argv, *extra)
+        assert rc == 0, ("an existing ingest tree was refused", extra, rc, err)
+
+
+def test_a_refusal_over_a_half_written_tree_names_the_directory_to_fix() -> None:
+    """An interrupted compose leaves one directory with a `document.md` and no `run.json`, which
+    makes the whole root "not an ingest tree" — so with any manifest elsewhere unreadable, that
+    scope stops composing. Recoverable in seconds IF the refusal says which directory; otherwise
+    it sends the operator through hundreds of them."""
+    root, reg = _tmp(), _registry()
+    tree = root / "demo-index"
+    argv = (str(_DEMO_VAULT), "--db", str(root / "demo.db"), "--index-root", str(tree),
+            "--registry", str(reg))
+    rc, err = _compose_cli(*argv)
+    assert rc == 0, (rc, err)
+    half = next(c for c in tree.iterdir() if c.is_dir())
+    (half / "run.json").unlink()
+
+    b_vault = _vault_dir(root / "b-vault", "b")
+    (b_vault / ".substrate.toml").write_text('name = "b\n', encoding="utf-8")
+    scopes.record("b", vault=b_vault, db=root / "b.db", index_root=root / "b-index", registry=reg)
+
+    for extra in ([], ["--clean"]):
+        rc, err = _compose_cli(*argv, *extra)
+        assert rc == 2, (extra, rc, err)
+        assert half.name in err and "run.json" in err, (
+            f"the refusal does not name the directory to fix: {err}")
+
+
+def test_only_the_row_this_compose_replaces_is_exempt() -> None:
+    """The own-row exemption dropped rows by VAULT for one revision, which waved through the stale
+    row a manifest rename leaves behind — `record` keys by NAME and nothing deletes the old one.
+    The compose then registered at a root that stale row refused every --clean over: the same wedge
+    the exemption exists to remove, one rename away."""
+    root, reg = _tmp(), _registry()
+    shared = root / "shared"
+    (shared / "old-index").mkdir(parents=True)
+    (shared / "old.db").write_bytes(b"")
+    scopes.record("demo-old", vault=_DEMO_VAULT, db=shared / "old.db",
+                  index_root=shared / "old-index", registry=reg)
+
+    rc, err = _compose_cli(str(_DEMO_VAULT), "--db", str(root / "new.db"),
+                           "--index-root", str(shared), "--registry", str(reg))
+    assert rc == 2, ("a stale row for the same vault under an older name was exempted", rc, err)
+    assert "'demo-old'" in err and str(scopes.registry_path(reg)) in err, err
+    assert "demo" not in scopes.load(reg), "the compose registered over the stale row"
 
 
 def test_a_claimant_is_judged_where_it_really_is() -> None:
@@ -704,8 +943,9 @@ def test_an_unknowable_chain_refuses_every_target_but_an_ingest_tree() -> None:
     """One scope whose inherited vaults cannot be known must not stop every other scope's --clean:
     the app recomposes a workspace after EVERY recording, and that failure is only logged. What is
     exempt is a directory that IS an ingest tree — every child an ingest directory — because no
-    vault can be hiding in one. A registry row saying "this is my tree" is not enough: a plain
-    compose registers whatever --index-root it was given, without any of these checks."""
+    vault can be hiding in one. A registry row saying "this is my tree" is not enough: the rows
+    written before `_refuse_index_root` ran on every compose name whatever --index-root was handed
+    to one, and the registry is a hand-editable file besides."""
     import shutil
 
     for breakage in ("a manifest that does not parse", "a manifest that is gone"):

@@ -319,7 +319,7 @@ final class ScriptaVaultTests: XCTestCase {
     /// `write()` overwrite its hand-written manifest — `inherits`, `reference_domains`,
     /// `reference_pins` — on EVERY recording, and `WorkspaceDeleter` remove it entire on a wipe.
     /// The engine refuses on exactly this signal for exactly this reason
-    /// (`cli._refuse_destructive_clean`); this side was reading it the other way.
+    /// (`cli._refuse_index_root`); this side was reading it the other way.
     func testAVaultThisAppDidNotCreateIsNotAdopted() throws {
         let curated = root.appendingPathComponent("cbre", isDirectory: true)
         try FileManager.default.createDirectory(at: curated, withIntermediateDirectories: true)

@@ -505,10 +505,11 @@ def test_clean_refuses_to_delete_anything_vault_shaped() -> None:
     """`--clean` rmtree's --index-root unconditionally; a vault must never be a valid target.
 
     The vaults and the index roots sit side by side in `~/.substrate/scopes.toml`, so the two get
-    typed into the same command, and the vaults are the source of truth. Five shapes must refuse.
+    typed into the same command, and the vaults are the source of truth. Five shapes must refuse —
+    and the three that are vaults must refuse a compose that deletes nothing, too.
     """
     import tempfile
-    from substrate.cli import _refuse_destructive_clean
+    from substrate.cli import _refuse_index_root
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -522,9 +523,9 @@ def test_clean_refuses_to_delete_anything_vault_shaped() -> None:
             'name = "proj"\ninherits = ["core-vault"]\n', encoding="utf-8")
         scope = V.resolve_scope(proj)
 
-        def refuse(target: Path) -> str:
-            return _refuse_destructive_clean(target, scope, db=root / "proj.db",
-                                             registry=root / "no-scopes.toml")
+        def refuse(target: Path, *, removing: bool = True) -> str:
+            return _refuse_index_root(target, scope, db=root / "proj.db",
+                                      registry=root / "no-scopes.toml", removing=removing)
 
         assert "not an index root" in refuse(proj), "the project vault"
         assert refuse(core), "an inherited vault"
@@ -550,6 +551,17 @@ def test_clean_refuses_to_delete_anything_vault_shaped() -> None:
         upper = root / core.name.upper() / "attachments"
         if upper.exists():  # a volume that ignores case; the Linux CI runner is not one
             assert refuse(upper), "a case variant of a directory inside a vault"
+
+        # EVERY VAULT SHAPE REFUSES A PLAIN COMPOSE TOO. Writing an ingest tree into a vault and
+        # registering it as one is the state the --clean guard then has to be safe over.
+        for target, what in ((proj, "the project vault"), (core, "an inherited vault"),
+                             (root, "a parent of a vault")):
+            why = refuse(target, removing=False)
+            assert why, f"{what} accepted a compose that does not --clean"
+            assert "delete" not in why, f"{what} was refused as a deletion: {why}"
+        assert refuse(root / "idx", removing=False) == "", "a genuine index root"
+        assert refuse(authored, removing=False) == "", (
+            "authored markdown is a deletion refusal; writing beside it is recoverable")
 
 
 if __name__ == "__main__":

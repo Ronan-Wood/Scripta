@@ -291,11 +291,28 @@ def foreign_owner(
     return None
 
 
-def indexes_within(root: Path, registry: str | Path | None = None) -> list[tuple[str, Path]]:
+def indexes_within(root: Path, registry: str | Path | None = None, *,
+                   except_row: tuple[str, Path] | None = None) -> list[tuple[str, Path]]:
     """Every registered db or ingest tree strictly inside `root`, as (scope name, path) — what
-    removing `root` would take with it. A scope's own ingest tree AT `root` is not inside it."""
+    removing `root` would take with it. A scope's own ingest tree AT `root` is not inside it.
+
+    `except_row` is the `(name, vault)` of the ONE row a caller is about to rewrite, and drops just
+    that row. Pass it only where nothing is being DELETED: a compose that is merely building here
+    replaces its own row, and without the exemption a scope whose db or previous tree sits under
+    the root it is composing into is refused in its own name — with no remedy the message can name,
+    because the refusal reads the registry row and only a compose that can still run rewrites it.
+    Where `rmtree` is involved the row stays in: it really would take it.
+
+    BOTH HALVES MUST MATCH, and this was `except_vault` for one revision. `record` keys the
+    registry by NAME, so a vault whose manifest `name` changed leaves its old row behind under the
+    old name — a reachable state, since nothing deletes it. Exempting every row sharing the vault
+    waved that stale row through as well, and the compose registered at a root the stale row then
+    refused every `--clean` over: the same wedge the exemption exists to remove, one rename away.
+    """
     return [(entry.name, held)
             for entry in load(registry).values()
+            if except_row is None or not (entry.name == except_row[0]
+                                          and _same_path(entry.vault, except_row[1]))
             for held in (entry.db, entry.index_root)
             if held is not None and is_within(held, root)]
 
@@ -326,8 +343,16 @@ def trees_around(root: Path, vault: Path,
         This is what keeps a scope composed inside an over-broad tree able to clean its own.
 
     A NOTE IS NEVER A TREE. A registered "tree" holding a `document.md` is one of the wider tree's
-    ingested notes — a compose run without --clean can register itself there — so it claims
-    nothing; otherwise the next --clean would delete that note in the claimant's name.
+    ingested notes, so it claims nothing; otherwise the next --clean would delete that note in the
+    claimant's name. A compose can no longer write such a row — `cli._refuse_index_root` runs on
+    every compose now — but the registry is a hand-editable file and holds the rows written before
+    it did, so the rule is still reachable and still load-bearing.
+
+    EXEMPTION BY VAULT ALONE IS RIGHT HERE, though `indexes_within` needs a name as well. The two
+    answer different questions. This one asks "is this tree MINE" — a property of the vault, and a
+    stale row left by a manifest rename names the same vault's own disposable ingest dirs, so
+    exempting it costs nothing. `indexes_within` asks "would this take a row I am NOT about to
+    rewrite", and `record` keys rows by name, so there the name is half the question.
     """
     trees = [e for e in load(registry).values() if e.index_root is not None]
     around = []
