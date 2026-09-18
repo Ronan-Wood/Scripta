@@ -20,6 +20,7 @@ wearing a new hat. `assert_composed` is the post-index proof that it did not hap
 from __future__ import annotations
 
 import hashlib
+import os
 
 import tomllib
 from dataclasses import dataclass, field
@@ -348,6 +349,51 @@ def resolve_vaults(project_vault: Path) -> tuple[VaultRef, ...]:
 
     visit(project_vault, ())
     return tuple(ordered)
+
+
+def chain_best_effort(project_vault: Path) -> tuple[Path, ...]:
+    """The vaults a scope's chain still names when `resolve_vaults` refuses it. For PROTECTION
+    only — composing such a chain is still refused.
+
+    ONLY `inherits` IS READ, AND LENIENTLY. A manifest fails validation for keys that have nothing
+    to do with inheritance (a bad domain tag, a missing `name`), and reading it through
+    `_read_manifest` dropped every vault it inherits from protection. An entry that is not a string
+    or does not resolve is skipped, and a cycle ends the walk. A project vault with no manifest, a
+    manifest that cannot be read or parsed, or an `inherits` that is not a list makes the chain
+    unknowable, and that raises VaultError: a guard must not pass on what it cannot see.
+    """
+    chain: list[Path] = []
+    pending = [project_vault]
+    while pending:
+        vault_dir = Path(os.path.realpath(os.path.expanduser(pending.pop())))
+        if vault_dir in chain:
+            continue
+        chain.append(vault_dir)
+        manifest = vault_dir / MANIFEST
+        if not manifest.is_file():
+            if len(chain) == 1:
+                # The PROJECT vault. It was composed, so it had a manifest; without one now (moved,
+                # or its volume offline) nothing says what it inherits.
+                raise VaultError(f"{vault_dir} has no {MANIFEST} any more, so the vaults it "
+                                 f"inherits are unknown.")
+            continue
+        try:
+            data = tomllib.loads(_read_capped(manifest))
+        except (tomllib.TOMLDecodeError, RecursionError, ValueError) as e:
+            raise VaultError(f"cannot parse {manifest}, so the vaults it inherits are unknown: "
+                             f"{e}") from e
+        inherits = data.get("inherits", [])
+        if not isinstance(inherits, list):
+            raise VaultError(f"{manifest}: 'inherits' is not a list, so the vaults it inherits "
+                             f"are unknown.")
+        for entry in inherits:
+            if not isinstance(entry, str):
+                continue
+            try:
+                pending.append(_resolve_inherit(entry, vault_dir))
+            except (VaultError, OSError, RuntimeError, ValueError):
+                continue
+    return tuple(chain)
 
 
 def resolve_scope(project_vault: Path) -> Scope:
