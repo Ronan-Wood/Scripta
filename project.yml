@@ -180,8 +180,8 @@ targetTemplates:
       # minute after it was verified, and how v0.1.0 shipped reporting 1.0. Edit here, never there.
       properties:
         CFBundleDisplayName: Scripta
-        CFBundleShortVersionString: "0.3.0"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "0.3.1"
+        CFBundleVersion: "4"
         # In-app updates (Sparkle). The feed is whatever GitHub release is marked Latest — see
         # `AppUpdater`. The public key pairs with the private one `generate_keys` put in the
         # release machine's login keychain on 2026-09-14; `Distribution/RELEASING.md` says how to
