@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import ScriptaShared
 
 /// A workspace, as a substrate vault on disk.
@@ -220,12 +221,17 @@ public struct ScriptaVault: Equatable {
             contentsOf: directory.appendingPathComponent(manifestName), encoding: .utf8)
         else { return nil }
         for line in manifest.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // NEWLINES TRIMMED TOO, not just spaces and tabs. Splitting a CRLF file on `\n` leaves a
+            // `\r` on every line, and `.whitespaces` does not cover it — so `scripta_workspace_vault
+            // = true\r` read as the value `true\r`, `isAppVault` said false, and the app refused its
+            // OWN vault as one it did not create. The engine's TOML parser accepts CRLF, so the two
+            // sides disagreed about a file they both read.
+            let trimmed = Self.trimmed(line)
             guard !trimmed.hasPrefix("#"), let equals = trimmed.firstIndex(of: "=") else { continue }
             guard trimmed[trimmed.startIndex..<equals].trimmingCharacters(in: .whitespaces) == key
             else { continue }
             var value = trimmed[trimmed.index(after: equals)...]
-                .trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
                 value = String(value.dropFirst().dropLast())
             }
@@ -419,8 +425,284 @@ public struct ScriptaVault: Equatable {
         // aimed at an app-created vault instead of a foreign one.
         //
         // Regeneration still repairs a MISSING manifest, which is what it was for.
-        if inherits.isEmpty, manager.fileExists(atPath: manifestURL.path) { return }
+        if declaredInherits.isEmpty, manager.fileExists(atPath: manifestURL.path) {
+            // …AND IT IS THE REASON A SELF-INHERITING MANIFEST NEEDED A HAND-EDIT. Once the entry
+            // above is dropped the computed list is usually EMPTY, so this early return would keep
+            // the broken file forever — the operator would be left where #24 found them, the scope
+            // frozen and nothing on the capture path able to fix it.
+            repairSelfInheritance()
+            return
+        }
         try manifest().write(to: manifestURL, atomically: true, encoding: .utf8)
+    }
+
+    /// `inherits` without any entry that IS this vault — the list the manifest may actually declare.
+    ///
+    /// A VAULT THAT INHERITS ITSELF COMPOSES NOTHING AT ALL. `vault.resolve_vaults` walks the chain
+    /// with cycle detection and raises `VaultError: inheritance cycle` on the first repeat, so the
+    /// entry does not merely fail to add anything: it takes the whole scope down, every refresh
+    /// records `compose_failed`, and retrieval keeps answering from the last good index — which is
+    /// how the live `cbre` scope stayed frozen for four days without a single visible error (#24).
+    ///
+    /// DROPPED RATHER THAN REFUSED. The self-reference arrives mixed in with the curated vaults the
+    /// operator does want, and throwing would take those down with it — composing the workspace
+    /// without its notes, which is the same silent loss of context by a different route.
+    ///
+    /// The filter is HERE, not at the call sites, because all five of them — recording, note
+    /// capture, upload promotion, workspace creation, group repair — build the vault from
+    /// `WorkspaceBinding.contextVaults` and funnel through `write()`. The app-side guard in
+    /// `WorkspaceBindings.bind` keeps the value out of defaults; this is what makes it unwritable.
+    var declaredInherits: [URL] {
+        inherits.filter { !Self.isSameDirectory($0, root) }
+    }
+
+    /// Whether two URLs name the same directory.
+    ///
+    /// SYMLINKS RESOLVED, because the engine resolves them: `vault.visit` calls `Path.resolve()`
+    /// before comparing against the chain, so a guard that compared spellings would pass a manifest
+    /// the engine still refuses. The operator reaches vaults through symlinks routinely — the
+    /// `~/Documents/*Vault` paths are all links into an iCloud tree — so this is the ordinary case.
+    ///
+    /// File identity SECOND, for what path comparison cannot see: macOS filesystems are
+    /// case-insensitive by default, so `<root>/CBRE` and `<root>/cbre` are one directory that no
+    /// string comparison calls equal. It is a fallback rather than the primary test because it needs
+    /// both paths to exist, and an `inherits` entry naming a directory that is not there yet is a
+    /// stale binding to report, not a crash.
+    public static func isSameDirectory(_ one: URL, _ other: URL) -> Bool {
+        let left = one.resolvingSymlinksInPath().standardizedFileURL
+        let right = other.resolvingSymlinksInPath().standardizedFileURL
+        if left.path == right.path { return true }
+        let key: Set<URLResourceKey> = [.fileResourceIdentifierKey]
+        guard let leftID = try? left.resourceValues(forKeys: key).fileResourceIdentifier,
+              let rightID = try? right.resourceValues(forKeys: key).fileResourceIdentifier
+        else { return false }
+        return leftID.isEqual(rightID)
+    }
+
+    /// Remove this vault from its own manifest's `inherits`, if a previous build put it there.
+    ///
+    /// A SURGICAL SPLICE, NOT A REGENERATION. Only the `inherits` block is replaced, and only when a
+    /// self-reference was actually found; every line outside it survives byte for byte, so
+    /// `reference_domains`, `reference_pins` and anything else the operator added by hand are still
+    /// there afterwards. Inside the block the KEPT ENTRIES keep their exact spelling but not their
+    /// indentation — they are re-emitted one per line, which is the shape they already had.
+    ///
+    /// THAT GUARANTEE IS THIS BRANCH'S ALONE. When `declaredInherits` is non-empty `write()` takes
+    /// the other branch and regenerates the whole manifest, which drops every key `manifest()` does
+    /// not author — longstanding behaviour, not introduced here, and the reason the early return
+    /// exists at all. So a hand-added key survives a repair and does not survive the next binding
+    /// change; do not read this docstring as a promise about the file in general.
+    ///
+    /// The operator's OTHER inherits are kept, which is the point: the live repair for #24 repointed
+    /// `cbre` at its curated vault by hand, and a fix that dropped the whole list would undo it on
+    /// the next call.
+    func repairSelfInheritance() {
+        // THE HARM, CHECKED WHERE IT HAPPENS, not only at its cause. `vault(forScope:under:)` already
+        // refuses a directory this app did not create, so every caller that can reach here has
+        // passed that gate — but this is a destructive rewrite of a file whose ownership key is what
+        // grants permission to rewrite it, and the guard standing one call away in another function
+        // is the shape that made `vaultBelongsToAnotherWorkspace` necessary in the first place.
+        guard Self.isAppVault(root),
+              let text = try? String(contentsOf: manifestURL, encoding: .utf8),
+              let block = Self.inheritsBlock(in: text) else { return }
+        // THE ENTRIES STAY THE BYTES THEY WERE. Re-emitting them as resolved absolute paths would
+        // rewrite the operator's `../cbre-vault` into whatever it resolved to here — and since a
+        // relative entry resolves against the VAULT'S PARENT rather than this process's working
+        // directory, "whatever it resolved to" is not a path the engine would have read. Re-encoding
+        // them is the same hazard one level down: this reader keeps the backslash on any escape but
+        // `\"` and `\\`, so decoding `"a\tb"` and re-encoding it would yield `"a\\tb"` — a different
+        // path, in an entry that had nothing to do with the self-reference. `raw` is the source text
+        // between the quotes, and it goes back out untouched.
+        let kept = block.entries.filter { !Self.isSameDirectory(resolvedInherit($0.value), root) }
+        guard kept.count != block.entries.count else { return }
+
+        var lines = text.components(separatedBy: "\n")
+        lines.replaceSubrange(block.lines, with: Self.inheritsLines(quoting: kept.map(\.raw)))
+        let repaired = lines.joined(separator: "\n")
+
+        // COMPARE AND SWAP, because this is a read-modify-write on a file in a cloud-synced folder
+        // that `write()` itself regenerates from other callers. A full regeneration landing between
+        // the read above and the write below would be silently reverted to the stale text — losing
+        // the `identity` line it had just added, or a vault the operator had just bound. Re-reading
+        // costs one syscall on a path that only runs when a repair is actually due.
+        guard let current = try? String(contentsOf: manifestURL, encoding: .utf8), current == text
+        else {
+            Self.log.error("""
+                \(self.scope, privacy: .public): the manifest changed while its self-inheritance was \
+                being repaired; leaving it for the next write
+                """)
+            return
+        }
+        // WRITTEN BEST-EFFORT, because the caller cannot afford this to throw. `write()` is called
+        // from the recording path, where any failure falls back to filing the call in the flat
+        // output folder instead of the vault (`RecordingSession.destination`) — so a manifest this
+        // could not rewrite would divert the call out of its workspace entirely, every time. A
+        // scope that is stale is strictly better than a call that is filed somewhere else.
+        //
+        // IT IS STILL SAID OUT LOUD. A repair that fails silently on every recording is the exact
+        // shape of the defect being fixed: four days of `compose_failed` that nothing surfaced.
+        do {
+            try repaired.write(to: manifestURL, atomically: true, encoding: .utf8)
+            Self.log.notice("""
+                \(self.scope, privacy: .public): removed this vault from its own inherits; the scope \
+                composed nothing while that entry was there
+                """)
+        } catch {
+            Self.log.error("""
+                \(self.scope, privacy: .public): could not rewrite a manifest that inherits itself \
+                (\(error.localizedDescription, privacy: .public)); the scope will not compose until \
+                this succeeds
+                """)
+        }
+    }
+
+    static let log = Logger(subsystem: "com.ronanwood.Scripta", category: "Vault")
+
+    /// An `inherits` entry as the ENGINE reads it — `vault._resolve_inherit`.
+    ///
+    /// Absolute is honoured as given; everything else, a bare name included, resolves against the
+    /// vault's PARENT and never the process working directory, "so composition is deterministic
+    /// regardless of where `compose` is invoked". A guard that resolved these the way Foundation
+    /// does by default would compare against a path in whatever directory the app happened to be
+    /// launched from, and so would neither recognise a relative self-reference nor leave a relative
+    /// entry alone.
+    func resolvedInherit(_ entry: String) -> URL {
+        let expanded = (entry as NSString).expandingTildeInPath
+        guard !expanded.hasPrefix("/") else {
+            return URL(fileURLWithPath: expanded, isDirectory: true)
+        }
+        return root.deletingLastPathComponent().appendingPathComponent(entry, isDirectory: true)
+    }
+
+    /// The `inherits` array in a manifest: which lines it spans, and the entries it declares, in the
+    /// exact spelling the file gives them.
+    ///
+    /// IT RECOGNISES ONLY THE SHAPE `manifest()` WRITES — `inherits = []`, or `inherits = [` with one
+    /// quoted entry per line and a closing `]` — and returns `nil`, meaning LEAVE THE FILE ALONE, for
+    /// everything else. That is narrow on purpose. The manifests this repairs are the ones the app
+    /// itself wrote with a self-reference, which are canonical by construction; anything else is a
+    /// hand edit, where the cost of misreading is deleting a vault, or a comment recording WHY a
+    /// vault was disabled, that the operator meant to keep. A general TOML reader here would have to
+    /// be right about comments, multi-line strings and `]` inside a path before it could be trusted
+    /// with a destructive rewrite — and being wrong about any of them is worse than not repairing.
+    ///
+    /// So a hand-edited manifest keeps its self-reference and stays frozen until the operator fixes
+    /// it. `declaredInherits` still guarantees the app cannot be the one that put it there.
+    static func inheritsBlock(in manifest: String)
+        -> (lines: Range<Int>, entries: [(value: String, raw: String)])? {
+        let lines = manifest.components(separatedBy: "\n")
+        // TOP-LEVEL ONLY. Every key after a `[table]` header belongs to that table, and the engine
+        // reads the top-level `inherits`; scanning the whole file would splice a table's array in a
+        // manifest that happened to have one and no top-level entry. TOML puts top-level keys before
+        // the first header, so stopping there is the whole check.
+        guard let start = lines.prefix(while: { !trimmed($0).hasPrefix("[") })
+            .firstIndex(where: { manifestKey(of: $0) == "inherits" })
+        else { return nil }
+
+        // `trimmed` takes newlines too: a CRLF manifest splits on `\n` leaving `\r` on every line,
+        // and a shape test using `.whitespaces` alone would match none of them — so the repair would
+        // silently never run on a file that arrived through a sync path or a Windows-side edit.
+        let opening = trimmed(lines[start])
+        if opening == "inherits = []" { return (start..<(start + 1), []) }
+        guard opening == "inherits = [" else { return nil }
+
+        var entries: [(value: String, raw: String)] = []
+        var index = start + 1
+        while index < lines.count {
+            let line = trimmed(lines[index])
+            if line == "]" { return (start..<(index + 1), entries) }
+            // A blank line carries nothing, so dropping it loses nothing — unlike a comment, which
+            // records WHY a vault was disabled and is what makes `soleTomlString` refuse the block.
+            if line.isEmpty { index += 1; continue }
+            guard let entry = soleTomlString(in: line) else { return nil }
+            entries.append(entry)
+            index += 1
+        }
+        // An array with no closing bracket is a file the engine refuses outright; running off the
+        // end of it and splicing over whatever came next is how a bad parse deletes `guard_state`.
+        return nil
+    }
+
+    /// Whitespace AND newlines, so a `\r` left by splitting a CRLF file on `\n` cannot make an
+    /// otherwise canonical line unrecognisable.
+    static func trimmed(_ line: String) -> String {
+        line.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// One entry line of the array `manifest()` writes: a single TOML basic string, an optional
+    /// trailing comma, and nothing else. `nil` for anything else — a comment, two entries on a line,
+    /// a trailing note — which is what keeps `inheritsBlock` to the shape it can safely rewrite.
+    ///
+    /// Parsed with quote state rather than matched on delimiters, so a path legally containing `]`,
+    /// `,` or `#` reads as the one string it is.
+    /// Returns both the DECODED value, for comparing against this vault, and the RAW source text
+    /// between the quotes, which is what a repair writes back. Keeping the raw form is what stops the
+    /// decode/re-encode round trip corrupting an entry: this decoder keeps the backslash on any
+    /// escape but `\"` and `\\`, so `"a\tb"` would decode to `a\tb` and re-encode to `"a\\tb"` — a
+    /// different path, in an entry nobody asked to change.
+    static func soleTomlString(in line: String) -> (value: String, raw: String)? {
+        let characters = Array(line)
+        guard characters.first == "\"" else { return nil }
+        var value = ""
+        var raw = ""
+        var escaped = false
+        var index = 1
+        var closed = false
+        while index < characters.count {
+            let character = characters[index]
+            index += 1
+            if escaped {
+                // Only the two escapes `tomlString` emits; any other keeps its backslash, so a path
+                // we do not fully understand cannot silently compare equal to something else.
+                value += (character == "\"" || character == "\\") ? String(character)
+                                                                  : "\\\(character)"
+                raw.append(character)
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+                raw.append(character)
+            } else if character == "\"" {
+                closed = true
+                break
+            } else {
+                value.append(character)
+                raw.append(character)
+            }
+        }
+        guard closed else { return nil }
+        // AN EMPTY ENTRY IS NOT A VAULT. `appendingPathComponent("")` returns the receiver, so `""`
+        // would resolve to the vault's PARENT and be kept as a legitimate inherit of the directory
+        // holding every workspace. It is garbage in a file we are about to rewrite: leave it alone.
+        guard !value.isEmpty else { return nil }
+        let rest = trimmed(String(characters[index...]))
+        guard rest.isEmpty || rest == "," else { return nil }
+        return (value, raw)
+    }
+
+    /// The key a manifest line declares, or `nil` for a comment or a line with no `=`.
+    ///
+    /// A REAL KEY MATCH rather than a prefix test, for the reason `manifestValue` records: the
+    /// looser form accepted `scripta_workspace_vault = false # true`, and any key merely STARTING
+    /// with the one being asked for.
+    static func manifestKey(of line: String) -> String? {
+        let trimmed = Self.trimmed(line)
+        guard !trimmed.hasPrefix("#"), let equals = trimmed.firstIndex(of: "=") else { return nil }
+        return trimmed[trimmed.startIndex..<equals].trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The `inherits` lines, from paths that still need escaping — the writer's side.
+    static func inheritsLines(escaping paths: [String]) -> [String] {
+        inheritsLines(quoting: paths.map(tomlBody))
+    }
+
+    /// The `inherits` lines, from bodies that are ALREADY in their final escaped form — the repair's
+    /// side, where the body is the source text the operator wrote and must not be re-encoded.
+    ///
+    /// Both spellings go through here so the writer and the repair cannot drift apart about the
+    /// shape of the block, which is also the shape `inheritsBlock` is the only reader of.
+    static func inheritsLines(quoting bodies: [String]) -> [String] {
+        guard !bodies.isEmpty else { return ["inherits = []"] }
+        return ["inherits = ["] + bodies.map { "    \"\($0)\"," } + ["]"]
     }
 
     /// `name` and `inherits` only. `reference_domains` and `reference_pins` are deliberately absent:
@@ -490,28 +772,26 @@ public struct ScriptaVault: Equatable {
         if FileManager.default.fileExists(atPath: registry.path) {
             lines.append("\(Self.identityKey) = \(Self.tomlString(registry.path))")
         }
-        if inherits.isEmpty {
-            lines.append("inherits = []")
-        } else {
-            lines.append("inherits = [")
-            for vault in inherits {
-                lines.append("    \(Self.tomlString(vault.standardizedFileURL.path)),")
-            }
-            lines.append("]")
-        }
+        // `declaredInherits`, NOT `inherits`: a vault may not inherit itself, and this is the single
+        // place the value reaches the file. See that property for what the entry costs.
+        lines.append(contentsOf: Self.inheritsLines(
+            escaping: declaredInherits.map(\.standardizedFileURL.path)))
         return lines.joined(separator: "\n") + "\n"
     }
 
     /// A TOML basic string. Backslash first — escaping it after the quote would double-escape the
     /// backslash this function just inserted.
-    static func tomlString(_ value: String) -> String {
+    static func tomlString(_ value: String) -> String { "\"\(tomlBody(value))\"" }
+
+    /// The inside of a TOML basic string — everything `tomlString` does but the quotes, so the
+    /// `inherits` emitter can compose a body without going through a form it would have to unwrap.
+    static func tomlBody(_ value: String) -> String {
         var escaped = value.replacingOccurrences(of: "\\", with: "\\\\")
         escaped = escaped.replacingOccurrences(of: "\"", with: "\\\"")
         // A control byte inside a TOML basic string is a parse error, not a quoting problem, so it
         // is removed rather than escaped. Shared with every other scalar writer — the escaping half
         // above is TOML's alone, this half is not.
-        escaped = TranscriptWriter.flattenedControlCharacters(escaped)
-        return "\"\(escaped)\""
+        return TranscriptWriter.flattenedControlCharacters(escaped)
     }
 
     // MARK: - Naming

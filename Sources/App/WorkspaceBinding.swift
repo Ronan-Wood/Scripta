@@ -82,12 +82,64 @@ struct WorkspaceBinding: Equatable {
     /// express this, the only way a workspace inherited anything was as a side effect of picking a
     /// scope in Ask — which bound exactly one, and left the operator hand-editing TOML to add a
     /// second.
+    ///
+    /// NEVER THIS WORKSPACE'S OWN VAULT (#24). Since the scope named after a workspace is registered
+    /// to the workspace vault, picking it in Ask stored that directory as the bound scope's vault —
+    /// and the fallback below then offered the vault to itself as context. `ScriptaVault` refuses to
+    /// write it, so the manifest is safe either way; this filter is what stops it being PERSISTED,
+    /// because `AppModel.createWorkspace` reads this list and stores it straight back into
+    /// `AppSettings.workspaceContextVaults` as the operator's explicit choice.
+    ///
+    /// DROPPED ON READ, not purged from defaults. A value written before this shipped — or through
+    /// the Settings toggle, whose options are filtered by scope NAME rather than by directory — is
+    /// still in the store and still renders as chosen there. It just never reaches a manifest.
+    /// `AppModel.createWorkspace` stores this filtered list back, so creating a workspace does
+    /// eventually purge it: correct, since a value this always drops can never mean anything.
+    ///
+    /// IT TOUCHES THE FILESYSTEM, which a caller reading a stored list would not expect. Comparing
+    /// directories rather than spellings is the whole point of the guard, and that costs a `stat` per
+    /// candidate — so the vault to compare against is resolved ONCE here rather than per entry, and
+    /// an empty list never resolves it at all.
     var contextVaults: [URL] {
         let chosen = AppSettings.workspaceContextVaults[workspace] ?? []
         if !chosen.isEmpty {
-            return chosen.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            guard let own = ownVault else { return chosen.map(Self.directory) }
+            return chosen.map(Self.directory).filter { !ScriptaVault.isSameDirectory($0, own) }
         }
-        return inheritsVault.map { [$0] } ?? []
+        guard let vault = inheritsVault else { return [] }
+        guard let own = ownVault else { return [vault] }
+        return ScriptaVault.isSameDirectory(vault, own) ? [] : [vault]
+    }
+
+    private static func directory(_ path: String) -> URL {
+        URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    /// This workspace's OWN vault directory — the one thing its `inherits` may never name (#24).
+    ///
+    /// Derived by path rather than through `ScriptaVault.vault(forScope:under:)`: that factory
+    /// REFUSES a name it will not create a vault for, and a refusal here would answer "no, that is
+    /// not your own vault" — the wrong way round for a guard. Every app-side caller of the factory
+    /// passes `AppSettings.outputFolder`, so the two agree on where a vault lives.
+    ///
+    /// THE UNNAMED WORKSPACE HAS A VAULT TOO, and reading `""` as "no own vault" would leave the
+    /// guard off on the path a new install takes first. `AppSettings.activeGroup` is `""` on a fresh
+    /// machine and `RecordingSession.destination` files its calls under `ScriptaVault.defaultScope`,
+    /// so picking `default` in Ask stores exactly the value this exists to keep out. Mirrored from
+    /// there rather than restated: an unnameable name that is not empty still has no vault.
+    var ownVault: URL? {
+        let slug = ScriptaVault.slug(workspace.isEmpty ? ScriptaVault.defaultScope : workspace)
+        guard !slug.isEmpty else { return nil }
+        return AppSettings.outputFolder.appendingPathComponent(slug, isDirectory: true)
+    }
+
+    /// Whether a path IS this workspace's own vault — compared as a directory rather than as a
+    /// string, because the operator reaches vaults through symlinks and macOS is case-insensitive.
+    /// `ScriptaVault.isSameDirectory` is the same comparison the manifest writer makes, so the two
+    /// cannot disagree about what "its own vault" means.
+    func isOwnVault(_ candidate: URL) -> Bool {
+        guard let own = ownVault else { return false }
+        return ScriptaVault.isSameDirectory(candidate, own)
     }
 
     var inheritsVault: URL? {
@@ -127,12 +179,26 @@ enum WorkspaceBindings {
     /// name because capture needs it off the main actor — see `AppSettings.workspaceReadVaults`.
     /// Passing `nil` for it binds the name without the path, which leaves the workspace vault
     /// inheriting nothing: correct only when the caller genuinely does not know the path.
+    ///
+    /// THE VAULT IS DROPPED WHEN IT IS THE WORKSPACE'S OWN, and the SCOPE NAME IS STILL STORED (#24).
+    /// Binding CBRE to the `cbre` scope is a legitimate thing to do — since Doc 4 §8 that scope IS
+    /// the workspace vault, and the binding is what Ask asks. What must not be stored is its
+    /// DIRECTORY, because the only consumer of that path is the manifest's `inherits`, where the
+    /// workspace's own vault means an inheritance cycle and a scope that composes nothing at all.
+    /// A workspace bound to its own scope inherits nothing extra, which is correct: it already
+    /// composes itself.
     static func bind(_ workspace: String, reads scope: String?, vault: String? = nil) {
         var scopes = AppSettings.workspaceReadScopes
         var vaults = AppSettings.workspaceReadVaults
         if let scope, !scope.isEmpty {
             scopes[workspace] = scope
-            if let vault, !vault.isEmpty { vaults[workspace] = vault } else { vaults.removeValue(forKey: workspace) }
+            let binding = WorkspaceBinding(workspace: workspace, readsScope: scope)
+            if let vault, !vault.isEmpty,
+               !binding.isOwnVault(URL(fileURLWithPath: vault, isDirectory: true)) {
+                vaults[workspace] = vault
+            } else {
+                vaults.removeValue(forKey: workspace)
+            }
         } else {
             scopes.removeValue(forKey: workspace)
             vaults.removeValue(forKey: workspace)
