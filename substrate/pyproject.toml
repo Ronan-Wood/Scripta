@@ -57,7 +57,7 @@ opencv-python-headless = ["ninja"]
 opencv-python-headless = { ENABLE_HEADLESS = "1", ENABLE_CONTRIB = "0", CMAKE_ARGS = "-DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DVIDEOIO_ENABLE_PLUGINS=OFF -DWITH_KLEIDICV=OFF -DBUILD_opencv_gapi=OFF -DWITH_ADE=OFF -DWITH_AVIF=OFF -DWITH_JPEGXL=OFF -DWITH_SPNG=OFF -DWITH_TBB=OFF -DWITH_EIGEN=OFF -DWITH_ITT=OFF -DBUILD_JAVA=OFF -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF" }
 
 [dependency-groups]
-dev = ["ipykernel", "ruff>=0.16.7"]
+dev = ["ipykernel", "ruff>=0.16.8"]
 
 [tool.ruff]
 target-version = "py310"
