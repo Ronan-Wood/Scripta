@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       # NOT `uv sync`. The engine's full dependency set is torch, docling and an OpenCV built from
       # source — gigabytes, and twenty minutes of compiling, for a suite that touches none of it.
       # Measured 2026-09-16: these four packages run all 606 tests in 15 seconds from a 57 MB
