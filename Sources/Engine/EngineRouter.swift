@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 
 /// Resolves task → engine from settings at dispatch (so switching engines is live). Apple FM is
 /// always the default and the automatic downward fallback; nothing constructs a URLSession unless
@@ -71,8 +72,21 @@ enum EngineRouter {
         guard AppSettings.endpointEnabled,
               let url = AppSettings.endpointURL,
               Locality.isAllowedForRequest(url, lanConfirmed: AppSettings.endpointLANConfirmed) else { return nil }
-        let model = AppSettings.endpointModel(for: task)
-        guard let model, !model.isEmpty else { return nil }
+        guard let model = AppSettings.resolvedModel(for: task == .ask ? .ask : .enrich).name else { return nil }
         return EndpointEngine(baseURL: url, model: model, lanConfirmed: AppSettings.endpointLANConfirmed)
+    }
+
+    /// Re-reads the server's model catalog, so bindings resolve against what it has now rather than
+    /// what it had when Settings last tested the connection. Returns the stored catalog; a failed
+    /// read keeps the last good one.
+    @discardableResult
+    static func refreshCatalog() async -> [ServerModel]? {
+        guard AppSettings.endpointEnabled,
+              let url = AppSettings.endpointURL,
+              Locality.isAllowedForRequest(url, lanConfirmed: AppSettings.endpointLANConfirmed) else { return nil }
+        if let catalog = try? await OpenAIWire(baseURL: url, lanConfirmed: AppSettings.endpointLANConfirmed).catalog() {
+            AppSettings.storeCatalog(catalog, from: url)
+        }
+        return AppSettings.endpointCatalog
     }
 }

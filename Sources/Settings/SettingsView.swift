@@ -78,6 +78,7 @@ struct SettingsView: View {
     @State private var endpointEnabled = AppSettings.endpointEnabled
     @State private var endpointURLText = AppSettings.endpointURLString
     @State private var endpointModels: [String] = AppSettings.endpointKnownModels
+    @State private var catalog: [ServerModel]? = AppSettings.endpointCatalog
     @State private var askModel = AppSettings.endpointModel(for: .ask) ?? ""
     @State private var enrichModel = AppSettings.endpointModel(for: .enrich) ?? ""
     @State private var endpointStatus = ""
@@ -641,7 +642,11 @@ struct SettingsView: View {
     @ViewBuilder private var localModelSections: some View {
         Section {
             Toggle("Use a local model server", isOn: $endpointEnabled)
-                .onChange(of: endpointEnabled) { _, v in AppSettings.endpointEnabled = v }
+                .onChange(of: endpointEnabled) { _, v in
+                    AppSettings.endpointEnabled = v
+                    if v { Task { await reloadCatalog() } }
+                }
+                .task { await reloadCatalog() }
             if endpointEnabled {
                 TextField("http://localhost:11434/v1", text: $endpointURLText)
                     .textFieldStyle(.roundedBorder)
@@ -650,6 +655,8 @@ struct SettingsView: View {
                         // Editing the endpoint invalidates any prior LAN confirmation — the new
                         // address must be confirmed again before it's used (audit L1).
                         AppSettings.endpointLANConfirmed = false
+                        // …and the old server's catalog, which says nothing about the new one's.
+                        catalog = AppSettings.endpointCatalog
                     }
                 HStack(spacing: 8) {
                     Button(testingEndpoint ? "Testing…" : "Test connection") { testEndpoint() }
@@ -660,27 +667,15 @@ struct SettingsView: View {
                     Text(endpointStatus).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Picker("Ask your calls", selection: $askModel) {
-                    Text("Apple Intelligence (default)").tag("")
-                    ForEach(endpointModels, id: \.self) { Text($0).tag($0) }
-                    if !askModel.isEmpty && !endpointModels.contains(askModel) {
-                        Text("\(askModel) (not on server)").tag(askModel)
-                    }
+                    modelOptions(.ask, selection: askModel, none: "Apple Intelligence (default)")
                 }
                 .onChange(of: askModel) { _, v in AppSettings.setEndpointModel(v.isEmpty ? nil : v, for: .ask) }
                 Picker("Titles & summaries", selection: $enrichModel) {
-                    Text("Apple Intelligence (default)").tag("")
-                    ForEach(endpointModels, id: \.self) { Text($0).tag($0) }
-                    if !enrichModel.isEmpty && !endpointModels.contains(enrichModel) {
-                        Text("\(enrichModel) (not on server)").tag(enrichModel)
-                    }
+                    modelOptions(.enrich, selection: enrichModel, none: "Apple Intelligence (default)")
                 }
                 .onChange(of: enrichModel) { _, v in AppSettings.setEndpointModel(v.isEmpty ? nil : v, for: .enrich) }
                 Picker("Screen captioning (vision)", selection: $visionModel) {
-                    Text("Off — OCR text only").tag("")
-                    ForEach(endpointModels, id: \.self) { Text($0).tag($0) }
-                    if !visionModel.isEmpty && !endpointModels.contains(visionModel) {
-                        Text("\(visionModel) (not on server)").tag(visionModel)
-                    }
+                    modelOptions(.vision, selection: visionModel, none: "Off — OCR text only")
                 }
                 .onChange(of: visionModel) { _, v in AppSettings.visionModel = v }
                 if !askModel.isEmpty {
@@ -776,10 +771,13 @@ struct SettingsView: View {
             let wire = OpenAIWire(baseURL: url, lanConfirmed: AppSettings.endpointLANConfirmed)
             let started = Date()
             do {
-                let models = try await wire.models(timeout: 3)
+                let fetched = try await wire.catalog()
+                let models = fetched.map(\.name)
                 let ms = Int(Date().timeIntervalSince(started) * 1000)
-                AppSettings.endpointKnownModels = models
+                AppSettings.storeCatalog(fetched, from: url)
                 endpointModels = models
+                // An empty list isn't stored (see storeCatalog), but the pickers should still show it.
+                catalog = fetched.isEmpty ? [] : AppSettings.endpointCatalog
                 endpointOK = true
                 endpointStatus = "Connected — \(models.count) model\(models.count == 1 ? "" : "s"), \(ms) ms"
             } catch {
@@ -787,6 +785,66 @@ struct SettingsView: View {
                 endpointStatus = (error as? EngineError)?.errorDescription ?? "Couldn’t connect"
             }
             testingEndpoint = false
+        }
+    }
+
+    /// Picker rows for one model binding: none, Auto (naming what it picks), the models that can
+    /// do the job, and — when the server no longer has the saved pick — that pick, saying what
+    /// stands in for it.
+    @ViewBuilder
+    private func modelOptions(_ role: ModelRole, selection: String, none: String) -> some View {
+        let rows = offeredModels(role, selection: selection)
+        Text(none).tag("")
+        Text(autoLabel(role)).tag(ModelResolver.auto)
+        ForEach(rows, id: \.self) { name in
+            Text(isCloud(name) ? "\(name) (cloud)" : name).tag(name)
+        }
+        // Every selection needs a row tagged with exactly its value, or the picker shows blank.
+        if !selection.isEmpty, selection != ModelResolver.auto, !rows.contains(selection) {
+            Text(staleLabel(role, selection)).tag(selection)
+        }
+    }
+
+    private func isCloud(_ name: String) -> Bool {
+        ModelResolver.isRemote(catalog?.first { ModelResolver.sameModel($0.name, name) } ?? ServerModel(name: name))
+    }
+
+    /// Pulls the server's current catalog into the pickers. Runs when the pane opens and when the
+    /// server is switched on, so Auto isn't left resolving against nothing until Test connection.
+    private func reloadCatalog() async {
+        guard let fresh = await EngineRouter.refreshCatalog() else { return }
+        catalog = fresh
+        endpointModels = fresh.map(\.name)
+    }
+
+    private func autoLabel(_ role: ModelRole) -> String {
+        // Without a catalog Auto resolves to nothing, so say so rather than promise a pick.
+        guard let catalog else { return "Auto (test connection to choose)" }
+        if let name = ModelResolver.best(for: role, in: catalog) { return "Auto (\(name))" }
+        return role == .vision ? "Auto (no vision model on server)" : "Auto (no suitable model on server)"
+    }
+
+    /// The models listed for a role — everything, until a catalog says what each can do — plus the
+    /// saved pick if the server has it, even one we'd no longer offer. The pick is listed under its
+    /// saved spelling (`mistral` where the server says `mistral:latest`) so its row's tag matches.
+    private func offeredModels(_ role: ModelRole, selection: String) -> [String] {
+        var rows = catalog.map { $0.filter { ModelResolver.offers($0, for: role) }.map(\.name) } ?? endpointModels
+        guard !selection.isEmpty, selection != ModelResolver.auto else { return rows }
+        let all = catalog?.map(\.name) ?? endpointModels
+        if let saved = all.first(where: { ModelResolver.sameModel($0, selection) }), !rows.contains(saved) {
+            rows.append(saved)
+        }
+        return rows.map { ModelResolver.sameModel($0, selection) ? selection : $0 }
+    }
+
+    private func staleLabel(_ role: ModelRole, _ selection: String) -> String {
+        switch ModelResolver.resolve(binding: selection, role: role, catalog: catalog) {
+        case .model(let name, .substituted):
+            return "\(selection) (not on server — using \(name))"
+        case .model:
+            return "\(selection) (not on server)"
+        case .none:
+            return "\(selection) (not on server — \(role == .vision ? "captioning off" : "using Apple Intelligence"))"
         }
     }
 
