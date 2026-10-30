@@ -42,6 +42,7 @@ enum AppSettings {
         static let endpointModelAsk = "endpointModelAsk"
         static let endpointModelEnrich = "endpointModelEnrich"
         static let endpointKnownModels = "endpointKnownModels"
+        static let endpointCatalog = "endpointCatalog"
         static let appleFMSizeClass = "appleFMSizeClass"
         static let rerankEnabled = "rerankEnabled"
         static let mirrorEnabled = "mirrorEnabled"
@@ -499,6 +500,48 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: Keys.endpointKnownModels) }
     }
 
+    /// The last catalog the configured server reported (names, sizes, capabilities), or nil if it
+    /// was never fetched — or was fetched from a server that's no longer the configured one, whose
+    /// models say nothing about this one's. Model bindings resolve against it.
+    static var endpointCatalog: [ServerModel]? {
+        guard let data = defaults.data(forKey: Keys.endpointCatalog),
+              let stored = try? JSONDecoder().decode(StoredCatalog.self, from: data),
+              stored.url == endpointURL?.absoluteString else { return nil }
+        return stored.models
+    }
+
+    /// The one writer of the catalog. Drops one fetched from `url` if the endpoint has been changed
+    /// since — a slow launch refresh must not overwrite what the new server reported. Drops an empty
+    /// one too: that's what Ollama serves while its model store is unmounted (an external drive not
+    /// yet up at login), and storing it would turn every pick into a stand-in until the next
+    /// refresh, long after the drive is back.
+    static func storeCatalog(_ models: [ServerModel], from url: URL) {
+        guard !models.isEmpty, url.absoluteString == endpointURL?.absoluteString else { return }
+        defaults.set(try? JSONEncoder().encode(StoredCatalog(url: url.absoluteString, models: models)),
+                     forKey: Keys.endpointCatalog)
+        endpointKnownModels = models.map(\.name)
+    }
+
+    private struct StoredCatalog: Codable {
+        let url: String
+        let models: [ServerModel]
+    }
+
+    /// The stored binding for a role: "" (none), `ModelResolver.auto`, or a model name.
+    static func modelBinding(for role: ModelRole) -> String {
+        switch role {
+        case .ask: return endpointModel(for: .ask) ?? ""
+        case .enrich: return endpointModel(for: .enrich) ?? ""
+        case .vision: return visionModel
+        }
+    }
+
+    /// The model a role runs on right now: the saved pick, Auto's choice, or a stand-in for a pick
+    /// the server no longer has. See `ModelResolver`.
+    static func resolvedModel(for role: ModelRole) -> ResolvedModel {
+        ModelResolver.resolve(binding: modelBinding(for: role), role: role, catalog: endpointCatalog)
+    }
+
     /// Which prompt tier Apple FM gets. `.compact` today; a hidden override lets a newer-silicon
     /// tester flip to `.capable` without brittle CPU brand-string probing.
     static var appleFMSizeClass: SizeClass {
@@ -515,8 +558,8 @@ enum AppSettings {
     /// The local embedding model for semantic retrieval (e.g. "nomic-embed-text"). "" = off, so
     /// retrieval stays pure-FTS. Hybrid fusion turns on once chunks are embedded with it.
 
-    /// Local vision model for captioning screenshots OCR can't read (e.g. "qwen2.5vl:7b"). "" =
-    /// off. Runs only in the post-call pass, never during a meeting.
+    /// Local vision model for captioning screenshots OCR can't read (a model name, or
+    /// `ModelResolver.auto`). "" = off. Runs only in the post-call pass, never during a meeting.
     static var visionModel: String {
         get { defaults.string(forKey: Keys.visionModel) ?? "" }
         set { defaults.set(newValue, forKey: Keys.visionModel) }

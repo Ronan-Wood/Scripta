@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          helpAction: #selector(openHelp))
         menuController = MenuController()
         AppUpdater.shared.start()
+        // Model bindings resolve against the server's catalog; read what it has now.
+        Task { await EngineRouter.refreshCatalog() }
 
         if case .blocked(let plist) = carried { presentSettingsUnreachableAlert(plist) }
         presentFirstRunIfNeeded()
