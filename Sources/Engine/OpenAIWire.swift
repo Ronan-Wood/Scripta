@@ -1,7 +1,9 @@
 import Foundation
+import ScriptaCore
 
 /// Hand-rolled OpenAI-wire-format client for a user-run local server (Ollama / LM Studio / MLX).
-/// No SDK, no vendor-specific fields. Enforces locality on every request and rejects any redirect
+/// No SDK, no vendor-specific fields — except that the model catalog also reads Ollama's own
+/// `/api/tags` when the server has it. Enforces locality on every request and rejects any redirect
 /// that would leave the configured host.
 final class OpenAIWire: NSObject, URLSessionTaskDelegate {
     typealias Message = [String: String]   // {"role": ..., "content": ...}
@@ -35,7 +37,9 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
         self.lanConfirmed = lanConfirmed
     }
 
-    private func endpoint(_ path: String) throws -> URL {
+    /// `native` addresses Ollama's own API, which sits beside the OpenAI-compatible one (`…/v1` →
+    /// `…`). Same host either way, so every check below applies unchanged.
+    private func endpoint(_ path: String, native: Bool = false) throws -> URL {
         let host = baseURL.host ?? "?"
         guard Locality.isAllowedForRequest(baseURL, lanConfirmed: lanConfirmed) else {
             throw EngineError.refusedHost(host)
@@ -48,7 +52,8 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
         guard Locality.resolvedIsLocal(host: host) else {
             throw EngineError.refusedHost(host)
         }
-        return baseURL.appendingPathComponent(path)
+        let root = native && baseURL.lastPathComponent == "v1" ? baseURL.deletingLastPathComponent() : baseURL
+        return root.appendingPathComponent(path)
     }
 
     /// Reads a non-streaming response with a hard size cap so a hostile/buggy local server can't OOM
@@ -92,6 +97,50 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
         struct List: Decodable { struct M: Decodable { let id: String }; let data: [M] }
         guard let list = try? JSONDecoder().decode(List.self, from: data) else { throw EngineError.badResponse }
         return list.data.map(\.id)
+    }
+
+    /// At most this many models are kept from a server's list: far more than anyone runs, and a
+    /// bound on what a hostile local server can make the app persist.
+    private static let maxCatalogModels = 256
+    /// The capabilities `ModelResolver` reads. Anything else a server reports is dropped.
+    private static let knownCapabilities: Set<String> = ["completion", "vision", "embedding", "tools", "thinking", "insert"]
+
+    /// The server's models with whatever it will say about them: names from `/v1/models`, and on
+    /// Ollama, size, capabilities and whether the model runs in Ollama's cloud — all from one
+    /// `/api/tags` request, not one per model. Only the name list has to succeed; any other server
+    /// just yields names, which `ModelResolver` handles.
+    func catalog(timeout: TimeInterval = 3) async throws -> [ServerModel] {
+        let names = try await models(timeout: timeout).prefix(Self.maxCatalogModels)
+        let tags = (try? await ollamaTags(timeout: timeout)) ?? [:]
+        return names.map { name in
+            let tag = tags[name]
+            return ServerModel(name: name, capabilities: tag?.capabilities, sizeBytes: tag?.size, isRemote: tag?.isRemote ?? false)
+        }
+    }
+
+    private struct OllamaTag { let size: Int64?; let capabilities: [String]?; let isRemote: Bool }
+
+    private func ollamaTags(timeout: TimeInterval) async throws -> [String: OllamaTag] {
+        var req = URLRequest(url: try endpoint("api/tags", native: true))
+        req.timeoutInterval = timeout
+        let (data, resp) = try await dataCapped(for: req)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw EngineError.badResponse }
+        struct M: Decodable { let name: String; let size: Int64?; let capabilities: [String]?; let remote_host: String? }
+        // One entry that won't decode costs only that entry, not every model's size and cloud flag.
+        struct Entry: Decodable {
+            let model: M?
+            init(from decoder: Decoder) throws { model = try? M(from: decoder) }
+        }
+        struct Tags: Decodable { let models: [Entry] }
+        var byName: [String: OllamaTag] = [:]
+        for case let m? in try JSONDecoder().decode(Tags.self, from: data).models.map(\.model) where byName[m.name] == nil {
+            byName[m.name] = OllamaTag(
+                size: m.size,
+                capabilities: m.capabilities.map { Set($0).intersection(Self.knownCapabilities).sorted() },
+                // A cloud model is listed like a local one; `remote_host` gives it away.
+                isRemote: m.remote_host != nil)
+        }
+        return byName
     }
 
     // MARK: - Chat completions
@@ -188,7 +237,7 @@ final class OpenAIWire: NSObject, URLSessionTaskDelegate {
 
     // MARK: - Vision (screen captioning)
 
-    /// Captions an image with a local vision model (e.g. qwen2.5vl). OpenAI multimodal wire format:
+    /// Captions an image with a local vision model. OpenAI multimodal wire format:
     /// a message whose content is [text, image_url(data URI)]. Non-streaming.
     func caption(model: String, imageData: Data, prompt: String, timeout: TimeInterval = 90) async throws -> String {
         let dataURI = "data:image/png;base64,\(imageData.base64EncodedString())"

@@ -292,7 +292,7 @@ final class RecordingSession {
             // If a vision model is assigned, retain frame PNGs to an ephemeral caption dir OUTSIDE
             // the session temp dir (so it survives `cleanup()` for the post-call caption pass; the
             // captioner deletes it, and the launch sweep clears any crash leftovers).
-            if !AppSettings.visionModel.isEmpty {
+            if AppSettings.resolvedModel(for: .vision) != .none {
                 let dir = Self.pendingCaptionsRoot.appendingPathComponent(sessionDir.lastPathComponent, isDirectory: true)
                 try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 captionDir = dir
