@@ -223,6 +223,7 @@ def documents_payload(
     db: str | None = None,
     filter_notes: tuple[str, ...] = (),
     registry: str | None = None,
+    refresh: dict | None = None,
 ) -> dict:
     """The browse envelope. Same outer shape as `search_payload` — scope, db, filters,
     index_version, refresh — because a caller that has learned to read one envelope has learned to
@@ -252,7 +253,9 @@ def documents_payload(
                                    vaults=None if vault is None else frozenset({vault}),
                                    notes=filter_notes),
         "index_version": index_version,
-        "refresh": refresh_state.report(scope, registry),
+        # `refresh` is handed in by agent mode, which judges a published snapshot's record instead
+        # of reading the registry's (`substrate.agent`); every other caller reads it here.
+        "refresh": refresh if refresh is not None else refresh_state.report(scope, registry),
     }
 
 
@@ -443,6 +446,7 @@ def search_payload(
     db: str | None = None,
     filter_notes: tuple[str, ...] = (),
     registry: str | None = None,
+    refresh: dict | None = None,
 ) -> dict:
     """The whole envelope: passages, orientation, capability, applied filters, index_version, and
     what the refresh agent last did to this scope.
@@ -499,5 +503,7 @@ def search_payload(
                                    document_class=document_class, vaults=vaults,
                                    notes=filter_notes),
         "index_version": result.index_version,
-        "refresh": refresh_state.report(scope, registry),
+        # `refresh` is handed in by agent mode, which judges a published snapshot's record instead
+        # of reading the registry's (`substrate.agent`); every other caller reads it here.
+        "refresh": refresh if refresh is not None else refresh_state.report(scope, registry),
     }

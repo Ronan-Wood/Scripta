@@ -56,6 +56,52 @@ def effective_sha_of(data: bytes) -> tuple[str, bool]:
     return hashlib.sha256(data).hexdigest(), False
 
 
+def stale_verdict(raw: bytes, stored_sha: str | None) -> bool | None:
+    """Whether a note's bytes no longer match what was indexed — `None` where the stored checksum
+    is a DECLARED one and an edit cannot be seen from here. One copy, for `expand` on the live
+    server and for the agent snapshot's publisher, so the two cannot drift into different
+    verdicts about the same note."""
+    sha, declared = effective_sha_of(raw)
+    return None if declared else sha != (stored_sha or "")
+
+
+class NotRegularFile(OSError):
+    """`read_bounded` was pointed at a FIFO, a device, a directory — anything but a file."""
+
+
+class FileTooLarge(OSError):
+    """`read_bounded` hit its cap."""
+
+
+def read_bounded(src: Path, cap: int, *, nofollow: bool = False) -> bytes:
+    """A file, bounded by the read ITSELF rather than by a prior check. Raises OSError.
+
+    Opens once, non-blocking so a FIFO cannot stall the open, fstats the DESCRIPTOR it will
+    actually read, and reads at most one byte over the cap — so a path swapped for a FIFO or grown
+    past the cap after a check cannot get past either bound. A stat-then-read pair described an
+    ordering rather than a guarantee.
+    """
+    import os
+    import stat as _stat
+
+    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | (os.O_NOFOLLOW if nofollow else 0))
+    try:
+        if not _stat.S_ISREG(os.fstat(fd).st_mode):
+            raise NotRegularFile(f"{src} is not a regular file")
+        chunks, size = [], 0
+        while size <= cap:
+            block = os.read(fd, 1 << 20)
+            if not block:
+                break
+            chunks.append(block)
+            size += len(block)
+        if size > cap:
+            raise FileTooLarge(f"{src} exceeds {cap} bytes")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def _effective_sha(path: Path) -> tuple[str, bool]:
     """`effective_sha_of` for a caller that has only a path."""
     return effective_sha_of(path.read_bytes())
