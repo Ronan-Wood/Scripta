@@ -95,6 +95,43 @@ notarizes and staples the app, builds the dmg from the stapled app, then notariz
 dmg. Only after Gatekeeper accepts the app does the dmg move into `dist/archive`, with its build
 commit recorded in `dist/commits`. The script's comments say why each step is ordered as it is.
 
+**A killed poll is resumed, never re-run.** Each submission is made with `--no-wait`; the script
+prints the submission id and the command to resume with, and tees notarytool's output to
+`dist/notarize-<artifact>.log`. It polls every 30 seconds, printing the status each pass, and gives
+up after 45 minutes rather than waiting forever. A submit that dies always stops the script: if
+`notarytool history` lists a submission of that artifact made since the submit began, the error
+names it; if not — and the 2026-09-18 submission was never listed there — run
+`xcrun notarytool history --keychain-profile notary` yourself before re-running.
+
+If the poll dies — the terminal closed, the machine slept, the deadline passed — **do not re-run
+the script**: the upload is the expensive part and the submission is still with Apple. Wait for
+`xcrun notarytool info <id> --keychain-profile notary` to say `Accepted`; which log holds the id
+says where to pick up.
+
+- **`notarize-Scripta-app.zip.log`**: `xcrun stapler staple build/Distribution/Scripta.app`, then
+  the rest of the script by hand from `rm -rf dist/stage` down, submitting the dmg with
+  `notarytool submit <dmg> --keychain-profile notary --no-wait --no-progress` and polling `info`.
+- **`notarize-Scripta-<version>.dmg.log`**: do NOT rebuild the dmg — new bytes void the submission.
+
+```sh
+xcrun stapler staple dist/Scripta-<version>.dmg
+xcrun stapler validate build/Distribution/Scripta.app
+xcrun stapler validate dist/Scripta-<version>.dmg
+spctl -a -t exec -vvv build/Distribution/Scripta.app
+mkdir -p dist/archive dist/commits
+mv dist/Scripta-<version>.dmg dist/archive/
+git rev-parse HEAD > dist/commits/Scripta-<version>.commit
+```
+
+`spctl` must print `source=Notarized Developer ID` before the `mv`, and the last line is right only
+if HEAD has not moved since the build: `publish-release` signs whatever is in `dist/archive` into
+the appcast and tags whatever commit that file names. This exists because `notarytool submit --wait` stack-overflowed
+inside its own status formatting on 2026-09-18, 33 seconds into a 389 MB upload: Apple kept a
+submission that never completed, it read `In Progress` for over an hour against a sub-ten-minute
+baseline for the same app, and a submission cannot be cancelled. The id was on screen and nowhere
+else, so the only way forward was a full rebuild. `Distribution/test-notarize` runs each of these
+paths against a stubbed `xcrun`; run it after touching the script's `notarize`.
+
 ## The appcast, and the release that carries it
 
 The in-app updater reads `https://github.com/Ronan-Wood/Scripta/releases/latest/download/appcast.xml`
