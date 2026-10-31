@@ -252,3 +252,32 @@ def build(
 
     return Stack(embedder=embedder, expander=expander, reranker=reranker,
                  unavailable=tuple(unavailable))
+
+
+# The `build` parameter that asks for each arm — what `recheck` turns off for an arm that is up.
+_ARM_PARAM = {"embedder": "embed_model", "hyde": "hyde_model", "reranker": "rerank_model"}
+
+
+def recheck(current: Stack, **build_kwargs) -> Stack:
+    """Probe again ONLY the arms `current` could not start, and keep every arm that did.
+
+    `build` decides availability once, and a long-lived server lived with that verdict: one bad
+    moment at startup — Ollama answering `/api/tags` with a 500, a model store not yet mounted after
+    a wake — left it lexical-only until restarted. `build_kwargs` are the arguments the stack was
+    first built with. A wired arm is passed as None, so it is neither probed nor rebuilt and keeps
+    its warm state.
+    """
+    down = set(current.unavailable_arms)
+    if not down or build_kwargs.get("lexical_only"):
+        return current
+    retry = dict(build_kwargs)
+    for arm, param in _ARM_PARAM.items():
+        if arm not in down:
+            retry[param] = None
+    fresh = build(**retry)
+    return Stack(
+        embedder=current.embedder if current.embedder is not None else fresh.embedder,
+        expander=current.expander if current.expander is not None else fresh.expander,
+        reranker=current.reranker if current.reranker is not None else fresh.reranker,
+        unavailable=fresh.unavailable,
+    )
