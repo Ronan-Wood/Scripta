@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Tests `notarize` and `submitted_id` from build-and-notarize against a stubbed `xcrun`, so the paths
+# only a crash or a rejection reaches run without a 389 MB upload. macOS only: the functions use
+# /usr/bin/plutil and BSD `date -v`. Pass another copy of the script to test it instead.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+script=${1:-$here/build-and-notarize}
+# THE FUNCTIONS, NOT THE SCRIPT: running it would build and submit a release.
+funcs=$(awk '/^fail\(\)/ {print} /^(submitted_id|notarize)\(\) \{/,/^\}/' "$script")
+grep -q '^notarize()' <<<"$funcs" && grep -q '^submitted_id()' <<<"$funcs" \
+  || { echo "test-notarize: could not extract the functions from $script" >&2; exit 1; }
+
+root=$(mktemp -d)
+trap 'rm -rf "$root"' EXIT
+OLD=aaaaaaaa-0000-0000-0000-000000000001
+NEW=bbbbbbbb-0000-0000-0000-000000000002
+failures=0
+
+# One scenario: a fresh stub directory, a fresh cwd, and `xcrun` answering from files in $STUB.
+setup() {
+  STUB="$root/$1"
+  mkdir -p "$STUB/bin" "$STUB/work"
+  cat >"$STUB/bin/xcrun" <<'EOF'
+#!/usr/bin/env bash
+case $2 in
+  submit)
+    # `--wait` is the path that crashed on 2026-09-18; a submit without both flags fails every test.
+    [[ " $* " == *" --no-wait "* && " $* " == *" --no-progress "* && " $* " != *" --wait "* ]] \
+      || { echo "stub: submit must be --no-wait --no-progress, got: $*" >&2; exit 64; }
+    cat "$STUB/submit.out" 2>/dev/null; exit "$(cat "$STUB/submit.rc" 2>/dev/null || echo 0)" ;;
+  history) cat "$STUB/history.json" ;;
+  info)
+    n=$(( $(cat "$STUB/info.n" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$STUB/info.n"
+    f="$STUB/info.$n"; [ -f "$f" ] || f="$STUB/info.last"
+    # Diagnostics on stderr, as notarytool writes them.
+    cat "$f"; [ ! -f "$f.err" ] || cat "$f.err" >&2
+    exit "$(cat "$f.rc" 2>/dev/null || echo 0)" ;;
+  log) echo "rejection log for $3" ;;
+esac
+EOF
+  printf '#!/bin/sh\nexit 0\n' >"$STUB/bin/sleep"
+  chmod +x "$STUB/bin/xcrun" "$STUB/bin/sleep"
+}
+submit_ok() {
+  printf 'Submission ID received\n  id: %s\nSuccessfully uploaded file\n  id: %s\n' "$1" "$1" >"$STUB/submit.out"
+}
+history() { # name createdDate
+  printf '{"history":[{"id":"%s","name":"%s","status":"In Progress","createdDate":"%s"}]}' \
+    "$NEW" "$1" "$2" >"$STUB/history.json"
+}
+status() { # file status
+  printf '{"id":"%s","status":"%s"}' "$NEW" "$2" >"$STUB/$1"
+}
+run() { # artifact
+  set +e
+  (cd "$STUB/work" && PATH="$STUB/bin:$PATH" STUB="$STUB" \
+    bash -c "set -euo pipefail; $funcs"$'\n''notarize "$1"' _ "$1") >"$STUB/out" 2>&1
+  rc=$?
+  set -e
+}
+expect() { # description, then: rc N | has TEXT | lacks TEXT
+  local what=$1 ok=1; shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      rc) [ "$rc" = "$2" ] || ok=0 ;;
+      has) grep -qF -- "$2" "$STUB/out" || ok=0 ;;
+      lacks) ! grep -qF -- "$2" "$STUB/out" || ok=0 ;;
+    esac
+    shift 2
+  done
+  if [ "$ok" = 1 ]; then echo "ok   $what"; else
+    echo "FAIL $what (exit $rc)"; sed 's/^/     | /' "$STUB/out"; failures=$(( failures + 1 ))
+  fi
+}
+now=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+
+setup accepted
+submit_ok "$NEW"; status info.1 "In Progress"; status info.last Accepted
+run dist/Scripta-app.zip
+expect "a submission that is accepted returns 0 and names its id" \
+  rc 0 has "submitted as $NEW" has "In Progress" has "accepted"
+
+# THE REGRESSION. After the 2026-09-18 crash Apple did not list the dying submission, so the newest
+# entry was an older one — and `Scripta-app.zip` is every release's app upload. Matching on the name
+# alone named that old submission as the one this run had just lost.
+setup crash-stale-history
+echo 138 >"$STUB/submit.rc"; history Scripta-app.zip 2026-09-16T15:28:27.687Z
+sed -i '' "s/$NEW/$OLD/" "$STUB/history.json"
+run dist/Scripta-app.zip
+expect "a crashed submit never adopts an older submission of the same name" \
+  rc 1 lacks "$OLD" has "lists no Scripta-app.zip submitted since"
+
+setup crash-fresh-history
+echo 138 >"$STUB/submit.rc"; history Scripta-app.zip "$now"
+run dist/Scripta-app.zip
+expect "a crashed submit that Apple did list is named, not retried" \
+  rc 1 has "AFTER Apple issued $NEW"
+
+setup crash-other-name
+echo 138 >"$STUB/submit.rc"; history Scripta-app.zip "$now"
+run dist/Scripta-0.3.1.dmg
+expect "the dmg step does not adopt the app's fresh submission" \
+  rc 1 lacks "$NEW" has "lists no Scripta-0.3.1.dmg"
+
+setup no-id-in-output
+echo "Successfully uploaded file" >"$STUB/submit.out"; history Scripta-app.zip "$now"
+status info.last Accepted
+run dist/Scripta-app.zip
+expect "an id missing from the output is taken from a fresh history entry" \
+  rc 0 has "submitted as $NEW" has "accepted"
+
+setup rejected
+submit_ok "$NEW"; status info.last Invalid
+run dist/Scripta-app.zip
+expect "a rejection fails and prints Apple's log" \
+  rc 1 has "was not accepted: Invalid" has "rejection log for $NEW"
+
+setup query-fails
+submit_ok "$NEW"; : >"$STUB/info.last"; echo 69 >"$STUB/info.last.rc"
+echo "Error: No Keychain password item found for profile: notary" >"$STUB/info.last.err"
+run dist/Scripta-app.zip
+expect "a status query that keeps failing stops and shows why" \
+  rc 1 has "failed 5x" has "No Keychain password item found"
+
+setup query-warns
+submit_ok "$NEW"; status info.last Accepted
+echo "xcrun: note: a harmless warning" >"$STUB/info.last.err"
+run dist/Scripta-app.zip
+expect "a warning on stderr does not break the status parse" rc 0 has "accepted" lacks "failed"
+
+setup query-unreadable
+submit_ok "$NEW"
+echo "Successfully received submission info" >"$STUB/info.last"
+run dist/Scripta-app.zip
+expect "a query that exits 0 but cannot be parsed counts as failed" rc 1 has "failed 5x"
+
+# Each `date +%s` is ten minutes after the last, so the 45-minute deadline passes on the third poll.
+setup deadline
+submit_ok "$NEW"; status info.last "In Progress"
+cat >"$STUB/bin/date" <<'EOF'
+#!/usr/bin/env bash
+if [ "$*" = "+%s" ]; then
+  t=$(( $(cat "$STUB/clock" 2>/dev/null || echo 1000000) + 600 )); echo "$t" >"$STUB/clock"; echo "$t"
+else exec /bin/date "$@"; fi
+EOF
+chmod +x "$STUB/bin/date"
+run dist/Scripta-app.zip
+expect "a submission stuck In Progress hits the deadline and says not to re-run" \
+  rc 1 has "still In Progress after 45m; do NOT re-run" has "notarytool info $NEW"
+
+[ "$failures" = 0 ] || { echo "test-notarize: $failures failed" >&2; exit 1; }
+echo "test-notarize: all passed"
