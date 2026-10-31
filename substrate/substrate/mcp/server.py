@@ -41,10 +41,13 @@ to provide: a model reading a proposal would have no way to know it was one.
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import os
 import sys
 import threading
+import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -489,8 +492,8 @@ def _tool_search(args: dict, cfg: Config) -> dict:
 
     # `fast`: THE EMBEDDER ONLY, for a caller that must answer inside a turn of speech.
     #
-    # The arms are bound once at startup, which is right for a server whose callers are all asking
-    # considered questions. Live retrieval during a call is not that caller: EXPERIMENTS.md measures
+    # The arms are bound by `stack.build` at startup (an arm that could not start is re-probed while
+    # the server runs), which is right for a server whose callers are all asking considered questions. Live retrieval during a call is not that caller: EXPERIMENTS.md measures
     # the generator arms at "roughly an order of magnitude slower, consistent with 385ms → 4,558ms",
     # and nothing useful arrives 4.5 seconds into a conversation that has already moved on.
     #
@@ -501,6 +504,9 @@ def _tool_search(args: dict, cfg: Config) -> dict:
     # not wear the considered stack's number, which is Doc 4 §8's open question answered in the one
     # place that can answer it.
     fast = bool(args.get("fast", False))
+    # ONE read: a re-check can swap the stack mid-call, and the reply must describe the arms
+    # retrieval actually ran with, not the ones that came back while it ran.
+    st = cfg.stack
 
     entry, store, verdict = _open(scope, cfg.registry)
     try:
@@ -508,14 +514,14 @@ def _tool_search(args: dict, cfg: Config) -> dict:
             store, query, k=k, statuses=statuses, vaults=vaults,
             withheld_vaults=verdict.withhold, entity=entity,
             include_sources=include_sources, with_outlines=render.OUTLINE_RECORDS,
-            embedder=cfg.stack.embedder,
-            expander=None if fast else cfg.stack.expander,
-            reranker=None if fast else cfg.stack.reranker,
+            embedder=st.embedder,
+            expander=None if fast else st.expander,
+            reranker=None if fast else st.reranker,
         )
         return render.search_payload(
             result, scope=scope, query=query, statuses=statuses, vaults=vaults,
-            include_sources=include_sources, unavailable=cfg.stack.unavailable,
-            wiring=cfg.stack.wiring,
+            include_sources=include_sources, unavailable=st.unavailable,
+            wiring=st.wiring,
             db=str(entry.db),
             filter_notes=tuple(n for n in (clamp_note, verdict.reason) if n),
             registry=cfg.registry,
@@ -846,6 +852,13 @@ WRITE_TOOLS = frozenset({"ingest"})
 
 # --------------------------------------------------------------------------- protocol
 
+# How long a downed arm waits, from the end of the last re-check, before a query starts probing it
+# again. A re-check probes only the arms that are down, so this bounds a daemon that keeps failing
+# to one probe per down arm per interval — including one that never answers and makes each probe
+# wait out its 30 s timeout.
+RECHECK_AFTER = 60.0
+
+
 class Config:
     """Server-wide configuration: the registry to resolve scopes against, the stack to query with,
     and the plans this process has issued. Deliberately NOT a scope — one server serves them all
@@ -857,15 +870,70 @@ class Config:
     """
 
     def __init__(self, registry: str | None, retrieval: stack.Stack, *,
-                 read_only: bool = False):
+                 read_only: bool = False,
+                 recheck: Callable[[stack.Stack], stack.Stack] | None = None,
+                 recheck_after: float = RECHECK_AFTER,
+                 clock: Callable[[], float] = time.monotonic):
         self.registry = registry
-        self.stack = retrieval
+        self._stack = retrieval
         self.plans = notes.PlanBook()
         # Doc 3 §3. FALSE by default because a bare Config is the stdio one, and reaching stdio
         # already means spawning this process — the write primitive is no wider than the process
         # that owns it. `main()` turns this ON for `--http`, where any local process can reach the
         # port.
         self.read_only = read_only
+        # `stack.recheck` bound to the arguments the stack was built with, or None to keep the
+        # stack exactly as built — every test, and any caller that did not ask for recovery.
+        self._recheck = recheck
+        self._recheck_after = recheck_after
+        self._clock = clock
+        self._checked_at = clock()
+        self._rechecking: threading.Thread | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def stack(self) -> stack.Stack:
+        """The stack to query with. While an arm is down, a read starts at most one background
+        re-check per `recheck_after`; the read itself never waits on a probe, because a probe
+        against a daemon that does not answer can take its full 30 s timeout."""
+        current = self._stack
+        if self._recheck is not None and current.unavailable_arms:
+            with self._lock:
+                if (self._rechecking is None
+                        and self._clock() - self._checked_at >= self._recheck_after):
+                    t = threading.Thread(
+                        target=self._run_recheck, name="substrate-recheck", daemon=True)
+                    try:
+                        t.start()
+                    except RuntimeError as e:
+                        # No thread to be had. The query is served regardless, and this waits an
+                        # interval rather than retrying on every read.
+                        self._checked_at = self._clock()
+                        print(f"substrate-mcp: could not start a re-check: {e}", file=sys.stderr)
+                    else:
+                        # Recorded only once started; the thread cannot reach its own reset until
+                        # this lock is released, so it cannot be cleared before it is set.
+                        self._rechecking = t
+        return current
+
+    def _run_recheck(self) -> None:
+        before = after = self._stack
+        try:
+            after = self._recheck(before)
+        except Exception as e:  # noqa: BLE001 — a failed re-check keeps the stack; never fatal
+            print(f"substrate-mcp: re-checking unavailable arms failed: {e}", file=sys.stderr)
+        finally:
+            # In `finally`, or anything escaping above — an error printing to a closed stderr, a
+            # BaseException out of `build` — would leave `_rechecking` set for good, and the server
+            # would never re-check again: the failure this exists to fix. The interval runs from
+            # here, the END, so a re-check slower than the interval cannot start the next at once.
+            with self._lock:
+                self._stack = after
+                self._rechecking = None
+                self._checked_at = self._clock()
+        for arm in before.unavailable_arms:
+            if arm not in after.unavailable_arms:
+                print(f"substrate-mcp: {arm} recovered", file=sys.stderr)
 
 
 def _result(rid: Any, payload: dict) -> dict:
@@ -1475,6 +1543,15 @@ def serve_http(cfg: Config, host: str, port: int, *, ready: Any = None,
     return 0
 
 
+def _build_args(args: Any) -> dict:
+    """The arguments `main()` builds its stack with — ONE copy, because `recheck` must rebuild a
+    downed arm exactly as it was first asked for, or a recovered arm joins a stack configured
+    differently from the arms around it."""
+    return {"embed_model": args.embed_model, "hyde_model": args.hyde_model,
+            "rerank_model": args.rerank_model, "cache_path": args.cache,
+            "lexical_only": args.lexical_only}
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -1506,11 +1583,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"substrate-mcp: {e}", file=sys.stderr)
             return 2
 
-    retrieval = stack.build(
-        embed_model=args.embed_model, hyde_model=args.hyde_model,
-        rerank_model=args.rerank_model, cache_path=args.cache,
-        lexical_only=args.lexical_only,
-    )
+    build_args = _build_args(args)
+    retrieval = stack.build(**build_args)
     # stderr, not stdout: stdout is the JSON-RPC channel and a stray line corrupts the stream.
     # Reported at startup AND carried on every response — the caller may not see this.
     for note in retrieval.unavailable:
@@ -1527,7 +1601,10 @@ def main(argv: list[str] | None = None) -> int:
     # The warning for an opted-out socket belongs to `serve_http`, which is now what enforces the
     # default — one copy, so it cannot be printed by a path that does not actually apply the rule.
 
-    cfg = Config(args.registry, retrieval, read_only=read_only)
+    # An arm that could not start is probed again while the server runs, rather than leaving the
+    # server lexical-only for its whole life because of one bad moment at launch.
+    cfg = Config(args.registry, retrieval, read_only=read_only,
+                 recheck=functools.partial(stack.recheck, **build_args))
     if bind is not None:
         return serve_http(cfg, *bind, allow_writes=not read_only)
     return serve(cfg)
