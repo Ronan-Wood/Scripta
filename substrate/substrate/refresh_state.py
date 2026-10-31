@@ -238,8 +238,22 @@ def report(scope: str | None, registry: str | Path | None = None) -> dict:
     if unreadable:
         return _block(known=False, note=unreadable)
 
-    row = entries.get(scope)
-    if row is None:
+    return block_for(entries.get(scope))
+
+
+def stored_row(scope: str, registry: str | Path | None = None) -> dict | None:
+    """One scope's record exactly as stored, or None. For a caller that carries the record
+    somewhere else and judges it there with `block_for` — the agent snapshot does, because the
+    agent cannot read this file and must not be handed a verdict this build computed instead of
+    the facts it was computed from."""
+    entries, _ = _load(state_path(registry))
+    return entries.get(scope)
+
+
+def block_for(row: object) -> dict:
+    """The refresh block for one stored record — `report` without the file. Never raises, for the
+    same reason `report` does not: the row may have come from a file someone else wrote."""
+    if not isinstance(row, dict):
         return _block(known=False, note=_UNKNOWN_NOTE)
 
     # The isinstance check comes BEFORE the lookup, not after. `OUTCOMES.get(outcome)` HASHES its

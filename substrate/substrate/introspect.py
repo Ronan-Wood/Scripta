@@ -62,7 +62,8 @@ def vector_status(store, stack) -> dict | None:
     return {"model": key, "stored": n, "chunks": total, "complete": complete, "note": note}
 
 
-def status_payload(store, entry, *, stack, registry: str | None = None) -> dict:
+def status_payload(store, entry, *, stack, registry: str | None = None,
+                   refresh: dict | None = None, drift: bool = True) -> dict:
     """Everything `status` reports for one composed scope.
 
     The `refresh` block is the SAME shape `render.search_payload` emits — one reader, one key set,
@@ -75,7 +76,7 @@ def status_payload(store, entry, *, stack, registry: str | None = None) -> dict:
     out = {
         "scope": entry.name,
         "db": str(entry.db),
-        "vault": str(entry.vault),
+        "vault": None if entry.vault is None else str(entry.vault),
         "composed": entry.composed,
         "index_version": store.index_version,
         # No `rebuilt_empty` field: every read path now opens with migrate=False, so a schema
@@ -96,8 +97,15 @@ def status_payload(store, entry, *, stack, registry: str | None = None) -> dict:
         "entities": store.entity_roster(),
         "retrieval_arms": arms(stack),
         "vectors": vector_status(store, stack),
-        "refresh": refresh_state.report(entry.name, registry),
+        "refresh": refresh if refresh is not None else refresh_state.report(entry.name, registry),
     }
+    if not drift:
+        # Agent mode: the vault is not this process's to read, so drift is UNCHECKED and says so in
+        # its own slot, the same way an unresolvable scope does below. `refresh.snapshot` is what
+        # stands in for it — how old the published copy is.
+        out["drift"] = {"error": "not checked — this server answers from a published snapshot "
+                                 "and cannot read the vault it was built from."}
+        return out
     try:
         notes = [n.path for n in _vault.resolve_scope(entry.vault).notes]
         out["drift"] = freshness.drift(store, notes)
