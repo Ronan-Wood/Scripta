@@ -10,6 +10,129 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 fail() { echo "build-and-notarize: $*" >&2; exit 1; }
 
+# SUBMIT AND POLL, NEVER `--wait`. `notarytool submit --wait` stack-overflowed inside its own status
+# formatting 33 seconds into a 389 MB upload on 2026-09-18 — SIGBUS, KERN_PROTECTION_FAILURE at a
+# stack address, `String.init(format:)` → `__CFStringValidateFormat` on a secondary thread, whose
+# stack is the small one (`notarytool-2026-09-18-200101.ips`). That killed the upload mid-flight and
+# left Apple holding a submission that never completed: it read `In Progress` for over an hour
+# against a sub-ten-minute baseline for this same app, and a submission cannot be cancelled.
+#
+# The cost was not the crash, it was that the ID died with it: a submission that cannot be named
+# cannot be polled, stapled or abandoned, so the only way forward was a full rebuild and another
+# 389 MB upload. This function writes the id down before the long wait starts, asks Apple for it when
+# our copy is lost — see `submitted_id`, which cannot promise an answer — and a poll that dies is
+# resumed with `xcrun notarytool info <id>` rather than restarted.
+#
+# The submit keeps NORMAL output rather than json so a human watching sees the id as Apple issues it;
+# `--output-format json` would emit "a single update at the end of the operation"
+# (`notarytool submit --help`). Nothing in this function DEPENDS on that, because a redirected stdout
+# cannot be relied on to reach disk before a crash. json is used for the poll, where the id is
+# already known and a strict parse beats an early one.
+#
+# `--no-progress` keeps us off the formatting that overflowed. It defaulted ON for the two releases
+# that notarized fine, so it is a suspect rather than a proven cause, and being wrong about it is
+# survivable only if Apple lists the submission.
+
+# AFTER A CRASH, THE ID CANNOT COME FROM OUR STDOUT. Capturing notarytool's own announcement looks
+# like the obvious answer and does not survive one: redirected to a pipe or a file, its stdout is
+# FULLY buffered rather than line buffered, so the eighty bytes naming the submission sit unflushed
+# in its stdio buffer and die with it. Measured 2026-09-18 — a C program that prints those two lines and then
+# raises SIGBUS leaves a ZERO-BYTE log. The id was visible in the terminal during the real crash only
+# because a terminal is line buffered; the moment a script captures it, that guarantee is gone.
+#
+# `notarytool history` is the only other place to ask, and it is BEST EFFORT. The 2026-09-18
+# submission is not in it: checked 2026-09-21, the newest entry was 0.3.0's dmg from 2026-09-16, so a
+# submission whose upload died may never be listed. When ours is missing, the newest entry belongs to
+# an EARLIER submission — and `Scripta-app.zip` is every release's app upload, so a name match alone
+# would hand back an older, Accepted one and poll that. The entry must also be newer than `since`,
+# taken before the submit with two minutes of slack for this clock against Apple's; ISO 8601 in UTC
+# orders correctly as a string.
+submitted_id() {
+  local want=$1 since=$2 history name created
+  history=$(xcrun notarytool history --keychain-profile notary --output-format json 2>/dev/null) \
+    || return 1
+  name=$(printf '%s' "$history" | /usr/bin/plutil -extract history.0.name raw -o - - 2>/dev/null) \
+    || return 1
+  created=$(printf '%s' "$history" | /usr/bin/plutil -extract history.0.createdDate raw -o - - 2>/dev/null) \
+    || return 1
+  [ "$name" = "$want" ] && [[ $created > $since ]] || return 1
+  printf '%s' "$history" | /usr/bin/plutil -extract history.0.id raw -o - - 2>/dev/null
+}
+
+notarize() {
+  local what=$1 base id status info err start deadline qfails=0 log rc=0 since
+  mkdir -p dist
+  base=$(basename "$what")
+  log="dist/notarize-$base.log"
+  err="dist/notarize-$base.err"
+  since=$(date -u -v-2M +%Y-%m-%dT%H:%M:%S)
+  # The log is for a HUMAN to read afterwards, and where the id is looked for first. After a crash it
+  # is empty — see above.
+  xcrun notarytool submit "$what" --keychain-profile notary --no-wait --no-progress 2>&1 \
+    | tee "$log" || rc=$?
+  # `|| true` on both: an unwritable `dist` or a missing log must not kill the release at the one
+  # moment a submission may be live and unnamed. An empty id here is a question for Apple, not a
+  # reason to die with `sed: no such file`.
+  id=$(sed -n 's/^[[:space:]]*id:[[:space:]]*//p' "$log" 2>/dev/null | head -1 || true)
+  [ -n "$id" ] || id=$(submitted_id "$base" "$since" || true)
+  if [ "$rc" -ne 0 ]; then
+    # An id here means Apple opened a submission and then our side died — which is how a submission
+    # ends up permanently `In Progress`, holding bytes that never finished arriving. Named rather
+    # than retried: it cannot be cancelled, and re-running blindly just adds a second one.
+    [ -z "$id" ] || fail \
+      "submit for $what died (exit $rc) AFTER Apple issued $id; that submission is probably incomplete and cannot be cancelled — check it with: xcrun notarytool info $id --keychain-profile notary"
+    fail "submit for $what died (exit $rc) and Apple lists no $base submitted since $since UTC; see $log, and check xcrun notarytool history --keychain-profile notary before re-running"
+  fi
+  [ -n "$id" ] || fail "no submission id for $what, from notarytool or from Apple's history; see $log"
+  echo "build-and-notarize: $what submitted as $id (resume with: xcrun notarytool info $id --keychain-profile notary)"
+
+  start=$(date +%s)
+  # A DEADLINE, because the incident that produced this function was an unbounded `In Progress`: over
+  # an hour against a sub-ten-minute baseline, on a submission that was never going to land. Looping
+  # on that forever replaces a crash with a hang, which is worse — a hang has no error to read.
+  deadline=$(( start + 45 * 60 ))
+  while :; do
+    # A FAILED QUERY AND AN UNFINISHED ONE ARE DIFFERENT ANSWERS. Collapsing both to "" and retrying
+    # is how a wrong keychain profile or a revoked password becomes a silent forever-loop instead of
+    # the fast, readable failure `--wait` used to give. stderr is KEPT for the same reason: the text
+    # that says "no keychain profile found" is the whole diagnosis. Kept APART from the JSON, though:
+    # merged into stdout, a harmless `xcrun:` note on every call broke every parse, and five of those
+    # aborted a release whose submission was fine.
+    if info=$(xcrun notarytool info "$id" --keychain-profile notary --output-format json 2>"$err"); then
+      status=$(printf '%s' "$info" | /usr/bin/plutil -extract status raw -o - - 2>/dev/null) \
+        || status=""
+    else
+      status=""
+    fi
+    # A QUERY THAT EXITS 0 AND CANNOT BE READ IS STILL A FAILED QUERY. Resetting the counter on exit
+    # status alone let an unreadable reply break every parse while the count stayed at zero, so the
+    # cap below could never fire and the loop ran the full deadline reporting nothing useful. The
+    # verdict is what counts, not the exit code.
+    if [ -n "$status" ]; then qfails=0; else qfails=$(( qfails + 1 )); fi
+    [ "$qfails" -lt 5 ] \
+      || fail "the status query failed ${qfails}x for submission $id: $(cat "$err" 2>/dev/null) $info"
+    case $status in
+      Accepted) echo "build-and-notarize: $what accepted"; return 0 ;;
+      # NAMED, not "anything unrecognised". `notarytool log` errors on a submission that has not
+      # reached a verdict, so treating an unknown or garbled status as a rejection would print
+      # nothing useful and abort a release over a submission that may still be fine.
+      Invalid|Rejected)
+        # The log names the offending binary and why, which is the only thing that makes a rejection
+        # actionable — printed here rather than left for the operator to go looking for.
+        xcrun notarytool log "$id" --keychain-profile notary >&2 || true
+        fail "$what was not accepted: $status (submission $id)" ;;
+    esac
+    # SAID OUT LOUD EVERY PASS. A release that prints one line and then goes quiet for forty minutes
+    # is one somebody kills, and killing it is what costs the upload.
+    echo "build-and-notarize: $what ${status:-status unavailable} ($(( $(date +%s) - start ))s)"
+    [ "$(date +%s)" -lt "$deadline" ] || fail \
+      "$what still ${status:-unknown} after 45m; do NOT re-run this script — resume with: xcrun notarytool info $id --keychain-profile notary"
+    # `|| true`: a `sleep` cut short by a signal the shell survives would otherwise take `set -e`
+    # straight out of the function — the one loop exit that neither returns success nor says why.
+    sleep 30 || true
+  done
+}
+
 # A RELEASE IS BUILT FROM A COMMIT. The tag published with it is what anyone taking the GPL source
 # will use, so the binary must be exactly that commit, with no uncommitted edits or untracked files.
 [ -z "$(git status --porcelain)" ] || fail "the working tree has uncommitted changes; commit them first"
@@ -65,7 +188,7 @@ gpl_media=$(find "$APP" \( -name 'libavcodec*' -o -name 'libavformat*' -o -name 
 # ticket because users drag it out of the dmg, and a ticket on the dmg does not travel with the copy.
 mkdir -p dist
 ditto -c -k --keepParent "$APP" dist/Scripta-app.zip
-xcrun notarytool submit dist/Scripta-app.zip --keychain-profile notary --wait
+notarize dist/Scripta-app.zip
 xcrun stapler staple "$APP"
 
 # The dmg is built in dist/, NOT dist/archive. The archive is what the appcast tool signs, and a copy
@@ -75,7 +198,7 @@ rm -rf dist/stage && mkdir -p dist/stage
 cp -R "$APP" dist/stage/
 ln -s /Applications dist/stage/Applications
 hdiutil create -volname "Scripta" -srcfolder dist/stage -ov -format UDZO "$DMG"
-xcrun notarytool submit "$DMG" --keychain-profile notary --wait
+notarize "$DMG"
 xcrun stapler staple "$DMG"
 
 # What "shipped" looks like, ASSERTED. `spctl` on the APP is the check that matters; a dmg is not what
