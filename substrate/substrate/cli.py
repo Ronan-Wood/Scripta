@@ -2019,6 +2019,17 @@ def cmd_embed(args: argparse.Namespace) -> int:
            else OllamaEmbedder(model=args.model, host=args.host, prefix_style=args.embed_style))
 
     from substrate.embed.cache import VectorCache, content_sha
+    from substrate.stack import DEFAULT_CACHE
+
+    # THE DEFAULT CACHE IS NEVER RELATIVE TO CWD. The bundled shims `cd` to the engine root inside
+    # the signed app, and Scripta runs `embed --db <scope>` with no `--cache` after every compose, so
+    # the old `out/vector-cache.db` default wrote into the bundle: it broke the code seal, failed
+    # outright where /Applications is not user-writable, and changed the tree a Sparkle delta hashes.
+    # `stack.DEFAULT_CACHE` is the per-user path the engine already defines (the query stack keeps
+    # its HyDE and rerank entries there; its embedder reads vectors from the index, not from here),
+    # and one cache across scopes embeds core-vault's passages once rather than once per scope that
+    # inherits it. The `out/` eval fixture's callers pass `--cache out/vector-cache.db` explicitly.
+    cache_path = args.cache or str(DEFAULT_CACHE)
 
     t0 = time.monotonic()
     # `embed` WRITES vectors but cannot write chunks, so against a version-mismatched index it is
@@ -2058,7 +2069,7 @@ def cmd_embed(args: argparse.Namespace) -> int:
         store_cm.close()
         return 2
 
-    with store_cm as store, VectorCache(args.cache) as cache:
+    with store_cm as store, VectorCache(cache_path) as cache:
         dropped = store.drop_vectors(keeping_model=eng.key)
         if dropped:
             print(f"  dropped {dropped} vectors from other model spaces")
@@ -2099,7 +2110,7 @@ def cmd_embed(args: argparse.Namespace) -> int:
         el = time.monotonic() - t0
         cs = cache.stats()
         print(f"\n  {len(hits)} reused · {done} embedded in {el:.1f}s")
-        print(f"  cache: {cs['vectors']} vectors, {cs['bytes'] / 1e6:.1f} MB -> {args.cache}")
+        print(f"  cache: {cs['vectors']} vectors, {cs['bytes'] / 1e6:.1f} MB -> {cache_path}")
     return 0
 
 
@@ -2322,8 +2333,9 @@ def main(argv: list[str] | None = None) -> int:
     emb.add_argument("--model", default="qwen3-embedding:0.6b")
     emb.add_argument("--embed-style", default="auto", choices=["auto","nomic","none","qwen3"])
     emb.add_argument("--host", default="http://127.0.0.1:11434")
-    emb.add_argument("--cache", default="out/vector-cache.db",
-                     help="durable content-addressed cache; survives index rebuilds")
+    emb.add_argument("--cache", default=None,
+                     help="durable content-addressed cache; survives index rebuilds "
+                          "(default: stack.DEFAULT_CACHE, per-user)")
     emb.set_defaults(func=cmd_embed)
 
 

@@ -21,7 +21,7 @@ for m in $MODELS; do
         continue
     fi
 
-    embed_out=$(uv run python -m substrate.cli embed --model "$m" 2>&1 | tail -2)
+    embed_out=$(uv run python -m substrate.cli embed --model "$m" --cache out/vector-cache.db 2>&1 | tail -2)
     # migrate=False. This reads ONE integer, and with the default it dropped and rebuilt
     # `out/substrate.db` — the eval fixture — on the first mismatched version, one line after the
     # `embed` above had correctly refused to. `2>/dev/null` meant it did so in silence, and `dim`

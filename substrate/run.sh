@@ -37,7 +37,7 @@ REFUSING TO RUN: $DB is schema v$ON_DISK, this engine is v$ENGINE_SCHEMA.
   property, which is most of what makes it a fixture. To do it deliberately:
 
       uv run python -m substrate.cli index --migrate
-      uv run python -m substrate.cli embed          # the drop takes the vectors with it
+      uv run python -m substrate.cli embed --cache out/vector-cache.db   # the drop takes the vectors with it
       ./run.sh
 
 EOF
