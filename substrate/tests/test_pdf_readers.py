@@ -224,6 +224,36 @@ def test_an_image_without_models_is_read_by_the_recognizer(tmp_path, monkeypatch
     assert conv.markdown.startswith("# Quarterly Review\n\n## Renewals\n\n")
 
 
+def test_an_image_with_models_is_read_on_the_cpu_not_metal(tmp_path, monkeypatch):
+    """The image pipeline runs the same layout model as the PDF arm, so it takes the same CPU pin.
+
+    Without it docling picks Metal and the layout model dies on float64 before any page is read
+    (`docling_arm.cpu_accelerator`). The converter is replaced, so no model is loaded — but docling
+    itself must be importable, and CI's engine job installs none, so there it skips.
+    """
+    pytest.importorskip("docling")
+    import docling.document_converter as dc
+    from docling.datamodel.accelerator_options import AcceleratorDevice
+    from docling.datamodel.base_models import InputFormat
+
+    seen = {}
+
+    class Captured:
+        def __init__(self, *, allowed_formats=None, format_options=None):
+            seen.update(format_options or {})
+
+        def convert(self, _src):
+            raise RuntimeError("not loaded")
+
+    monkeypatch.setattr(dc, "DocumentConverter", Captured)
+    monkeypatch.setattr(paths, "configure", lambda models: {})
+    src = tmp_path / "sign.png"
+    src.write_bytes(b"")
+    with pytest.raises(convert.ConversionRefused, match="not loaded"):
+        convert.to_markdown(src, convert.spec_for(src), models=tmp_path, **QUIET)
+    assert seen[InputFormat.IMAGE].pipeline_options.accelerator_options.device == AcceleratorDevice.CPU
+
+
 def test_a_missing_models_folder_is_refused_and_never_created(tmp_path):
     missing = tmp_path / "models"
     with pytest.raises(paths.ModelsFolderError, match="is not there"):

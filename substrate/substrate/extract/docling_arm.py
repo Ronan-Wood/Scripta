@@ -17,8 +17,21 @@ from substrate.models import LABEL_MAP, Block, Document, Kind
 BATCH_PAGES = 100
 
 
-def _converter(models: Path):
+def cpu_accelerator():
+    """CPU, NOT THE GPU DOCLING PICKS BY ITSELF — for every pipeline that loads the layout model.
+
+    Measured 2026-09-16 on docling 2.126.0: its automatic device is Metal, and the layout model there
+    dies with "Cannot convert a MPS Tensor to float64 dtype as the MPS framework doesn't support
+    float64" — every PDF, before a single block is read. The same document converts on CPU in 12.1 s.
+    An accelerator that refuses the whole document is not an accelerator. The image pipeline in
+    `convert.to_markdown` runs the same layout model and died the same way until it took this too.
+    """
     from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+
+    return AcceleratorOptions(device=AcceleratorDevice.CPU)
+
+
+def _converter(models: Path):
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -26,12 +39,7 @@ def _converter(models: Path):
     opts = PdfPipelineOptions(artifacts_path=str(models))
     opts.do_ocr = False  # both reference inputs carry real text layers
     opts.do_table_structure = True
-    # CPU, NOT THE GPU DOCLING PICKS BY ITSELF. Measured 2026-09-16 on docling 2.126.0: its automatic
-    # device is Metal, and the layout model there dies with "Cannot convert a MPS Tensor to float64
-    # dtype as the MPS framework doesn't support float64" — every PDF, before a single block is read.
-    # The same document converts on CPU in 12.1 s. An accelerator that refuses the whole document is
-    # not an accelerator, and this pin is what makes the upgrade usable.
-    opts.accelerator_options = AcceleratorOptions(device=AcceleratorDevice.CPU)
+    opts.accelerator_options = cpu_accelerator()
     return DocumentConverter(
         format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
     )

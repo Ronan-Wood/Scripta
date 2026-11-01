@@ -478,6 +478,8 @@ def to_markdown(src: Path, spec: FormatSpec, *, models: Path | None = None, log=
         from docling.datamodel.pipeline_options import OcrMacOptions, PdfPipelineOptions
         from docling.document_converter import ImageFormatOption
 
+        from substrate.extract.docling_arm import cpu_accelerator
+
         opts = PdfPipelineOptions(artifacts_path=str(models))
         opts.do_ocr = True  # an image has no text layer to prefer; OCR is the only reading
         # APPLE VISION, NAMED rather than left to docling's automatic choice. Its fallback, RapidOCR,
@@ -485,6 +487,7 @@ def to_markdown(src: Path, spec: FormatSpec, *, models: Path | None = None, log=
         # naming the engine here means a stray reinstall cannot switch engines without a code change.
         opts.ocr_options = OcrMacOptions()
         opts.do_table_structure = True
+        opts.accelerator_options = cpu_accelerator()
         options = {InputFormat.IMAGE: ImageFormatOption(pipeline_options=opts)}
 
     t0 = time.monotonic()
