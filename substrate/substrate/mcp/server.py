@@ -28,8 +28,14 @@ still one function answering one frame the same way whichever socket it arrived 
 
 **`--connect` is how a stdio client reaches the shared server** (`substrate.mcp.bridge`). It is a
 stdio process with no stack: `handle()` runs as usual, except that a read tool's `tools/call` is
-forwarded to the loopback server that Scripta hosts. `ingest` still runs in-process, so the write
+forwarded to the server Scripta hosts on its Unix socket. `ingest` still runs in-process, so the write
 stays off the socket.
+
+**`--socket` is the shared server's real address; `--http` is a developer convenience.** Loopback
+TCP authenticates nobody: every user on the machine can query it, and while it is down any process
+can bind the port and be sent every client's queries. `--socket` serves the same handler on a
+Unix-domain path under a 0700 directory, and both ends check the other's uid (`local_socket`).
+Scripta's engine and `SubstrateKit` speak only that.
 
 **Scope is a parameter, not server configuration** (Doc 3a §3). One server serves every composed
 scope; the caller names the one it wants and `list_scopes` lets it discover them. A scope that
@@ -48,6 +54,8 @@ from __future__ import annotations
 import copy
 import functools
 import json
+import os
+import socketserver
 import sys
 import threading
 import time
@@ -56,7 +64,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from substrate import agent, guard, introspect, net, notes, private, render, scopes, stack
+from substrate import (
+    agent, guard, introspect, local_socket, net, notes, private, render, scopes, stack,
+)
 from substrate.mcp import bridge
 from substrate.store import schema
 
@@ -1268,6 +1278,11 @@ class _Handler(BaseHTTPRequestHandler):
     cfg: Config
     lock: threading.Lock
 
+    def address_string(self) -> str:
+        # An AF_UNIX peer has no address: `client_address` is '' there, and the base class indexes
+        # it, so the first log line about a socket caller would raise.
+        return self.client_address[0] if isinstance(self.client_address, tuple) else "unix"
+
     def log_message(self, fmt: str, *args: Any) -> None:
         # stderr, never stdout. This process may still be holding a stdio JSON-RPC channel (tests
         # drive `serve` and `serve_http` in one interpreter) and a stray line there corrupts it —
@@ -1443,8 +1458,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(out)
 
 
-class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
-    """ThreadingHTTPServer with a ceiling on live CONNECTIONS — which is not a ceiling on work.
+class _ConnectionCeiling:
+    """A threading server with a ceiling on live CONNECTIONS — which is not a ceiling on work.
 
     The stock class spawns a thread per connection with no cap. 300 connections that announce a
     Content-Length and then stall produce 300 parked threads, and this is now the ONE server Zed,
@@ -1522,8 +1537,89 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._slots.release()
 
 
+class _BoundedThreadingHTTPServer(_ConnectionCeiling, ThreadingHTTPServer):
+    """`--http`: loopback TCP."""
+
+
+class _UnixHTTPServer(_ConnectionCeiling, socketserver.ThreadingMixIn,
+                      socketserver.UnixStreamServer):
+    """`--socket`: the same handler on a Unix-domain path that only this user can reach.
+
+    Not `HTTPServer`: its `server_bind` unpacks a (host, port) the socket does not have.
+    """
+
+    # A FULL BACKLOG REFUSES on AF_UNIX. TCP drops the SYN and the client retries; a Unix socket
+    # answers ECONNREFUSED at once, which every client reads as "no engine". socketserver's default of 5 made a burst of 40 callers against a
+    # healthy engine lose 9 to 14 of them that way. Above the connection ceiling, so a caller past
+    # it gets the readable 503 rather than the kernel's refusal. `listen` clamps to somaxconn.
+    request_queue_size = 4 * _ConnectionCeiling.MAX_CONNECTIONS
+
+    def server_bind(self) -> None:
+        path = Path(self.server_address)
+        # Held until `server_close`: while it is, no other engine will touch this path.
+        self._claim = local_socket.claim(path)
+        self.socket.bind(str(path))
+        # The 0700 directory already keeps other users out during the moment before this runs. The
+        # mode is for the socket on its own, should the directory ever be loosened.
+        os.chmod(path, 0o600)
+        # What `server_close` may remove. A path that has since been replaced is someone else's.
+        self._bound_inode = os.lstat(path).st_ino
+
+    def verify_request(self, request: Any, client_address: Any) -> bool:
+        # Runs before a handler or a connection slot exists. A caller of another uid gets the
+        # connection closed and nothing else: nothing on this socket is for it, including a
+        # refusal message.
+        try:
+            uid = local_socket.peer_uid(request)
+        except OSError:
+            uid = None
+        if uid == os.geteuid():
+            return True
+        print(f"substrate-mcp: dropped a connection from uid {uid} on {self.server_address}: "
+              f"this engine answers only uid {os.geteuid()}", file=sys.stderr)
+        return False
+
+    def server_close(self) -> None:
+        super().server_close()
+        inode = getattr(self, "_bound_inode", None)
+        try:
+            if inode is not None and os.lstat(self.server_address).st_ino == inode:
+                os.unlink(self.server_address)
+        except OSError:
+            pass
+        # Released only after the unlink, so the next engine never finds this one's socket.
+        claim = getattr(self, "_claim", None)
+        if claim is not None:
+            self._claim = None
+            os.close(claim)
+
+
+def serve_unix(cfg: Config, path: str | Path, *, ready: Any = None,
+               allow_writes: bool = False) -> int:
+    """`serve_http`'s server on a Unix-domain socket. The path's directory is created 0700, and
+    is refused if it already exists any looser (`local_socket.claim`)."""
+    path = Path(path).expanduser()
+    return _serve(cfg, lambda handler: _UnixHTTPServer(str(path), handler), f"unix:{path}",
+                  reach="any process running as this user", ready=ready,
+                  allow_writes=allow_writes)
+
+
 def serve_http(cfg: Config, host: str, port: int, *, ready: Any = None,
                allow_writes: bool = False) -> int:
+    """One long-lived server on loopback TCP. Returns only when interrupted.
+
+    Every user on the machine can reach it, and nothing stops another process binding the port
+    while it is down, so nothing of ours connects here: Scripta and `--connect` use `serve_unix`.
+    """
+    print(f"substrate-mcp: {host}:{port} is loopback TCP, which every user on this machine can "
+          f"query. Serve with --socket for an engine only this user can reach.", file=sys.stderr)
+    return _serve(cfg, lambda handler: _BoundedThreadingHTTPServer((host, port), handler),
+                  f"{host}:{port}", reach="any local process", ready=ready,
+                  allow_writes=allow_writes)
+
+
+def _serve(cfg: Config, make: Callable[[type], Any], where: str, *, reach: str,
+           ready: Any, allow_writes: bool) -> int:
     """One long-lived server, every client. Returns only when interrupted.
 
     `ready` is an optional callable handed the bound server once the socket is listening. Tests
@@ -1545,17 +1641,17 @@ def serve_http(cfg: Config, host: str, port: int, *, ready: Any = None,
         cfg = copy.copy(cfg)
         cfg.read_only = True
     elif allow_writes and not cfg.read_only:
-        print(f"substrate-mcp: writes ENABLED on {host}:{port} — `ingest` is reachable by any "
-              f"local process", file=sys.stderr)
+        print(f"substrate-mcp: writes ENABLED on {where} — `ingest` is reachable by {reach}",
+              file=sys.stderr)
     handler = type("_BoundHandler", (_Handler,), {"cfg": cfg, "lock": threading.Lock()})
     try:
-        httpd = _BoundedThreadingHTTPServer((host, port), handler)
-    except OSError as e:
+        httpd = make(handler)
+    except (OSError, ValueError) as e:
         # A taken port is the common case — a second instance, or an old process that outlived its
         # client. Unhandled it escapes as a traceback, and under a KeepAlive'd launch job that is a
         # traceback every ThrottleInterval into an unrotated log. Refused with the same shape the
         # bind validator uses, so both failures read alike.
-        print(f"substrate-mcp: cannot bind {host}:{port} — {e}", file=sys.stderr)
+        print(f"substrate-mcp: cannot bind {where} — {e}", file=sys.stderr)
         return 2
     # Daemon threads, so an idle keep-alive connection cannot hold the interpreter open for its
     # full `_Handler.timeout` with nothing in flight. That is only safe alongside the barrier
@@ -1564,9 +1660,10 @@ def serve_http(cfg: Config, host: str, port: int, *, ready: Any = None,
     # writes a note with a plain write() into a real vault, so an exit there leaves a truncated
     # note that the next compose reads as the note.
     httpd.daemon_threads = True
-    bound_host, bound_port = httpd.server_address[0], httpd.server_address[1]
-    print(f"substrate-mcp: serving http://{bound_host}:{bound_port} "
-          f"(v{SERVER_VERSION}, schema v{schema.SCHEMA_VERSION})", file=sys.stderr)
+    bound = httpd.server_address
+    bound = f"unix:{bound}" if isinstance(bound, str) else f"http://{bound[0]}:{bound[1]}"
+    print(f"substrate-mcp: serving {bound} (v{SERVER_VERSION}, schema v{schema.SCHEMA_VERSION})",
+          file=sys.stderr)
     if ready is not None:
         ready(httpd)
     try:
@@ -1641,12 +1738,18 @@ def _main(argv: list[str] | None) -> int:
     ap.add_argument("--http", nargs="?", const=DEFAULT_HTTP, default=None, metavar="HOST:PORT",
                     help=f"serve over loopback HTTP instead of stdio (default {DEFAULT_HTTP}); "
                          f"one shared server for every client, restartable without touching them")
-    ap.add_argument("--connect", nargs="?", const=DEFAULT_HTTP, default=None, metavar="HOST:PORT",
-                    help=f"serve stdio by forwarding reads to the shared --http server (default "
-                         f"{DEFAULT_HTTP}, the one Scripta runs); `ingest` still runs here")
+    ap.add_argument("--connect", nargs="?", const=local_socket.DEFAULT_SOCKET, default=None,
+                    metavar="PATH",
+                    help=f"serve stdio by forwarding reads to the shared --socket server (default "
+                         f"{local_socket.DEFAULT_SOCKET}, the one Scripta runs); `ingest` still "
+                         f"runs here")
+    ap.add_argument("--socket", nargs="?", const=local_socket.DEFAULT_SOCKET, default=None,
+                    metavar="PATH",
+                    help=f"serve that shared server on a Unix-domain socket only this user can "
+                         f"reach (default {local_socket.DEFAULT_SOCKET}, where Scripta runs it)")
     ap.add_argument("--read-only", action=argparse.BooleanOptionalAction, default=None,
                     help="refuse `ingest`, the one tool that writes. ON by default under --http "
-                         "and off under stdio; state it either way to override that.")
+                         "and --socket and off under stdio; state it either way to override that.")
     ap.add_argument("--agent-mode", action="store_true",
                     help="serve ONLY --scopes, read-only, from snapshots in --snapshot-dir; never "
                          "read the registry or a vault (substrate.agent)")
@@ -1667,6 +1770,7 @@ def _main(argv: list[str] | None) -> int:
         # Every flag that would reach past the snapshot is REFUSED rather than ignored, so a
         # mis-written agent config fails at launch instead of quietly widening what it can touch.
         conflict = [f for f, v in (("--registry", args.registry), ("--http", args.http),
+                                   ("--socket", args.socket),
                                    ("--no-read-only", args.read_only is False)) if v]
         if conflict:
             print(f"substrate-mcp: --agent-mode refuses {', '.join(conflict)}", file=sys.stderr)
@@ -1688,6 +1792,20 @@ def _main(argv: list[str] | None) -> int:
         print("substrate-mcp: --scopes and --snapshot-dir only apply with --agent-mode",
               file=sys.stderr)
         return 2
+
+    if args.http is not None and args.socket is not None:
+        print("substrate-mcp: --http and --socket are two different transports; pick one",
+              file=sys.stderr)
+        return 2
+    socket_path = None
+    if args.socket is not None:
+        socket_path = Path(args.socket).expanduser()
+        try:
+            # Here, before the stack is built, for the same reason as the bind check below.
+            local_socket.check_length(socket_path)
+        except ValueError as e:
+            print(f"substrate-mcp: {e}", file=sys.stderr)
+            return 2
 
     # BEFORE the stack is built: a refused bind should cost nothing, and building the stack first
     # means a typo'd --http pays for model probes before it fails.
@@ -1717,7 +1835,8 @@ def _main(argv: list[str] | None) -> int:
     # here. stdio keeps `ingest` because reaching stdio already requires spawning this process.
     # An explicit --read-only / --no-read-only is honoured on either transport; unstated, the
     # default follows the transport, because that is the thing the exposure depends on.
-    read_only = (bind is not None) if args.read_only is None else args.read_only
+    shared = bind is not None or socket_path is not None
+    read_only = shared if args.read_only is None else args.read_only
     # The warning for an opted-out socket belongs to `serve_http`, which is now what enforces the
     # default — one copy, so it cannot be printed by a path that does not actually apply the rule.
 
@@ -1727,6 +1846,8 @@ def _main(argv: list[str] | None) -> int:
     # re-check writes nothing either.
     cfg = Config(args.registry, retrieval, read_only=read_only,
                  recheck=functools.partial(stack.recheck, **build_args), agent=agent_scopes)
+    if socket_path is not None:
+        return serve_unix(cfg, socket_path, allow_writes=not read_only)
     if bind is not None:
         return serve_http(cfg, *bind, allow_writes=not read_only)
     return serve(cfg)
@@ -1736,9 +1857,9 @@ def _connect(args: Any, ap: Any) -> int:
     """`--connect`: stdio in front of the shared server. No stack is built. Any retrieval flag is
     ignored, and ignored LOUDLY: the shared server's stack answers every read, so a reranker named
     here would otherwise look as if it were in force."""
-    if args.http is not None:
-        print("substrate-mcp: --connect and --http are two different transports; pick one",
-              file=sys.stderr)
+    if args.http is not None or args.socket is not None:
+        print("substrate-mcp: --connect is a client of the shared server; it cannot also serve "
+              "--http or --socket", file=sys.stderr)
         return 2
     # REFUSED, never ignored: agent mode narrows a server to snapshots, and the shared server
     # answers for every scope, with `ingest` on here.
@@ -1747,13 +1868,18 @@ def _connect(args: Any, ap: Any) -> int:
     if agent_flags:
         print(f"substrate-mcp: --connect refuses {', '.join(agent_flags)}", file=sys.stderr)
         return 2
+    path = Path(args.connect).expanduser()
+    if not path.is_absolute():
+        # Catches a HOST:PORT too. TCP is not offered at all: a loopback port authenticates
+        # nobody, so whatever held it would be sent every query.
+        print(f"substrate-mcp: --connect wants the engine's socket path, such as "
+              f"{local_socket.DEFAULT_SOCKET}, got {args.connect!r}. The engine is not reached "
+              f"over TCP: a loopback port cannot prove who is listening on it.", file=sys.stderr)
+        return 2
     try:
-        host, port = parse_bind(args.connect)
+        local_socket.check_length(path)
     except ValueError as e:
-        # The same loopback rule, for a different reason. Off-loopback, every query and the scope
-        # it names would leave the machine.
-        print(f"substrate-mcp: --connect wants a loopback HOST:PORT such as {DEFAULT_HTTP} ({e})",
-              file=sys.stderr)
+        print(f"substrate-mcp: {e}", file=sys.stderr)
         return 2
     ignored = [f"--{a.replace('_', '-')}" for a in
                ("embed_model", "hyde_model", "rerank_model", "cache", "lexical_only")
@@ -1764,7 +1890,7 @@ def _connect(args: Any, ap: Any) -> int:
     # Unstated, `ingest` stays ON, as on any stdio server: only a client that spawned this process
     # can reach it.
     read_only = bool(args.read_only)
-    cfg = Config(args.registry, None, read_only=read_only, remote=bridge.Remote(host, port))
+    cfg = Config(args.registry, None, read_only=read_only, remote=bridge.Remote(path))
     return serve(cfg)
 
 

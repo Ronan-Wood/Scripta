@@ -11,11 +11,11 @@ import SubstrateKit
 /// discovered here: Claude Code and Zed gain a dependency they did not have, and lose substrate
 /// when Scripta closes. That is accepted.
 ///
-/// THERE IS NO ADOPT PATH, and its absence is the design rather than an omission. A port that is
-/// already answering is reported (`portBusy`) and never used: adopting it would mean the app's
+/// THERE IS NO ADOPT PATH, and its absence is the design rather than an omission. A socket that is
+/// already answering is reported (`socketBusy`) and never used: adopting it would mean the app's
 /// lifetime and the engine's had come apart, which is the one property this type exists to keep.
 ///
-/// NOT LEAKING A PROCESS IS THE FIRST REQUIREMENT. An orphan on the port means the next launch
+/// NOT LEAKING A PROCESS IS THE FIRST REQUIREMENT. An orphan on the socket means the next launch
 /// cannot start its own engine, and the operator has no way to know why. Three exits have to be
 /// covered and only one of them runs our code:
 ///
@@ -48,20 +48,21 @@ final class SubstrateEngine: ObservableObject {
         case idle
 
         /// Spawned, not yet answering. DISTINCT FROM DOWN: the cross-encoder arm builds its stack
-        /// before `serve_http` binds, so the port stays closed for seconds by design.
+        /// before `serve_unix` binds, so the socket stays closed for seconds by design.
         case starting(Source, since: Date)
 
-        /// Answering JSON-RPC on the port.
+        /// Answering JSON-RPC on the socket.
         case serving(Source, since: Date)
 
         /// There is no engine to spawn. Not a fault — the state every machine that is not the
         /// operator's is in today — and it carries what was looked for so the answer is actionable.
         case notInstalled(searched: [String])
 
-        /// Something else holds the port. An ANOMALY, surfaced rather than adopted or swallowed:
-        /// it is either a stale orphan from a previous crash or an engine started by hand, and
-        /// both have a remedy the operator can only apply if they are told.
-        case portBusy(port: Int, occupant: Occupant)
+        /// Something else holds the socket. An ANOMALY, surfaced rather than adopted or swallowed:
+        /// it is either an orphan from a previous crash, an engine started by hand, or something
+        /// on the path that is not this user's, and each has a remedy the operator can only apply
+        /// if they are told.
+        case socketBusy(path: String, occupant: Occupant)
 
         /// Spawned and died, or spawned and never answered. Carries the process's own stderr — a
         /// supervisor that says "could not start" without saying why makes the operator go read
@@ -74,13 +75,17 @@ final class SubstrateEngine: ObservableObject {
         }
     }
 
-    /// Who is on the port when it is not us. Split because the remedies differ: another substrate
-    /// engine is quit or left alone, an unrelated listener is a port conflict.
+    /// Who is on the socket when it is not us. Split because the remedies differ: another substrate
+    /// engine is quit or left alone, and anything else is in the way of ours.
     enum Occupant {
         /// It answered JSON-RPC. `scopes` is the roster size when the answer decoded.
         case anEngine(scopes: Int?)
-        /// Something is listening and it is not this protocol.
+        /// Something of this user's answered, and not in this protocol. The probe WAS sent to it.
         case aStranger(String)
+        /// The client refused the socket before writing a byte: its directory is reachable by
+        /// another user, or the listener runs as another uid. Split from `aStranger` because only
+        /// here is "nothing was sent" true, and the remedy is about ownership, not a port clash.
+        case untrusted(String)
     }
 
     /// One process to run, resolved: what to exec, with what leading arguments, from where.
@@ -133,20 +138,21 @@ final class SubstrateEngine: ObservableObject {
 
     @Published private(set) var lifecycle: Lifecycle = .idle
 
-    // MARK: - The port
+    // MARK: - The socket
 
-    /// Derived from the client's own endpoint so the spawn and the caller cannot disagree about
-    /// which socket the engine is on — the disagreement would present as "the engine is down".
-    /// `nonisolated`: these are three reads of a constant URL, and the states they name are drawn
-    /// from a `Lifecycle` extension that has no actor of its own.
-    nonisolated static var port: Int { SubstrateClient.defaultEndpoint.port ?? 8765 }
-    nonisolated static var host: String { SubstrateClient.defaultEndpoint.host ?? "127.0.0.1" }
-    /// What the operator has to type into `lsof` to see for themselves.
-    nonisolated static var endpoint: String { "\(host):\(port)" }
+    /// The client's own path, so the spawn and the caller cannot disagree about which socket the
+    /// engine is on — the disagreement would present as "the engine is down". `nonisolated`: a
+    /// constant, and the states it names are drawn from a `Lifecycle` extension that has no actor.
+    ///
+    /// A UNIX SOCKET, NOT 127.0.0.1:8765. Loopback TCP let every user on the Mac query every scope,
+    /// and let any process that bound the port while Scripta was closed be sent every query. The
+    /// engine creates the socket's directory 0700, and both sides refuse a peer of another uid
+    /// (`UnixSocketHTTP`, `substrate/substrate/local_socket.py`).
+    nonisolated static var socketPath: String { SubstrateClient.defaultSocketPath }
 
-    /// `--read-only` IS STATED, not inherited. It already defaults on under `--http` (Doc 3 §3:
+    /// `--read-only` IS STATED, not inherited. It already defaults on under `--socket` (Doc 3 §3:
     /// `ingest` writes notes into real Obsidian vaults that the next refresh serves back as settled
-    /// knowledge, and any local process can reach a loopback port), but a default is a thing that
+    /// knowledge, and any process of this user can reach the socket), but a default is a thing that
     /// can move. Nothing here ever passes `--no-read-only`.
     /// `--rerank-model` IS DELIBERATELY NOT STATED, and this comment exists because stating it is
     /// the obvious-looking mistake. I made it on 2026-08-04, to stop tier 2 and tier 3 disagreeing,
@@ -170,12 +176,12 @@ final class SubstrateEngine: ObservableObject {
     /// shim on the unmeasured arm. That belongs in the shim or in `stack.DEFAULT_RERANK`, where one
     /// value serves the CLI, the MCP and this app alike.
     private static var serveArguments: [String] {
-        ["--http", endpoint, "--read-only"]
+        ["--socket", socketPath, "--read-only"]
     }
 
     /// How long a cold start may take before it is called a failure. Generous on purpose: the
-    /// engine builds its whole retrieval stack — embedder, HyDE and reranker — BEFORE `serve_http`
-    /// binds, so the port stays shut for as long as the slowest arm takes to load, and the starting
+    /// engine builds its whole retrieval stack — embedder, HyDE and reranker — BEFORE `serve_unix`
+    /// binds, so the socket stays shut for as long as the slowest arm takes to load, and the starting
     /// card counts seconds so a long wait looks like a long wait rather than a hang.
     ///
     /// Sized for the arms the ENGINE picks, not for one this app names: `serveArguments` states no
@@ -191,7 +197,7 @@ final class SubstrateEngine: ObservableObject {
     private var tail = StderrTail()
     private var task: Task<Void, Never>?
 
-    private let probe = SubstrateClient(endpoint: SubstrateClient.defaultEndpoint, timeout: 5)
+    private let probe = SubstrateClient(timeout: 5)
 
     // MARK: - Lifecycle
 
@@ -216,12 +222,12 @@ final class SubstrateEngine: ObservableObject {
     }
 
     /// The remedy every non-serving card offers. `start()` already tears down and re-runs discovery
-    /// and the port check, so this also covers "I quit the thing that was holding the port" and "I
-    /// installed the engine" — it is named separately because that is what the button means.
+    /// and the socket check, so this also covers "I quit the thing that was holding the socket" and
+    /// "I installed the engine" — it is named separately because that is what the button means.
     func restart() { start() }
 
     /// Quit path. The shim's EOF watchdog covers force-quit and crash; this is the fast, ordinary
-    /// one, and it runs before the app's own exit so the port is free by the time the next launch
+    /// one, and it runs before the app's own exit so the socket is free by the time the next launch
     /// looks at it.
     func stop() {
         teardown()
@@ -231,14 +237,16 @@ final class SubstrateEngine: ObservableObject {
     // MARK: - Bringing it up
 
     private func bringUp(_ source: Source) async {
-        // THE PORT CHECK COMES FIRST, and what it finds is never used. A busy port before we have
-        // spawned anything means a previous engine outlived its Scripta or the operator started one
-        // by hand; either way a second bind would fail and the first is not ours to own.
-        let state = await Self.portState(probe)
+        // THE SOCKET CHECK COMES FIRST, and what it finds is never used. A live socket before we
+        // have spawned anything means a previous engine outlived its Scripta or the operator started
+        // one by hand; either way a second bind would fail and the first is not ours to own. A
+        // crashed engine's socket file refuses connections, reads as free here, and the engine
+        // replaces it.
+        let state = await Self.socketState(probe)
         guard !Task.isCancelled else { return }
         if case .held(let occupant) = state {
-            Self.log.error("port \(Self.port) is already held; refusing to start a second engine")
-            lifecycle = .portBusy(port: Self.port, occupant: occupant)
+            Self.log.error("the engine socket is already held; refusing to start a second engine")
+            lifecycle = .socketBusy(path: Self.socketPath, occupant: occupant)
             return
         }
         do {
@@ -294,12 +302,12 @@ final class SubstrateEngine: ObservableObject {
 
     /// READINESS IS "IT ANSWERED", not "the process is alive". The engine builds its retrieval
     /// stack before it binds, so a live process proves nothing; and the socket is open only inside
-    /// `serve_http`, so an answer is decisive.
+    /// `serve_unix`, so an answer is decisive.
     private func waitUntilAnswering(_ source: Source) async {
-        let endpoint = Self.endpoint
+        let endpoint = Self.socketPath
         let deadline = Date().addingTimeInterval(Self.startupCeiling)
         while !Task.isCancelled {
-            if case .held(.anEngine) = await Self.portState(probe) {
+            if case .held(.anEngine) = await Self.socketState(probe) {
                 guard !Task.isCancelled else { return }
                 lifecycle = .serving(source, since: Date())
                 Self.log.info("engine answering on \(endpoint, privacy: .public)")
@@ -345,7 +353,7 @@ final class SubstrateEngine: ObservableObject {
     ///
     /// Narrower than `runningSource` on purpose: a `.starting` engine has a resolved source but has
     /// not proved it can run, and the Library's first act would be a minutes-long ingest against a
-    /// build that may be about to land in `.failed` with its reason on stderr. Waiting for the port
+    /// build that may be about to land in `.failed` with its reason on stderr. Waiting for the socket
     /// costs seconds and turns that into a legible refusal.
     var serving: Source? {
         if case .serving(let source, _) = lifecycle { return source }
@@ -354,7 +362,7 @@ final class SubstrateEngine: ObservableObject {
 
     /// What the ladder resolves to, whatever the process is doing.
     ///
-    /// For the one caller that genuinely does not need the port: the refresh agent composes indexes
+    /// For the one caller that genuinely does not need the socket: the refresh agent composes indexes
     /// directly and never speaks to the server, so an engine that failed to bind — or a Scripta
     /// whose engine is still loading its reranker — is no reason to leave every scope unrefreshed.
     /// Everything that reads a RESULT goes through `serving` instead, because a result implies
@@ -382,9 +390,9 @@ final class SubstrateEngine: ObservableObject {
         tail = StderrTail()
     }
 
-    // MARK: - Who is on the port
+    // MARK: - Who is on the socket
 
-    private enum PortState {
+    private enum SocketState {
         case free
         case held(Occupant)
     }
@@ -392,7 +400,7 @@ final class SubstrateEngine: ObservableObject {
     /// Asked with a real `list_scopes`, not a bare TCP connect, because the answer decides the
     /// SENTENCE as well as the fact: "an engine is already answering" and "something that is not a
     /// substrate engine is listening" have different remedies and the operator needs the right one.
-    private static func portState(_ client: SubstrateClient) async -> PortState {
+    private static func socketState(_ client: SubstrateClient) async -> SocketState {
         switch await client.listScopes() {
         case .ok(let list):
             return .held(.anEngine(scopes: list.scopes.count))
@@ -401,9 +409,10 @@ final class SubstrateEngine: ObservableObject {
             return .held(.anEngine(scopes: nil))
         case .transportFailure(let failure):
             // A cancelled probe is not evidence of anything; the caller's `Task.isCancelled` guard
-            // is what acts on it, so this must not read as "the port is free and yours to take".
+            // is what acts on it, so this must not read as "the socket is free and yours to take".
             if failure.isCancellation { return .free }
             if case .undecodablePayload = failure { return .held(.anEngine(scopes: nil)) }
+            if case .untrusted(let why) = failure { return .held(.untrusted(why)) }
             // The one mapping of URLError codes to "nothing is listening" lives in `VaultRefusal`;
             // duplicating the set here is how the two drift.
             if case .engineDown = VaultRefusal.of(failure) { return .free }
@@ -544,7 +553,7 @@ final class SubstrateEngine: ObservableObject {
     ///
     /// SHARED WITH THE CLI RUNNER (`SubstrateCLI`), not copied. The leak this closes is not special
     /// to the server: a docling ingest holds a torch stack for minutes, and a force-quit during one
-    /// leaves a process chewing the machine with no window to close and nothing on the port to
+    /// leaves a process chewing the machine with no window to close and nothing on the socket to
     /// explain it. Same three exits, same EOF watchdog, same group kill — and a second copy of this
     /// script is a second thing to get right.
     static let shim = """

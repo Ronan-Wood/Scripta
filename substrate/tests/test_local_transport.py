@@ -305,8 +305,11 @@ def test_no_model_request_bypasses_the_shared_transport() -> None:
                "create_connection"}
     clients = {"requests", "httpx", "urllib3", "aiohttp"}
     offenders = []
+    # `local_socket.py` too: its one HTTPConnection connects only to an AF_UNIX path, which no
+    # proxy or redirect can turn into a connection off this machine.
+    exempt = {_PACKAGE / "net.py", _PACKAGE / "local_socket.py"}
     for path in sorted(_PACKAGE.rglob("*.py")):
-        if path == _PACKAGE / "net.py":
+        if path in exempt:
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Import):

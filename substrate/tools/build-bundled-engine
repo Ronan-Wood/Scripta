@@ -144,7 +144,7 @@ STAMP="$DEST/.build-fingerprint"
 # the tampering the Swift discovery comment builds its threat model on — was never rebuilt and never
 # rechecked. Six `-e` tests are free; a stamp that outlives the tree it describes is not.
 REQUIRED="bin/substrate-mcp bin/substrate .venv/bin/python runtime/bin/python3.14 \
-          substrate/cli.py substrate/mcp/server.py substrate/mcp/bridge.py \
+          substrate/cli.py substrate/mcp/server.py substrate/mcp/bridge.py substrate/local_socket.py \
           bin/embed-apple bin/hyde-fm bin/rerank-fm bin/extract-apple"
 assert_whole() {
   for required in $REQUIRED; do

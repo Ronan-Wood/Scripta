@@ -28,14 +28,16 @@ files are readable in any editor and the index is a rebuildable cache that can b
 Scripta (Swift/SwiftUI, macOS 26)          Substrate (Python 3.14)
   capture → transcribe → write ──→  *.md  ──→ ingest → chunk → index → retrieve
                             ▲                                            │
-                            └────────── JSON-RPC on loopback ────────────┘
+                            └─────── JSON-RPC on a Unix socket ──────────┘
                                                  │
                                         MCP ─────┴───→ Claude Code, other clients
 ```
 
 The app spawns the engine as a child process. The same engine serves Claude Code over MCP.
 *Measured 2026-08-12:* app running → 3 engine processes, quit → 0 orphans, relaunch → back on
-`:8765`.
+`:8765`. The engine has since moved off TCP to a Unix socket in a 0700 directory
+(`~/Library/Application Support/Scripta/engine/substrate.sock`), and both ends refuse a peer of
+another uid: loopback TCP let every user on the Mac query every scope.
 
 ---
 

@@ -32,7 +32,7 @@ struct VaultBrowseView: View {
         switch engine.lifecycle {
         case .idle, .starting:
             VaultEngineStarting(lifecycle: engine.lifecycle)
-        case .notInstalled, .portBusy, .failed:
+        case .notInstalled, .socketBusy, .failed:
             VaultEngineRefusal(lifecycle: engine.lifecycle, restart: engine.restart)
         case .serving:
             VaultBrowseConsole(model: model)

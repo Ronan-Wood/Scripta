@@ -28,17 +28,17 @@ struct HelpView: View {
     /// drift from the ladder again.
     ///
     /// `--connect`, so every client shares the ONE engine this app runs instead of each spawning
-    /// a full engine of its own. It names the app's endpoint so the two cannot disagree about the
-    /// port. Only for an engine that HAS the flag (`mcpConnects`): an older one exits on an
-    /// unknown argument, and a registered server that never starts is worse than one that runs
-    /// its own engine.
+    /// a full engine of its own. It names the app's socket so the two cannot disagree about where
+    /// the engine is. Only for an engine whose `--connect` takes that socket (`mcpConnects`): an
+    /// older one exits on an unknown argument or a path where it wanted HOST:PORT, and a
+    /// registered server that never starts is worse than one that runs its own engine.
     ///
     /// A source that runs a MODULE (the pinned tier: `python -m substrate.mcp.server`) also needs
     /// its working directory. That venv does not install `substrate`, so the import resolves only
     /// from the deployment root, and a client spawns from its own cwd. The two shims `cd` to their
     /// root themselves, which is why only module sources are wrapped.
     private var mcpArgv: [String] {
-        let connect = mcpConnects ? ["--connect", SubstrateEngine.endpoint] : []
+        let connect = mcpConnects ? ["--connect", SubstrateEngine.socketPath] : []
         if let source = SubstrateEngine.resolved {
             let argv = [source.executable.path] + source.arguments + connect
             guard !source.arguments.isEmpty, let directory = source.workingDirectory else {
@@ -51,16 +51,18 @@ struct HelpView: View {
         return [helper] + connect
     }
 
-    /// Whether the engine a client would spawn knows `--connect`. The bundled and pinned tiers are
-    /// a package tree under their working directory, so the module that implements the flag is
-    /// checked for directly. The developer shim runs whatever the repo has checked out, which this
+    /// Whether the engine a client would spawn has a `--connect` that reaches the socket. The
+    /// bundled and pinned tiers are a package tree under their working directory, so the modules
+    /// that implement it are checked for directly: `bridge.py` alone is the TCP-only bridge, which
+    /// exits 2 on a socket path. The developer shim runs whatever the repo has checked out, which this
     /// app cannot see, so it is not assumed. With nothing resolved, the fallback is this build's
     /// own bundled engine, which has it.
     private var mcpConnects: Bool {
         guard let source = SubstrateEngine.resolved else { return true }
         guard let root = source.workingDirectory else { return false }
-        return FileManager.default.fileExists(
-            atPath: root.appendingPathComponent("substrate/mcp/bridge.py").path)
+        return ["substrate/mcp/bridge.py", "substrate/local_socket.py"].allSatisfy {
+            FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path)
+        }
     }
 
     /// Single-quoted per argument, so the `sh -c` script above survives being pasted into a shell.

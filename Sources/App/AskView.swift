@@ -42,7 +42,7 @@ struct AskView: View {
         switch engine.lifecycle {
         case .idle, .starting:
             VaultEngineStarting(lifecycle: engine.lifecycle)
-        case .notInstalled, .portBusy, .failed:
+        case .notInstalled, .socketBusy, .failed:
             VaultEngineRefusal(lifecycle: engine.lifecycle, restart: engine.restart)
         case .serving:
             VaultRoster(model: model)
@@ -156,10 +156,10 @@ extension SubstrateEngine.Lifecycle {
                     + "run. Ask needs it: your calls, notes and documents are all answered from a "
                     + "composed scope. Your recordings are safe and Calls can still search them. "
                     + "The paths it looked at are below.")]
-        case .portBusy(let port, let occupant):
+        case .socketBusy(_, let occupant):
             return [EngineNote(
-                id: "port", marker: "port \(port)", tone: Ink.warning,
-                text: occupant.sentence(port: port))]
+                id: "socket", marker: "socket held", tone: Ink.warning,
+                text: occupant.sentence)]
         case .failed(let source, let reason, _):
             return [EngineNote(
                 id: "failed", marker: "failed", tone: Ink.danger,
@@ -178,7 +178,7 @@ extension SubstrateEngine.Lifecycle {
             return searched.isEmpty ? nil : searched.joined(separator: "\n")
         case .failed(_, _, let stderr):
             return stderr.isEmpty ? nil : stderr
-        case .idle, .starting, .serving, .portBusy:
+        case .idle, .starting, .serving, .socketBusy:
             return nil
         }
     }
@@ -191,22 +191,26 @@ extension SubstrateEngine.Lifecycle {
 
 extension SubstrateEngine.Occupant {
 
-    /// Both arms name the port AND the remedy. A stale orphan from a crash and an engine the
-    /// operator started by hand are the two things this can be, and Scripta will not adopt either:
-    /// an engine it did not spawn is one it cannot promise to stop.
-    func sentence(port: Int) -> String {
-        let socket = SubstrateEngine.endpoint
+    /// Both arms name the socket AND the remedy. A stale orphan from a crash and an engine the
+    /// operator started by hand are what `anEngine` can be, and Scripta will not adopt either: an
+    /// engine it did not spawn is one it cannot promise to stop.
+    var sentence: String {
+        let socket = SubstrateEngine.socketPath
         switch self {
         case .anEngine(let scopes):
             let roster = scopes.map { " It answered with \($0) scope\($0 == 1 ? "" : "s")." } ?? ""
             return "A substrate engine is already answering on \(socket), and Scripta did not "
                 + "start it.\(roster) It is either one you ran by hand or an orphan a previous "
-                + "crash left behind — `lsof -nP -iTCP:\(port) -sTCP:LISTEN` names it. Scripta "
-                + "will not adopt a process it cannot promise to stop; quit it and press below."
+                + "crash left behind — `lsof -U | grep substrate.sock` names it. Scripta will not "
+                + "adopt a process it cannot promise to stop; quit it and press below."
         case .aStranger(let detail):
             return "Something is listening on \(socket) and it is not a substrate engine, so "
-                + "Scripta cannot bind the port its own engine needs: \(detail). "
-                + "`lsof -nP -iTCP:\(port) -sTCP:LISTEN` names it. Free the port and press below."
+                + "Scripta cannot bind the socket its own engine needs: \(detail). "
+                + "`lsof -U | grep substrate.sock` names it. Quit it and press below."
+        case .untrusted(let why):
+            return "Scripta will not use \(socket), because it is not provably this user's: "
+                + "\(why). Nothing was sent to it. Remove whatever is holding that path, or "
+                + "tighten its folder to 700, and press below."
         }
     }
 }
@@ -989,7 +993,7 @@ extension VaultRefusal {
                 // own `failed` card, which carries the stderr. Colouring it would put a second,
                 // louder and less informative report of one event on screen.
                 text: "Nothing is listening on "
-                    + "\(SubstrateClient.defaultEndpoint.absoluteString). Scripta runs the engine "
+                    + "\(SubstrateClient.defaultSocketPath). Scripta runs the engine "
                     + "itself, so it stopped underneath this query; the pane is about to say why. "
                     + "Your recordings are safe and Calls can still search them, but Ask needs the "
                     + "engine — there is no second corpus to fall back to.")]

@@ -49,7 +49,7 @@ Two programs meeting at one place — a folder of Markdown:
 Scripta (Swift/SwiftUI)              substrate (Python)
   capture → transcribe → write ──→ *.md ──→ ingest → chunk → index → retrieve
                           ▲                                            │
-                          └───────── JSON-RPC on loopback ─────────────┘
+                          └────── JSON-RPC on a Unix socket ───────────┘
                                               │
                                      MCP ─────┴───→ Claude
 ```

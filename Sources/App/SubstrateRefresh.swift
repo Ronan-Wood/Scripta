@@ -110,7 +110,7 @@ final class SubstrateRefresh: ObservableObject {
     private var isComingUp: Bool {
         switch SubstrateEngine.shared.lifecycle {
         case .idle, .starting: return true
-        case .serving, .notInstalled, .portBusy, .failed: return false
+        case .serving, .notInstalled, .socketBusy, .failed: return false
         }
     }
 

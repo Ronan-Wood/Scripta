@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - JSON-RPC 2.0 over loopback HTTP
+// MARK: - JSON-RPC 2.0 over HTTP on the engine's Unix socket
 //
 // The engine (`substrate/substrate/mcp/server.py`) speaks one JSON-RPC frame per POST. There is no
 // SSE stream and no request path: `do_GET` refuses with 405 and `do_POST` deliberately does not
@@ -11,7 +11,8 @@ import Foundation
 //   `Origin` must be ABSENT          — any Origin at all is refused; there is no page to allow-list
 //   `Content-Type: application/json` — no form can send this without a preflight the server never
 //                                      answers
-// `URLSession` sets Host from the URL and sends no Origin, so only the content type is ours to set.
+// `UnixSocketHTTP` writes all three itself (`Host: localhost`, no Origin). The socket and the peer's
+// uid are checked before any of it is sent; see that file for why the engine is not on TCP.
 // A refusal comes back as a non-200 with a JSON-RPC error body, which is why `httpStatus` carries
 // the body rather than discarding it.
 //
@@ -54,9 +55,15 @@ extension SubstrateCall: Sendable where Payload: Sendable {}
 /// Why no JSON-RPC answer came back. Split rather than merged because the operator's next move
 /// differs for each: start the engine, look at what the guard refused, or file a bug.
 public enum SubstrateTransportFailure: Equatable, Sendable, CustomStringConvertible {
-    /// The engine is DOWN, or the socket died mid-call. `code` is the `URLError.Code` when Foundation
-    /// gave one — `.cannotConnectToHost` is the "not running" signal.
+    /// The engine is DOWN, or the socket died mid-call. `code` is the `URLError.Code` the transport
+    /// reports, the same one URLSession would — `.cannotConnectToHost` is the "not running" signal.
     case unreachable(reason: String, code: URLError.Code?)
+
+    /// Something is on the engine's socket and it is not this user's engine: the directory is
+    /// reachable by another user, or the listener runs as another uid. NOTHING WAS SENT TO IT. Not
+    /// `.unreachable`, because "start the engine" is the wrong remedy: whatever holds the path has
+    /// to go first.
+    case untrusted(String)
 
     /// A non-200. The server refuses with 405 (GET), 415 (wrong content type), 403 (any Origin),
     /// 421 (non-loopback Host), 411/400/413 (framing), 503 (connection ceiling) — each with a
@@ -93,6 +100,8 @@ public enum SubstrateTransportFailure: Equatable, Sendable, CustomStringConverti
         case .unreachable(let reason, let code):
             let suffix = code.map { " (URLError \($0.rawValue))" } ?? ""
             return "the substrate engine is unreachable: \(reason)\(suffix)"
+        case .untrusted(let why):
+            return "refusing the substrate engine's socket, and nothing was sent to it: \(why)"
         case .httpStatus(let code, let body):
             return "HTTP \(code) from the substrate engine: \(body)"
         case .malformedResponse(let why):
@@ -224,30 +233,31 @@ public struct SubstrateNoArguments: Encodable, Sendable {
 
 // MARK: - Client
 
-/// The loopback JSON-RPC client.
+/// The engine's JSON-RPC client.
 ///
 /// An `actor` rather than a struct with a lock: the only mutable state is the request id counter,
 /// and `Core` is on `.macOS(.v14)` where `Mutex` does not exist. Nothing here is `@MainActor` — the
 /// engine is a subprocess on a socket and no view is wired to this yet.
 public actor SubstrateClient {
-    /// `http://127.0.0.1:8765` — what `substrate-mcp --http 127.0.0.1:8765` binds.
-    public static let defaultEndpoint = URL(string: "http://127.0.0.1:8765")!
+    /// What `substrate-mcp --socket` binds by default (`local_socket.DEFAULT_SOCKET`), and where
+    /// `SubstrateEngine` runs it. The two are one string on each side of the language boundary.
+    public static let defaultSocketPath = NSHomeDirectory()
+        + "/Library/Application Support/Scripta/engine/substrate.sock"
 
-    public let endpoint: URL
-    private let session: URLSession
+    public let socketPath: String
+    private let timeout: TimeInterval
+    private let trust: UnixSocketHTTP.Trust
     private var nextID = 0
 
-    public init(endpoint: URL = SubstrateClient.defaultEndpoint, timeout: TimeInterval = 120) {
-        self.endpoint = endpoint
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = timeout
-        // FAIL FAST when the engine is down. With this on, Foundation parks the request until the
-        // host answers, which turns "the engine is not running" — the state a fresh machine is in —
-        // into a hang instead of the outcome this enum exists to report.
-        configuration.waitsForConnectivity = false
-        configuration.httpShouldSetCookies = false
-        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        self.session = URLSession(configuration: configuration)
+    public init(socketPath: String = SubstrateClient.defaultSocketPath,
+                timeout: TimeInterval = 120) {
+        self.init(socketPath: socketPath, timeout: timeout, trust: UnixSocketHTTP.Trust())
+    }
+
+    init(socketPath: String, timeout: TimeInterval, trust: UnixSocketHTTP.Trust) {
+        self.socketPath = socketPath
+        self.timeout = timeout
+        self.trust = trust
     }
 
     public func search(_ request: SubstrateSearchRequest) async -> SubstrateCall<WireSearchResult> {
@@ -288,16 +298,15 @@ public actor SubstrateClient {
             return .transportFailure(.malformedResponse("could not encode the request: \(error)"))
         }
 
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        // Required by `_guarded()`; anything else is refused with 415.
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = body
-
+        let status: Int
         let data: Data
-        let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (status, data) = try await UnixSocketHTTP.post(path: socketPath, body: body,
+                                                           timeout: timeout, trust: trust)
+        } catch let error as UnixSocketHTTP.Untrusted {
+            return .transportFailure(.untrusted(error.description))
+        } catch let error as UnixSocketHTTP.Malformed {
+            return .transportFailure(.malformedResponse(error.description))
         } catch let error as URLError {
             return .transportFailure(.unreachable(reason: error.localizedDescription,
                                                   code: error.code))
@@ -305,7 +314,7 @@ public actor SubstrateClient {
             return .transportFailure(.unreachable(reason: "\(error)", code: nil))
         }
 
-        return Self.interpret(body: data, response: response, expectedID: id)
+        return Self.interpret(body: data, status: status, expectedID: id)
     }
 
     // MARK: Frame handling
@@ -319,11 +328,11 @@ public actor SubstrateClient {
     /// than a different call. The body is carried along because it says which of the six guards
     /// refused.
     public static func interpret<Payload: Decodable>(
-        body: Data, response: URLResponse?, expectedID: Int?
+        body: Data, status: Int, expectedID: Int?
     ) -> SubstrateCall<Payload> {
-        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+        if status != 200 {
             return .transportFailure(.httpStatus(
-                code: http.statusCode,
+                code: status,
                 body: String(data: body, encoding: .utf8) ?? "<\(body.count) bytes, not UTF-8>"
             ))
         }

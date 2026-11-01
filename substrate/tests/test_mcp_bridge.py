@@ -1,11 +1,12 @@
 """`--connect`: one shared server for the reads, and `ingest` kept off its socket.
 
 Each stdio client used to spawn a full engine of its own. The bridge replaces that with a process
-that builds no stack and forwards reads to the loopback server Scripta hosts. These tests check
-the three properties the design rests on:
+that builds no stack and forwards reads to the server Scripta hosts on a Unix socket. These tests
+check the four properties the design rests on:
   * reads really are answered by the shared server;
   * the write never travels over the socket;
-  * a closed Scripta is an error the model can read, not a dead tool list.
+  * a closed Scripta is an error the model can read, not a dead tool list;
+  * a listener that is not this user's engine is sent nothing, and nothing it says is relayed.
 """
 
 from __future__ import annotations
@@ -13,9 +14,11 @@ from __future__ import annotations
 import http.server
 import io
 import json
-import socket
+import os
+import socketserver
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -23,17 +26,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from substrate import stack  # noqa: E402
+from substrate import local_socket, stack  # noqa: E402
 from substrate.mcp import bridge, server  # noqa: E402
-from test_mcp_server import _NOTE, REPO, _call, _cfg, _fixture, _http_server  # noqa: E402
+from test_local_socket import OTHER_UID, _engine, _patched, _socket_dir  # noqa: E402
+from test_mcp_server import _NOTE, REPO, _call, _cfg, _fixture  # noqa: E402
 
 
-def _closed_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
+def _no_engine() -> Path:
+    """A socket path in a private directory, with nothing bound: Scripta closed."""
+    return Path(tempfile.mkdtemp(dir="/tmp")) / "substrate.sock"
 
 
 def _bridge(registry: Path, remote) -> server.Config:
@@ -60,29 +61,33 @@ class _Recorder:
                                                                      "text": "{}"}]}}
 
 
+class _UnixStub(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
 def _stub(handler_body):
-    """A loopback HTTP listener that answers every POST with `handler_body(handler)`."""
+    """An HTTP listener on a fresh private socket that answers every POST with
+    `handler_body(handler)`. Returns (server, socket path, the bodies it was sent)."""
+    seen: list[bytes] = []
 
     class H(http.server.BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802
-            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            seen.append(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
             handler_body(self)
 
         def log_message(self, *a):
             pass
 
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
-    httpd.daemon_threads = True
+    path = Path(tempfile.mkdtemp(dir="/tmp")) / "substrate.sock"
+    httpd = _UnixStub(str(path), H)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd
+    return httpd, path, seen
 
 
 def test_reads_are_answered_by_the_shared_server() -> None:
     _, registry = _fixture()
-    base, stop = _http_server(_cfg(registry))
-    try:
-        port = int(base.rsplit(":", 1)[1])
-        cfg = _bridge(registry, bridge.Remote("127.0.0.1", port))
+    with _socket_dir() as d, _engine(d / "s.sock", _cfg(registry)):
+        cfg = _bridge(registry, bridge.Remote(d / "s.sock"))
         resp = _tools_call(cfg, "search", {"scope": "demo", "query": "composition"})
         assert resp["id"] == 7
         body = resp["result"]
@@ -91,8 +96,6 @@ def test_reads_are_answered_by_the_shared_server() -> None:
         direct = _call("search", {"scope": "demo", "query": "composition"}, registry)
         assert bridged["passages"] and bridged["passages"] == direct["passages"]
         assert cfg.stack is None, "the bridge must not have answered from a stack of its own"
-    finally:
-        stop()
 
 
 def test_ingest_never_crosses_the_socket() -> None:
@@ -118,7 +121,7 @@ def test_ingest_never_crosses_the_socket() -> None:
 def test_ingest_works_while_scripta_is_closed() -> None:
     root, registry = _fixture(manifest=True)
     (root / "demo-vault" / "04-synthesis").mkdir()
-    cfg = _bridge(registry, bridge.Remote("127.0.0.1", _closed_port()))
+    cfg = _bridge(registry, bridge.Remote(_no_engine()))
     out = _tools_call(cfg, "ingest", {"scope": "demo", "content": _NOTE, "filename": "d.md"})
     assert not out["result"].get("isError"), out
 
@@ -129,31 +132,23 @@ def test_ingest_is_refused_when_the_engine_reads_another_registry() -> None:
     root, registry = _fixture(manifest=True)
     (root / "demo-vault" / "04-synthesis").mkdir()
     _, other = _fixture()
-    base, stop = _http_server(_cfg(other))
-    try:
-        port = int(base.rsplit(":", 1)[1])
-        cfg = _bridge(registry, bridge.Remote("127.0.0.1", port))
+    with _socket_dir() as d, _engine(d / "s.sock", _cfg(other)):
+        cfg = _bridge(registry, bridge.Remote(d / "s.sock"))
         out = _tools_call(cfg, "ingest", {"scope": "demo", "content": _NOTE, "filename": "d.md"})
         assert out["result"]["isError"] is True
         text = out["result"]["content"][0]["text"]
         assert str(other.resolve()) in text and "refused" in text, text
-    finally:
-        stop()
 
 
 def test_ingest_proceeds_when_the_engine_reads_the_same_registry() -> None:
     root, registry = _fixture(manifest=True)
     (root / "demo-vault" / "04-synthesis").mkdir()
-    base, stop = _http_server(_cfg(registry))
-    try:
-        port = int(base.rsplit(":", 1)[1])
-        cfg = _bridge(registry, bridge.Remote("127.0.0.1", port))
+    with _socket_dir() as d, _engine(d / "s.sock", _cfg(registry)):
+        cfg = _bridge(registry, bridge.Remote(d / "s.sock"))
         args = {"scope": "demo", "content": _NOTE, "filename": "d.md"}
         out = _tools_call(cfg, "ingest", args)
         assert not out["result"].get("isError"), out
         assert json.loads(out["result"]["content"][0]["text"])["plan"]["confirm_token"]
-    finally:
-        stop()
 
 
 def test_the_bridge_lists_every_tool_without_reaching_the_server() -> None:
@@ -182,7 +177,7 @@ def test_local_refusals_happen_before_forwarding() -> None:
 
 def test_a_closed_scripta_is_a_readable_tool_error() -> None:
     _, registry = _fixture()
-    cfg = _bridge(registry, bridge.Remote("127.0.0.1", _closed_port()))
+    cfg = _bridge(registry, bridge.Remote(_no_engine()))
     resp = _tools_call(cfg, "search", {"scope": "demo", "query": "x"})
     assert resp["id"] == 7
     body = resp["result"]
@@ -203,15 +198,15 @@ def test_a_null_id_refusal_comes_back_under_the_callers_id() -> None:
         h.end_headers()
         h.wfile.write(out)
 
-    httpd = _stub(answer)
+    httpd, path, _ = _stub(answer)
     try:
-        r = bridge.Remote("127.0.0.1", httpd.server_address[1])(41, "search", {})
+        r = bridge.Remote(path)(41, "search", {})
         assert r["id"] == 41 and r["error"]["message"] == "at its ceiling", r
     finally:
         httpd.shutdown()
 
 
-def test_a_stranger_on_the_port_is_named_not_relayed() -> None:
+def test_a_stranger_on_the_socket_is_named_not_relayed() -> None:
     def answer(h):
         out = b"<html>hello</html>"
         h.send_response(200)
@@ -220,9 +215,9 @@ def test_a_stranger_on_the_port_is_named_not_relayed() -> None:
         h.end_headers()
         h.wfile.write(out)
 
-    httpd = _stub(answer)
+    httpd, path, _ = _stub(answer)
     try:
-        r = bridge.Remote("127.0.0.1", httpd.server_address[1])(3, "search", {})
+        r = bridge.Remote(path)(3, "search", {})
         assert r["id"] == 3 and r["result"]["isError"] is True
         assert "not a JSON-RPC response" in r["result"]["content"][0]["text"]
     finally:
@@ -235,10 +230,10 @@ def test_a_hung_server_is_bounded() -> None:
     def answer(h):
         gate.wait(5)
 
-    httpd = _stub(answer)
+    httpd, path, _ = _stub(answer)
     try:
         t0 = time.monotonic()
-        r = bridge.Remote("127.0.0.1", httpd.server_address[1], timeout=0.3)(4, "search", {})
+        r = bridge.Remote(path, timeout=0.3)(4, "search", {})
         assert time.monotonic() - t0 < 3
         assert r["result"]["isError"] is True and "did not answer" in \
             r["result"]["content"][0]["text"]
@@ -264,11 +259,12 @@ def test_main_connect_builds_no_stack_and_keeps_ingest() -> None:
         assert server.main(["--connect", "--registry", str(registry)]) == 0
         cfg = seen["cfg"]
         assert cfg.stack is None and cfg.read_only is False
-        assert (cfg.remote.host, cfg.remote.port) == ("127.0.0.1", 8765)
+        assert cfg.remote.path == local_socket.default_path()
 
-        assert server.main(["--connect", "127.0.0.1:9999", "--read-only",
+        assert server.main(["--connect", "/tmp/elsewhere/s.sock", "--read-only",
                             "--registry", str(registry)]) == 0
-        assert seen["cfg"].read_only is True and seen["cfg"].remote.port == 9999
+        assert seen["cfg"].read_only is True
+        assert seen["cfg"].remote.path == Path("/tmp/elsewhere/s.sock")
     finally:
         server.serve, stack.build = real
 
@@ -277,9 +273,14 @@ def test_main_connect_refuses_what_it_cannot_honour() -> None:
     real_err = sys.stderr
     sys.stderr = io.StringIO()
     try:
-        assert server.main(["--connect", "10.0.0.5:8765"]) == 2
-        assert "loopback" in sys.stderr.getvalue()
+        # TCP is not a transport --connect offers, loopback included: whoever holds the port while
+        # Scripta is closed would be sent every query.
+        for spec in ("127.0.0.1:8765", "localhost:8765", "10.0.0.5:8765"):
+            assert server.main(["--connect", spec]) == 2, spec
+        assert "socket path" in sys.stderr.getvalue()
         assert server.main(["--connect", "--http"]) == 2
+        assert server.main(["--connect", "--socket"]) == 2
+        assert server.main(["--connect", "/tmp/" + "x" * 120 + "/s.sock"]) == 2
     finally:
         sys.stderr = real_err
 
@@ -318,8 +319,7 @@ def test_the_bridge_process_exits_when_its_client_goes() -> None:
     """End of stdin is how a stdio client says it has gone. A bridge that outlived it would just
     be the pile-up again, one level down."""
     proc = subprocess.run(
-        [sys.executable, "-m", "substrate.mcp.server", "--connect",
-         f"127.0.0.1:{_closed_port()}"],
+        [sys.executable, "-m", "substrate.mcp.server", "--connect", str(_no_engine())],
         input=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n",
         capture_output=True, text=True, cwd=REPO, timeout=30)
     assert proc.returncode == 0, proc.stderr
@@ -344,9 +344,9 @@ def test_the_registry_is_asked_again_on_every_write() -> None:
         h.end_headers()
         h.wfile.write(out)
 
-    httpd = _stub(answer)
+    httpd, path, _ = _stub(answer)
     try:
-        cfg = _bridge(registry, bridge.Remote("127.0.0.1", httpd.server_address[1]))
+        cfg = _bridge(registry, bridge.Remote(path))
         args = {"scope": "demo", "content": _NOTE, "filename": "d.md"}
         assert not _tools_call(cfg, "ingest", args)["result"].get("isError")
         reported["registry"] = "/somewhere/else/scopes.toml"
@@ -358,14 +358,10 @@ def test_the_registry_is_asked_again_on_every_write() -> None:
 def test_a_lone_surrogate_is_forwarded_not_fatal() -> None:
     """Legal JSON (`"\\ud800"`) that UTF-8 cannot encode. It used to raise out of the forward."""
     _, registry = _fixture()
-    base, stop = _http_server(_cfg(registry))
-    try:
-        port = int(base.rsplit(":", 1)[1])
-        cfg = _bridge(registry, bridge.Remote("127.0.0.1", port))
+    with _socket_dir() as d, _engine(d / "s.sock", _cfg(registry)):
+        cfg = _bridge(registry, bridge.Remote(d / "s.sock"))
         resp = _tools_call(cfg, "search", {"scope": "demo", "query": "composition \ud800"})
         assert resp["id"] == 7 and "result" in resp, resp
-    finally:
-        stop()
 
 
 def test_a_fault_in_the_forward_is_a_tool_fault() -> None:
@@ -385,3 +381,67 @@ def test_a_fault_in_the_forward_is_a_tool_fault() -> None:
         resp = _tools_call(cfg, tool, args)
         assert resp["id"] == 7 and resp["result"]["isError"] is True, resp
         assert "blew up" in resp["result"]["content"][0]["text"]
+
+
+def _registry_answer(registry: str):
+    """A stub body that answers every call as `list_scopes` reporting `registry`."""
+    def answer(h):
+        text = json.dumps({"scopes": [], "registry": registry})
+        out = json.dumps({"jsonrpc": "2.0", "id": 0, "result": {
+            "content": [{"type": "text", "text": text}]}}).encode()
+        h.send_response(200)
+        h.send_header("Content-Type", "application/json")
+        h.send_header("Content-Length", str(len(out)))
+        h.end_headers()
+        h.wfile.write(out)
+    return answer
+
+
+def test_a_squatter_of_another_uid_is_sent_no_query() -> None:
+    """The case loopback TCP lost: Scripta is closed and someone else holds the address. The query
+    names a scope and carries the reader's own words, so the refusal has to come BEFORE the
+    write. An answer is then never read, so none can reach the model as vault content."""
+    _, registry = _fixture()
+    httpd, path, seen = _stub(_registry_answer(str(registry)))
+    try:
+        cfg = _bridge(registry, bridge.Remote(path))
+        with _patched(local_socket, "peer_uid", lambda sock: OTHER_UID):
+            resp = _tools_call(cfg, "search", {"scope": "atlas", "query": "the private question"})
+        assert resp["id"] == 7 and resp["result"]["isError"] is True, resp
+        text = resp["result"]["content"][0]["text"]
+        assert "NOT sent" in text and f"uid {OTHER_UID}" in text, text
+        assert seen == [], f"the squatter was sent {seen}"
+    finally:
+        httpd.shutdown()
+
+
+def test_a_squatter_cannot_vouch_for_a_registry() -> None:
+    """A squatter that answers `list_scopes` with a DIFFERENT registry would refuse the write if
+    it were believed. It is not even asked: the write goes ahead on this process's own registry,
+    exactly as when Scripta is closed, and the squatter sees nothing."""
+    root, registry = _fixture(manifest=True)
+    (root / "demo-vault" / "04-synthesis").mkdir()
+    httpd, path, seen = _stub(_registry_answer("/somewhere/else/scopes.toml"))
+    try:
+        cfg = _bridge(registry, bridge.Remote(path))
+        with _patched(local_socket, "peer_uid", lambda sock: OTHER_UID):
+            out = _tools_call(cfg, "ingest", {"scope": "demo", "content": _NOTE,
+                                              "filename": "d.md"})
+        assert not out["result"].get("isError"), out
+        assert seen == [], f"the squatter was asked {seen}"
+    finally:
+        httpd.shutdown()
+
+
+def test_a_socket_in_a_loose_directory_is_not_trusted() -> None:
+    _, registry = _fixture()
+    httpd, path, seen = _stub(_registry_answer(str(registry)))
+    try:
+        os.chmod(path.parent, 0o755)
+        resp = _tools_call(_bridge(registry, bridge.Remote(path)), "search",
+                           {"scope": "demo", "query": "x"})
+        assert resp["result"]["isError"] is True
+        assert "must be 700" in resp["result"]["content"][0]["text"]
+        assert seen == []
+    finally:
+        httpd.shutdown()
