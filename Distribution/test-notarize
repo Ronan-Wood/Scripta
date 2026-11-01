@@ -6,14 +6,16 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 script=${1:-$here/build-and-notarize}
 # THE FUNCTIONS, NOT THE SCRIPT: running it would build and submit a release.
-funcs=$(awk '/^fail\(\)/ {print} /^(submitted_id|notarize)\(\) \{/,/^\}/' "$script")
+funcs=$(awk '/^fail\(\)/ {print} /^(submitted_id|retryable|notarize)\(\) \{/,/^\}/' "$script")
 grep -q '^notarize()' <<<"$funcs" && grep -q '^submitted_id()' <<<"$funcs" \
+  && grep -q '^retryable()' <<<"$funcs" \
   || { echo "test-notarize: could not extract the functions from $script" >&2; exit 1; }
 
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 OLD=aaaaaaaa-0000-0000-0000-000000000001
 NEW=bbbbbbbb-0000-0000-0000-000000000002
+DEAD=dddddddd-0000-0000-0000-000000000003
 failures=0
 
 # One scenario: a fresh stub directory, a fresh cwd, and `xcrun` answering from files in $STUB.
@@ -27,8 +29,14 @@ case $2 in
     # `--wait` is the path that crashed on 2026-09-18; a submit without both flags fails every test.
     [[ " $* " == *" --no-wait "* && " $* " == *" --no-progress "* && " $* " != *" --wait "* ]] \
       || { echo "stub: submit must be --no-wait --no-progress, got: $*" >&2; exit 64; }
-    cat "$STUB/submit.out" 2>/dev/null; exit "$(cat "$STUB/submit.rc" 2>/dev/null || echo 0)" ;;
-  history) cat "$STUB/history.json" ;;
+    # Per attempt: submit.N.out / submit.N.rc when a test scripts a retry, else the single pair.
+    n=$(( $(cat "$STUB/submit.n" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$STUB/submit.n"
+    o="$STUB/submit.$n.out"; [ -f "$o" ] || o="$STUB/submit.out"
+    r="$STUB/submit.$n.rc"; [ -f "$r" ] || r="$STUB/submit.rc"
+    cat "$o" 2>/dev/null; exit "$(cat "$r" 2>/dev/null || echo 0)" ;;
+  history)
+    n=$(( $(cat "$STUB/history.n" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$STUB/history.n"
+    f="$STUB/history.$n.json"; [ -f "$f" ] || f="$STUB/history.json"; cat "$f" ;;
   info)
     n=$(( $(cat "$STUB/info.n" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$STUB/info.n"
     f="$STUB/info.$n"; [ -f "$f" ] || f="$STUB/info.last"
@@ -44,9 +52,9 @@ EOF
 submit_ok() {
   printf 'Submission ID received\n  id: %s\nSuccessfully uploaded file\n  id: %s\n' "$1" "$1" >"$STUB/submit.out"
 }
-history() { # name createdDate
+history() { # name createdDate [id] [file]
   printf '{"history":[{"id":"%s","name":"%s","status":"In Progress","createdDate":"%s"}]}' \
-    "$NEW" "$1" "$2" >"$STUB/history.json"
+    "${3:-$NEW}" "$1" "$2" >"$STUB/${4:-history.json}"
 }
 status() { # file status
   printf '{"id":"%s","status":"%s"}' "$NEW" "$2" >"$STUB/$1"
@@ -88,19 +96,73 @@ echo 138 >"$STUB/submit.rc"; history Scripta-app.zip 2026-09-16T15:28:27.687Z
 sed -i '' "s/$NEW/$OLD/" "$STUB/history.json"
 run dist/Scripta-app.zip
 expect "a crashed submit never adopts an older submission of the same name" \
-  rc 1 lacks "$OLD" has "lists no Scripta-app.zip submitted since"
+  rc 1 lacks "$OLD" has "attempt 3/3" lacks "3/3 (exit 138); a dead upload" has "died on all 3 attempts"
 
+# 2026-10-31: the dmg's first upload crashed after Apple issued an id, and that submission was never
+# processed. Another upload of the same bytes is the only remedy; the dead one is named, not polled.
 setup crash-fresh-history
-echo 138 >"$STUB/submit.rc"; history Scripta-app.zip "$now"
+: >"$STUB/submit.1.out"; echo 138 >"$STUB/submit.1.rc"; history Scripta-app.zip "$now" "$DEAD"
+submit_ok "$NEW"; status info.last Accepted
 run dist/Scripta-app.zip
-expect "a crashed submit that Apple did list is named, not retried" \
-  rc 1 has "AFTER Apple issued $NEW"
+expect "a crashed upload that Apple listed is abandoned and uploaded again" \
+  rc 0 has "after Apple issued $DEAD" has "submitted as $NEW" has "accepted"
+
+# The 2-minute slack on `since` reaches back to an earlier attempt. When a retry's own submission is
+# not listed, the newest entry is the PREVIOUS attempt's dead one — fresh and the same name.
+setup retry-stale-dead
+echo 138 >"$STUB/submit.rc"; history Scripta-app.zip "$now" "$DEAD"
+run dist/Scripta-app.zip
+expect "a retry never adopts the previous attempt's dead submission" \
+  rc 1 lacks "submitted as $DEAD" has "died on all 3 attempts (abandoned: $DEAD)"
+
+# The hazard the exclusion exists for: a LATER attempt that succeeds but prints no id. Without it,
+# history's newest entry is the earlier attempt's dead submission, and the poll waits 45 minutes on
+# an upload that will never be processed.
+setup retry-succeeds-without-id
+: >"$STUB/submit.1.out"; echo 138 >"$STUB/submit.1.rc"; history Scripta-app.zip "$now" "$DEAD"
+echo "Successfully uploaded file" >"$STUB/submit.out"; status info.last Accepted
+run dist/Scripta-app.zip
+expect "a retry that prints no id never polls the earlier attempt's dead submission" \
+  rc 1 lacks "submitted as $DEAD" has "printed no id"
+
+# The same hazard when the dead id was NOT learned in time: Apple lists attempt 1's submission only
+# after attempt 1 gave up, so it never reached the exclusion list — and on attempt 2's history call
+# it is the newest entry, fresh and the same name.
+setup late-listed-dead
+: >"$STUB/submit.1.out"; echo 138 >"$STUB/submit.1.rc"
+history Scripta-app.zip 2026-09-16T15:28:27.687Z "$OLD" history.1.json
+history Scripta-app.zip "$now" "$DEAD" history.2.json
+echo "Successfully uploaded file" >"$STUB/submit.out"; status info.last Accepted
+run dist/Scripta-app.zip
+expect "a dead submission Apple lists late is never polled by a later attempt" \
+  rc 1 lacks "submitted as $DEAD" has "printed no id"
+
+setup killed
+echo 143 >"$STUB/submit.rc"
+run dist/Scripta-app.zip
+expect "someone stopping notarytool is not answered with another upload" \
+  rc 1 has "not in a way another upload fixes" lacks "attempt 2"
+
+setup reset-printed
+echo "error: The operation couldn’t be completed. (Network.NWError error 54 - Connection reset by peer))" \
+  >"$STUB/submit.1.out"; echo 1 >"$STUB/submit.1.rc"
+submit_ok "$NEW"; status info.last Accepted
+run dist/Scripta-app.zip
+expect "a connection reset that notarytool printed is uploaded again" \
+  rc 0 has "died on attempt 1/3 (exit 1)" has "submitted as $NEW" has "accepted"
+
+setup refused
+echo "Error: HTTP status code: 403. A required agreement is missing or has expired." >"$STUB/submit.out"
+echo 1 >"$STUB/submit.rc"
+run dist/Scripta-app.zip
+expect "a refusal is not retried: another upload would be refused the same way" \
+  rc 1 has "not in a way another upload fixes" has "notarytool history" lacks "attempt"
 
 setup crash-other-name
 echo 138 >"$STUB/submit.rc"; history Scripta-app.zip "$now"
 run dist/Scripta-0.3.1.dmg
 expect "the dmg step does not adopt the app's fresh submission" \
-  rc 1 lacks "$NEW" has "lists no Scripta-0.3.1.dmg"
+  rc 1 lacks "$NEW" has "died on all 3 attempts"
 
 setup no-id-in-output
 echo "Successfully uploaded file" >"$STUB/submit.out"; history Scripta-app.zip "$now"

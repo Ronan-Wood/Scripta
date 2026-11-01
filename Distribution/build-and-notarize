@@ -10,18 +10,29 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 fail() { echo "build-and-notarize: $*" >&2; exit 1; }
 
-# SUBMIT AND POLL, NEVER `--wait`. `notarytool submit --wait` stack-overflowed inside its own status
-# formatting 33 seconds into a 389 MB upload on 2026-09-18 — SIGBUS, KERN_PROTECTION_FAILURE at a
-# stack address, `String.init(format:)` → `__CFStringValidateFormat` on a secondary thread, whose
-# stack is the small one (`notarytool-2026-09-18-200101.ips`). That killed the upload mid-flight and
-# left Apple holding a submission that never completed: it read `In Progress` for over an hour
-# against a sub-ten-minute baseline for this same app, and a submission cannot be cancelled.
+# SUBMIT AND POLL, NEVER `--wait`, so the id is written down before the long wait starts and a
+# poll that dies can be resumed. The first crash was 2026-09-18, 33 seconds into a 389 MB upload:
+# SIGBUS, KERN_PROTECTION_FAILURE at a stack address, `String.init(format:)` →
+# `__CFStringValidateFormat` on a secondary thread (`notarytool-2026-09-18-200101.ips`). It was
+# blamed on `--wait`'s status formatting at the time; the cause is below, and it is not `--wait`.
+# Apple was left holding a submission that never completed — `In Progress` for over an hour against
+# a sub-ten-minute baseline — and a submission cannot be cancelled.
 #
-# The cost was not the crash, it was that the ID died with it: a submission that cannot be named
-# cannot be polled, stapled or abandoned, so the only way forward was a full rebuild and another
-# 389 MB upload. This function writes the id down before the long wait starts, asks Apple for it when
-# our copy is lost — see `submitted_id`, which cannot promise an answer — and a poll that dies is
-# resumed with `xcrun notarytool info <id>` rather than restarted.
+# WHY IT CRASHES, confirmed 2026-10-31. The parts upload fine; it is notarytool's LAST request, the
+# S3 CompleteMultipartUpload that joins them, that intermittently gets `Connection reset by peer`
+# (NWError 54). notarytool's error for that failure embeds the whole request — one ETag per part,
+# 121 of them for a 668 MB dmg — in a `String(format:)` call on a SwiftNIO connection thread, and
+# that thread's small stack overflows: the SIGBUS. When the error is small enough it prints instead.
+# That day, from Terminal, the app uploaded first time and the dmg took three tries: one crash, one
+# printed reset, one success. S3 Transfer Acceleration on or off made no difference.
+#
+# A DEAD UPLOAD IS NEVER PROCESSED. Its submission sits `In Progress` until Apple quietly deletes it —
+# 2026-10-30's did; two from 2026-10-31 were still `In Progress` at 20 minutes while the upload that
+# completed was Accepted in five. So the only remedy is ANOTHER upload of the same bytes, and this
+# function makes up to three. A submission that cannot be named cannot be polled, so the id of the
+# one that lands is written down before the long wait starts, asked of Apple when our copy is lost —
+# see `submitted_id`, which cannot promise an answer — and a poll that dies is resumed with
+# `xcrun notarytool info <id>` rather than restarted.
 #
 # The submit keeps NORMAL output rather than json so a human watching sees the id as Apple issues it;
 # `--output-format json` would emit "a single update at the end of the operation"
@@ -29,9 +40,8 @@ fail() { echo "build-and-notarize: $*" >&2; exit 1; }
 # cannot be relied on to reach disk before a crash. json is used for the poll, where the id is
 # already known and a strict parse beats an early one.
 #
-# `--no-progress` keeps us off the formatting that overflowed. It defaulted ON for the two releases
-# that notarized fine, so it is a suspect rather than a proven cause, and being wrong about it is
-# survivable only if Apple lists the submission.
+# `--no-progress` was once suspected of the overflow and is not its cause — the crashes above ran
+# with it. It stays because a progress bar is noise in a log a human reads afterwards.
 
 # AFTER A CRASH, THE ID CANNOT COME FROM OUR STDOUT. Capturing notarytool's own announcement looks
 # like the obvious answer and does not survive one: redirected to a pipe or a file, its stdout is
@@ -46,43 +56,76 @@ fail() { echo "build-and-notarize: $*" >&2; exit 1; }
 # an EARLIER submission — and `Scripta-app.zip` is every release's app upload, so a name match alone
 # would hand back an older, Accepted one and poll that. The entry must also be newer than `since`,
 # taken before the submit with two minutes of slack for this clock against Apple's; ISO 8601 in UTC
-# orders correctly as a string.
+# orders correctly as a string. That slack is wide enough to reach back to a retry's EARLIER attempt,
+# whose dead submission is newer than `since` and has the same name — so `dead` names the ids already
+# given up on, and the newest entry being one of them is no answer at all.
 submitted_id() {
-  local want=$1 since=$2 history name created
+  local want=$1 since=$2 dead=${3:-} history name created newest
   history=$(xcrun notarytool history --keychain-profile notary --output-format json 2>/dev/null) \
     || return 1
   name=$(printf '%s' "$history" | /usr/bin/plutil -extract history.0.name raw -o - - 2>/dev/null) \
     || return 1
   created=$(printf '%s' "$history" | /usr/bin/plutil -extract history.0.createdDate raw -o - - 2>/dev/null) \
     || return 1
+  newest=$(printf '%s' "$history" | /usr/bin/plutil -extract history.0.id raw -o - - 2>/dev/null) \
+    || return 1
+  case " $dead " in *" $newest "*) return 1 ;; esac
   [ "$name" = "$want" ] && [[ $created > $since ]] || return 1
-  printf '%s' "$history" | /usr/bin/plutil -extract history.0.id raw -o - - 2>/dev/null
+  printf '%s' "$newest"
+}
+
+# What a dead upload looks like: notarytool CRASHING — the stack overflow arrives as SIGBUS (exit
+# 138) or, on another stack layout, SIGSEGV (139) — or reporting a dropped connection. Not any signal:
+# a SIGTERM, SIGKILL or Ctrl-C (143, 137, 130) is someone stopping the release, and answering it
+# with another 668 MB upload is the opposite of what they asked. Anything else — a refused
+# credential, an agreement Apple wants re-accepted (HTTP 403) — fails the same way every time.
+retryable() {
+  [ "$1" -eq 138 ] || [ "$1" -eq 139 ] \
+    || grep -qiE 'connection reset|NWError|network connection was lost|timed out' "$2" 2>/dev/null
 }
 
 notarize() {
-  local what=$1 base id status info err start deadline qfails=0 log rc=0 since
+  local what=$1 base id status info err start deadline qfails=0 log rc since attempt dead="" from hint again
   mkdir -p dist
   base=$(basename "$what")
   log="dist/notarize-$base.log"
   err="dist/notarize-$base.err"
-  since=$(date -u -v-2M +%Y-%m-%dT%H:%M:%S)
-  # The log is for a HUMAN to read afterwards, and where the id is looked for first. After a crash it
-  # is empty — see above.
-  xcrun notarytool submit "$what" --keychain-profile notary --no-wait --no-progress 2>&1 \
-    | tee "$log" || rc=$?
-  # `|| true` on both: an unwritable `dist` or a missing log must not kill the release at the one
-  # moment a submission may be live and unnamed. An empty id here is a question for Apple, not a
-  # reason to die with `sed: no such file`.
-  id=$(sed -n 's/^[[:space:]]*id:[[:space:]]*//p' "$log" 2>/dev/null | head -1 || true)
-  [ -n "$id" ] || id=$(submitted_id "$base" "$since" || true)
-  if [ "$rc" -ne 0 ]; then
-    # An id here means Apple opened a submission and then our side died — which is how a submission
-    # ends up permanently `In Progress`, holding bytes that never finished arriving. Named rather
-    # than retried: it cannot be cancelled, and re-running blindly just adds a second one.
-    [ -z "$id" ] || fail \
-      "submit for $what died (exit $rc) AFTER Apple issued $id; that submission is probably incomplete and cannot be cancelled — check it with: xcrun notarytool info $id --keychain-profile notary"
-    fail "submit for $what died (exit $rc) and Apple lists no $base submitted since $since UTC; see $log, and check xcrun notarytool history --keychain-profile notary before re-running"
-  fi
+  for attempt in 1 2 3; do
+    rc=0
+    since=$(date -u -v-2M +%Y-%m-%dT%H:%M:%S)
+    # The log is for a HUMAN to read afterwards, and where the id is looked for first. After a crash
+    # it is empty — see above. Each attempt overwrites it, so it always describes the last one.
+    xcrun notarytool submit "$what" --keychain-profile notary --no-wait --no-progress 2>&1 \
+      | tee "$log" || rc=$?
+    # `|| true` on both: an unwritable `dist` or a missing log must not kill the release at the one
+    # moment a submission may be live and unnamed. An empty id here is a question for Apple, not a
+    # reason to die with `sed: no such file`.
+    id=$(sed -n 's/^[[:space:]]*id:[[:space:]]*//p' "$log" 2>/dev/null | head -1 || true)
+    from=log
+    if [ -z "$id" ]; then from=history; id=$(submitted_id "$base" "$since" "$dead" || true); fi
+    if [ "$rc" -eq 0 ]; then
+      # A RETRY'S id IS NEVER TAKEN FROM HISTORY. A dead attempt's submission can reach the list after
+      # that attempt gave up, too late to be excluded — and then it is the newest entry, fresh and the
+      # same name, so the fallback would poll it for 45 minutes. A clean submit prints its id; one that
+      # did not is a question for a human.
+      [ "$from" = log ] || [ "$attempt" = 1 ] || fail \
+        "upload of $what succeeded on attempt $attempt but notarytool printed no id, and Apple's list cannot tell it from the uploads that died${dead:+ (abandoned:$dead)}; find it with: xcrun notarytool history --keychain-profile notary"
+      break
+    fi
+    if ! retryable "$rc" "$log"; then
+      hint="if it reached Apple, find it with: xcrun notarytool history --keychain-profile notary"
+      [ -z "$id" ] || hint="Apple issued $id; check it with: xcrun notarytool info $id --keychain-profile notary"
+      fail "submit for $what failed (exit $rc), and not in a way another upload fixes; $hint${dead:+ (abandoned earlier:$dead)}; see $log"
+    fi
+    [ -z "$id" ] || dead="$dead $id"
+    again="; a dead upload is never processed, so uploading again"
+    [ "$attempt" != 3 ] || again=""
+    echo "build-and-notarize: upload of $what died on attempt $attempt/3 (exit $rc)${id:+ after Apple issued $id}$again"
+    # `|| true`: see the poll's sleep below.
+    [ "$attempt" = 3 ] || sleep 15 || true
+  done
+  [ "$rc" -eq 0 ] || fail \
+    "upload of $what died on all 3 attempts (abandoned:${dead:- none Apple listed}); Apple drops these on its own. See $log, and run this from Terminal, not a sandboxed shell"
   [ -n "$id" ] || fail "no submission id for $what, from notarytool or from Apple's history; see $log"
   echo "build-and-notarize: $what submitted as $id (resume with: xcrun notarytool info $id --keychain-profile notary)"
 

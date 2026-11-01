@@ -98,10 +98,23 @@ commit recorded in `dist/commits`. The script's comments say why each step is or
 **A killed poll is resumed, never re-run.** Each submission is made with `--no-wait`; the script
 prints the submission id and the command to resume with, and tees notarytool's output to
 `dist/notarize-<artifact>.log`. It polls every 30 seconds, printing the status each pass, and gives
-up after 45 minutes rather than waiting forever. A submit that dies always stops the script: if
-`notarytool history` lists a submission of that artifact made since the submit began, the error
-names it; if not — and the 2026-09-18 submission was never listed there — run
-`xcrun notarytool history --keychain-profile notary` yourself before re-running.
+up after 45 minutes rather than waiting forever.
+
+**A dead upload is retried, up to three uploads in all.** notarytool's final upload request
+intermittently gets `Connection reset by peer`, and notarytool then either prints an enormous error
+or crashes formatting it (a `Bus error`, exit 138). Either way that submission is never processed —
+it sits `In Progress` until Apple drops it — so the script uploads the same bytes again and names
+the abandoned ids. Only a crash (exit 138 or 139) or a reported dropped connection is retried.
+Anything else stops at once: a refusal, which another upload would meet the same way, or someone
+stopping the script. A retry that succeeds but prints no submission id also stops, because Apple's
+list cannot tell it from the uploads that died; find it with `xcrun notarytool history
+--keychain-profile notary`. The script's comments carry the evidence.
+
+- **Run releases from Terminal**, not from a sandboxed agent shell. The upload died there on the
+  first try, 2026-10-30, where Terminal mostly succeeded the next day.
+- **HTTP 403, "A required agreement is missing or has expired"** means Apple has a new developer
+  agreement. The Account Holder accepts it at developer.apple.com; it took about two minutes to
+  apply on 2026-10-31.
 
 If the poll dies — the terminal closed, the machine slept, the deadline passed — **do not re-run
 the script**: the upload is the expensive part and the submission is still with Apple. Wait for
@@ -125,12 +138,12 @@ git rev-parse HEAD > dist/commits/Scripta-<version>.commit
 
 `spctl` must print `source=Notarized Developer ID` before the `mv`, and the last line is right only
 if HEAD has not moved since the build: `publish-release` signs whatever is in `dist/archive` into
-the appcast and tags whatever commit that file names. This exists because `notarytool submit --wait` stack-overflowed
-inside its own status formatting on 2026-09-18, 33 seconds into a 389 MB upload: Apple kept a
-submission that never completed, it read `In Progress` for over an hour against a sub-ten-minute
-baseline for the same app, and a submission cannot be cancelled. The id was on screen and nowhere
-else, so the only way forward was a full rebuild. `Distribution/test-notarize` runs each of these
-paths against a stubbed `xcrun`; run it after touching the script's `notarize`.
+the appcast and tags whatever commit that file names. This exists because notarytool crashed on
+2026-09-18, 33 seconds into a 389 MB upload, and the id was on screen and nowhere else: Apple kept a
+submission that never completed and cannot be cancelled, and with no id to resume, the only way
+forward then was a full rebuild. The cause, found 2026-10-31, is the reset described above, not
+`--wait`. `Distribution/test-notarize` runs each of these paths against a stubbed `xcrun`; run it
+after touching the script's `notarize`.
 
 ## The appcast, and the release that carries it
 
