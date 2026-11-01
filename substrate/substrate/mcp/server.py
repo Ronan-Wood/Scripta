@@ -26,6 +26,11 @@ refresh serves back as settled knowledge. Reaching stdio already requires spawni
 so stdio keeps it. That decision travels on `Config`, not in a second dispatch — `handle()` is
 still one function answering one frame the same way whichever socket it arrived on.
 
+**`--connect` is how a stdio client reaches the shared server** (`substrate.mcp.bridge`). It is a
+stdio process with no stack: `handle()` runs as usual, except that a read tool's `tools/call` is
+forwarded to the loopback server that Scripta hosts. `ingest` still runs in-process, so the write
+stays off the socket.
+
 **Scope is a parameter, not server configuration** (Doc 3a §3). One server serves every composed
 scope; the caller names the one it wants and `list_scopes` lets it discover them. A scope that
 cannot be resolved HARD-FAILS: quietly answering from a narrower scope would be the chapter-title
@@ -52,6 +57,7 @@ from pathlib import Path
 from typing import Any
 
 from substrate import agent, guard, introspect, net, notes, private, render, scopes, stack
+from substrate.mcp import bridge
 from substrate.store import schema
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -882,14 +888,19 @@ class Config:
     nobody in this session ever saw.
     """
 
-    def __init__(self, registry: str | None, retrieval: stack.Stack, *,
+    def __init__(self, registry: str | None, retrieval: stack.Stack | None, *,
                  read_only: bool = False,
                  recheck: Callable[[stack.Stack], stack.Stack] | None = None,
                  recheck_after: float = RECHECK_AFTER,
                  clock: Callable[[], float] = time.monotonic,
-                 agent: agent.AgentScopes | None = None):
+                 agent: agent.AgentScopes | None = None,
+                 remote: bridge.Remote | None = None):
         self.registry = registry
+        # None ONLY alongside `remote`: under `--connect` every tool that reads through the stack
+        # is forwarded, so no stack is built and no model is probed.
         self._stack = retrieval
+        # `--connect`'s forwarder: (id, tool, arguments) -> a whole response.
+        self.remote = remote
         self.plans = notes.PlanBook()
         # Doc 3 §3. FALSE by default because a bare Config is the stdio one, and reaching stdio
         # already means spawning this process — the write primitive is no wider than the process
@@ -1072,6 +1083,16 @@ def _dispatch(msg: dict, cfg: Config) -> dict | None:
             # The serialization is INSIDE the try: a payload that will not serialize is a tool
             # fault like any other, and leaving json.dumps outside made it a second way to kill
             # the session rather than an isError the caller could read.
+            if cfg.remote is not None:
+                # After every local check, so the bridge refuses an unknown tool or bad params
+                # the same way a stdio server would. The write is never forwarded; see `bridge`.
+                # Inside the try for the same reason: a fault in the forward is a tool fault.
+                if name not in WRITE_TOOLS:
+                    return cfg.remote(rid, name, params.get("arguments") or {})
+                refusal = cfg.remote.registry_disagreement(scopes.registry_path(cfg.registry))
+                if refusal is not None:
+                    return _result(rid, {"content": [{"type": "text", "text": refusal}],
+                                         "isError": True})
             text = json.dumps(fn(params.get("arguments") or {}, cfg), indent=2, ensure_ascii=False)
         except Exception as e:  # noqa: BLE001 — a tool fault must not kill the session
             # isError keeps the failure INSIDE the result, so the model sees the condition and can
@@ -1620,6 +1641,9 @@ def _main(argv: list[str] | None) -> int:
     ap.add_argument("--http", nargs="?", const=DEFAULT_HTTP, default=None, metavar="HOST:PORT",
                     help=f"serve over loopback HTTP instead of stdio (default {DEFAULT_HTTP}); "
                          f"one shared server for every client, restartable without touching them")
+    ap.add_argument("--connect", nargs="?", const=DEFAULT_HTTP, default=None, metavar="HOST:PORT",
+                    help=f"serve stdio by forwarding reads to the shared --http server (default "
+                         f"{DEFAULT_HTTP}, the one Scripta runs); `ingest` still runs here")
     ap.add_argument("--read-only", action=argparse.BooleanOptionalAction, default=None,
                     help="refuse `ingest`, the one tool that writes. ON by default under --http "
                          "and off under stdio; state it either way to override that.")
@@ -1634,6 +1658,9 @@ def _main(argv: list[str] | None) -> int:
                     metavar="SECONDS",
                     help="agent mode: older than this, every answer reports the snapshot stale")
     args = ap.parse_args(argv)
+
+    if args.connect is not None:
+        return _connect(args, ap)
 
     agent_scopes = None
     if args.agent_mode:
@@ -1702,6 +1729,42 @@ def _main(argv: list[str] | None) -> int:
                  recheck=functools.partial(stack.recheck, **build_args), agent=agent_scopes)
     if bind is not None:
         return serve_http(cfg, *bind, allow_writes=not read_only)
+    return serve(cfg)
+
+
+def _connect(args: Any, ap: Any) -> int:
+    """`--connect`: stdio in front of the shared server. No stack is built. Any retrieval flag is
+    ignored, and ignored LOUDLY: the shared server's stack answers every read, so a reranker named
+    here would otherwise look as if it were in force."""
+    if args.http is not None:
+        print("substrate-mcp: --connect and --http are two different transports; pick one",
+              file=sys.stderr)
+        return 2
+    # REFUSED, never ignored: agent mode narrows a server to snapshots, and the shared server
+    # answers for every scope, with `ingest` on here.
+    agent_flags = [f for f, v in (("--agent-mode", args.agent_mode), ("--scopes", args.scopes),
+                                  ("--snapshot-dir", args.snapshot_dir)) if v]
+    if agent_flags:
+        print(f"substrate-mcp: --connect refuses {', '.join(agent_flags)}", file=sys.stderr)
+        return 2
+    try:
+        host, port = parse_bind(args.connect)
+    except ValueError as e:
+        # The same loopback rule, for a different reason. Off-loopback, every query and the scope
+        # it names would leave the machine.
+        print(f"substrate-mcp: --connect wants a loopback HOST:PORT such as {DEFAULT_HTTP} ({e})",
+              file=sys.stderr)
+        return 2
+    ignored = [f"--{a.replace('_', '-')}" for a in
+               ("embed_model", "hyde_model", "rerank_model", "cache", "lexical_only")
+               if getattr(args, a) != ap.get_default(a)]
+    if ignored:
+        print(f"substrate-mcp: ignoring {', '.join(ignored)} under --connect: the shared server's "
+              f"stack answers every read", file=sys.stderr)
+    # Unstated, `ingest` stays ON, as on any stdio server: only a client that spawned this process
+    # can reach it.
+    read_only = bool(args.read_only)
+    cfg = Config(args.registry, None, read_only=read_only, remote=bridge.Remote(host, port))
     return serve(cfg)
 
 

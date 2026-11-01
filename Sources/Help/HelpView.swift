@@ -26,12 +26,47 @@ struct HelpView: View {
     /// helper is a binary inside the bundle, so it is spawnable whether or not Scripta is running.
     /// Deriving it here means the command is right for whichever tier actually answered, and cannot
     /// drift from the ladder again.
+    ///
+    /// `--connect`, so every client shares the ONE engine this app runs instead of each spawning
+    /// a full engine of its own. It names the app's endpoint so the two cannot disagree about the
+    /// port. Only for an engine that HAS the flag (`mcpConnects`): an older one exits on an
+    /// unknown argument, and a registered server that never starts is worse than one that runs
+    /// its own engine.
+    ///
+    /// A source that runs a MODULE (the pinned tier: `python -m substrate.mcp.server`) also needs
+    /// its working directory. That venv does not install `substrate`, so the import resolves only
+    /// from the deployment root, and a client spawns from its own cwd. The two shims `cd` to their
+    /// root themselves, which is why only module sources are wrapped.
+    private var mcpArgv: [String] {
+        let connect = mcpConnects ? ["--connect", SubstrateEngine.endpoint] : []
+        if let source = SubstrateEngine.resolved {
+            let argv = [source.executable.path] + source.arguments + connect
+            guard !source.arguments.isEmpty, let directory = source.workingDirectory else {
+                return argv
+            }
+            return ["/bin/sh", "-c", "cd \"$0\" && exec \"$@\"", directory.path] + argv
+        }
+        let helper = Bundle.main.resourceURL?
+            .appendingPathComponent("substrate-engine/bin/substrate-mcp").path ?? "substrate-mcp"
+        return [helper] + connect
+    }
+
+    /// Whether the engine a client would spawn knows `--connect`. The bundled and pinned tiers are
+    /// a package tree under their working directory, so the module that implements the flag is
+    /// checked for directly. The developer shim runs whatever the repo has checked out, which this
+    /// app cannot see, so it is not assumed. With nothing resolved, the fallback is this build's
+    /// own bundled engine, which has it.
+    private var mcpConnects: Bool {
+        guard let source = SubstrateEngine.resolved else { return true }
+        guard let root = source.workingDirectory else { return false }
+        return FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("substrate/mcp/bridge.py").path)
+    }
+
+    /// Single-quoted per argument, so the `sh -c` script above survives being pasted into a shell.
     private var mcpCommand: String {
-        let helper = SubstrateEngine.resolved?.executable.path
-            ?? Bundle.main.resourceURL?
-                .appendingPathComponent("substrate-engine/bin/substrate-mcp").path
-            ?? "substrate-mcp"
-        return "claude mcp add -s user substrate -- \"\(helper)\""
+        let quoted = mcpArgv.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        return "claude mcp add -s user substrate -- " + quoted.joined(separator: " ")
     }
 
     private struct TOCEntry: Identifiable {
@@ -214,7 +249,11 @@ struct HelpView: View {
     @ViewBuilder private var connectClaude: some View {
         VStack(alignment: .leading, spacing: Space.x4) {
             body14("Your calls live in a vault the substrate engine composes, so Claude reads them through the engine — the same server that answers for every other vault you keep. Register it once:")
-            body14("While Scripta is closed, this workspace's own calls are withheld and the engine says so; everything the workspace inherits keeps answering. Opening Scripta and selecting the workspace is what vouches for it.")
+            if mcpConnects {
+                body14("Claude reaches the engine Scripta runs, so searching answers only while Scripta is open. Claude can still write a note into a vault while it is closed.")
+            } else {
+                body14("This engine is too old to share Scripta's, so each Claude window runs its own copy of it.")
+            }
 
             HStack(alignment: .top, spacing: Space.x3) {
                 Text(mcpCommand)
@@ -288,7 +327,8 @@ struct HelpView: View {
             var servers = (root["mcpServers"] as? [String: Any]) ?? [:]
             // The ENGINE, under its own name. Writing `scripta` here would register a helper this
             // app no longer ships, and Claude Desktop would fail to spawn it every launch.
-            servers["substrate"] = ["command": "\(NSHomeDirectory())/.local/bin/substrate-mcp"]
+            let argv = mcpArgv
+            servers["substrate"] = ["command": argv[0], "args": Array(argv.dropFirst())]
             root["mcpServers"] = servers
             let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: configURL, options: .atomic)
