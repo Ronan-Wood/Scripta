@@ -14,6 +14,7 @@ stale, mis-shaped, or more certain than the note ever claimed.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 
 SCHEMA_VERSION = 10
@@ -293,6 +294,17 @@ def connect(path: str) -> sqlite3.Connection:
     db.execute("PRAGMA busy_timeout=5000")
     db.execute("PRAGMA foreign_keys=ON")
     db.execute("PRAGMA journal_size_limit=67108864")
+    return db
+
+
+def connect_immutable(path: str) -> sqlite3.Connection:
+    """A read-only open that touches nothing but the file itself — see `IndexStore(immutable=)`."""
+    from urllib.parse import quote
+
+    db = sqlite3.connect(f"file:{quote(os.path.abspath(path))}?mode=ro&immutable=1", uri=True,
+                         isolation_level=None)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA query_only=ON")
     return db
 
 

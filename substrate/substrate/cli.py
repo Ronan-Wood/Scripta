@@ -1720,7 +1720,50 @@ def cmd_refresh_record(args: argparse.Namespace) -> int:
             continue
         if not args.quiet:
             print(f"  {name}: {args.outcome}  ->  {path}")
+        _publish_agent_snapshot(name, args.outcome, args.registry, quiet=args.quiet)
     return 2 if failed else 0
+
+
+def _publish_agent_snapshot(name: str, outcome: str, registry: str | None, *,
+                            quiet: bool) -> None:
+    """The agent-snapshot publisher, run where a refresh pass COMPLETES — this is the one call the
+    app's refresh makes per scope once compose and embed are done, so a scope listed in
+    `agent-publish.toml` is republished on the same pass that verified it (`substrate.agent`).
+
+    A failure is a WARNING and never the exit status: the outcome above is recorded and true, and
+    the app reads a non-zero exit here as "could not record", which would be a false report. The
+    catch is broad for the same reason — a full disk or a missing shared folder must not turn a
+    recorded refresh into a failed one."""
+    from substrate import agent
+
+    try:
+        line = agent.after_refresh_record(name, outcome, registry=registry)
+    except Exception as e:  # noqa: BLE001 — see the docstring
+        print(f"WARNING (agent snapshot {name}): {type(e).__name__}: {e}", file=sys.stderr)
+        return
+    if line and not quiet:
+        print(f"  {line}")
+
+
+def cmd_publish_snapshot(args: argparse.Namespace) -> int:
+    """Publish one scope's agent snapshot now — the first publish, or one outside a refresh."""
+    from substrate import agent
+
+    try:
+        target = (Path(args.dir).expanduser() if args.dir
+                  else agent.load_config(args.registry).get(args.scope))
+        if target is None:
+            print(f"FATAL: no --dir, and {args.scope!r} is not under [publish] in "
+                  f"{agent.CONFIG_FILENAME} beside the registry.", file=sys.stderr)
+            return 2
+        p = agent.publish(args.scope, target, registry=args.registry)
+    except agent.AgentError as e:
+        print(f"FATAL (publish-snapshot): {e}", file=sys.stderr)
+        return 2
+    print(f"  {p.scope}: snapshot {'published' if p.rewrote else 'verified, unchanged'} -> "
+          f"{p.db}" + (f" · withheld vaults {', '.join(p.withheld)}" if p.withheld else "")
+          + (f" · {p.excluded} document(s) outside the vaults excluded" if p.excluded else ""))
+    return 0
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
@@ -2219,6 +2262,19 @@ def main(argv: list[str] | None = None) -> int:
                          f"${scopes.ENV_VAR}, else {scopes.DEFAULT_REGISTRY})")
     rr.add_argument("--quiet", action="store_true", help="print nothing on success")
     rr.set_defaults(func=cmd_refresh_record)
+
+    ps = sub.add_parser("publish-snapshot",
+                        help="write a scope's read-only agent snapshot (substrate.agent); "
+                             "refresh-record does this on every pass for scopes in "
+                             "agent-publish.toml")
+    ps.add_argument("--scope", required=True)
+    ps.add_argument("--dir", default=None,
+                    help="the shared folder to publish into (default: the scope's `dir` in "
+                         "agent-publish.toml beside the registry). Must already exist.")
+    ps.add_argument("--registry", default=None,
+                    help=f"scope registry (default ${scopes.ENV_VAR}, else "
+                         f"{scopes.DEFAULT_REGISTRY})")
+    ps.set_defaults(func=cmd_publish_snapshot)
 
     ev = sub.add_parser("eval")
     ev.add_argument("--db", default="out/substrate.db")

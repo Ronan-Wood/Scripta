@@ -304,7 +304,7 @@ class SchemaMismatch(RuntimeError):
 
 
 class IndexStore:
-    def __init__(self, path: str | Path, *, migrate: bool = True):
+    def __init__(self, path: str | Path, *, migrate: bool = True, immutable: bool = False):
         """Open an index, migrating by default.
 
         `migrate=False` is the READ path. Migration is drop-and-rebuild on a version mismatch, so
@@ -336,8 +336,15 @@ class IndexStore:
                 f"{self.path} does not exist. Refusing to create it on a read.",
                 found=-1, expected=schema.SCHEMA_VERSION,
             )
+        if immutable and migrate:
+            raise ValueError("an immutable open cannot migrate: migration writes.")
         try:
-            self.db = schema.connect(self.path)
+            # IMMUTABLE is the agent-snapshot open. `mode=ro` alone is not read-only against a WAL
+            # database — the reader still creates `-shm`/`-wal` beside it — and the agent's user
+            # cannot write that directory. `immutable=1` also skips locking, which is sound only
+            # because a snapshot is replaced by rename and never written in place.
+            self.db = (schema.connect_immutable(self.path) if immutable
+                       else schema.connect(self.path))
         except sqlite3.DatabaseError as e:
             # `found=-2`: not an index, and distinct from -1 ("no file") because `cmd_index`
             # BOOTSTRAPS on -1. A corrupt or non-SQLite file must never be bootstrapped into —

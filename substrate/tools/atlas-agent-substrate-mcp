@@ -1,0 +1,29 @@
+#!/bin/bash
+# The `atlas-agent` user's substrate MCP server: agent mode (substrate/agent.py), one scope,
+# read-only, answered from a snapshot the operator's own refresh publishes.
+#
+# Install as /Users/Shared/atlas-agent/bin/substrate-mcp (the agent cannot run anything under the
+# operator's home, which is where ~/.local/bin/substrate-mcp and this repo live). It runs the engine
+# BUNDLED in Scripta.app, because that is world-readable and self-contained — so agent mode, and the
+# refresh hook that publishes for it, arrive with the Scripta release that bundles them.
+#
+# Setup, once, as the operator:
+#   1. The shared folder, readable by the agent's group and nobody else:
+#        mkdir -p /Users/Shared/atlas-agent/substrate /Users/Shared/atlas-agent/bin
+#        chgrp <agent group> /Users/Shared/atlas-agent/substrate
+#        chmod 750 /Users/Shared/atlas-agent/substrate
+#      Snapshots are written 0640 and take the folder's group.
+#   2. Opt the scope in, in ~/.substrate/agent-publish.toml:
+#        [publish.atlas]
+#        dir = "/Users/Shared/atlas-agent/substrate"
+#      Every refresh of `atlas` then republishes (or re-verifies) the snapshot.
+#      `substrate publish-snapshot --scope atlas` publishes one now.
+#   3. Install this file at /Users/Shared/atlas-agent/bin/substrate-mcp, mode 755.
+#   4. The agent's MCP config:
+#        {"mcpServers": {"substrate": {"command": "/Users/Shared/atlas-agent/bin/substrate-mcp",
+#          "args": ["--agent-mode", "--scopes", "atlas",
+#                   "--snapshot-dir", "/Users/Shared/atlas-agent/substrate"]}}}
+#
+# NOTHING may write to stdout but the JSON-RPC stream.
+set -euo pipefail
+exec /Applications/Scripta.app/Contents/Resources/substrate-engine/bin/substrate-mcp "$@"

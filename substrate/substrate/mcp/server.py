@@ -43,7 +43,6 @@ from __future__ import annotations
 import copy
 import functools
 import json
-import os
 import sys
 import threading
 import time
@@ -52,7 +51,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from substrate import guard, introspect, net, notes, render, scopes, stack
+from substrate import agent, guard, introspect, net, notes, render, scopes, stack
 from substrate.store import schema
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -129,7 +128,7 @@ class ToolError(RuntimeError):
 
 # --------------------------------------------------------------------------- scope access
 
-def _open(name: str, registry: str | None, *, refuse_empty: bool = True):
+def _open(name: str, cfg: Config, *, refuse_empty: bool = True):
     """Resolve a scope and open its index, or refuse. Opened per call, never cached: a recompose
     replaces the database file, and a cached handle would keep answering from the old one.
 
@@ -141,8 +140,19 @@ def _open(name: str, registry: str | None, *, refuse_empty: bool = True):
     """
     from substrate.store.index_store import IndexStore, SchemaMismatch
 
+    if cfg.agent is not None:
+        # AGENT MODE resolves against the allowed scopes' snapshots and nothing else — never the
+        # registry, which names every scope. No guard check: a guarded vault's own notes were
+        # REMOVED when the snapshot was published (`agent._fill`), and this process cannot read
+        # the vault the guard would consult.
+        try:
+            entry, store = cfg.agent.open(name)
+        except agent.AgentError as e:
+            raise ToolError(str(e)) from e
+        return _refuse_if_empty(name, entry, store, guard.OPEN, refuse_empty)
+
     try:
-        entry = scopes.resolve(name, registry)
+        entry = scopes.resolve(name, cfg.registry)
     except scopes.ScopeError as e:
         raise ToolError(str(e)) from e
 
@@ -165,6 +175,10 @@ def _open(name: str, registry: str | None, *, refuse_empty: bool = True):
         # The remedy is scope-specific and the exception deliberately does not name one, so this
         # adapter supplies it: every scope on this server was built by `compose`.
         raise ToolError(f"{e} Rebuild the scope with `substrate compose`.") from e
+    return _refuse_if_empty(name, entry, store, verdict, refuse_empty)
+
+
+def _refuse_if_empty(name: str, entry, store, verdict, refuse_empty: bool):
     if refuse_empty:
         # EMPTINESS, not the `rebuilt` flag. That flag is true only on the open that PERFORMED a
         # migration, so it is consumed by whoever opens first and cannot be relied on by anyone
@@ -180,6 +194,12 @@ def _open(name: str, registry: str | None, *, refuse_empty: bool = True):
                 f"no-match. (`status` still reports on it.)"
             )
     return entry, store, verdict
+
+
+def _refresh(cfg: Config, scope: str) -> dict | None:
+    """The `refresh` block a payload should carry: the snapshot's in agent mode, else None for
+    the renderer to read from the registry as it always has."""
+    return cfg.agent.refresh(scope) if cfg.agent is not None else None
 
 
 def _clamp_k(raw: object) -> tuple[int, str | None]:
@@ -293,7 +313,8 @@ TOOLS = [
             "Read the full text behind a search result's `expand_ref`. `mode=\"passage\"` (default) "
             "returns that passage; `mode=\"note\"` returns the whole note it came from, for "
             "connective questions where the passage is only part of the argument. A note is read "
-            "from disk, so it also reports whether it has changed since the index was built."
+            "from disk (on an agent server, from the published snapshot's copy), so it also "
+            "reports whether it has changed since the index was built."
         ),
         "inputSchema": {
             "type": "object",
@@ -508,7 +529,7 @@ def _tool_search(args: dict, cfg: Config) -> dict:
     # retrieval actually ran with, not the ones that came back while it ran.
     st = cfg.stack
 
-    entry, store, verdict = _open(scope, cfg.registry)
+    entry, store, verdict = _open(scope, cfg)
     try:
         result = retriever.retrieve(
             store, query, k=k, statuses=statuses, vaults=vaults,
@@ -524,7 +545,7 @@ def _tool_search(args: dict, cfg: Config) -> dict:
             wiring=st.wiring,
             db=str(entry.db),
             filter_notes=tuple(n for n in (clamp_note, verdict.reason) if n),
-            registry=cfg.registry,
+            registry=cfg.registry, refresh=_refresh(cfg, scope),
         )
     finally:
         store.close()
@@ -543,7 +564,7 @@ def _tool_expand(args: dict, cfg: Config) -> dict:
     except render.RefError as e:
         raise ToolError(str(e)) from e
 
-    entry, store, verdict = _open(scope, cfg.registry)
+    entry, store, verdict = _open(scope, cfg)
     try:
         hit = store.chunk(chunk_id)
         if hit is None:
@@ -554,7 +575,14 @@ def _tool_expand(args: dict, cfg: Config) -> dict:
         out = {"scope": scope, "mode": mode, "index_version": store.index_version,
                "passage": render.passage(hit, scope=scope, full=True)}
         if mode == "note":
-            out["note"] = _note_text(store, hit.doc_id)
+            if cfg.agent is not None:
+                # From the snapshot's own copy of the note — an agent server reads no vault.
+                try:
+                    out["note"] = cfg.agent.note(store, hit.doc_id, cap=NOTE_CHAR_CAP)
+                except agent.AgentError as e:
+                    raise ToolError(str(e)) from e
+            else:
+                out["note"] = _note_text(store, hit.doc_id)
         return out
     finally:
         store.close()
@@ -572,7 +600,7 @@ def _note_text(store, doc_id: str) -> dict:
     file's own), so a PDF-derived passage — whose stored checksum names the PDF — is `unverifiable`
     rather than a false `stale`.
     """
-    from substrate.freshness import effective_sha_of
+    from substrate.freshness import stale_verdict
 
     row = store.db.execute(
         "SELECT source_path, source_sha256 FROM documents WHERE doc_id=?", (doc_id,)
@@ -588,7 +616,6 @@ def _note_text(store, doc_id: str) -> dict:
         # from the guards `_read_source` applies for exactly that reason.
         raw = _read_source(path)
         text = raw.decode("utf-8", errors="replace")
-        sha, declared = effective_sha_of(raw)
     except OSError as e:
         raise ToolError(
             f"the note for {doc_id!r} is indexed at {path} but cannot be read ({e}). The passage "
@@ -603,47 +630,29 @@ def _note_text(store, doc_id: str) -> dict:
         # A note that no longer matches what was indexed: the passages came from the OLD content.
         # `null` where the stored checksum is a declared one and an edit cannot be seen from here —
         # false is a claim, and this is the case where no claim can honestly be made.
-        "stale": None if declared else (sha != (row["source_sha256"] or "")),
+        "stale": stale_verdict(raw, row["source_sha256"]),
     }
 
 
 def _read_source(src: Path) -> bytes:
-    """A caller-named file, bounded by the read ITSELF rather than by a prior check.
+    """A caller-named file, bounded by the read ITSELF (`freshness.read_bounded`).
 
     The caller here is a model, and its arguments can be influenced by content it just read, so
-    "a path" is untrusted input. An earlier version stat'd then read, which is a check-then-act
-    pair: the path could be swapped for a FIFO or grown past the cap in between, and the bound
-    described an ordering rather than a guarantee. This opens once, non-blocking so a FIFO cannot
-    stall the open, fstats the DESCRIPTOR it will actually read, and reads at most one byte over
-    the cap — so growth after the check cannot exceed it either.
+    "a path" is untrusted input.
 
     The failure message is deliberately fixed rather than echoing the OSError, which otherwise
     answers "does /etc/<x> exist and can you read it" for any path a model cares to name.
     """
-    import stat as _stat
+    from substrate.freshness import FileTooLarge, NotRegularFile, read_bounded
 
     try:
-        fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK)
+        return read_bounded(src, MAX_SOURCE_BYTES)
+    except NotRegularFile as e:
+        raise ToolError("source_path is not a regular file.") from e
+    except FileTooLarge as e:
+        raise ToolError(f"source_path exceeds the {MAX_SOURCE_BYTES}-byte limit for a note.") from e
     except OSError as e:
         raise ToolError(f"cannot read the given source_path ({type(e).__name__}).") from e
-    try:
-        st = os.fstat(fd)
-        if not _stat.S_ISREG(st.st_mode):
-            raise ToolError("source_path is not a regular file.")
-        chunks, size = [], 0
-        while size <= MAX_SOURCE_BYTES:
-            block = os.read(fd, 1 << 20)
-            if not block:
-                break
-            chunks.append(block)
-            size += len(block)
-        if size > MAX_SOURCE_BYTES:
-            raise ToolError(f"source_path exceeds the {MAX_SOURCE_BYTES}-byte limit for a note.")
-        return b"".join(chunks)
-    except OSError as e:
-        raise ToolError(f"cannot read the given source_path ({type(e).__name__}).") from e
-    finally:
-        os.close(fd)
 
 
 def _tool_ingest(args: dict, cfg: Config) -> dict:
@@ -739,6 +748,8 @@ def _tool_ingest(args: dict, cfg: Config) -> dict:
 
 
 def _tool_list_scopes(args: dict, cfg: Config) -> dict:
+    if cfg.agent is not None:
+        return cfg.agent.scopes_payload()
     return introspect.scopes_payload(cfg.registry)
 
 
@@ -746,9 +757,11 @@ def _tool_status(args: dict, cfg: Config) -> dict:
     name = args.get("scope")
     if not name:
         raise ToolError("status requires `scope`.")
-    entry, store, verdict = _open(name, cfg.registry, refuse_empty=False)
+    entry, store, verdict = _open(name, cfg, refuse_empty=False)
     try:
-        return introspect.status_payload(store, entry, stack=cfg.stack, registry=cfg.registry)
+        return introspect.status_payload(store, entry, stack=cfg.stack, registry=cfg.registry,
+                                         refresh=_refresh(cfg, name),
+                                         drift=cfg.agent is None)
     finally:
         store.close()
 
@@ -824,7 +837,7 @@ def _tool_documents(args: dict, cfg: Config) -> dict:
     include_sources = bool(args.get("include_sources", False))
     statuses = retriever.statuses(include_archived=bool(args.get("include_archived", False)))
 
-    entry, store, verdict = _open(scope, cfg.registry)
+    entry, store, verdict = _open(scope, cfg)
     try:
         rows, total = store.browse(statuses=statuses, include_sources=include_sources,
                                    vault=vault, doc_type=doc_type,
@@ -834,7 +847,7 @@ def _tool_documents(args: dict, cfg: Config) -> dict:
             rows, total, scope=scope, statuses=statuses, include_sources=include_sources,
             doc_type=doc_type, vault=vault, index_version=store.index_version, db=str(entry.db),
             filter_notes=tuple(n for n in (limit_note, offset_note, verdict.reason) if n),
-            registry=cfg.registry,
+            registry=cfg.registry, refresh=_refresh(cfg, scope),
         )
     finally:
         store.close()
@@ -873,7 +886,8 @@ class Config:
                  read_only: bool = False,
                  recheck: Callable[[stack.Stack], stack.Stack] | None = None,
                  recheck_after: float = RECHECK_AFTER,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 agent: agent.AgentScopes | None = None):
         self.registry = registry
         self._stack = retrieval
         self.plans = notes.PlanBook()
@@ -881,7 +895,10 @@ class Config:
         # already means spawning this process — the write primitive is no wider than the process
         # that owns it. `main()` turns this ON for `--http`, where any local process can reach the
         # port.
-        self.read_only = read_only
+        self.read_only = read_only or agent is not None
+        # AGENT MODE (`substrate.agent`): serve only these scopes, from published snapshots. It
+        # implies read-only and goes further — the write tools are not registered at all.
+        self.agent = agent
         # `stack.recheck` bound to the arguments the stack was built with, or None to keep the
         # stack exactly as built — every test, and any caller that did not ask for recovery.
         self._recheck = recheck
@@ -972,6 +989,15 @@ def _available_tools(cfg: Config) -> list[dict]:
     return [t for t in TOOLS if t["name"] not in WRITE_TOOLS]
 
 
+def _handler(name: object, cfg: Config):
+    """The tool to run, or None for one this server does not have. In agent mode the write tools
+    are ABSENT rather than refused: there is no transport on which an agent server writes, so
+    there is nothing to point a caller towards, unlike the read-only socket below."""
+    if cfg.agent is not None and name in WRITE_TOOLS:
+        return None
+    return HANDLERS.get(name)
+
+
 def handle(msg: object, cfg: Config) -> dict | list | None:
     """One JSON-RPC frame in, one response out — a dict, a batch array, or None for a frame that
     takes no reply.
@@ -1026,7 +1052,7 @@ def _dispatch(msg: dict, cfg: Config) -> dict | None:
         if not isinstance(params, dict):
             return _error(rid, -32602, "params must be an object for tools/call")
         name = params.get("name")
-        fn = HANDLERS.get(name)
+        fn = _handler(name, cfg)
         if fn is None:
             return _error(rid, -32602, f"unknown tool {name!r}")
         if cfg.read_only and name in WRITE_TOOLS:
@@ -1571,7 +1597,44 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--read-only", action=argparse.BooleanOptionalAction, default=None,
                     help="refuse `ingest`, the one tool that writes. ON by default under --http "
                          "and off under stdio; state it either way to override that.")
+    ap.add_argument("--agent-mode", action="store_true",
+                    help="serve ONLY --scopes, read-only, from snapshots in --snapshot-dir; never "
+                         "read the registry or a vault (substrate.agent)")
+    ap.add_argument("--scopes", default=None, metavar="NAME[,NAME…]",
+                    help="agent mode: the scopes this server may answer for")
+    ap.add_argument("--snapshot-dir", default=None,
+                    help="agent mode: where the operator's engine publishes snapshots")
+    ap.add_argument("--max-snapshot-age", type=int, default=agent.DEFAULT_MAX_AGE_SECONDS,
+                    metavar="SECONDS",
+                    help="agent mode: older than this, every answer reports the snapshot stale")
     args = ap.parse_args(argv)
+
+    agent_scopes = None
+    if args.agent_mode:
+        # Every flag that would reach past the snapshot is REFUSED rather than ignored, so a
+        # mis-written agent config fails at launch instead of quietly widening what it can touch.
+        conflict = [f for f, v in (("--registry", args.registry), ("--http", args.http),
+                                   ("--no-read-only", args.read_only is False)) if v]
+        if conflict:
+            print(f"substrate-mcp: --agent-mode refuses {', '.join(conflict)}", file=sys.stderr)
+            return 2
+        if not args.scopes or not args.snapshot_dir:
+            print("substrate-mcp: --agent-mode needs --scopes and --snapshot-dir", file=sys.stderr)
+            return 2
+        try:
+            agent_scopes = agent.AgentScopes(
+                [n.strip() for n in args.scopes.split(",") if n.strip()],
+                Path(args.snapshot_dir), max_age_seconds=args.max_snapshot_age)
+        except agent.AgentError as e:
+            print(f"substrate-mcp: {e}", file=sys.stderr)
+            return 2
+        # The generator arms' cache lives in memory: its default is a database in the CALLER's
+        # home, and an agent server writes nothing anywhere.
+        args.cache = ":memory:"
+    elif args.scopes or args.snapshot_dir:
+        print("substrate-mcp: --scopes and --snapshot-dir only apply with --agent-mode",
+              file=sys.stderr)
+        return 2
 
     # BEFORE the stack is built: a refused bind should cost nothing, and building the stack first
     # means a typo'd --http pays for model probes before it fails.
@@ -1602,9 +1665,11 @@ def main(argv: list[str] | None = None) -> int:
     # default — one copy, so it cannot be printed by a path that does not actually apply the rule.
 
     # An arm that could not start is probed again while the server runs, rather than leaving the
-    # server lexical-only for its whole life because of one bad moment at launch.
+    # server lexical-only for its whole life because of one bad moment at launch. Agent mode too:
+    # its models are the same loopback daemon, and `build_args` carries its in-memory cache, so a
+    # re-check writes nothing either.
     cfg = Config(args.registry, retrieval, read_only=read_only,
-                 recheck=functools.partial(stack.recheck, **build_args))
+                 recheck=functools.partial(stack.recheck, **build_args), agent=agent_scopes)
     if bind is not None:
         return serve_http(cfg, *bind, allow_writes=not read_only)
     return serve(cfg)
