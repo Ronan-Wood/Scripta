@@ -9,7 +9,7 @@ subprocess, which a sandboxed app cannot do — so it was unsubmittable long bef
 | Sandbox | **No** — and that is what closed the App Store |
 | Configuration to ship | **`Distribution`** — NOT `Release` (see below) |
 | Signing | Developer ID Application + notarization |
-| Bundled engine | ~1.4 GB under `Contents/Resources/substrate-engine`, 366 nested Mach-O signed by the build phase |
+| Bundled engine | ~1.1 GB under `Contents/Resources/substrate-engine`, 275 nested Mach-O signed by the build phase (2026-11-01) |
 | Build output | `build/Distribution/` (SYMROOT=build) |
 | Updates | Sparkle 2, EdDSA-signed appcast attached to the Latest GitHub release |
 
@@ -171,6 +171,15 @@ the right default. Deltas are per version pair — the three most recent archive
 user further back than that downloads the full dmg. When the bundled engine changes (the Python
 runtime or its dependencies) the delta is nearly the full size and there is nothing to be done
 about it; the point of deltas is that most releases do not change the engine.
+
+**`generate_appcast` builds no delta from 0.3.0 or 0.3.2.** Sparkle refuses to diff a tree in which
+any file carries a code signature in its extended attributes, and both shipped 142 — debug symbols
+the engine build phase signed. `tools/slim-bundled-engine` removes them and the build refuses a tree
+with any. For those two archives the tool prints "Diffing code signed extended attributes are not
+supported" and still writes a valid, signed appcast with the full dmg. Measured 2026-11-01: a delta
+built from a copy of 0.3.2 with those attributes removed was 2.7 MB against a 214 MB dmg, and
+`BinaryDelta apply` installed it onto an unmodified 0.3.2 cleanly — but `publish-release` does not
+make that copy, so without it the first delta comes one release after the first built with this.
 
 **Verifying the update path** before announcing: install the PREVIOUS release, launch it, Scripta
 menu → Check for Updates…, and let it install. The installed copy should report the new version in

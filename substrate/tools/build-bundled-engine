@@ -113,7 +113,7 @@ fingerprint() {
     # The arms' SOURCES, because the arms are compiled from them below. Hashing the compiled
     # output instead would be circular, and hashing neither means editing `embed-apple.swift`
     # leaves a stamped tree holding the previous binary.
-    shasum -a 256 "$REPO/uv.lock" "$REPO/pyproject.toml" "$0" \
+    shasum -a 256 "$REPO/uv.lock" "$REPO/pyproject.toml" "$0" "$REPO/tools/slim-bundled-engine" \
       "$REPO/tools/embed-apple.swift" "$REPO/tools/hyde-fm.swift" \
       "$REPO/tools/rerank-fm.swift" "$REPO/tools/extract-apple.swift" | cut -d' ' -f1
     ( cd "$REPO" && find substrate \( -type f -o -type l \) \
@@ -253,6 +253,13 @@ rsync -a --exclude '__pycache__' --exclude '*.pyc' "$REPO/substrate/" "$STAGE/su
 say "pruning vendored test suites"
 find "$STAGE/.venv/lib" \( -type d -name tests -o -type d -name test \) -prune -exec rm -rf {} + \
   || die "could not prune vendored test suites"
+
+# DEBUG SYMBOLS, HEADERS AND THE INTERPRETER'S GUI AND INSTALLER GO TOO, for the same reason and in
+# the same place: before the import check below and before signing. The dSYMs are the ones that
+# matter — signing them wrote code signatures into extended attributes, and Sparkle cannot build a
+# delta from a tree that has any. The script carries the list, the measurements and what is kept.
+say "removing debug symbols, headers and the interpreter's GUI and installer"
+"$REPO/tools/slim-bundled-engine" "$STAGE" || die "could not slim the engine"
 
 "$STAGE/.venv/bin/python" -B -E -s -c "
 import numpy, scipy, pandas, torch, docling, ocrmac, cv2
@@ -596,6 +603,12 @@ EOF
 else
   say "NOT signed (no identity given) — this tree will not notarize"
 fi
+
+# CHECKED AFTER SIGNING, because signing is what wrote the extended attributes the first time: any
+# file codesign cannot embed a signature in gets one in `com.apple.cs.*` xattrs instead, and a single
+# such file costs every user the delta update. This also refuses anything the slimming step should
+# have removed.
+"$REPO/tools/slim-bundled-engine" --check "$STAGE" || die "the engine would block Sparkle delta updates"
 
 # ------------------------------------------------------------------ assert whole, then swap
 #

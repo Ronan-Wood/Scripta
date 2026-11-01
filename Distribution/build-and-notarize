@@ -240,7 +240,24 @@ DMG="dist/Scripta-$VERSION.dmg"
 rm -rf dist/stage && mkdir -p dist/stage
 cp -R "$APP" dist/stage/
 ln -s /Applications dist/stage/Applications
-hdiutil create -volname "Scripta" -srcfolder dist/stage -ov -format UDZO "$DMG"
+# NO CODE SIGNATURE IN EXTENDED ATTRIBUTES, checked on the copy that goes into the dmg. Sparkle cannot
+# build a delta from or to a tree with one; 0.3.0 and 0.3.2 each shipped 142. The engine phase refuses
+# them in its own stage, but Xcode, Sparkle's helper phase, stapling and this copy all come after it,
+# so the whole app is checked here, last. Captured rather than piped, as for the GPL check above.
+signed_xattrs=$(find dist/stage/Scripta.app -xattrname com.apple.cs.CodeDirectory \
+  -o -xattrname com.apple.cs.CodeRequirements -o -xattrname com.apple.cs.CodeSignature)
+[ -z "$signed_xattrs" ] || fail "files carry a code signature in extended attributes, so Sparkle could build no delta to this release: $signed_xattrs"
+# CREATED, THEN CONVERTED, AND THE CONVERT IS WHAT MATTERS. `hdiutil create -srcfolder` writes a file
+# far larger than the compressed data in it: 0.3.2's UDZO was 668 MB around 398 MB of chunks, and a
+# ULMO made the same way was 448 MB around 214 MB. `hdiutil convert` writes only the chunks. ULMO (lzma)
+# rather than UDZO because it is the smallest of the four measured on 0.3.2's contents: UDZO 345 MB,
+# ULFO 312 MB, ULMO 230 MB once converted. That is every update download without a delta, and the
+# notarization upload whose final request kept dying. ULMO needs macOS 10.15; the app needs 26.
+RW="dist/Scripta-$VERSION-rw.dmg"
+rm -f "$RW" "$DMG"
+hdiutil create -volname "Scripta" -srcfolder dist/stage -ov -format UDRW "$RW"
+hdiutil convert "$RW" -format ULMO -o "$DMG"
+rm -f "$RW"
 notarize "$DMG"
 xcrun stapler staple "$DMG"
 
