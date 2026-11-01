@@ -6,8 +6,9 @@ here into the matching package's `dist-info/licenses/` in the bundle, and it ref
 bundled package is still without a license file.
 
 Files are named `<normalized package name>-<version>.txt` and were fetched from each project's source
-at that exact version on 2026-09-15. When a package is upgraded the old name no longer matches and
-the build fails, so the text is refreshed on purpose rather than carried forward.
+at that exact version, docling's on 2026-11-01 and the rest on 2026-09-15. When a package is upgraded
+the old name no longer matches and the build fails, so the text is refreshed on purpose rather than
+carried forward.
 
 ## OpenCV's third-party notice
 

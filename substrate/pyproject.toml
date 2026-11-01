@@ -2,7 +2,7 @@
 name = "substrate"
 version = "0.1.0"
 description = "Language-neutral knowledge substrate engine — structure-aware ingestion + retrieval"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
 dependencies = [
     "docling",
@@ -60,7 +60,7 @@ opencv-python-headless = { ENABLE_HEADLESS = "1", ENABLE_CONTRIB = "0", CMAKE_AR
 dev = ["ipykernel", "ruff>=0.16.7"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 # Bug-catchers only. Pyflakes (F), the real-error slices of pycodestyle (E4 import
