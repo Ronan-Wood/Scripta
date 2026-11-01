@@ -877,6 +877,16 @@ public struct WireVectorStatus: Codable, Equatable, Sendable {
     }
 }
 
+/// `introspect.status_payload`'s `exposed` — which of a scope's index paths another local user can
+/// read. Three states, because the wire has three: an engine older than the field sends no key; an
+/// agent-mode server sends `null`, since its snapshot is shared with its folder's group by design;
+/// anything else sends a list, where empty is the only safe value.
+public enum WireExposure: Equatable, Sendable {
+    case notSent
+    case notChecked
+    case paths([String])
+}
+
 /// `introspect.status_payload` — everything `status` reports for one composed scope.
 public struct WireStatusResult: Codable, Equatable, Sendable {
     public let scope: String
@@ -900,6 +910,7 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
     public let vectors: WireVectorStatus?
     public let refresh: WireRefreshReport
     public let drift: WireDriftReport
+    public let exposed: WireExposure
 
     public init(scope: String, db: String, vault: String, composed: String, indexVersion: String,
                 documents: Int, passages: Int, outlines: Int, schemaVersion: Int,
@@ -907,7 +918,8 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
                 byDocType: [String: Int], byConfidence: [String: Int],
                 entities: [WireEntity] = [],
                 retrievalArms: WireRetrievalArms, vectors: WireVectorStatus?,
-                refresh: WireRefreshReport, drift: WireDriftReport) {
+                refresh: WireRefreshReport, drift: WireDriftReport,
+                exposed: WireExposure = .notSent) {
         self.scope = scope
         self.db = db
         self.vault = vault
@@ -927,6 +939,7 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
         self.vectors = vectors
         self.refresh = refresh
         self.drift = drift
+        self.exposed = exposed
     }
 
     enum CodingKeys: String, CodingKey {
@@ -941,7 +954,7 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
         case byConfidence = "by_confidence"
         case entities
         case retrievalArms = "retrieval_arms"
-        case vectors, refresh, drift
+        case vectors, refresh, drift, exposed
     }
 
     public init(from decoder: Decoder) throws {
@@ -967,6 +980,13 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
         vectors = try c.decodeIfPresent(WireVectorStatus.self, forKey: .vectors)
         refresh = try c.decodeRefresh(forKey: .refresh)
         drift = try c.decode(WireDriftReport.self, forKey: .drift)
+        if !c.contains(.exposed) {
+            exposed = .notSent
+        } else if try c.decodeNil(forKey: .exposed) {
+            exposed = .notChecked
+        } else {
+            exposed = .paths(try c.decode([String].self, forKey: .exposed))
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -990,6 +1010,11 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
         try c.encodeExplicitNull(vectors, forKey: .vectors)
         if refresh.wasSent { try c.encode(refresh, forKey: .refresh) }
         try c.encode(drift, forKey: .drift)
+        switch exposed {
+        case .notSent: break
+        case .notChecked: try c.encodeNil(forKey: .exposed)
+        case .paths(let paths): try c.encode(paths, forKey: .exposed)
+        }
     }
 }
 

@@ -1270,8 +1270,11 @@ final class SubstrateLibraryModel: ObservableObject {
             database = root.appendingPathComponent("\(name).db")
             indexRoot = root.appendingPathComponent(name, isDirectory: true)
         }
+        // 0700, intermediates included: `~` is readable by every staff account, and this tree holds
+        // every library scope's index. The engine seals the files; this is the directory.
         try? FileManager.default.createDirectory(at: database.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true)
+                                                 withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
         var arguments = ["compose", vault.path,
                          "--index-root", indexRoot.path,
                          "--db", database.path]

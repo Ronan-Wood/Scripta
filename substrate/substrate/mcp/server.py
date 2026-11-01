@@ -51,7 +51,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from substrate import agent, guard, introspect, net, notes, render, scopes, stack
+from substrate import agent, guard, introspect, net, notes, private, render, scopes, stack
 from substrate.store import schema
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -1578,7 +1578,33 @@ def _build_args(args: Any) -> dict:
             "lexical_only": args.lexical_only}
 
 
+def warn_exposed(registry: str | None) -> None:
+    """Name, at startup, every registered scope whose index another local user can read.
+
+    Warned, never refused and never repaired: this process is a reader, and a leak that has already
+    happened is not undone by refusing to answer. The next compose seals the scope. A registry that
+    cannot be read is skipped here because every call reports that fault on its own.
+    """
+    try:
+        entries = scopes.load(registry)
+    except scopes.ScopeError:
+        return
+    for name, entry in sorted(entries.items()):
+        loose = private.exposed(private.index_paths(entry.db, entry.index_root))
+        if loose:
+            print(f"substrate-mcp: scope {name!r} is readable by other users on this machine: "
+                  f"{', '.join(loose)}. Recompose it, or run `chmod -R go-rwx` on each path.",
+                  file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
+    # Everything this process creates — the vector cache, a note `ingest` writes — is the
+    # operator's alone. See `private`.
+    with private.restricted():
+        return _main(argv)
+
+
+def _main(argv: list[str] | None) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(prog="substrate-mcp", description=__doc__.split("\n")[0])
@@ -1652,6 +1678,10 @@ def main(argv: list[str] | None = None) -> int:
     # Reported at startup AND carried on every response — the caller may not see this.
     for note in retrieval.unavailable:
         print(f"substrate-mcp: {note}", file=sys.stderr)
+    # Not in agent mode, which never reads the registry, and whose snapshot is the operator's own
+    # decision to share with its folder's group.
+    if agent_scopes is None:
+        warn_exposed(args.registry)
 
     # Doc 3 §3: `ingest` comes off the TCP transport. Any local process can reach a loopback port,
     # and `ingest` writes notes into real Obsidian vaults that the next refresh serves back as

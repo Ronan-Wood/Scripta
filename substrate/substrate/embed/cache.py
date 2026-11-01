@@ -21,7 +21,10 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import struct
+import sys
 from pathlib import Path
+
+from substrate import private
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS expansions(
@@ -77,6 +80,12 @@ class VectorCache:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        # The `expansions` table is HyDE text written from the operator's queries. A cache created
+        # before the engine set its umask is still 0644, and this process owns it, so it seals it.
+        if self.path != ":memory:":
+            for line in private.seal(private.sqlite_family(Path(self.path))):
+                print(f"substrate: WARNING still readable by other users: {line}",
+                      file=sys.stderr)
 
     def close(self) -> None:
         self.db.close()

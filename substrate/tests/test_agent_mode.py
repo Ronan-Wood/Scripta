@@ -385,6 +385,34 @@ def test_refresh_record_publishes_and_a_publish_failure_does_not_fail_the_record
     assert "WARNING (agent snapshot atlas)" in capsys.readouterr().err
 
 
+def test_a_snapshot_published_by_the_cli_stays_readable_by_its_group(world):
+    """The CLI runs under umask 077 so nothing the operator's engine writes is readable by another
+    uid. The snapshot is the one file meant to be: the agent reads it through the folder's group."""
+    shared, registry = world
+    (registry.parent / agent.CONFIG_FILENAME).write_text(
+        f'[publish.atlas]\ndir = "{shared}"\n', encoding="utf-8")
+    for p in agent.snapshot_paths(shared, "atlas"):
+        p.unlink()
+    previous = os.umask(0o022)
+    try:
+        assert cli.main(["refresh-record", "--scope", "atlas", "--outcome", "refreshed",
+                         "--registry", str(registry), "--quiet"]) == 0
+    finally:
+        os.umask(previous)
+    for p in agent.snapshot_paths(shared, "atlas"):
+        assert oct(p.stat().st_mode & 0o777) == oct(agent.FILE_MODE), p
+
+
+def test_agent_status_does_not_judge_the_shared_snapshot_exposed(world):
+    """The snapshot is 0640 on purpose. `exposed` lists what must be sealed; listing the one file
+    the operator chose to share would tell the agent to report a correct setup as a leak."""
+    shared, registry = world
+    _hide(registry)
+    status, err = _call(_cfg(shared), "status", {"scope": "atlas"})
+    assert not err, status
+    assert status["exposed"] is None
+
+
 def test_a_scope_not_in_the_config_is_never_published(world):
     shared, registry = world
     (registry.parent / agent.CONFIG_FILENAME).write_text(

@@ -21,7 +21,7 @@ simply an edit made since the last tick.
 
 from __future__ import annotations
 
-from substrate import freshness, refresh_state, scopes
+from substrate import freshness, private, refresh_state, scopes
 from substrate import vault as _vault
 
 
@@ -98,6 +98,11 @@ def status_payload(store, entry, *, stack, registry: str | None = None,
         "retrieval_arms": arms(stack),
         "vectors": vector_status(store, stack),
         "refresh": refresh if refresh is not None else refresh_state.report(entry.name, registry),
+        # Each index path another local user can read. Empty is the only safe value; anything
+        # listed is sealed by the next compose of this scope. Null in agent mode: a snapshot is
+        # 0640 by design, shared with its folder's group, and not this process's to judge.
+        "exposed": (private.exposed(private.index_paths(entry.db, entry.index_root))
+                    if drift else None),
     }
     if not drift:
         # Agent mode: the vault is not this process's to read, so drift is UNCHECKED and says so in

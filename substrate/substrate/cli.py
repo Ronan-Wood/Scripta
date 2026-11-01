@@ -26,7 +26,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from substrate import classes, identity, render, scopes
+from substrate import classes, identity, private, render, scopes
 from substrate.checks import document_checks, partition_check_failures
 from substrate.paths import ModelsFolderError, configure, internal_cache_footprint, models_folder
 
@@ -1086,6 +1086,21 @@ def cmd_compose(args: argparse.Namespace) -> int:
         # traceback, and nothing has been written yet.
         print(f"FATAL (--index-root): cannot create {index_root}: {e}", file=sys.stderr)
         return 2
+
+    # SEALED BY THE WRITER, BEFORE THE FIRST BYTE OF CONTENT. The umask covers what this run creates;
+    # it never reaches a database or ingest file that already exists, and those are rewritten in
+    # place — so an index first built at 0644 would stay readable by every other local user. Here
+    # rather than after the gates: every refusal below has already rewritten the ingest tree, and a
+    # scope that keeps failing compose would leak each new edit for as long as it stayed frozen.
+    # A warning, not a refusal: the content is already exposed, and refusing does not undo that.
+    unsealed = private.seal(private.index_paths(db, index_root))
+    if unsealed:
+        print(f"WARNING (permissions): {len(unsealed)} path(s) of this index are still readable "
+              f"by other users:", file=sys.stderr)
+        for line in unsealed[:10]:
+            print(f"    {line}", file=sys.stderr)
+        if len(unsealed) > 10:
+            print(f"    … and {len(unsealed) - 10} more", file=sys.stderr)
 
     # Ingest every note. Collect failures rather than aborting on the first, then refuse the WHOLE
     # scope if any failed — a composed index missing notes is exactly the silent-loss shape, so it
@@ -2319,7 +2334,8 @@ def main(argv: list[str] | None = None) -> int:
     rev.set_defaults(func=cmd_review)
 
     args = ap.parse_args(argv)
-    return args.func(args)
+    with private.restricted():
+        return args.func(args)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,29 @@ final class WireDecodingTests: XCTestCase {
                                     payload: try GoldenFixture.payload(GoldenFixture.status))
     }
 
+    /// `exposed` has three wire states and each must survive a round trip: absent (an engine older
+    /// than the field, which is what the golden capture is), `null` (an agent-mode server), and a
+    /// list. Collapsing absent and `null` into one optional would re-encode one as the other.
+    func testStatusExposureDecodesAndRoundTripsEachWireState() throws {
+        let golden = try GoldenFixture.payload(GoldenFixture.status)
+        XCTAssertEqual(try JSONDecoder().decode(WireStatusResult.self, from: golden).exposed,
+                       .notSent)
+
+        let cases: [(Any, WireExposure)] = [
+            (NSNull(), .notChecked),
+            ([String](), .paths([])),
+            (["/x/scripta.db", "/x/scripta-index"], .paths(["/x/scripta.db", "/x/scripta-index"])),
+        ]
+        for (value, expected) in cases {
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: golden) as? [String: Any])
+            object["exposed"] = value
+            let payload = try JSONSerialization.data(withJSONObject: object)
+            XCTAssertEqual(try JSONDecoder().decode(WireStatusResult.self, from: payload).exposed,
+                           expected)
+            try JSONDiff.assertLossless(WireStatusResult.self, payload: payload)
+        }
+    }
+
     func testScopeListRoundTripsLosslessly() throws {
         try JSONDiff.assertLossless(WireScopeList.self,
                                     payload: try GoldenFixture.payload(GoldenFixture.listScopes))
