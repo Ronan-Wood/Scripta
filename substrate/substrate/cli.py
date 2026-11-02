@@ -1860,7 +1860,12 @@ def cmd_eval(args: argparse.Namespace) -> int:
         print(f"  retrieval: {'hybrid (lexical + vector)' if embedder else 'lexical only'}")
     expander = None
     if not args.no_hyde:
-        from substrate.retrieve.expand import AppleFMExpander, HyDE, LlamaServerHyDE
+        from substrate.retrieve.expand import AUTO, OFF, AppleFMExpander, HyDE, LlamaServerHyDE
+
+        if args.hyde_model in (AUTO, OFF):
+            print(f"FATAL: eval measures a NAMED HyDE model; got {args.hyde_model!r}. Name one "
+                  f"(`--hyde-model qwen3.5:4b-mlx`), or pass --no-hyde.", file=sys.stderr)
+            return 2
 
         from substrate.embed.cache import VectorCache
 
@@ -2313,7 +2318,13 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--embed-model", default="qwen3-embedding:0.6b")
     ev.add_argument("--embed-style", default="auto", choices=["auto","nomic","none","qwen3"])
     ev.add_argument("--no-hyde", action="store_true", help="disable query expansion (A/B)")
-    ev.add_argument("--hyde-model", default="qwen2.5:7b")
+    # A NAMED model, never the stack's `auto`: a number measured against whatever auto picked on
+    # this machine today cannot be reproduced. Imported rather than retyped — the literal this
+    # replaced kept naming qwen2.5:7b after the model was gone.
+    from substrate.retrieve.expand import DEFAULT_MODEL as HYDE_MODEL
+
+    ev.add_argument("--hyde-model", default=HYDE_MODEL,
+                    help="a model name; `auto` is refused, since its pick is not reproducible")
     ev.add_argument("--hyde-prompt", default="canonical", choices=["canonical", "distinctive"])
     ev.add_argument("--multi-query", type=int, default=0, metavar="N")
     ev.add_argument("--no-rerank", action="store_true")

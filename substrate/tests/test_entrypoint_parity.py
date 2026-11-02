@@ -138,6 +138,27 @@ def test_the_two_entry_points_disagree_and_this_is_the_open_decision() -> None:
     )
 
 
+def _cli_eval_subparser() -> argparse.ArgumentParser:
+    from substrate.cli import main as cli_main
+
+    root = _parser_of(cli_main)
+    for action in root._actions:  # noqa: SLF001
+        if isinstance(action, argparse._SubParsersAction):  # noqa: SLF001
+            return action.choices["eval"]
+    raise AssertionError("no subparsers on the CLI root parser")
+
+
+def test_a_bare_eval_measures_the_named_hyde_model() -> None:
+    """`eval --hyde-model` was a literal `qwen2.5:7b` beside the engine's own default, and stayed one
+    after that model was gone. It now names `expand.DEFAULT_MODEL` — and NOT the stack's `auto`,
+    because a number measured against whatever auto picked on one machine cannot be reproduced."""
+    from substrate.retrieve.expand import AUTO, DEFAULT_MODEL
+
+    d = _defaults_of(_cli_eval_subparser(), "hyde_model")
+    assert d["hyde_model"] == DEFAULT_MODEL, d
+    assert d["hyde_model"] != AUTO
+
+
 if __name__ == "__main__":
     _tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     _failed = 0

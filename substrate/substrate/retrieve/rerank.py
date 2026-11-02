@@ -30,7 +30,11 @@ from substrate.net import open_local, require_loopback
 from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
 from substrate.store.index_store import Hit
 
-DEFAULT_MODEL = "qwen2.5:7b"
+# The same model as HyDE's named default (`expand.DEFAULT_MODEL`, what `auto` picks on the
+# machine that measured it), so the listwise stack is one MEASURED pair rather than two
+# defaults nobody ran together: qwen3.5:4b-mlx both ways scores 0.681 at 44 cases (2026-11-01).
+# Not the shipped arm — `stack.DEFAULT_RERANK` is the cross-encoder.
+DEFAULT_MODEL = "qwen3.5:4b-mlx"
 DEFAULT_HOST = "http://127.0.0.1:11434"
 POOL = 20          # candidates handed to the reranker
 SNIPPET = 320      # chars per candidate; 20 x 320 keeps the prompt small enough to be fast
@@ -104,6 +108,7 @@ class LLMReranker:
             "model": self.model,
             "prompt": PROMPT.format(q=query, passages=listing),
             "stream": False,
+            "think": False,     # an 80-token budget spent thinking returns no ordering; see HyDE.expand
             "options": {"temperature": 0.0, "num_predict": 80},
         }
         req = urllib.request.Request(

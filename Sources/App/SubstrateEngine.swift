@@ -167,17 +167,32 @@ final class SubstrateEngine: ObservableObject {
     /// that, since Ollama exposes no logprobs so it ran as a yes/no FILTER where "most candidates
     /// tie" — for "roughly an order of magnitude slower, consistent with 385ms → 4,558ms".
     ///
-    /// So the app states NOTHING about retrieval. `AskModel` requires an in-app query and
-    /// the equivalent CLI query to agree, "and they can only be compared while this side computes
-    /// none of the three"; a reranker chosen by a Swift constant is this side computing one.
+    /// So the app states nothing about the reranker or the embedder. `AskModel` requires an in-app
+    /// query and the equivalent CLI query to agree, "and they can only be compared while this side
+    /// computes none of the three"; a reranker chosen by a Swift constant is this side computing one.
+    ///
+    /// `--hyde-model` IS THE ONE EXCEPTION, since 2026-11-01, and it is a user's choice rather than
+    /// a constant. The engine's HyDE default used to be a pinned tag, and because this app passed
+    /// nothing, that tag was every user's model — lost by anyone who had not pulled it, as everyone
+    /// did when qwen2.5 left the machine. It now comes from Settings → Search
+    /// (`AppSettings.engineSearchModel`): Off, whatever the server; a named local pick only when the
+    /// Settings server IS the engine's Ollama and still lists it. Auto, a stale pick and a cloud
+    /// pick pass nothing, so the engine's own Auto picks — the rule the picker's label shows,
+    /// applied to what Ollama lists now. On Auto the CLI and the app run the same model by
+    /// construction.
     ///
     /// The tier disagreement that prompted the change is real and is NOT the app's to fix: it comes
     /// from `~/.local/bin/substrate-mcp` passing `cross` itself, which puts every client of that
     /// shim on the unmeasured arm. That belongs in the shim or in `stack.DEFAULT_RERANK`, where one
     /// value serves the CLI, the MCP and this app alike.
-    private static var serveArguments: [String] {
-        ["--socket", socketPath, "--read-only"]
+    private static func serveArguments(searchModel: String?) -> [String] {
+        // One `--flag=value` element, so a value starting with "-" is a value, never an option.
+        ["--socket", socketPath, "--read-only"] + (searchModel.map { ["--hyde-model=\($0)"] } ?? [])
     }
+
+    /// The `--hyde-model` the current start passes (nil: none). The engine reads it once, at
+    /// startup, so this is what `searchModelChanged` compares against.
+    private var launchedSearchModel: String?
 
     /// How long a cold start may take before it is called a failure. Generous on purpose: the
     /// engine builds its whole retrieval stack — embedder, HyDE and reranker — BEFORE `serve_unix`
@@ -185,9 +200,18 @@ final class SubstrateEngine: ObservableObject {
     /// card counts seconds so a long wait looks like a long wait rather than a hang.
     ///
     /// Sized for the arms the ENGINE picks, not for one this app names: `serveArguments` states no
-    /// models, so a machine configured onto a heavier reranker must still fit under this. The
-    /// ceiling therefore does not move when the measured default does.
+    /// embedder or reranker, so a machine configured onto a heavier reranker must still fit under
+    /// this. HyDE's model, the one it can state, is only probed at startup, never loaded, so the
+    /// ceiling does not move with it either.
     private static let startupCeiling: TimeInterval = 180
+
+    /// How long a restart waits for the engine it replaced to exit. Above the shim's own ~4s
+    /// TERM-then-KILL budget, so the bound is only hit by something this app did not expect.
+    private static let retireCeiling: TimeInterval = 10
+
+    /// The shim of an engine of ours that `teardown` signalled, and until when to wait for it.
+    private var retiring: Process?
+    private var retiringUntil: Date?
 
     // MARK: - Process
 
@@ -218,13 +242,32 @@ final class SubstrateEngine: ObservableObject {
             return
         }
         lifecycle = .starting(source, since: Date())
-        task = Task { [weak self] in await self?.bringUp(source) }
+        // Read and recorded HERE, before anything async: a second change arriving during the socket
+        // check must compare against what this start will launch, not what the last one did.
+        let searchModel = AppSettings.engineSearchModel
+        launchedSearchModel = searchModel
+        task = Task { [weak self] in await self?.bringUp(source, searchModel: searchModel) }
     }
 
     /// The remedy every non-serving card offers. `start()` already tears down and re-runs discovery
     /// and the socket check, so this also covers "I quit the thing that was holding the socket" and
     /// "I installed the engine" — it is named separately because that is what the button means.
     func restart() { start() }
+
+    /// Settings changed something search resolves from — the binding, the server, or its catalog.
+    /// The engine reads its HyDE model only at launch, so an engine that is up or coming up is
+    /// restarted, and ONLY when the argument actually differs: a restart rebuilds every arm and
+    /// leaves search unavailable while it does. An engine that is down picks the new value up on
+    /// its next start.
+    func searchModelChanged() {
+        switch lifecycle {
+        case .starting, .serving: break
+        default: return
+        }
+        guard AppSettings.engineSearchModel != launchedSearchModel else { return }
+        Self.log.info("search model changed; restarting the engine")
+        restart()
+    }
 
     /// Quit path. The shim's EOF watchdog covers force-quit and crash; this is the fast, ordinary
     /// one, and it runs before the app's own exit so the socket is free by the time the next launch
@@ -236,8 +279,24 @@ final class SubstrateEngine: ObservableObject {
 
     // MARK: - Bringing it up
 
-    private func bringUp(_ source: Source) async {
-        // THE SOCKET CHECK COMES FIRST, and what it finds is never used. A live socket before we
+    private func bringUp(_ source: Source, searchModel: String?) async {
+        // FIRST, an engine of OURS that is retiring is waited out. `teardown` signals it and does
+        // not wait, and until it is gone it still holds the socket's lifetime lock — so a new
+        // engine spawned now exits "already serving", and one still answering reads as an occupant
+        // below. Either strands a Settings-driven restart on a card asking the user to restart.
+        //
+        // Keyed on the retiring SHIM exiting, not on the socket going quiet: the shim exits only
+        // after the engine's whole process group is gone (see `shim`), which is what releases both
+        // the socket and the lock, whereas a listener can stop answering while its process still
+        // holds the lock. Bounded by `retiringUntil`, kept on the instance so a second restart
+        // arriving mid-wait still waits for the same engine.
+        if let until = retiringUntil {
+            while retiring?.isRunning == true, Date() < until, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        guard !Task.isCancelled else { return }
+        // THE SOCKET CHECK COMES NEXT, and what it finds is never used. A live socket before we
         // have spawned anything means a previous engine outlived its Scripta or the operator started
         // one by hand; either way a second bind would fail and the first is not ours to own. A
         // crashed engine's socket file refuses connections, reads as free here, and the engine
@@ -250,7 +309,7 @@ final class SubstrateEngine: ObservableObject {
             return
         }
         do {
-            try spawn(source)
+            try spawn(source, searchModel: searchModel)
         } catch {
             lifecycle = .failed(source, reason: "The engine could not be launched: \(error).",
                                 stderr: "")
@@ -259,11 +318,11 @@ final class SubstrateEngine: ObservableObject {
         await waitUntilAnswering(source)
     }
 
-    private func spawn(_ source: Source) throws {
+    private func spawn(_ source: Source, searchModel: String?) throws {
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/bin/sh")
         child.arguments = ["-c", Self.shim, "substrate-engine", source.executable.path]
-            + source.arguments + Self.serveArguments
+            + source.arguments + Self.serveArguments(searchModel: searchModel)
         if let directory = source.workingDirectory { child.currentDirectoryURL = directory }
 
         // The parent-death pipe. Never written to and never closed while the engine should live —
@@ -379,7 +438,11 @@ final class SubstrateEngine: ObservableObject {
         task?.cancel()
         task = nil
         process?.terminationHandler = nil
-        if let process, process.isRunning { process.terminate() }
+        if let process, process.isRunning {
+            process.terminate()
+            retiring = process
+            retiringUntil = Date().addingTimeInterval(Self.retireCeiling)
+        }
         stderr?.fileHandleForReading.readabilityHandler = nil
         // Closing our write end is the other half of the same signal: the shim's `cat` sees EOF and
         // kills the engine's process group even if the SIGTERM above was somehow missed.

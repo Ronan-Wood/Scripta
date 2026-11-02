@@ -86,6 +86,9 @@ enum EngineRouter {
               Locality.isAllowedForRequest(url, lanConfirmed: AppSettings.endpointLANConfirmed) else { return nil }
         if let catalog = try? await OpenAIWire(baseURL: url, lanConfirmed: AppSettings.endpointLANConfirmed).catalog() {
             AppSettings.storeCatalog(catalog, from: url)
+            // A named Search pick can appear in or drop out of the catalog, which changes whether
+            // the engine is passed it. Auto is the engine's own and needs no restart here.
+            await SubstrateEngine.shared.searchModelChanged()
         }
         return AppSettings.endpointCatalog
     }

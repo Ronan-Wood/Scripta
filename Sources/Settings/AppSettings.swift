@@ -47,6 +47,7 @@ enum AppSettings {
         static let rerankEnabled = "rerankEnabled"
         static let mirrorEnabled = "mirrorEnabled"
         static let visionModel = "visionModel"
+        static let searchModel = "searchModel"
         static let sidebarExpanded = "sidebarExpanded"
         static let globalHotkey = "globalHotkey"
         static let liveTranscription = "liveTranscription"
@@ -533,6 +534,7 @@ enum AppSettings {
         case .ask: return endpointModel(for: .ask) ?? ""
         case .enrich: return endpointModel(for: .enrich) ?? ""
         case .vision: return visionModel
+        case .search: return searchModel
         }
     }
 
@@ -563,6 +565,31 @@ enum AppSettings {
     static var visionModel: String {
         get { defaults.string(forKey: Keys.visionModel) ?? "" }
         set { defaults.set(newValue, forKey: Keys.visionModel) }
+    }
+
+    /// The model the retrieval engine expands vault searches with (HyDE): a model name,
+    /// `ModelResolver.auto` (the default — unset means Auto), or "" for off. Read by the ENGINE, not
+    /// by the app, so it only applies through `engineSearchModel` and a restart of the engine.
+    static var searchModel: String {
+        get { defaults.string(forKey: Keys.searchModel) ?? ModelResolver.auto }
+        set { defaults.set(newValue, forKey: Keys.searchModel) }
+    }
+
+    /// The engine's HyDE reaches Ollama at this address and nowhere else (loopback-only, Ollama's
+    /// native API), so the Settings server can stand for it only when it is that same server.
+    static let engineOllamaPort = 11434
+
+    /// Whether `url` is the local Ollama the engine reads — loopback, on Ollama's port.
+    static func servesEngine(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        return Locality.classify(url) == .loopback && url.port == engineOllamaPort
+    }
+
+    /// What the engine is launched with as `--hyde-model`, or nil to pass nothing (the engine then
+    /// picks for itself). See `ModelResolver.searchArgument`.
+    static var engineSearchModel: String? {
+        ModelResolver.searchArgument(binding: searchModel, catalog: endpointCatalog,
+                                     servesEngine: endpointEnabled && servesEngine(endpointURL))
     }
 
     /// Mirror the entity graph into the vault as `Entities/<Group>/…` stub notes. Default off —

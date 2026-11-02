@@ -51,6 +51,11 @@ def test_expected_mrr_exact_stacks() -> None:
     # listwise one is no longer the default but is still reachable by name.
     assert _measured_tier(_OLLAMA, "qwen2.5:7b", _CROSS_MODEL, True, True) == (0.708, None)
     assert _measured_tier(_OLLAMA, "qwen2.5:7b", "qwen2.5:7b", True, False) == (0.603, None)
+    # The 2026-11-01 re-measure after qwen2.5 left the machine. The records above stay reachable;
+    # these are what the shipped defaults resolve to.
+    assert _measured_tier(_OLLAMA, "qwen3.5:4b-mlx", _CROSS_MODEL, True, True) == (0.667, None)
+    assert _measured_tier(_OLLAMA, "qwen3.5:4b-mlx", _CROSS_MODEL, True, False) == (0.568, None)
+    assert _measured_tier(_OLLAMA, "qwen3.5:4b-mlx", "qwen3.5:4b-mlx", True, True) == (0.681, None)
     assert _measured_tier("apple-nlcontextual", "apple-fm", "apple-fm", True, True) == (0.593, None)
     assert _measured_tier("apple-nlcontextual", "apple-fm", "apple-fm", True, False) == (0.467, None)
     assert _measured_tier("apple-nlcontextual", "apple-fm", "apple-fm", False, False) == (0.343, None)
@@ -289,11 +294,14 @@ def test_shipped_objects_match_stacks() -> None:
     ok = OllamaEmbedder().key
     ollama = stacks_for(ok)
     assert ollama, f"no measured stack for the shipped embedder key {ok!r}"
-    assert {s["hyde"] for s in ollama} == {HyDE().model}
-    # BOTH Ollama rerankers are measured, and both must resolve. The listwise arm is no longer the
-    # default but is still reachable by name, and a tier that stopped matching it would report a
-    # measured configuration as unmeasured.
-    assert {s["reranker"] for s in ollama} == {LLMReranker().model, CrossEncoderReranker().model}
+    # The embedder fronts the retired qwen2.5:7b records too (still exact for anyone who pulls it),
+    # so the shipped HyDE default is pinned by membership and its pairings by filtering on it.
+    shipped = [s for s in ollama if s["hyde"] == HyDE().model]
+    assert shipped, f"no measured stack for the shipped HyDE model {HyDE().model!r}"
+    # BOTH Ollama rerankers are measured WITH that HyDE model, and both must resolve. The listwise
+    # arm is no longer the default but is still reachable by name, and a tier that stopped matching
+    # it would report a measured configuration as unmeasured.
+    assert {s["reranker"] for s in shipped} == {LLMReranker().model, CrossEncoderReranker().model}
 
     ak = AppleEmbedder().key
     apple = stacks_for(ak)
@@ -312,8 +320,13 @@ def test_the_shipped_default_stack_has_a_number() -> None:
     from substrate.embed.engine import OllamaEmbedder
     from substrate.retrieve.retriever import _measured_tier
 
+    from substrate.retrieve.expand import DEFAULT_MODEL as HYDE_MODEL
+
+    # `DEFAULT_HYDE` is `auto`, resolved per machine (tests/test_hyde_auto.py pins that it lands on
+    # `expand.DEFAULT_MODEL` on the machine that measured it). The tier is keyed by that model.
+    assert _stack.DEFAULT_HYDE == _stack.HYDE_AUTO
     mrr, why = _measured_tier(OllamaEmbedder(model=_stack.DEFAULT_EMBED).key,
-                              _stack.DEFAULT_HYDE, _stack.DEFAULT_RERANK,
+                              HYDE_MODEL, _stack.DEFAULT_RERANK,
                               hyde_in_tier=True, rerank_in_tier=True)
     assert why is None, f"the shipped default stack is unmeasured: {why}"
     assert mrr is not None and mrr > 0

@@ -21,9 +21,10 @@ public struct ServerModel: Codable, Equatable, Sendable {
     }
 }
 
-/// The local-model bindings in Settings → Local model.
+/// The local-model bindings in Settings → Local model. `search` is the model the retrieval engine
+/// expands vault searches with (HyDE); unlike the others it runs in the engine, not in the app.
 public enum ModelRole: Sendable {
-    case ask, enrich, vision
+    case ask, enrich, vision, search
 }
 
 /// What a binding resolves to when a task is dispatched.
@@ -65,14 +66,18 @@ public enum ModelResolver {
         if binding == auto {
             return best(for: role, in: catalog).map { .model($0, .auto) } ?? .none
         }
-        if let present = catalog.first(where: { sameModel($0.name, binding) }) {
+        // A cloud model is never Search's, even when saved: the query carries what is being
+        // searched for in the vault. It is treated as gone, so Auto's local pick stands in.
+        if let present = catalog.first(where: { sameModel($0.name, binding) }),
+           !(role == .search && isRemote(present)) {
             return .model(present.name, .asSaved)
         }
         return best(for: role, in: catalog).map { .model($0, .substituted(for: binding)) } ?? .none
     }
 
     /// Auto's choice for a role: the largest model on disk for Ask, where answer quality matters
-    /// most, and the smallest for enrichment and captions, which run after every call. Size on disk
+    /// most, and the smallest for enrichment and captions, which run after every call, and for
+    /// search, which runs on every new query and measured no better on a bigger model. Size on disk
     /// rather than parameter count, because a 1-bit 27B model is smaller and weaker than a 4-bit 9B
     /// one, and MLX builds report no parameter count at all. Equal or unknown sizes fall back to
     /// name order so the choice is stable across launches.
@@ -89,6 +94,40 @@ public enum ModelResolver {
             .first?.name
     }
 
+    /// The engine's word for "no query expansion": a choice it reports as off, not as a model it
+    /// could not reach.
+    public static let searchOff = "off"
+
+    /// What the app passes the retrieval engine as `--hyde-model`, or nil to pass nothing and let
+    /// the engine choose for itself — its own Auto, the same rule as `best(for: .search)`, applied
+    /// to what its Ollama lists NOW and re-applied by its background re-check.
+    ///
+    /// So only a choice the app can vouch for is passed: Off, or a named pick the catalog still
+    /// has (or that there is no catalog yet to doubt). Auto, and a stale pick's stand-in, are left
+    /// to the engine. Resolving them here would pin a name from a catalog that may be stale, would
+    /// turn "nothing suitable yet" into an Off the user never chose — which the engine never
+    /// re-checks — and would be a second copy of a rule that must not drift from the engine's.
+    /// `servesEngine` is whether the Settings server is the local Ollama the engine reads; a pick
+    /// from any other server's catalog may not exist where the engine looks.
+    ///
+    /// Off is passed whatever the server: it names no model, so no catalog can make it wrong. A
+    /// cloud pick is never passed, even with no catalog to recognise it by — the name still says so.
+    public static func searchArgument(binding: String, catalog: [ServerModel]?, servesEngine: Bool) -> String? {
+        if binding.isEmpty { return searchOff }
+        guard servesEngine, binding != auto, !isRemote(ServerModel(name: binding)) else { return nil }
+        if case .model(let name, .asSaved) = resolve(binding: binding, role: .search, catalog: catalog) {
+            return name
+        }
+        return nil
+    }
+
+    /// What the Search picker shows: the binding, except a named pick the engine is not running.
+    /// When the Settings server is not the engine's, a named pick is not passed (`searchArgument`)
+    /// and the engine's Auto runs — so Auto is what is shown, never a choice it is not in.
+    public static func searchShown(binding: String, servesEngine: Bool) -> String {
+        servesEngine || binding.isEmpty ? binding : auto
+    }
+
     /// Whether Auto may pick `model` for `role`. Stricter than `offers`: it never picks a cloud
     /// model, because the user didn't choose to send transcripts or screenshots off the machine;
     /// and with no capabilities to go on it never picks a vision model, because a wrong guess sends
@@ -99,16 +138,19 @@ public enum ModelResolver {
 
     /// Whether the picker lists `model` for `role`. Hides what the server says can't do the job,
     /// and rerankers; a model the server won't describe stays listed, and so does a cloud model,
-    /// since an explicit pick is the user's to make.
+    /// since an explicit pick is the user's to make — except for Search, whose every query carries
+    /// what is being looked for in the vault, to an engine that is loopback-only by design.
     public static func offers(_ model: ServerModel, for role: ModelRole) -> Bool {
-        model.capabilities == nil ? !isReranker(model.name) : suits(model, role)
+        if role == .search && isRemote(model) { return false }
+        return model.capabilities == nil ? !isReranker(model.name) : suits(model, role)
     }
 
     /// A cloud model, by the server's word or by Ollama's naming (`gpt-oss:120b-cloud`,
     /// `glm-4.6:cloud`). The name still says so when the server's description couldn't be read.
     public static func isRemote(_ model: ServerModel) -> Bool {
         if model.isRemote { return true }
-        let tag = model.name.split(separator: ":").last.map(String.init) ?? model.name
+        let name = model.name.lowercased()
+        let tag = name.split(separator: ":").last.map(String.init) ?? name
         return tag == "cloud" || tag.hasSuffix("-cloud")
     }
 

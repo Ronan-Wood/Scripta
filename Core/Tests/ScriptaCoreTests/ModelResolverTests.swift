@@ -23,7 +23,7 @@ final class ModelResolverTests: XCTestCase {
     }
 
     func testEmptyBindingIsNone() {
-        for role in [ModelRole.ask, .enrich, .vision] {
+        for role in [ModelRole.ask, .enrich, .vision, .search] {
             XCTAssertEqual(resolve("", role, ollama), .none)
         }
     }
@@ -43,7 +43,7 @@ final class ModelResolverTests: XCTestCase {
 
     func testEmbeddersAreNeverPicked() {
         let embedders = ollama.filter { $0.capabilities?.contains("embedding") == true }
-        for role in [ModelRole.ask, .enrich, .vision] {
+        for role in [ModelRole.ask, .enrich, .vision, .search] {
             XCTAssertEqual(resolve("auto", role, embedders), .none)
         }
     }
@@ -126,5 +126,83 @@ final class ModelResolverTests: XCTestCase {
         XCTAssertEqual(ModelResolver.best(for: .ask, in: catalog), "a-model")
         XCTAssertEqual(ModelResolver.best(for: .ask, in: [ServerModel(name: "b", capabilities: ["completion"]),
                                                            ServerModel(name: "a", capabilities: ["completion"])]), "a")
+    }
+
+    // MARK: - Search (the engine's query expansion)
+
+    /// Smallest chat model, as for enrichment: the 2026-11-01 sweep measured the 9B no better than
+    /// the 4B at HyDE, and HyDE runs on every new query. The reranker, the smaller of the two, is
+    /// skipped by name.
+    func testAutoSearchPicksTheSmallestChatModel() {
+        XCTAssertEqual(resolve("auto", .search, ollama), .model("qwen3.5:4b-mlx", .auto))
+    }
+
+    func testSearchArgumentPassesANamedPickTheServerHas() {
+        XCTAssertEqual(ModelResolver.searchArgument(binding: "qwen3.5:9b-mlx", catalog: ollama, servesEngine: true), "qwen3.5:9b-mlx")
+        // No catalog yet: nothing to doubt the pick against, so it goes as saved.
+        XCTAssertEqual(ModelResolver.searchArgument(binding: "qwen3.5:9b-mlx", catalog: nil, servesEngine: true), "qwen3.5:9b-mlx")
+    }
+
+    /// Auto is the ENGINE's to resolve, against what its Ollama lists now: the app's catalog can be
+    /// stale, and a name pinned from it outlives the model. The picker label still names the pick.
+    func testAutoSearchIsLeftToTheEngine() {
+        XCTAssertNil(ModelResolver.searchArgument(binding: "auto", catalog: ollama, servesEngine: true))
+        XCTAssertNil(ModelResolver.searchArgument(binding: "auto", catalog: nil, servesEngine: true))
+    }
+
+    /// The bug this binding exists for: a pick the server no longer has went to the engine as-is,
+    /// and search silently lost expansion. Nothing is passed instead, so the engine's Auto stands
+    /// in — the model the picker's stale row names.
+    func testAStaleSearchPickIsNotPassed() {
+        XCTAssertNil(ModelResolver.searchArgument(binding: "qwen2.5:7b", catalog: ollama, servesEngine: true))
+        XCTAssertEqual(resolve("qwen2.5:7b", .search, ollama), .model("qwen3.5:4b-mlx", .substituted(for: "qwen2.5:7b")))
+    }
+
+    /// Off is only ever the user's choice. "No suitable model yet" is not Off: the engine reports
+    /// that as unavailable and re-checks it, so a model pulled later is used without a restart.
+    func testOnlyAnEmptyBindingIsOff() {
+        XCTAssertEqual(ModelResolver.searchArgument(binding: "", catalog: ollama, servesEngine: true), ModelResolver.searchOff)
+        let embedders = ollama.filter { $0.capabilities?.contains("embedding") == true }
+        XCTAssertNil(ModelResolver.searchArgument(binding: "auto", catalog: embedders, servesEngine: true))
+        XCTAssertNil(ModelResolver.searchArgument(binding: "qwen2.5:7b", catalog: embedders, servesEngine: true))
+    }
+
+    /// A catalog from any server but the engine's own says nothing about what the engine can run,
+    /// so no model NAME is passed then — but Off names no model, and is the user's either way.
+    func testOnlyOffIsPassedUnlessSettingsServesTheEngine() {
+        for binding in ["auto", "qwen3.5:9b-mlx"] {
+            XCTAssertNil(ModelResolver.searchArgument(binding: binding, catalog: ollama, servesEngine: false))
+        }
+        XCTAssertEqual(ModelResolver.searchArgument(binding: "", catalog: ollama, servesEngine: false), ModelResolver.searchOff)
+        XCTAssertEqual(ModelResolver.searchArgument(binding: "", catalog: nil, servesEngine: false), ModelResolver.searchOff)
+    }
+
+    /// The picker never shows a state the engine is not in: a named pick that is not passed shows
+    /// as Auto, which is what runs; Off and Auto show as themselves.
+    func testThePickerShowsWhatTheEngineRuns() {
+        XCTAssertEqual(ModelResolver.searchShown(binding: "qwen3.5:9b-mlx", servesEngine: false), ModelResolver.auto)
+        XCTAssertEqual(ModelResolver.searchShown(binding: "", servesEngine: false), "")
+        XCTAssertEqual(ModelResolver.searchShown(binding: "auto", servesEngine: false), "auto")
+        XCTAssertEqual(ModelResolver.searchShown(binding: "qwen3.5:9b-mlx", servesEngine: true), "qwen3.5:9b-mlx")
+    }
+
+    /// Search's query is vault content, and the engine is loopback-only by design; Ollama proxying a
+    /// cloud model would defeat that while the socket stays local. So Search never offers one, and a
+    /// saved one behaves like a stale pick: not passed, with Auto's local model standing in.
+    func testSearchNeverUsesACloudModel() {
+        let cloud = ServerModel(name: "qwen3-vl:235b-cloud", capabilities: chat, sizeBytes: 400, isRemote: true)
+        let proxied = ServerModel(name: "big:latest", capabilities: chat, sizeBytes: 9 * gb, isRemote: true)
+        let catalog = ollama + [cloud, proxied]
+        XCTAssertFalse(ModelResolver.offers(cloud, for: .search))
+        XCTAssertFalse(ModelResolver.offers(proxied, for: .search))
+        XCTAssertTrue(ModelResolver.offers(cloud, for: .ask), "an explicit cloud pick stays the user's for Ask")
+        XCTAssertEqual(resolve("big:latest", .search, catalog), .model("qwen3.5:4b-mlx", .substituted(for: "big:latest")))
+        for binding in ["big:latest", "qwen3-vl:235b-cloud"] {
+            XCTAssertNil(ModelResolver.searchArgument(binding: binding, catalog: catalog, servesEngine: true))
+        }
+        // No catalog to recognise it by: the tag still says cloud, in any case.
+        XCTAssertNil(ModelResolver.searchArgument(binding: "glm-4.6:cloud", catalog: nil, servesEngine: true))
+        XCTAssertNil(ModelResolver.searchArgument(binding: "gpt-oss:120b-CLOUD", catalog: nil, servesEngine: true))
+        XCTAssertTrue(ModelResolver.isRemote(ServerModel(name: "glm-4.6:Cloud")))
     }
 }

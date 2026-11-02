@@ -138,7 +138,7 @@ _COHORT = "44-case semantic"
 #
 # Matching is still EXACT on every arm that ran. Nothing here interpolates or generalizes by family.
 _STACKS: tuple[dict, ...] = (
-    {                                       # all-Ollama CEILING, the shipped listwise arm
+    {                                       # all-Ollama CEILING, the original listwise arm
         "embedder": "qwen3-embedding:0.6b#raw",
         "hyde": "qwen2.5:7b", "reranker": "qwen2.5:7b",
         "mrr": {(True, True): 0.698, (True, False): 0.603},
@@ -152,6 +152,25 @@ _STACKS: tuple[dict, ...] = (
         "embedder": "qwen3-embedding:0.6b#raw",
         "hyde": "qwen2.5:7b", "reranker": _CROSS_MODEL,
         "mrr": {(True, True): 0.708},
+    },
+    # WHAT THE DEFAULT RESOLVES TO since 2026-11-01 — `stack.DEFAULT_HYDE` is `auto`, and on the
+    # machine that measured it auto picks this model. EXPERIMENTS.md §"HyDE
+    # re-measured after qwen2.5": same fixture (signature 4a560ce34aa6378a, migrated to v10), on
+    # which a cache replay of the two qwen2.5:7b records above reproduced 0.603 and 0.708 exactly —
+    # so these numbers come off the same instrument as the ones they replace.
+    #
+    # The qwen2.5:7b records stay. They are still exact for anyone who pulls that model, and this
+    # table exists to stop a number reaching an unmeasured stack, not to withhold one from a
+    # measured stack because it is not installed HERE.
+    {
+        "embedder": "qwen3-embedding:0.6b#raw",
+        "hyde": "qwen3.5:4b-mlx", "reranker": _CROSS_MODEL,
+        "mrr": {(True, True): 0.667, (True, False): 0.568},
+    },
+    {                                       # same HyDE, listwise with the same model
+        "embedder": "qwen3-embedding:0.6b#raw",
+        "hyde": "qwen3.5:4b-mlx", "reranker": "qwen3.5:4b-mlx",
+        "mrr": {(True, True): 0.681},
     },
     {                                       # all-Apple FLOOR (zero-install default)
         "embedder": "apple-nlcontextual",

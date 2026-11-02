@@ -88,6 +88,8 @@ struct SettingsView: View {
     @State private var rerankEnabled = AppSettings.rerankEnabled
     @State private var mirrorEnabled = AppSettings.mirrorEnabled
     @State private var visionModel = AppSettings.visionModel
+    @State private var searchModel = AppSettings.searchModel
+    @State private var searchRestart: Task<Void, Never>?
     @State private var automaticUpdates: Bool = AppUpdater.shared.automaticallyChecksForUpdates
     @ObservedObject private var updater = AppUpdater.shared
 
@@ -645,6 +647,7 @@ struct SettingsView: View {
                 .onChange(of: endpointEnabled) { _, v in
                     AppSettings.endpointEnabled = v
                     if v { Task { await reloadCatalog() } }
+                    SubstrateEngine.shared.searchModelChanged()
                 }
                 .task { await reloadCatalog() }
             if endpointEnabled {
@@ -657,6 +660,15 @@ struct SettingsView: View {
                         AppSettings.endpointLANConfirmed = false
                         // …and the old server's catalog, which says nothing about the new one's.
                         catalog = AppSettings.endpointCatalog
+                        // The Search picker follows the address as it is typed, so the engine
+                        // must too — once typing pauses, not per keystroke, since crossing to
+                        // or from the engine's own Ollama can mean a restart.
+                        searchRestart?.cancel()
+                        searchRestart = Task {
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            guard !Task.isCancelled else { return }
+                            SubstrateEngine.shared.searchModelChanged()
+                        }
                     }
                 HStack(spacing: 8) {
                     Button(testingEndpoint ? "Testing…" : "Test connection") { testEndpoint() }
@@ -678,6 +690,27 @@ struct SettingsView: View {
                     modelOptions(.vision, selection: visionModel, none: "Off — OCR text only")
                 }
                 .onChange(of: visionModel) { _, v in AppSettings.visionModel = v }
+                // Off and Auto are honoured whatever the server; a NAMED model only when this server
+                // is the engine's own Ollama. So off it, only those two are offered, and a saved
+                // named pick shows as the Auto that actually runs (`ModelResolver.searchShown`) —
+                // never a choice the engine is ignoring.
+                Picker("Search (query expansion)", selection: shownSearchModel) {
+                    if searchServesEngine {
+                        modelOptions(.search, selection: searchModel, none: "Off — no query expansion")
+                    } else {
+                        Text("Off — no query expansion").tag("")
+                        Text("Auto (chosen on the local Ollama)").tag(ModelResolver.auto)
+                    }
+                }
+                .onChange(of: searchModel) { _, v in
+                    AppSettings.searchModel = v
+                    SubstrateEngine.shared.searchModelChanged()
+                }
+                if !searchServesEngine {
+                    Text("Search runs on the local Ollama at 127.0.0.1:\(AppSettings.engineOllamaPort). Point this server at it to choose a specific model.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if !askModel.isEmpty {
                     Toggle("Rerank Ask results (experimental)", isOn: $rerankEnabled)
                         .onChange(of: rerankEnabled) { _, v in AppSettings.rerankEnabled = v }
@@ -775,6 +808,7 @@ struct SettingsView: View {
                 let models = fetched.map(\.name)
                 let ms = Int(Date().timeIntervalSince(started) * 1000)
                 AppSettings.storeCatalog(fetched, from: url)
+                SubstrateEngine.shared.searchModelChanged()
                 endpointModels = models
                 // An empty list isn't stored (see storeCatalog), but the pickers should still show it.
                 catalog = fetched.isEmpty ? [] : AppSettings.endpointCatalog
@@ -805,6 +839,18 @@ struct SettingsView: View {
         }
     }
 
+    /// The Search picker's selection: what the engine runs, written back as the user's choice.
+    private var shownSearchModel: Binding<String> {
+        Binding(get: { ModelResolver.searchShown(binding: searchModel, servesEngine: searchServesEngine) },
+                set: { searchModel = $0 })
+    }
+
+    /// Whether the Settings server is the engine's own local Ollama. Read from @State, so the
+    /// Search picker's options follow the address as it is edited.
+    private var searchServesEngine: Bool {
+        endpointEnabled && AppSettings.servesEngine(URL(string: endpointURLText.trimmingCharacters(in: .whitespaces)))
+    }
+
     private func isCloud(_ name: String) -> Bool {
         ModelResolver.isRemote(catalog?.first { ModelResolver.sameModel($0.name, name) } ?? ServerModel(name: name))
     }
@@ -831,20 +877,30 @@ struct SettingsView: View {
         var rows = catalog.map { $0.filter { ModelResolver.offers($0, for: role) }.map(\.name) } ?? endpointModels
         guard !selection.isEmpty, selection != ModelResolver.auto else { return rows }
         let all = catalog?.map(\.name) ?? endpointModels
-        if let saved = all.first(where: { ModelResolver.sameModel($0, selection) }), !rows.contains(saved) {
+        if let saved = all.first(where: { ModelResolver.sameModel($0, selection) }), !rows.contains(saved),
+           !(role == .search && isCloud(saved)) {
+            // Search never runs a cloud model, so a saved one is left to the stale row below,
+            // which names the local model standing in rather than showing the cloud one chosen.
             rows.append(saved)
         }
         return rows.map { ModelResolver.sameModel($0, selection) ? selection : $0 }
     }
 
     private func staleLabel(_ role: ModelRole, _ selection: String) -> String {
+        // "Not on server" would be false for a cloud Search pick: it is listed, and refused.
+        let gone = role == .search && isCloud(selection) ? "cloud, not used for search" : "not on server"
         switch ModelResolver.resolve(binding: selection, role: role, catalog: catalog) {
         case .model(let name, .substituted):
-            return "\(selection) (not on server — using \(name))"
+            return "\(selection) (\(gone) — using \(name))"
         case .model:
-            return "\(selection) (not on server)"
+            return "\(selection) (\(gone))"
         case .none:
-            return "\(selection) (not on server — \(role == .vision ? "captioning off" : "using Apple Intelligence"))"
+            let fallback = switch role {
+            case .vision: "captioning off"
+            case .search: "search expansion off"
+            case .ask, .enrich: "using Apple Intelligence"
+            }
+            return "\(selection) (\(gone) — \(fallback))"
         }
     }
 

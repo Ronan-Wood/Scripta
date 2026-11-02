@@ -28,10 +28,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-# The one import this module takes at load time, for the one value it needs before any function
-# runs: the rerank default. Everything else here is imported lazily inside `build` on purpose —
-# wiring an arm should not cost a caller who never asks for it. `rerank_cross` pulls only stdlib
-# plus `substrate.net`/`substrate.retrieve`, so this is a name, not a model.
+# The two imports this module takes at load time, for the values it needs before any function
+# runs: the rerank default and the HyDE sentinels. Everything else here is imported lazily inside
+# `build` on purpose — wiring an arm should not cost a caller who never asks for it. Both modules
+# pull only stdlib plus `substrate.net`/`substrate.retrieve`, so these are names, not models.
+from substrate.retrieve.expand import AUTO as HYDE_AUTO
+from substrate.retrieve.expand import OFF as HYDE_OFF
 from substrate.retrieve.rerank_cross import DEFAULT_MODEL as CROSS_MODEL
 
 # The all-Ollama CEILING tier (retriever._STACKS): this embedder key with these models is a MEASURED
@@ -62,8 +64,19 @@ from substrate.retrieve.rerank_cross import DEFAULT_MODEL as CROSS_MODEL
 # belongs in the shim or in `stack.DEFAULT_RERANK`, where one value serves the CLI, the MCP and this
 # app alike." Moving the constant does exactly that, and the number survives the move because
 # `retriever._STACKS` gained the cross-encoder's own measured 44-case tier rather than losing one.
+#
+# THE HyDE DEFAULT IS `auto` since 2026-11-01, and is the one arm here that is NOT a pinned tag.
+# `qwen2.5:7b` was deleted from the local Ollama and every stack reported it unreachable — and the
+# app passed the engine no model, so a pinned tag was every user's HyDE model, lost by anyone who had
+# not pulled that exact one. The app now passes Settings → Search's Off, or a named local pick when
+# its Settings server is this engine's Ollama and lists it, and otherwise nothing, leaving Auto here. `auto` resolves in `build` to the smallest local chat model
+# (`expand.pick_auto`, the app's `ModelResolver` rule). The tier contract is untouched by this:
+# `_measured_tier` still matches the RESOLVED model exactly, so on a machine where auto lands on
+# `qwen3.5:4b-mlx` the default stack reports its measured 0.667, and anywhere else an honest None.
+# 0.667 is below the 0.675 measured with HyDE off on the same stack, by under one case — a
+# non-effect at 44 cases; the vault cohort has HyDE ahead (0.596 against 0.571), also under one.
 DEFAULT_EMBED = "qwen3-embedding:0.6b"
-DEFAULT_HYDE = "qwen2.5:7b"
+DEFAULT_HYDE = HYDE_AUTO
 DEFAULT_RERANK = CROSS_MODEL
 DEFAULT_POOL = 20
 APPLE_POOL = 10      # Apple FM overflows above ~10 candidates (measured)
@@ -156,6 +169,8 @@ def build(
     Vector COMPLETENESS is deliberately not checked here — it is a property of an index, not of a
     stack, and one stack serves many scopes. `_retrieve` checks it per query and degrades.
     """
+    if hyde_model == HYDE_OFF:
+        hyde_model = None
     if lexical_only or not (embed_model or hyde_model or rerank_model):
         return Stack()
 
@@ -188,14 +203,23 @@ def build(
 
     expander = None
     if hyde_model:
-        from substrate.retrieve.expand import AppleFMExpander, HyDE
+        from substrate.retrieve.expand import DEFAULT_HOST as HYDE_HOST
+        from substrate.retrieve.expand import AppleFMExpander, HyDE, resolve_auto
 
-        hc = (AppleFMExpander(cache=_cache()) if hyde_model in ("apple", "apple-fm")
-              else HyDE(model=hyde_model, cache=_cache()))
-        expander = hc if hc.available() else None
+        # `auto` is resolved HERE, not once at import, so `recheck` — which calls `build` again
+        # with the original `auto` — picks up a model pulled after startup. Nothing to pick is the
+        # arm being unavailable, named as `auto` so the reader knows nothing was pinned, through
+        # the same one append as every other HyDE failure.
+        named = resolve_auto() if hyde_model == HYDE_AUTO else hyde_model
+        hc = None
+        if named:
+            hc = (AppleFMExpander(cache=_cache()) if named in ("apple", "apple-fm")
+                  else HyDE(model=named, cache=_cache()))
+            expander = hc if hc.available() else None
         if expander is None:
-            unavailable.append(_unreachable("hyde", hyde_model,
-                                            getattr(hc, "host", "the local daemon")))
+            unavailable.append(_unreachable("hyde", named or hyde_model,
+                                            getattr(hc, "host", "the local daemon") if hc
+                                            else HYDE_HOST))
 
     reranker = None
     if rerank_model:

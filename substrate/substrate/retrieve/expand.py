@@ -61,9 +61,95 @@ from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
 # than a fluke: larger models write longer, hedged, discursive hypotheticals, and the extra
 # prose dilutes the query vector. The output here is never read by a human — it is only
 # ever embedded — so tight and on-vocabulary beats comprehensive.
-DEFAULT_MODEL = "qwen2.5:7b"
+#
+# THE DEFAULT MOVED TO qwen3.5:4b-mlx on 2026-11-01, because qwen2.5 was removed from the machine.
+# Re-measured at 44 cases on the reference fixture (EXPERIMENTS.md §"HyDE re-measured after
+# qwen2.5"), semantic MRR, rerank off / with the cross-encoder:
+#
+#     qwen2.5:7b (cache replay)   0.603 / 0.708     the measured tiers, reproduced exactly
+#     qwen3.5:9b-mlx              0.566 / 0.687     3.95s per uncached expansion
+#     qwen3.5:4b-mlx              0.568 / 0.667     1.93s
+#     Bonsai-27B Q1_0             0.530 / 0.662     6.85s — over the 5s interactive budget
+#     none                        0.480 / 0.675
+#
+# 9b and 4b are within one case (0.023) of each other on the shipped stack, so the smaller and
+# faster model wins, by a rule fixed before the numbers existed. Bigger still does not win: the
+# 9b leads 4b by less than a case, and the 27B is last.
+#
+# This is the NAMED model — what `eval` measures by default and what the listwise arm pairs with.
+# The STACK default is `AUTO` (stack.DEFAULT_HYDE), which `pick_auto` resolves to the smallest
+# local chat model, because a hardcoded tag silently cost HyDE to everyone without that exact pull.
+# On the machine the sweep ran on, AUTO picks this model.
+DEFAULT_MODEL = "qwen3.5:4b-mlx"
 DEFAULT_HOST = "http://127.0.0.1:11434"
 TIMEOUT = 45
+
+# The two `--hyde-model` sentinels that are not model names. `OFF` is the arm switched off on
+# purpose — never "unavailable", which would say a daemon is down.
+AUTO = "auto"
+OFF = "off"
+
+
+def is_cloud(entry: dict) -> bool:
+    """A model Ollama serves from its cloud through the local daemon: `remote_host` says so, and
+    the tag does (`gpt-oss:120b-cloud`, `glm-4.6:cloud`) when the listing says nothing more. The
+    socket is loopback either way, and the query still leaves the machine — so HyDE never uses
+    one, picked or named. Same test as the app's `ModelResolver.isRemote`."""
+    tag = str(entry.get("name") or "").lower().rsplit(":", 1)[-1]
+    return bool(entry.get("remote_host")) or tag == "cloud" or tag.endswith("-cloud")
+
+
+def _bare(name: str) -> str:
+    """A model name as Ollama matches it: case-insensitively, `:latest` implied."""
+    low = name.lower()
+    return low[: -len(":latest")] if low.endswith(":latest") else low
+
+
+def pick_auto(models: list[dict]) -> str | None:
+    """The smallest local chat model in an Ollama `/api/tags` listing, or None.
+
+    The same rule as the app's `ModelResolver.best(for: .search)` (Core/Sources/ScriptaCore/
+    ModelResolver.swift), so the app and a standalone engine agree on a machine. Smallest on disk,
+    because HyDE runs on every novel query and the sweep found no gain from size. Never a cloud
+    model (the query would leave the machine), an embedder, or a reranker — Ollama lists rerankers
+    as `completion` and only the name gives them away. Equal or unknown sizes fall back to name
+    order, so the pick is stable across launches.
+    """
+    def runs(m: dict) -> bool:
+        name = m.get("name")
+        if not isinstance(name, str) or not name or is_cloud(m):
+            return False
+        if "rerank" in name.lower():
+            return False
+        caps = m.get("capabilities")
+        if caps is not None and not isinstance(caps, list):
+            return False
+        if caps is None:
+            low = name.lower()
+            return not any(s in low for s in ("embed", "bge-", "minilm"))
+        return "completion" in caps and "embedding" not in caps
+
+    def order(m: dict) -> tuple:
+        size = m.get("size")
+        return (0, size, m["name"]) if isinstance(size, int) else (1, 0, m["name"])
+
+    picks = sorted((m for m in models if runs(m)), key=order)
+    return picks[0]["name"] if picks else None
+
+
+def resolve_auto(host: str = DEFAULT_HOST) -> str | None:
+    """`pick_auto` over what the local daemon lists now. None when it lists no chat model or
+    cannot be read — `stack.build` reports either as the arm being unavailable, and the server's
+    background re-check calls this again, so a model pulled later is picked up without a restart."""
+    require_loopback(host, sends="the model listing request", suggest=DEFAULT_HOST)
+    # The parse and the pick are inside the guard too: whatever answers on this port decides the
+    # body's shape, and a malformed one must leave the arm unavailable, not take startup down.
+    try:
+        with open_local(f"{host}/api/tags", timeout=30) as r:
+            models = json.loads(r.read()).get("models", [])
+        return pick_auto([m for m in models if isinstance(m, dict)])
+    except Exception:
+        return None
 
 # Two objectives, deliberately different. See the "canonical vs distinctive" note below.
 PROMPTS = {
@@ -123,14 +209,26 @@ class HyDE:
         return f"{self.model}#{self.prompt_id}"
 
     def available(self) -> bool:
+        """Listed, and not a cloud model. A cloud model is refused even when named outright: the
+        query it would be sent carries what the caller is searching their vault for.
+
+        ONE matching rule for both halves, so "refused" and "available" cannot disagree about which
+        listing entry this model is: the exact name if listed, else its family (the older loose
+        match, kept). Any cloud entry among the matches refuses — a differently-cased or bare spelling
+        of a cloud model must not slip past the cloud test and then match by family.
+        """
+        if is_cloud({"name": self.model}):
+            return False
         try:
             with open_local(f"{self.host}/api/tags", timeout=30) as r:
-                names = {m["name"] for m in json.loads(r.read()).get("models", [])}
-            return self.model in names or self.model.split(":")[0] in {
-                n.split(":")[0] for n in names
-            }
+                listed = [m for m in json.loads(r.read()).get("models", [])
+                          if isinstance(m, dict) and isinstance(m.get("name"), str)]
         except Exception:
             return False
+        want = _bare(self.model)
+        matched = ([m for m in listed if _bare(m["name"]) == want]
+                   or [m for m in listed if _bare(m["name"]).split(":")[0] == want.split(":")[0]])
+        return bool(matched) and not any(is_cloud(m) for m in matched)
 
     def expand(self, query: str) -> str:
         """Return `query + hypothetical passage`, or the bare query on any failure."""
@@ -139,10 +237,17 @@ class HyDE:
             if hit is not None:
                 return hit
 
+        # `think: False` is load-bearing on a thinking model. Without it qwen3.5 spends the whole
+        # 160-token budget in the separate `thinking` field and `response` comes back EMPTY, so
+        # every query fails open to the bare query — measured 2026-11-01, 0/160 tokens of prose
+        # from both sizes. Bonsai-27B under Ollama is worse: no `thinking` field, its reasoning
+        # lands IN `response` as "Here's a thinking process:", which would be embedded as the
+        # hypothetical passage. Shared by every Ollama generator here and in rerank.py.
         payload = {
             "model": self.model,
             "prompt": PROMPTS[self.prompt_id].format(q=query),
             "stream": False,
+            "think": False,
             "options": {"temperature": 0.0, "num_predict": self.max_tokens},
         }
         req = urllib.request.Request(
@@ -383,6 +488,7 @@ class MultiQuery:
             "model": self.model,
             "prompt": MULTIQUERY_PROMPT.format(n=self.n, q=query),
             "stream": False,
+            "think": False,     # see HyDE.expand
             "options": {"temperature": 0.0, "num_predict": 200},
         }
         req = urllib.request.Request(
