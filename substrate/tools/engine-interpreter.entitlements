@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- THE ENGINE INTERPRETER ONLY: `runtime/bin/python3.14`, signed by `build-bundled-engine`. Every
+	     other binary in the engine is signed with no entitlements, and the build refuses one that
+	     carries any.
+
+	     allow-jit   docling-parse draws PDF pages with Blend2D, which JIT-compiles its raster
+	                 pipelines into MAP_JIT memory. The hardened runtime refuses MAP_JIT without this
+	                 key, and Blend2D does not fall back to drawing without the JIT. It returns the
+	                 page buffer uninitialised instead. 0.3.0-0.3.2 shipped that: docling's layout model
+	                 read noise, so every PDF converted with the models folder set came out as loose
+	                 text blocks with no title and no table. Measured 2026-11-01 on docling-parse
+	                 7.20.0 and 7.24.2.
+
+	     WHAT IT WEAKENS: the engine process, which parses untrusted documents, may map memory that
+	     flips between writable and executable. Memory corruption anywhere in that process has an
+	     easier route to running code than it would under the full hardened runtime. Library
+	     validation, the DYLD_* strip and the rest of the hardened runtime are unchanged.
+
+	     NOT allow-unsigned-executable-memory, which also cures the render and permits ANY writable
+	     and executable mapping, MAP_JIT or not. NOT disable-library-validation, which does not cure
+	     it. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+</dict>
+</plist>

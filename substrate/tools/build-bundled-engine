@@ -136,7 +136,8 @@ fingerprint() {
     # leaves a stamped tree holding the previous binary.
     shasum -a 256 "$REPO/uv.lock" "$REPO/pyproject.toml" "$0" "$REPO/tools/slim-bundled-engine" \
       "$REPO/tools/embed-apple.swift" "$REPO/tools/hyde-fm.swift" \
-      "$REPO/tools/rerank-fm.swift" "$REPO/tools/extract-apple.swift" | cut -d' ' -f1
+      "$REPO/tools/rerank-fm.swift" "$REPO/tools/extract-apple.swift" \
+      "$REPO/tools/engine-interpreter.entitlements" "$REPO/tools/check-page-render.py" | cut -d' ' -f1
     ( cd "$REPO" && find substrate \( -type f -o -type l \) \
         ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 \
         | LC_ALL=C sort -z | xargs -0 shasum -a 256 )
@@ -522,21 +523,31 @@ chmod 755 "$STAGE/bin/substrate-mcp" "$STAGE/bin/substrate"
 # 363 binaries, ~70 s, including a 326 MB libtorch_cpu.dylib at 1.2 s.
 if [ -n "$IDENTITY" ] && [ "$IDENTITY" != "-" ]; then
   say "signing Mach-O binaries as $IDENTITY"
-  # Branched rather than an array of flags: macOS ships bash 3.2, where expanding an EMPTY array as
-  # "${ts[@]}" is an unbound-variable error under `set -u`. It fails only on the no-timestamp path,
-  # so an array here works from a terminal with a modern bash and dies inside Xcode.
+  # OPTIONAL FLAGS ARE ARRAYS EXPANDED AS `${a[@]+"${a[@]}"}`, NEVER `"${a[@]}"`. macOS ships bash
+  # 3.2, where expanding an EMPTY array the plain way is an unbound-variable error under `set -u`. It
+  # fails only when the array is empty (no timestamp, or any binary but the interpreter), so the
+  # plain form works from a terminal with a modern bash and dies inside Xcode. The guarded form
+  # expands to nothing when empty and was verified under /bin/bash 3.2 with `set -euo pipefail`.
   # STDERR IS THE ANSWER, not noise. An earlier version sent it to /dev/null, so a refusal printed a
   # count and a path and destroyed the one sentence that says what to do — and codesign's messages
   # here are specific and each has a different remedy ("resource fork, Finder information, or
   # similar detritus not allowed" → `xattr -c`; "could not be found in the keychain" → wrong
   # identity; "errSecInternalComponent" → locked keychain). The Mach-O filter below already removes
   # the only chatter the redirect was plausibly for.
+  #
+  # THE INTERPRETER, AND ONLY THE INTERPRETER, CARRIES AN ENTITLEMENT: allow-jit, without which
+  # docling-parse draws every PDF page as an uninitialised buffer. The file says why and what it
+  # weakens. Entitlements are honoured only on the main executable, so the `.so` that does the JIT
+  # needs none — and every binary other than this one is refused below if it has any.
+  INTERPRETER="$STAGE/runtime/bin/python3.14"
+  ENTITLEMENTS="$REPO/tools/engine-interpreter.entitlements"
+  [ -f "$ENTITLEMENTS" ] || die "missing $ENTITLEMENTS"
   sign_one() {
-    if [ -n "$TIMESTAMP" ]; then
-      codesign --force --sign "$IDENTITY" --options runtime --timestamp "$1" 2>&1
-    else
-      codesign --force --sign "$IDENTITY" --options runtime "$1" 2>&1
-    fi
+    local ts=() ent=()
+    [ -n "$TIMESTAMP" ] && ts=(--timestamp)
+    [ "$1" = "$INTERPRETER" ] && ent=(--entitlements "$ENTITLEMENTS")
+    codesign --force --sign "$IDENTITY" --options runtime \
+      ${ts[@]+"${ts[@]}"} ${ent[@]+"${ent[@]}"} "$1" 2>&1
   }
   # ENUMERATED BY WHAT THE FILE IS, NOT BY WHAT IT IS CALLED. The first version matched
   # `*.so`/`*.dylib`/owner-executable, which has two defects the verify pass below could not cover:
@@ -606,7 +617,15 @@ EOF
     esac
   }
 
-  unsigned=0 unhardened=0
+  # The entitlement KEYS a binary was signed with, one per line; nothing for none. Captured, not
+  # piped, for the SIGPIPE reason above.
+  entitlement_keys() {
+    local xml
+    xml=$(codesign -d --entitlements - --xml "$1" 2>/dev/null || true)
+    printf '%s' "$xml" | perl -ne 'print "$1\n" while /<key>([^<]*)<\/key>/g'
+  }
+
+  unsigned=0 unhardened=0 entitled=0 interpreter_seen=
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     if ! codesign --verify --strict "$f" 2>/dev/null; then
@@ -614,12 +633,36 @@ EOF
     elif ! hardened "$f"; then
       unhardened=$((unhardened + 1)); echo "    NO HARDENED RUNTIME: $f" >&2
     fi
+    keys=$(entitlement_keys "$f")
+    if [ "$f" = "$INTERPRETER" ]; then
+      interpreter_seen=1
+      [ "$keys" = "com.apple.security.cs.allow-jit" ] \
+        || die "the interpreter's entitlements are '${keys:-none}', not exactly allow-jit"
+    elif [ -n "$keys" ]; then
+      entitled=$((entitled + 1)); echo "    ENTITLED ($(echo $keys)): $f" >&2
+    fi
   done <<EOF
 $binaries
 EOF
   [ "$unsigned" -eq 0 ] || die "$unsigned binaries do not verify — the bundle would not notarize"
   [ "$unhardened" -eq 0 ] \
     || die "$unhardened binaries lack the hardened runtime — the bundle would not notarize"
+  [ -n "$interpreter_seen" ] || die "the interpreter was not among the signed binaries: $INTERPRETER"
+  [ "$entitled" -eq 0 ] || die "$entitled binaries other than the interpreter carry entitlements"
+
+  # THE RENDER IS CHECKED UNDER THE SIGNATURE THAT SHIPS, because that is the only place it broke:
+  # every import and every check above passed on 0.3.2 while docling drew noise. No models needed.
+  # `-B -I`: the script's own docstring says why `-I` is safe here and not in the shims. The exit
+  # code says WHICH failure: 1 is the page, 2 is the check, above 128 is a signal. This is the first
+  # thing run under the signed interpreter, so neither of the last two clears the signature.
+  render_status=0
+  "$STAGE/.venv/bin/python" -B -I "$REPO/tools/check-page-render.py" || render_status=$?
+  case "$render_status" in
+    0) ;;
+    1) die "docling cannot draw a PDF page under this signature — layout and table models would read noise" ;;
+    2) die "the render check could not reach a page — its traceback above says why; an import refused for a code signature, Team ID or library validation is a signing fault" ;;
+    *) die "the render check died (exit $render_status; above 128 means killed by signal exit-128) — a process killed under a new signature most likely died of the signature" ;;
+  esac
   say "signed and verified $count binaries"
 else
   say "NOT signed (no identity given) — this tree will not notarize"
