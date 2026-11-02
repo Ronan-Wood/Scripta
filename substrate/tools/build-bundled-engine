@@ -72,10 +72,31 @@ fi
 # resolve Homebrew's python3.14, which is a framework build wired to its own absolute prefix: it
 # would build here and fail on the first machine that is not this one. python-build-standalone
 # finds its stdlib relative to the executable, which is what makes `runtime/` movable at all.
-PY_BIN=$("$UV" python find 3.14 --python-preference only-managed --no-project 2>/dev/null) \
+#
+# `--system`, because `--no-project` does not stop uv preferring a VIRTUAL ENVIRONMENT: `$VIRTUAL_ENV`,
+# or a `.venv` in the working directory or any parent. Run from `substrate/`, that is the dev venv, and
+# `runtime/` became a copy of it — ipykernel and all, a 2.0 GB engine whose interpreter is a symlink
+# into this Mac's uv store. No later check refused it.
+PY_BIN=$("$UV" python find 3.14 --python-preference only-managed --no-project --system 2>/dev/null) \
   || die "no uv-managed CPython 3.14. Install one: uv python install 3.14"
 PY_ROOT=$(cd "$(dirname "$PY_BIN")/.." && pwd -P)
 [ -x "$PY_ROOT/bin/python3.14" ] || die "$PY_ROOT does not look like a standalone interpreter"
+# `pyvenv.cfg` is what makes a directory a venv (PEP 405), so it is the signal rather than a path
+# guess: if a later uv finds a venv despite `--system`, this refuses before 2 GB is copied and signed.
+[ ! -e "$PY_ROOT/pyvenv.cfg" ] || die "$PY_ROOT is a virtual environment, not a standalone interpreter"
+# AND IT MUST LIVE WHERE UV INSTALLS ITS OWN, because `pyvenv.cfg` only names venvs. Anything else
+# uv might hand back outside its store — a conda prefix, a framework build — has none and would ship
+# every package in it. Defense in depth, not a reproduced bypass: on uv 0.12.2 an active conda base
+# (`CONDA_PREFIX`, `CONDA_DEFAULT_ENV=base`) does NOT beat `only-managed`. Real paths on both sides:
+# the managed install is reached through a minor-version symlink, which `pwd -P` above has already
+# resolved. The empty answer is refused by name: `cd ""` succeeds in bash and would make the working
+# directory the root.
+UV_PY_DIR=$("$UV" python dir 2>/dev/null) && [ -n "$UV_PY_DIR" ] && UV_PY_DIR=$(cd "$UV_PY_DIR" && pwd -P) \
+  || die "could not resolve uv's managed-interpreter directory (uv python dir)"
+case "$PY_ROOT" in
+  "$UV_PY_DIR"/*) ;;
+  *) die "$PY_ROOT is not a uv-managed interpreter (not under $UV_PY_DIR)" ;;
+esac
 
 # ------------------------------------------------------------------ fingerprint
 #
