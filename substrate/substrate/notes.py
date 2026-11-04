@@ -1,8 +1,9 @@
 """Adding a note to a vault — plan first, write only on confirmation.
 
 Doc 3a §2: ingest over MCP is a WRITE. "It requires explicit confirmation from the human in the
-loop; it is not a fire-and-forget tool call. Additive-only (new sources); it never edits existing
-notes."
+loop; it is not a fire-and-forget tool call." Adding stays additive-only: `plan`/`commit` never
+touch an existing note. Changing one is a separate path, `plan_amend`/`commit_amend` at the end of
+this module, with a diff to review and a compare-and-swap on the bytes the diff was taken from.
 
 The gate is two-phase and the token is UNFORGEABLE: `plan()` writes nothing, mints a random
 single-use nonce, and records it in a `PlanBook` held by the running process. `commit()` redeems
@@ -49,7 +50,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from substrate.vault import SKIP_NAMES
+from substrate.vault import SKIP_DIRS, SKIP_NAMES
 
 # Doc 2 §4's project skeleton. A note lands in one of these, and `04-synthesis` is the default
 # because that is the folder the spec designates for model-entered synthesis notes.
@@ -95,18 +96,30 @@ class PlanBook:
     """
 
     def __init__(self) -> None:
-        self._issued: dict[str, str] = {}
+        # token -> (binding, note). `note` is (target, sha256 of the bytes an amend plan's diff
+        # was taken from), None for an add. It is not part of what the token authorises — the
+        # binding already covers both — it is kept so a commit can say WHY it is refused when the
+        # note moved under the plan.
+        self._issued: dict[str, tuple[str, tuple[str, str] | None]] = {}
 
-    def issue(self, binding: str) -> str:
+    def issue(self, binding: str, *, note: tuple[str, str] | None = None) -> str:
         token = secrets.token_urlsafe(32)
-        self._issued[token] = binding
+        self._issued[token] = (binding, note)
         return token
+
+    def note_of(self, token: str) -> tuple[str, str] | None:
+        """(target, base sha256) an issued amend plan was for; None for an unknown token or an add."""
+        entry = self._issued.get(token)
+        return entry[1] if entry else None
+
+    def discard(self, token: str) -> None:
+        self._issued.pop(token, None)
 
     def redeem(self, token: str, binding: str) -> bool:
         """True only for a token this process issued FOR THIS binding. Single-use either way — a
         token presented against the wrong binding is burned, not left available to retry."""
         issued = self._issued.pop(token, None)
-        return issued is not None and secrets.compare_digest(issued, binding)
+        return issued is not None and secrets.compare_digest(issued[0], binding)
 
 
 def _resolve_target(project_vault: Path, folder: str, filename: str) -> Path:
@@ -139,8 +152,8 @@ def _resolve_target(project_vault: Path, folder: str, filename: str) -> Path:
         raise NoteError(f"{target} resolves outside the project vault {project_vault}.")
     if target.exists():
         raise NoteError(
-            f"{target} already exists. This path is additive-only: editing an existing note goes "
-            f"through diff review, not through here."
+            f"{target} already exists. This path is additive-only: to change an existing note use "
+            f"`amend`, which shows the diff and refuses if the note changes before the write."
         )
     return target
 
@@ -259,3 +272,556 @@ def commit(
         target.unlink(missing_ok=True)
         raise NoteError(f"failed writing {target}: {e}") from e
     return target
+
+
+# --------------------------------------------------------------------------- amending a note
+#
+# Changing an existing note is the write where decision history gets flattened and confidence
+# markers get laundered, so a plan that shows only the new text cannot reveal what the edit
+# destroys. An amend plan therefore carries the unified diff of the note AS IT IS against the note
+# as proposed, and the spine on both sides, and its token is bound to the checksum of the bytes the
+# diff was taken from. A note edited between plan and commit — in Obsidian, by a sync, by another
+# session — is refused rather than overwritten, which is the manual `diff` check automated.
+#
+# What the compare-and-swap does NOT buy, said rather than implied: POSIX has no compare-and-rename,
+# so a write landing between the last checksum and the `rename` is still lost. That window is the
+# few microseconds between two syscalls. The engine keeps no copy of the replaced version; recovery
+# inside that window, or from any approved edit, is the sync provider's version history.
+
+# A diff that does not fit in one reply cannot be reviewed, and a truncated one shows the reviewer
+# less than they are approving. Refused at plan time instead: split the change.
+AMEND_DIFF_CHAR_CAP = 64_000
+
+# The largest note amend reads. Matches the MCP server's source cap and agent mode's note cap.
+MAX_NOTE_BYTES = 8 * 1024 * 1024
+
+# The spine fields a plan compares. `doc_id` is here because an undeclared id is DERIVED from the
+# content, so an edit changes it, and the reviewer should see that.
+SPINE_FIELDS = ("doc_id", "status", "doc_type", "confidence", "document_class", "domains",
+                "supersedes", "superseded_by")
+
+
+@dataclass(frozen=True)
+class AmendPlan:
+    target: Path
+    base_sha256: str
+    new_sha256: str
+    diff: str
+    spine_before: dict
+    spine_after: dict
+    spine_changed: list[str]
+    passages: int
+    confirm_token: str
+    warnings: list[str]
+
+
+def _amend_binding(target: Path, base_sha256: str, content: bytes) -> str:
+    """What an amend plan is FOR: replacing exactly the bytes whose checksum is `base_sha256`, at
+    exactly this path, with exactly this content. Prefixed so no add binding can equal it."""
+    h = hashlib.sha256()
+    h.update(b"amend\0")
+    h.update(str(target).encode("utf-8"))
+    h.update(b"\0")
+    h.update(base_sha256.encode("ascii"))
+    h.update(b"\0")
+    h.update(content)
+    return h.hexdigest()
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _resolve_existing(project_vault: Path, path: str) -> tuple[Path, tuple[str, ...], Path, str]:
+    """Check `path` LEXICALLY and return (vault root, components, target, vault-relative posix).
+
+    Touches nothing on disk below the root: `_open_note_dir` walks it, and every write is made
+    relative to the folder descriptor that walk ends on. The root itself may sit behind a link
+    (`~/OneDrive` is one) because the operator chose it.
+    """
+    from pathlib import PurePosixPath
+
+    if "\0" in path:
+        raise NoteError("`path` contains a NUL byte, which no note name can.")
+    root = project_vault.expanduser().resolve()
+    given = os.path.expanduser(path) if path.startswith("~") else path
+    raw = PurePosixPath(given)
+    if raw.is_absolute():
+        rel = None
+        # Accept the vault as the registry spells it or as it resolves: `expand` reports the
+        # resolved path, a person types `~/OneDrive/...`. Neither form is resolved itself.
+        for base in (root, project_vault.expanduser()):
+            try:
+                rel = PurePosixPath(Path(given).relative_to(base).as_posix())
+                break
+            except ValueError:
+                continue
+        if rel is None:
+            raise NoteError(
+                f"{path} is outside the project vault {root}. Only this scope's own project vault "
+                f"is amended — never the shared core tier, which is promoted by hand."
+            )
+    else:
+        rel = raw
+
+    parts = rel.parts
+    if not parts or any(p in ("", ".", "..") for p in parts):
+        raise NoteError(f"{path!r} must name a note inside the project vault, without `..`.")
+    if parts[0] not in WRITABLE_FOLDERS:
+        raise NoteError(
+            f"{path!r} is not in a writable project folder. Notes under {list(WRITABLE_FOLDERS)} "
+            f"can be amended (Doc 2 §4); `_sources/`, `_archive/` and the shared core tier cannot."
+        )
+    if any(p.startswith(".") for p in parts):
+        raise NoteError(f"{path!r} names a hidden file or folder, which is never a note.")
+    if any(p in SKIP_DIRS for p in parts) or parts[-1] in SKIP_NAMES:
+        raise NoteError(f"{path!r} is in the engine's skip list, so it is never indexed as a note.")
+    if "passages" in parts:
+        raise NoteError(
+            f"{path!r} is a reference passage. Its class and spine come from its source's "
+            f"`_meta.md`, which a plan cannot reproduce, so it is not amended this way."
+        )
+    if not parts[-1].endswith(".md"):
+        raise NoteError(f"{path!r} is not markdown. Only .md notes are amended.")
+    return root, parts, root.joinpath(*parts), rel.as_posix()
+
+
+def _open_note_dir(root: Path, parts: tuple[str, ...]) -> int:
+    """A descriptor for the folder holding the note, reached one component at a time.
+
+    NOTHING BELOW THE ROOT IS FOLLOWED. Each folder is opened `O_NOFOLLOW` relative to the one
+    before it, and the read, the staging file and the `rename` all happen relative to the
+    descriptor this returns. A folder swapped for a symlink after a check therefore cannot redirect
+    the write — the earlier version re-resolved the whole path string for every syscall, so only
+    the last component was protected. The caller closes the descriptor.
+
+    Each component must also be spelled exactly as it is on disk. The lexical refusals compare the
+    CALLER'S string, and APFS is case-insensitive: `PASSAGES/` reaches `passages/`, so without this
+    every one of them could be walked around by changing case.
+    """
+    import errno
+    import stat as _stat
+
+    try:
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as e:
+        raise NoteError(f"cannot open the project vault {root}: {e}") from e
+    try:
+        for i, part in enumerate(parts):
+            here = root.joinpath(*parts[: i + 1])
+            try:
+                st = os.stat(part, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError as e:
+                raise NoteError(
+                    f"{root.joinpath(*parts)} does not exist. `amend` changes an existing note; "
+                    f"use `ingest` to add a new one."
+                ) from e
+            except OSError as e:
+                raise NoteError(f"cannot inspect {here}: {e}") from e
+            try:
+                spelled = part in os.listdir(fd)
+            except OSError as e:
+                raise NoteError(f"cannot list {here.parent}: {e}") from e
+            if not spelled:
+                raise NoteError(
+                    f"{here} is not spelled the way it is on disk (case or Unicode form differs). "
+                    f"Name the note exactly as `expand` reports it."
+                )
+            if _stat.S_ISLNK(st.st_mode):
+                raise NoteError(
+                    f"{here} is a symlink. A note is amended only at its real location inside the "
+                    f"project vault, never through a link."
+                )
+            if i == len(parts) - 1:
+                if not _stat.S_ISREG(st.st_mode):
+                    raise NoteError(f"{here} is not a regular file.")
+                return fd
+            if not _stat.S_ISDIR(st.st_mode):
+                raise NoteError(f"{here} is not a folder.")
+            try:
+                nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except OSError as e:
+                if e.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise NoteError(f"{here} is a symlink. A note is amended only at its real "
+                                    f"location inside the project vault, never through a link.") from e
+                raise NoteError(f"cannot open {here}: {e}") from e
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    raise AssertionError("unreachable: the loop returns on the last component")
+
+
+def _read_at(dfd: int, name: str, shown: Path) -> bytes:
+    """The note's bytes, opened `O_NOFOLLOW` relative to its folder's descriptor."""
+    from substrate.freshness import FileTooLarge, NotRegularFile, read_bounded
+
+    try:
+        return read_bounded(Path(name), MAX_NOTE_BYTES, nofollow=True, dir_fd=dfd)
+    except (NotRegularFile, FileTooLarge) as e:
+        raise NoteError(f"{shown}: {e}") from e
+    except OSError as e:
+        raise NoteError(f"cannot read {shown}: {e}") from e
+
+
+def _lines(data: bytes) -> list[str]:
+    """Lines split on `\\n` ONLY. `str.splitlines` also breaks on `\\f`, `\\x85`, U+2028 and a
+    lone `\\r`, which gave the reviewer a diff whose lines were not the file's — and a false
+    "No newline at end of file" marker mid-diff wherever one of them appeared."""
+    parts = data.decode("utf-8", errors="replace").split("\n")
+    lines = [p + "\n" for p in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+# What a viewer would hide, by Unicode CATEGORY rather than a list: controls (Cc), format characters
+# (Cf — zero-width spaces, bidi overrides, and the tag block U+E0000–E007F that smuggles ASCII text
+# no viewer draws), line and paragraph separators (Zl, Zp), private-use (Co) and unassigned (Cn).
+# A hand-picked list missed most of Cf, so a model could add a whole invisible instruction to a
+# note and the approved diff showed nothing (crosscheck, 2026-11-04). Plus the default-ignorable
+# code points that are NOT Cf: CGJ, the Hangul fillers, and the variation selectors.
+_HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cn"})
+_HIDDEN_EXTRA = frozenset({0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0})
+_ZWJ, _VS16 = "\u200d", "\ufe0f"
+
+
+def _hidden(text: str, i: int) -> bool:
+    import unicodedata
+
+    ch, o = text[i], ord(text[i])
+    # Emoji are built from a joiner and a presentation selector between pictographs (👩\u200d💻, ❤\ufe0f).
+    # Marking those would put a mark inside every emoji, which teaches a reviewer to ignore marks;
+    # anywhere else the same two characters are hidden like any other.
+    #
+    # "Between pictographs" covers the shapes in ordinary use: a pictograph (So), or one followed by
+    # a skin-tone modifier (U+1F3FB-1F3FF) or by VS16, then the joiner, then a pictograph; and VS16
+    # after a pictograph or a keycap base (`1` + VS16 + U+20E3). The skin tones are named by RANGE,
+    # not by their category: Sk also holds ASCII `` ` `` and `^`, and exempting it let a VS16 after a
+    # backtick make `` `\ufe0f`` `` read as a code fence in the approved diff while the reader parsed
+    # text (crosscheck, 2026-11-04). A text-default symbol given emoji presentation (U+203C + VS16) is
+    # still marked: rare, and marked is not hidden.
+    before = text[i - 1] if i > 0 else ""
+    prev = unicodedata.category(before) if before else ""
+    nxt = text[i + 1] if i + 1 < len(text) else ""
+    skin = bool(before) and 0x1F3FB <= ord(before) <= 0x1F3FF
+    if ch == _VS16 and (prev == "So" or (before in "0123456789#*" and before and nxt == "\u20e3")):
+        return False
+    if ch == _ZWJ and (prev == "So" or skin or before == _VS16) \
+            and nxt and unicodedata.category(nxt) == "So":
+        return False
+    if ch == "\t":
+        return False
+    return (unicodedata.category(ch) in _HIDDEN_CATEGORIES or o in _HIDDEN_EXTRA
+            or 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF or 0x180B <= o <= 0x180F)
+
+
+def _visible(text: str) -> tuple[str, int, int]:
+    """`text` with every character a viewer would hide shown as `⟨U+XXXX⟩`; returns (text, how many
+    hidden characters were marked, how many literal `⟨` were escaped).
+
+    A literal `⟨` is escaped the same way, so in the diff every `⟨` opens a mark and a note cannot
+    forge one. It is counted apart: escaping it hides nothing, and `⟨x, y⟩` is ordinary notation in
+    a maths note. Lookalike brackets (U+2329, U+3008) are NOT escaped.
+    """
+    out, hidden, literal = [], 0, 0
+    for i, ch in enumerate(text):
+        if ch == "\u27e8":
+            out.append("\u27e8U+27E8\u27e9")
+            literal += 1
+        elif _hidden(text, i):
+            out.append(f"\u27e8U+{ord(ch):04X}\u27e9")
+            hidden += 1
+        else:
+            out.append(ch)
+    return "".join(out), hidden, literal
+
+
+def _spine_of(staged: Path) -> tuple[dict, str]:
+    """The DECLARED spine of a staged note, and its declared `doc_id` line ("" if none).
+
+    Parsed, not gated, so the current note's spine can be read even if it would not pass today's
+    write gate (most migrated notes declare no confidence). Both sides of a plan go through this one
+    function, so a field reported as changed changed in the file, not in how it was read.
+    """
+    from substrate.classes import UNCLASSIFIED_CLASS
+    from substrate.markdown.reader import _parse_frontmatter, doc_id_list, read_markdown
+
+    doc, _body, _stats = read_markdown(staged)
+    text = staged.read_bytes().decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    front, _ = _parse_frontmatter(text)
+    return {
+        "doc_id": doc.doc_id,
+        "status": doc.status,
+        "doc_type": doc.doc_type,
+        "confidence": doc.confidence,
+        "document_class": doc.document_class or UNCLASSIFIED_CLASS,
+        "domains": list(doc.domains),
+        "supersedes": doc_id_list(doc.supersedes),
+        "superseded_by": doc.superseded_by,
+    }, front.get("doc_id", "")
+
+
+def _check_amend(*, target: Path, rel: str, base: bytes, content: bytes) -> dict:
+    """Every gate an amend must pass, against the current bytes `base`. Issues NOTHING."""
+    import difflib
+
+    from substrate import classes
+    from substrate.markdown.ingest import CoverageError, ingest_markdown
+    from substrate.spine import SpineError
+
+    # Before any work: a note over the cap no later amend could read back, and the gate run should
+    # not be spent on it. This does NOT bound the diff's cost — `difflib` is roughly quadratic in the
+    # line count (~49 s at 813 KB, measured 2026-11-04), so a large note under the cap can still hold
+    # the server for a long time before the diff cap refuses it.
+    if len(content) > MAX_NOTE_BYTES:
+        raise NoteError(f"the amended note is {len(content)} bytes, over the {MAX_NOTE_BYTES}-byte "
+                        f"limit for a note.")
+    if base == content:
+        raise NoteError(f"{target} already holds exactly this content; there is nothing to amend.")
+
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        # The SAME filename on both sides, so an undeclared doc_id derives exactly as it will in
+        # the vault: from the note's stem and its bytes.
+        (tmp / "before").mkdir()
+        before_path = tmp / "before" / target.name
+        before_path.write_bytes(base)
+        try:
+            before, before_fid = _spine_of(before_path)
+        except ValueError as e:
+            raise NoteError(f"the current note cannot be read as markdown: {e}") from e
+
+        if before["status"] == "superseded":
+            raise NoteError(
+                f"{target} is superseded (by {before['superseded_by']}). A superseded note is the "
+                f"record of what was replaced; change the live note instead."
+            )
+        before_policy = classes.POLICIES.get(before["document_class"])
+        if before_policy is not None and before_policy.frozen:
+            raise NoteError(
+                f"{target} is `{before['document_class']}`, a frozen class "
+                f"({before_policy.description}) — it is never edited in place."
+            )
+
+        (tmp / "after").mkdir()
+        after_path = tmp / "after" / target.name
+        after_path.write_bytes(content)
+        try:
+            # The same gates as adding a note, including the stricter confidence gate: an amend has
+            # an author present, so a note it touches leaves with a judged confidence.
+            result = ingest_markdown(
+                after_path, tmp / "out", require_status=True, require_confidence=True
+            )
+        except (ValueError, classes.ClassPolicyError, SpineError, CoverageError) as e:
+            raise NoteError(f"{type(e).__name__}: {e}") from e
+        after, after_fid = _spine_of(after_path)
+
+        after_policy = classes.POLICIES.get(after["document_class"])
+        if after_policy is not None and after_policy.frozen:
+            raise NoteError(
+                f"the amended note would be `{after['document_class']}`, a frozen class "
+                f"({after_policy.description}). A frozen note is never produced by an edit."
+            )
+        if before_fid != after_fid:
+            raise NoteError(
+                f"the declared doc_id changes ({before_fid or '<none>'} → {after_fid or '<none>'}). "
+                f"A declared id is the note's identity: an amend may not add, remove or change it."
+            )
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # A final line without a newline is marked the way GNU diff marks it. Left bare, it ran into
+    # the next diff line, so `-old last line+new last line` read as one removed line and hid the
+    # added one — in the only text the human approves. Obsidian often saves without a final newline.
+    rendered, literal = [], 0
+    hidden = {"+": 0, "-": 0, " ": 0}
+    for k, line in enumerate(difflib.unified_diff(
+        _lines(base), _lines(content), fromfile=f"a/{rel}", tofile=f"b/{rel}",
+    )):
+        ended = line.endswith("\n")
+        shown, n, lit = _visible(line[:-1] if ended else line)
+        # Counted by the side of the diff the line is on: a mark in a removed line is something
+        # the amend takes OUT, and saying the note will hold it would misdescribe the change.
+        # The two file headers are told apart by POSITION, which `unified_diff` fixes, not by their
+        # `---`/`+++` prefix: a removed YAML fence renders as `----` and an added `++x` as `+++x`.
+        side = line[:1] if k >= 2 and line[:1] in hidden else " "
+        hidden[side] += n
+        literal += lit
+        rendered.append(shown + ("\n" if ended else "\n\\ No newline at end of file\n"))
+    diff = "".join(rendered)
+    if len(diff) > AMEND_DIFF_CHAR_CAP:
+        raise NoteError(
+            f"the diff is {len(diff)} characters, over the {AMEND_DIFF_CHAR_CAP} that one plan can "
+            f"show whole. A truncated diff cannot be reviewed; split the change into smaller amends."
+        )
+
+    changed = [f for f in SPINE_FIELDS if before[f] != after[f]]
+    warnings = [
+        "the per-note A22 assertion sweep runs at compose, not in this plan",
+        "the engine keeps no copy of the current version; recovering it after the write means the "
+        "sync provider's version history",
+    ]
+    if any(hidden.values()):
+        where = ", ".join(f"{n} in {label}" for n, label in (
+            (hidden["+"], "added lines (the amended note will hold them)"),
+            (hidden["-"], "removed lines"), (hidden[" "], "unchanged lines")) if n)
+        warnings.append(
+            f"the diff shows characters a viewer would hide (controls, zero-width and format "
+            f"characters, separators) as `⟨U+XXXX⟩`: {where}"
+        )
+    if literal:
+        warnings.append(f"a literal `⟨` in the note is shown as `⟨U+27E8⟩` ({literal}), so that "
+                        f"every `⟨` in the diff opens a mark")
+    if "doc_id" in changed:
+        warnings.append(
+            f"doc_id changes {before['doc_id']} → {after['doc_id']}: the note declares no doc_id, "
+            f"so its id derives from its content (as with any edit in Obsidian). Nothing that "
+            f"names the old id — a `superseded_by`, a `supersedes` entry — is updated."
+        )
+    if "confidence" in changed:
+        warnings.append(
+            f"confidence changes {before['confidence'] or '<undeclared>'} → {after['confidence']}: "
+            f"check the diff carries the evidence for the new value (WRITING.md)."
+        )
+    if "status" in changed and after["status"] in ("archived", "superseded"):
+        warnings.append(f"status → {after['status']}: the note leaves default retrieval.")
+    if after["status"] == "superseded" and "superseded_by" in changed:
+        warnings.append(
+            f"superseded_by {after['superseded_by']} is not checked to exist, here or at compose."
+        )
+
+    return {
+        "diff": diff,
+        "spine_before": before,
+        "spine_after": after,
+        "spine_changed": changed,
+        "passages": int((result.run.get("chunk") or {}).get("passages", 0)),
+        "warnings": warnings,
+    }
+
+
+def plan_amend(*, project_vault: Path, path: str, content: bytes, book: PlanBook) -> AmendPlan:
+    """Diff an existing note against `content`, run every gate, and issue a single-use token bound
+    to the current bytes. Writes nothing. A refused plan issues no token."""
+    root, parts, target, rel = _resolve_existing(project_vault, path)
+    dfd = _open_note_dir(root, parts)
+    try:
+        base = _read_at(dfd, parts[-1], target)
+    finally:
+        os.close(dfd)
+    fields = _check_amend(target=target, rel=rel, base=base, content=content)
+    base_sha = _sha(base)
+    token = book.issue(_amend_binding(target, base_sha, content), note=(str(target), base_sha))
+    return AmendPlan(target=target, base_sha256=base_sha, new_sha256=_sha(content),
+                     confirm_token=token, **fields)
+
+
+def _changed_since_plan(target: Path) -> NoteError:
+    return NoteError(
+        f"{target} changed after the plan was made, so the diff you approved no longer describes "
+        f"the edit. Nothing was written. Call amend again without a token to get a diff against "
+        f"the note as it is now."
+    )
+
+
+def commit_amend(
+    *, project_vault: Path, path: str, content: bytes, confirm_token: str, book: PlanBook,
+) -> tuple[Path, str]:
+    """Replace the note, only for a token issued for exactly these bytes over exactly the bytes
+    on disk now. Returns (target, previous_sha256).
+
+    The compare-and-swap runs FIRST, so a note that moved under the plan is reported as that,
+    rather than as whichever gate the moved note happens to fail. ANY refusal burns the token: a
+    plan only issues once every gate has passed, so a commit that is refused means something moved,
+    and the plan the human approved no longer describes what would be written.
+    """
+    try:
+        root, parts, target, rel = _resolve_existing(project_vault, path)
+        dfd = _open_note_dir(root, parts)
+    except NoteError:
+        book.discard(confirm_token)
+        raise
+    try:
+        previous = _commit_at(dfd, parts[-1], target=target, rel=rel, content=content,
+                              confirm_token=confirm_token, book=book)
+    except NoteError:
+        book.discard(confirm_token)
+        raise
+    finally:
+        os.close(dfd)
+    return target, previous
+
+
+def _commit_at(dfd: int, name: str, *, target: Path, rel: str, content: bytes,
+               confirm_token: str, book: PlanBook) -> str:
+    """The write itself, relative to the note's folder descriptor. Returns the replaced sha256."""
+    import stat as _stat
+
+    base = _read_at(dfd, name, target)
+    base_sha = _sha(base)
+    planned = book.note_of(confirm_token)
+    # Only a token issued for THIS note can say this note moved. A token for another note falls
+    # through to `redeem`, which refuses it as not issued for this amend.
+    if planned is not None and planned[0] == str(target) \
+            and not secrets.compare_digest(planned[1], base_sha):
+        raise _changed_since_plan(target)
+
+    _check_amend(target=target, rel=rel, base=base, content=content)
+    if not book.redeem(confirm_token, _amend_binding(target, base_sha, content)):
+        raise NoteError(
+            "confirm_token was not issued by this server for this amend, or has already been used. "
+            "Call again without a token to get a current plan, confirm it with the human, and pass "
+            "THAT token."
+        )
+
+    try:
+        mode = _stat.S_IMODE(os.stat(name, dir_fd=dfd, follow_symlinks=False).st_mode)
+    except OSError as e:
+        raise NoteError(f"cannot inspect {target}: {e}") from e
+    tmp = f".{name}.{secrets.token_hex(8)}.tmp"
+    # Staged beside the note so `rename` stays on one filesystem and is atomic. Random, O_EXCL and
+    # O_NOFOLLOW: a staging name that could be predicted could be pre-planted as a symlink, which is
+    # how the add path once wrote outside the vault. The `.tmp` suffix keeps a crash's leftover out
+    # of compose, which only discovers `*.md`.
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+    except OSError as e:
+        raise NoteError(f"cannot stage the amended note beside {target}: {e}") from e
+    try:
+        try:
+            # The descriptor is owned by the file object BEFORE anything else can fail, so no
+            # error path leaks it.
+            with os.fdopen(fd, "wb") as fh:
+                os.fchmod(fh.fileno(), mode)
+                fh.write(content)
+                fh.flush()
+                os.fsync(fh.fileno())
+        except OSError as e:
+            raise NoteError(f"failed staging the amended note for {target}: {e}") from e
+
+        # The last look before the swap. Anything that changed the note since the read above is
+        # refused here; only a write inside the gap between this read and `rename` is not seen.
+        if _sha(_read_at(dfd, name, target)) != base_sha:
+            raise _changed_since_plan(target)
+        try:
+            # Relative to the folder descriptor, so neither name is re-resolved through a path.
+            # `rename` replaces the final directory ENTRY rather than writing through it.
+            os.rename(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+        except OSError as e:
+            raise NoteError(f"failed replacing {target}: {e}") from e
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=dfd)
+        except FileNotFoundError:
+            pass
+        raise
+
+    try:
+        os.fsync(dfd)
+    except OSError:
+        # The rename has happened; a filesystem that cannot fsync a directory (some sync providers)
+        # leaves its durability to that provider. Not a failure of the amend.
+        pass
+    return base_sha

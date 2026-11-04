@@ -20,16 +20,16 @@ JSON-RPC rules is how the two would drift into answering differently, which is e
 divergence Doc 3a §6 forbids between the MCP and the CLI.
 
 **The transports differ in exactly one thing, and it is a parameter rather than a fork.** HTTP is
-`--read-only` by default, so `ingest` is neither advertised nor run there (Doc 3 §3): any local
-process can reach a loopback port, and `ingest` writes notes into real vaults that the next
-refresh serves back as settled knowledge. Reaching stdio already requires spawning this process,
-so stdio keeps it. That decision travels on `Config`, not in a second dispatch — `handle()` is
+`--read-only` by default, so the write tools (`ingest`, `amend`) are neither advertised nor run
+there (Doc 3 §3): any local process can reach a loopback port, and they write notes into real
+vaults that the next refresh serves back as settled knowledge. Reaching stdio already requires
+spawning this process, so stdio keeps them. That decision travels on `Config`, not in a second dispatch — `handle()` is
 still one function answering one frame the same way whichever socket it arrived on.
 
 **`--connect` is how a stdio client reaches the shared server** (`substrate.mcp.bridge`). It is a
 stdio process with no stack: `handle()` runs as usual, except that a read tool's `tools/call` is
-forwarded to the server Scripta hosts on its Unix socket. `ingest` still runs in-process, so the write
-stays off the socket.
+forwarded to the server Scripta hosts on its Unix socket. The write tools still run in-process, so
+the write stays off the socket.
 
 **`--socket` is the shared server's real address; `--http` is a developer convenience.** Loopback
 TCP authenticates nobody: every user on the machine can query it, and while it is down any process
@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import copy
 import functools
+import hashlib
 import json
 import os
 import socketserver
@@ -351,8 +352,8 @@ TOOLS = [
             "would land, the doc_id and spine values it would get, and any gate that would refuse "
             "it. Show that plan to the human. Only with their agreement, call again with the same "
             "arguments plus the plan's `confirm_token`.\n\n"
-            "Additive only: it will not overwrite an existing note (editing goes through diff "
-            "review), it never writes into the shared core tier, and it does not update the "
+            "Additive only: it will not overwrite an existing note (change one with `amend`), "
+            "it never writes into the shared core tier, and it does not update the "
             "index — the note is invisible to `search` until the scope is recomposed, which the "
             "response says explicitly.\n\n"
             "REQUIRED FRONTMATTER: `status`, `doc_type`, AND `confidence` — the last is required "
@@ -382,6 +383,41 @@ TOOLS = [
                                   "description": "From a previous plan. Omit on the first call."},
             },
             "required": ["scope"],
+        },
+    },
+    {
+        "name": "amend",
+        "description": (
+            "Change an EXISTING note in a project vault. THIS IS A WRITE, and it is two-phase like "
+            "`ingest`: called without `confirm_token` it writes nothing and returns a plan — a "
+            "unified `diff` of the note as it is now against your version, the spine before and "
+            "after with every changed field named, and any gate that would refuse it. Show the "
+            "diff to the human. Only with their agreement, call again with the same arguments plus "
+            "the plan's `confirm_token`.\n\n"
+            "Pass the WHOLE note as `content`, frontmatter included — not a patch. The commit "
+            "is refused if the note changed after the plan (an edit in Obsidian, a sync); plan "
+            "again. Preserve decision history (WRITING.md): record what changed and why rather "
+            "than overwriting the old reasoning.\n\n"
+            "Refused: a note that does not exist (use `ingest`), anything outside this scope's "
+            "project vault (never the shared core tier), a path through a symlink, a superseded "
+            "note, a `conversation` or `reference-frozen` note, a change to a declared `doc_id`, "
+            "and a diff too large to show whole. The same frontmatter gates as `ingest` apply, "
+            "`confidence` included. The index is not updated; the response says so."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "description": "Which scope's project vault the note is in."},
+                "path": {"type": "string",
+                         "description": "The note, relative to the project vault (e.g. "
+                                        "'04-synthesis/retrieval-decision.md'), or its absolute "
+                                        "path as `expand` reports it."},
+                "content": {"type": "string",
+                            "description": "The note's full new markdown, including frontmatter."},
+                "confirm_token": {"type": "string",
+                                  "description": "From a previous plan. Omit on the first call."},
+            },
+            "required": ["scope", "path", "content"],
         },
     },
     {
@@ -671,6 +707,37 @@ def _read_source(src: Path) -> bytes:
         raise ToolError(f"cannot read the given source_path ({type(e).__name__}).") from e
 
 
+def _writable_scope(name: str, cfg: Config):
+    """The registry entry for a scope a write may land in, or a ToolError. Shared by every write
+    tool so they cannot drift apart on which vaults they will write into."""
+    try:
+        entry = scopes.resolve(name, cfg.registry)
+    except scopes.ScopeError as e:
+        raise ToolError(str(e)) from e
+
+    # THE GUARD, HERE TOO. The write tools resolve the scope themselves rather than going through
+    # `_open` — they need the vault, not the index — so the chokepoint that covers every READ does
+    # not cover them. A model that cannot read a guarded workspace must not be able to write into
+    # one either, and a write is where getting it wrong leaves a note behind rather than an answer.
+    # REFUSES OUTRIGHT, unlike the read tools. They withhold a vault and answer from the rest; there
+    # is no "write into the rest" — a note goes into THIS vault or nowhere, and writing into one
+    # nothing is vouching for is the case the guard exists for.
+    verdict = guard.check(Path(entry.vault), name)
+    if not verdict.vouched:
+        raise ToolError(f"{verdict.reason} A write into this vault is refused entirely — "
+                        f"unlike a read, there is no unguarded part of it to write to.")
+    return entry
+
+
+def _compose_hint(entry) -> str:
+    # `--index-root` is omitted when the registry entry predates the field: emitting a
+    # defaulted "." would tell the user to write the disposable index tree into whatever
+    # directory they happen to be standing in.
+    return ("run `substrate compose " + str(entry.vault)
+            + (f" --index-root {entry.index_root}" if entry.index_root else "")
+            + f" --db {entry.db}`")
+
+
 def _tool_ingest(args: dict, cfg: Config) -> dict:
     """Two-phase by construction. Without a token this PLANS and writes nothing; with one it
     re-plans and writes only if the token still matches. A client that auto-approves tool calls
@@ -689,22 +756,7 @@ def _tool_ingest(args: dict, cfg: Config) -> dict:
 
     # The scope is resolved BEFORE any file is touched, so a call naming an unknown scope costs
     # nothing — it previously read the whole source into memory first and then refused.
-    try:
-        entry = scopes.resolve(name, cfg.registry)
-    except scopes.ScopeError as e:
-        raise ToolError(str(e)) from e
-
-    # THE GUARD, HERE TOO. `ingest` resolves the scope itself rather than going through `_open` —
-    # it needs the vault, not the index — so the chokepoint that covers every READ does not cover
-    # this. A model that cannot read a guarded workspace must not be able to write into one either,
-    # and this is the tool where getting it wrong leaves a note behind rather than an answer.
-    # REFUSES OUTRIGHT, unlike the read tools. They withhold a vault and answer from the rest; there
-    # is no "write into the rest" — a note goes into THIS vault or nowhere, and writing into one
-    # nothing is vouching for is the case the guard exists for.
-    ingest_verdict = guard.check(Path(entry.vault), name)
-    if not ingest_verdict.vouched:
-        raise ToolError(f"{ingest_verdict.reason} A write into this vault is refused entirely — "
-                        f"unlike a read, there is no unguarded part of it to write to.")
+    entry = _writable_scope(name, cfg)
 
     if source_path:
         src = Path(source_path).expanduser()
@@ -753,13 +805,83 @@ def _tool_ingest(args: dict, cfg: Config) -> dict:
         # The note is in the vault and NOT in the index. Said as a field, and `status` will show
         # it under drift.added until the scope is recomposed.
         "index_stale": True,
-        # `--index-root` is omitted when the registry entry predates the field: emitting a
-        # defaulted "." would tell the user to write the disposable index tree into whatever
-        # directory they happen to be standing in.
-        "next": ("the note is in the vault but not in the index — run `substrate compose "
-                 + str(entry.vault)
-                 + (f" --index-root {entry.index_root}" if entry.index_root else "")
-                 + f" --db {entry.db}` before it can be found by search."),
+        "next": ("the note is in the vault but not in the index — " + _compose_hint(entry)
+                 + " before it can be found by search."),
+    }
+
+
+def _burn_amend_token(args: object, cfg: Config) -> None:
+    token = args.get("confirm_token") if isinstance(args, dict) else None
+    if isinstance(token, str):
+        cfg.plans.discard(token)
+
+
+def _tool_amend(args: dict, cfg: Config) -> dict:
+    """`ingest`'s two-phase gate over an existing note. Without a token this diffs and plans and
+    writes nothing; with one it re-checks the note's checksum and every gate, then replaces it.
+    Any refusal burns the token; `_dispatch` does that, since not every refusal reaches here."""
+    name = args.get("scope")
+    if not isinstance(name, str) or not name:
+        raise ToolError("amend requires `scope`.")
+    path = args.get("path")
+    if not isinstance(path, str) or not path:
+        raise ToolError("amend requires `path`: the note to change, relative to the project vault.")
+    # NO `source_path`, unlike `ingest`, and refused rather than ignored. An amend plan returns the
+    # new note in full, as the diff, so a caller-named source would make every plan a read of any
+    # file this process can reach — including notes in a vault the guard withholds — with nothing
+    # written and nobody asked. `ingest`'s plan returns spine fields only.
+    if "source_path" in args:
+        raise ToolError("amend takes the new note as `content`, not `source_path`: its plan echoes "
+                        "the whole note back as a diff, so reading a named file would expose it.")
+    content_arg = args.get("content")
+    if not isinstance(content_arg, str) or not content_arg:
+        raise ToolError("amend requires `content`: the whole note as it should read, frontmatter "
+                        "included.")
+    token = args.get("confirm_token")
+    if token is not None and not isinstance(token, str):
+        raise ToolError("`confirm_token` must be the string a plan returned.")
+    try:
+        content = content_arg.encode("utf-8")
+    except UnicodeEncodeError as e:
+        raise ToolError(f"`content` is not encodable as UTF-8 ({e.reason}).") from e
+
+    entry = _writable_scope(name, cfg)
+
+    try:
+        if not token:
+            p = notes.plan_amend(project_vault=entry.vault, path=path, content=content,
+                                 book=cfg.plans)
+            return {
+                "written": False,
+                "plan": {
+                    "scope": name, "target": str(p.target),
+                    "base_sha256": p.base_sha256, "new_sha256": p.new_sha256,
+                    "diff": p.diff,
+                    "spine": {"before": p.spine_before, "after": p.spine_after,
+                              "changed": p.spine_changed},
+                    "passages": p.passages, "warnings": p.warnings,
+                    "confirm_token": p.confirm_token,
+                },
+                "next": ("NOTHING HAS BEEN WRITTEN. Show the diff to the human, and only with "
+                         "their agreement call amend again with the same arguments plus "
+                         "`confirm_token`."),
+            }
+        target, previous = notes.commit_amend(project_vault=entry.vault, path=path,
+                                              content=content, confirm_token=token,
+                                              book=cfg.plans)
+    except notes.NoteError as e:
+        raise ToolError(str(e)) from e
+
+    return {
+        "written": True,
+        "scope": name,
+        "target": str(target),
+        "previous_sha256": previous,
+        "sha256": hashlib.sha256(content).hexdigest(),
+        # The vault holds the new version and the index still holds the old one.
+        "index_stale": True,
+        "next": ("the vault holds the amended note and the index still holds the previous "
+                 "version — " + _compose_hint(entry) + " before search reflects the change."),
     }
 
 
@@ -870,13 +992,13 @@ def _tool_documents(args: dict, cfg: Config) -> dict:
 
 
 HANDLERS = {"search": _tool_search, "expand": _tool_expand, "ingest": _tool_ingest,
-            "list_scopes": _tool_list_scopes, "status": _tool_status,
+            "amend": _tool_amend, "list_scopes": _tool_list_scopes, "status": _tool_status,
             "documents": _tool_documents}
 
 # The tools that WRITE. Named once because read-only has to mean the same thing to `tools/list`
 # and to `tools/call`: a tool hidden from the list but still runnable when called is not read-only,
 # and one that is listed and always refuses trains a model to keep trying.
-WRITE_TOOLS = frozenset({"ingest"})
+WRITE_TOOLS = frozenset({"ingest", "amend"})
 
 
 # --------------------------------------------------------------------------- protocol
@@ -1002,7 +1124,7 @@ def _internal_error(msg: object, exc: BaseException) -> dict | None:
 
 
 def _available_tools(cfg: Config) -> list[dict]:
-    """What this server will actually run. A read-only transport does not ADVERTISE `ingest`: a
+    """What this server will actually run. A read-only transport does not ADVERTISE the write tools: a
     model told a tool exists will call it, and Doc 3 §3 takes the write primitive off the socket
     rather than letting it fail late."""
     if not cfg.read_only:
@@ -1099,8 +1221,11 @@ def _dispatch(msg: dict, cfg: Config) -> dict | None:
                 # Inside the try for the same reason: a fault in the forward is a tool fault.
                 if name not in WRITE_TOOLS:
                     return cfg.remote(rid, name, params.get("arguments") or {})
-                refusal = cfg.remote.registry_disagreement(scopes.registry_path(cfg.registry))
+                refusal = cfg.remote.registry_disagreement(
+                    scopes.registry_path(cfg.registry), tool=name)
                 if refusal is not None:
+                    if name == "amend":
+                        _burn_amend_token(params.get("arguments"), cfg)
                     return _result(rid, {"content": [{"type": "text", "text": refusal}],
                                          "isError": True})
             text = json.dumps(fn(params.get("arguments") or {}, cfg), indent=2, ensure_ascii=False)
@@ -1108,6 +1233,14 @@ def _dispatch(msg: dict, cfg: Config) -> dict | None:
             # isError keeps the failure INSIDE the result, so the model sees the condition and can
             # act on it (compose the scope, search again) rather than a transport error it cannot
             # interpret. An unexpected exception is reported the same way for the same reason.
+            #
+            # ANY refusal of an amend burns its token, and this is the one place every refusal
+            # passes: a wrong scope, a guard that will not vouch, a malformed argument, and the
+            # bridge's registry check, which raises before `_tool_amend` runs. Burning only inside
+            # `notes.commit_amend` left the token live after those, so a retry — once the guard
+            # vouched again — wrote against a plan whose refusal had already been shown.
+            if name == "amend":
+                _burn_amend_token(params.get("arguments"), cfg)
             return _result(rid, {
                 "content": [{"type": "text", "text": f"{type(e).__name__}: {e}"}],
                 "isError": True,
@@ -1222,7 +1355,7 @@ def parse_bind(spec: str) -> tuple[str, int]:
     it failed closed here only because getaddrinfo happened to reject the result, which is an
     accident rather than a guard.
 
-    Binding off-loopback would put `ingest` — which WRITES vaults and reads caller-named files —
+    Binding off-loopback would put the write tools — which WRITE vaults and read caller-named files —
     on the network, so this fails closed on anything it cannot parse, and the string it validates
     is the string it returns.
     """
@@ -1244,8 +1377,8 @@ def parse_bind(spec: str) -> tuple[str, int]:
         )
     if not _host_is_loopback(host):
         raise ValueError(
-            f"refusing to bind {spec!r}: not a loopback address. This server exposes `ingest`, "
-            f"which writes vaults and reads caller-named files — off-loopback it is a remote "
+            f"refusing to bind {spec!r}: not a loopback address. This server exposes `ingest` and "
+            f"`amend`, which write vaults and read caller-named files — off-loopback they are a remote "
             f"write primitive. Bind a loopback address such as {DEFAULT_HTTP}."
         )
     if not _is_digits(port_s):
@@ -1641,7 +1774,8 @@ def _serve(cfg: Config, make: Callable[[type], Any], where: str, *, reach: str,
         cfg = copy.copy(cfg)
         cfg.read_only = True
     elif allow_writes and not cfg.read_only:
-        print(f"substrate-mcp: writes ENABLED on {where} — `ingest` is reachable by {reach}",
+        print(f"substrate-mcp: writes ENABLED on {where} — `ingest` (adds notes) and `amend` "
+              f"(overwrites existing notes) are reachable by {reach}",
               file=sys.stderr)
     handler = type("_BoundHandler", (_Handler,), {"cfg": cfg, "lock": threading.Lock()})
     try:
@@ -1682,7 +1816,9 @@ def _serve(cfg: Config, make: Callable[[type], Any], where: str, *, reach: str,
         if not handler.lock.acquire(timeout=SHUTDOWN_GRACE_SECONDS):
             print(f"substrate-mcp: a tool call was still running after "
                   f"{SHUTDOWN_GRACE_SECONDS:.0f}s — exiting anyway. If it was an `ingest`, check "
-                  f"the target note: it is written with a plain write() and may be truncated.",
+                  f"the target note: it is written with a plain write() and may be truncated. An "
+                  f"`amend` replaces its note by rename, so the note is whole, but a "
+                  f"`.<note>.<hex>.tmp` may be left beside it.",
                   file=sys.stderr)
     return 0
 
@@ -1741,14 +1877,15 @@ def _main(argv: list[str] | None) -> int:
     ap.add_argument("--connect", nargs="?", const=local_socket.DEFAULT_SOCKET, default=None,
                     metavar="PATH",
                     help=f"serve stdio by forwarding reads to the shared --socket server (default "
-                         f"{local_socket.DEFAULT_SOCKET}, the one Scripta runs); `ingest` still "
-                         f"runs here")
+                         f"{local_socket.DEFAULT_SOCKET}, the one Scripta runs); the write tools "
+                         f"(`ingest`, `amend`) still run here")
     ap.add_argument("--socket", nargs="?", const=local_socket.DEFAULT_SOCKET, default=None,
                     metavar="PATH",
                     help=f"serve that shared server on a Unix-domain socket only this user can "
                          f"reach (default {local_socket.DEFAULT_SOCKET}, where Scripta runs it)")
     ap.add_argument("--read-only", action=argparse.BooleanOptionalAction, default=None,
-                    help="refuse `ingest`, the one tool that writes. ON by default under --http "
+                    help="refuse the tools that write: `ingest` (adds notes) and `amend` "
+                         "(overwrites existing notes). ON by default under --http "
                          "and --socket and off under stdio; state it either way to override that.")
     ap.add_argument("--agent-mode", action="store_true",
                     help="serve ONLY --scopes, read-only, from snapshots in --snapshot-dir; never "

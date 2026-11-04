@@ -11,14 +11,14 @@ that directory and the uid of the process on the far end. It used to be 127.0.0.
 process could bind that while Scripta was closed and be sent every query. It could even answer
 `list_scopes` with a matching registry and wave a write through `registry_disagreement`.
 
-**`ingest` is not forwarded, and that is the design.** The shared socket is read-only because
+**The writes (`ingest`, `amend`) are not forwarded, and that is the design.** The shared socket is read-only because
 every process this user runs can reach it (Doc 3 §3). Forwarding the write would put it back on
 that socket. Instead the write runs HERE, through the same `handle()` and the same PlanBook a stdio
 server uses, so it stays exactly as reachable as it is today: you can only reach it by spawning
 this process. `ingest` needs only the registry and the vault, never the retrieval stack, which is
 why it can run in a process that has no stack.
 
-Answered locally: `initialize`, `tools/list` and `ingest`. A client therefore connects and keeps
+Answered locally: `initialize`, `tools/list` and the write tools. A client therefore connects and keeps
 its full tool list even while Scripta is closed. Forwarded: every other `tools/call`. Each one
 opens a fresh connection, because the server closes a connection after it has been idle for a
 while, and an agent's next call can arrive minutes later.
@@ -74,7 +74,7 @@ class Remote:
             return self._unreachable(rid, name, e)
         return self._relay(rid, name, status, raw)
 
-    def registry_disagreement(self, local: Path) -> str | None:
+    def registry_disagreement(self, local: Path, *, tool: str = "ingest") -> str | None:
         """Why a write here would land outside what the reads see, or None.
 
         One session answers from TWO registries under `--connect`. `ingest` resolves its scope
@@ -101,7 +101,7 @@ class Remote:
             return None
         if theirs == local.expanduser().resolve():
             return None
-        return (f"`ingest` is refused: this process resolves scopes against {local}, but the "
+        return (f"`{tool}` is refused: this process resolves scopes against {local}, but the "
                 f"shared engine on {self.endpoint} reads {theirs}. Every search in this session "
                 f"comes from the engine, so a note written here would go to a vault those reads "
                 f"may never cover. Start this client with the same registry as Scripta's engine "

@@ -682,8 +682,8 @@ def test_initialize_and_tools_list() -> None:
     assert init["result"]["protocolVersion"] == server.PROTOCOL_VERSION
 
     listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, cfg)["result"]
-    assert {t["name"] for t in listed["tools"]} == {"search", "expand", "ingest", "list_scopes",
-                                                    "status", "documents"}
+    assert {t["name"] for t in listed["tools"]} == {"search", "expand", "ingest", "amend",
+                                                    "list_scopes", "status", "documents"}
     assert set(listed["tools"][0]) >= {"name", "description", "inputSchema"}
     for t in listed["tools"]:
         assert t["inputSchema"]["type"] == "object"
@@ -694,7 +694,12 @@ def test_initialize_and_tools_list() -> None:
     # the answer is the corpus rather than a claim about relevance. `search(query="")` could not
     # produce it — retrieval with an empty query is not a listing, it is a bug — and no combination
     # of the other five returns which vault an unretrieved note composed from.
-    assert len(listed["tools"]) <= 6, "resist adding tools that are parameter variants"
+    #
+    # Raised 6 → 7 for `amend`. A flag on `ingest` was the parameter-variant alternative, and it was
+    # rejected for a reason this assertion exists to protect: a model told "already exists" would
+    # add the flag, and the approval prompt would still read `ingest`. The contracts differ too — a
+    # diff and a base checksum against a placement — so one tool would answer two questions.
+    assert len(listed["tools"]) <= 7, "resist adding tools that are parameter variants"
 
 
 def test_notifications_get_no_reply() -> None:
@@ -1100,6 +1105,122 @@ def test_ingest_with_the_token_writes_and_declares_the_index_stale() -> None:
 
     d = _call("status", {"scope": "demo"}, registry)["drift"]
     assert any(p.endswith("d.md") for p in d["added"]), "the new note must show as unindexed"
+
+
+# ---------------------------------------------------------------- amend
+
+def _amend_fixture() -> tuple[Path, Path, Path]:
+    root, registry = _fixture(manifest=True)
+    (root / "demo-vault" / "04-synthesis").mkdir()
+    note = root / "demo-vault" / "04-synthesis" / "d.md"
+    note.write_text(_NOTE, encoding="utf-8")
+    return root, registry, note
+
+
+_AMENDED = _NOTE + "\n**Amended:** previously one tool, now two, because adding and editing differ.\n"
+
+
+def test_amend_without_a_token_returns_a_diff_and_writes_nothing() -> None:
+    _, registry, note = _amend_fixture()
+    out = _call("amend", {"scope": "demo", "path": "04-synthesis/d.md", "content": _AMENDED},
+                registry)
+    assert out["written"] is False
+    plan = out["plan"]
+    assert plan["confirm_token"] and plan["base_sha256"] and plan["new_sha256"]
+    assert "+**Amended:**" in plan["diff"]
+    assert set(plan["spine"]) == {"before", "after", "changed"}
+    assert "NOTHING HAS BEEN WRITTEN" in out["next"]
+    assert note.read_text(encoding="utf-8") == _NOTE
+
+
+def test_amend_with_the_token_replaces_the_note_and_declares_the_index_stale() -> None:
+    import hashlib
+
+    _, registry, note = _amend_fixture()
+    cfg = _cfg(registry)      # ONE server across both phases, as in production
+    args = {"scope": "demo", "path": "04-synthesis/d.md", "content": _AMENDED}
+    plan = _call("amend", args, registry, cfg)["plan"]
+    out = _call("amend", {**args, "confirm_token": plan["confirm_token"]}, registry, cfg)
+    assert out["written"] is True and out["index_stale"] is True
+    assert out["previous_sha256"] == hashlib.sha256(_NOTE.encode()).hexdigest()
+    assert out["sha256"] == plan["new_sha256"]
+    assert "substrate compose" in out["next"]
+    assert note.read_text(encoding="utf-8") == _AMENDED
+
+
+def test_amend_refuses_when_the_note_changed_since_the_plan() -> None:
+    _, registry, note = _amend_fixture()
+    cfg = _cfg(registry)
+    args = {"scope": "demo", "path": "04-synthesis/d.md", "content": _AMENDED}
+    plan = _call("amend", args, registry, cfg)["plan"]
+    note.write_text(_NOTE + "\nObsidian got here first.\n", encoding="utf-8")
+    body = _call_raw("amend", {**args, "confirm_token": plan["confirm_token"]}, registry, cfg)
+    assert body.get("isError")
+    assert "changed after the plan" in body["content"][0]["text"]
+    assert note.read_text(encoding="utf-8").endswith("Obsidian got here first.\n")
+
+
+def test_amend_refuses_source_path_because_its_plan_would_echo_the_file() -> None:
+    """The plan returns the new note in full as the diff, so a caller-named `source_path` made
+    every plan a read of any file the process can reach — a guard-withheld vault's note included —
+    with nothing written and nobody asked (crosscheck, 2026-11-04)."""
+    root, registry, note = _amend_fixture()
+    secret = root / "elsewhere.md"
+    secret.write_text(_AMENDED + "\nPRIVATE LINE\n", encoding="utf-8")
+    body = _call_raw("amend", {"scope": "demo", "path": "04-synthesis/d.md",
+                               "source_path": str(secret)}, registry)
+    assert body.get("isError")
+    assert "PRIVATE LINE" not in body["content"][0]["text"]
+    assert "source_path" in body["content"][0]["text"]
+    body = _call_raw("amend", {"scope": "demo", "path": "04-synthesis/d.md", "content": _AMENDED,
+                               "source_path": str(secret)}, registry)
+    assert body.get("isError") and "PRIVATE LINE" not in body["content"][0]["text"]
+
+
+def test_amend_refuses_bad_arguments_as_tool_errors() -> None:
+    """Every malformed argument is an isError the caller can read. A list for `content` used to
+    raise AttributeError out of `.encode`, a lone surrogate UnicodeEncodeError, a NUL in `path`
+    ValueError from the filesystem — none of them the tool's own refusal."""
+    _, registry, note = _amend_fixture()
+    good = {"scope": "demo", "path": "04-synthesis/d.md", "content": _AMENDED}
+    for args in ({k: v for k, v in good.items() if k != "scope"},
+                 {k: v for k, v in good.items() if k != "path"},
+                 {k: v for k, v in good.items() if k != "content"},
+                 {**good, "content": ["not", "a", "string"]},
+                 {**good, "content": "bad \ud800 surrogate"},
+                 {**good, "path": 7},
+                 {**good, "path": "04-synthesis/d\x00.md"},
+                 {**good, "confirm_token": ["not", "a", "token"]}):
+        body = _call_raw("amend", args, registry)
+        assert body.get("isError"), args
+        text = body["content"][0]["text"]
+        assert not text.startswith(("AttributeError", "TypeError", "ValueError",
+                                    "UnicodeEncodeError")), (args, text)
+    assert note.read_text(encoding="utf-8") == _NOTE
+
+
+def test_a_commit_refused_at_the_tool_boundary_burns_its_token() -> None:
+    """A wrong scope, a stray `source_path` or empty content refused the commit before it reached
+    `notes`, and the token survived: the next call with the original arguments wrote the note
+    (reproduced by crosscheck, 2026-11-04)."""
+    _, registry, note = _amend_fixture()
+    args = {"scope": "demo", "path": "04-synthesis/d.md", "content": _AMENDED}
+    for bad in ({**args, "scope": "nope"}, {**args, "source_path": "/etc/hosts"},
+                {**args, "content": ""}):
+        cfg = _cfg(registry)
+        token = _call("amend", args, registry, cfg)["plan"]["confirm_token"]
+        assert _call_raw("amend", {**bad, "confirm_token": token}, registry, cfg).get("isError")
+        body = _call_raw("amend", {**args, "confirm_token": token}, registry, cfg)
+        assert body.get("isError") and "not issued" in body["content"][0]["text"], bad
+    assert note.read_text(encoding="utf-8") == _NOTE
+
+
+def test_amend_is_refused_by_the_guard_like_ingest() -> None:
+    _, registry = _guard_fixture(None)
+    body = _call_raw("amend", {"scope": "demo", "path": "04-synthesis/mine.md",
+                               "content": _AMENDED}, registry)
+    assert body.get("isError")
+    assert "refused entirely" in body["content"][0]["text"], body["content"][0]["text"][:200]
 
 
 def test_k_is_strict_about_its_type() -> None:
@@ -1688,6 +1809,42 @@ def test_ingest_is_refused_over_http_and_the_refusal_is_legible() -> None:
     # The SAME tool, same arguments, over the transport that keeps it: what differs is a parameter
     # on Config, not a second dispatch.
     assert _call("ingest", args, registry)["written"] is False
+
+
+def test_the_operator_is_told_amend_is_exposed_when_writes_are_enabled() -> None:
+    """The warning printed when an operator turns writes on for a socket named only `ingest`, so
+    the one tool that OVERWRITES notes came along unannounced. Same for `--read-only`'s help."""
+    import contextlib
+
+    _, registry = _fixture()
+
+    def cannot_bind(handler):
+        raise OSError(48, "Address already in use")
+
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        assert server._serve(_cfg(registry), cannot_bind, "test", reach="every local process",
+                             ready=None, allow_writes=True) == 2
+    assert "writes ENABLED" in err.getvalue() and "`amend`" in err.getvalue(), err.getvalue()
+
+    helped = subprocess.run([sys.executable, "-m", "substrate.mcp.server", "--help"],
+                            capture_output=True, text=True, cwd=REPO, check=True).stdout
+    flat = " ".join(helped.split())
+    assert "refuse the tools that write: `ingest` (adds notes) and `amend`" in flat, flat
+
+
+def test_amend_is_neither_listed_nor_run_on_a_read_only_server() -> None:
+    """The same Doc 3 §3 control as `ingest`, held by membership of WRITE_TOOLS rather than by a
+    second check: a write tool added without joining that set would be served on the socket."""
+    assert "amend" in server.WRITE_TOOLS
+    _, registry, note = _amend_fixture()
+    cfg = _cfg(registry, read_only=True)
+    listed = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, cfg)
+    assert "amend" not in {t["name"] for t in listed["result"]["tools"]}
+    body = _call_raw("amend", {"scope": "demo", "path": "04-synthesis/d.md",
+                               "content": _AMENDED}, registry, cfg)
+    assert body["isError"] is True and "read-only" in body["content"][0]["text"]
+    assert note.read_text(encoding="utf-8") == _NOTE
 
 
 def test_the_read_only_default_follows_the_transport() -> None:

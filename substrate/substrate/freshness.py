@@ -73,7 +73,8 @@ class FileTooLarge(OSError):
     """`read_bounded` hit its cap."""
 
 
-def read_bounded(src: Path, cap: int, *, nofollow: bool = False) -> bytes:
+def read_bounded(src: Path, cap: int, *, nofollow: bool = False,
+                 dir_fd: int | None = None) -> bytes:
     """A file, bounded by the read ITSELF rather than by a prior check. Raises OSError.
 
     Opens once, non-blocking so a FIFO cannot stall the open, fstats the DESCRIPTOR it will
@@ -84,7 +85,10 @@ def read_bounded(src: Path, cap: int, *, nofollow: bool = False) -> bytes:
     import os
     import stat as _stat
 
-    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | (os.O_NOFOLLOW if nofollow else 0))
+    # `dir_fd` opens `src` relative to an already-open folder, so a caller that walked to that
+    # folder without following links is not re-resolving the path it checked.
+    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | (os.O_NOFOLLOW if nofollow else 0),
+                 dir_fd=dir_fd)
     try:
         if not _stat.S_ISREG(os.fstat(fd).st_mode):
             raise NotRegularFile(f"{src} is not a regular file")

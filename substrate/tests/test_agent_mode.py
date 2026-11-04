@@ -188,8 +188,9 @@ def test_ingest_is_not_registered(world):
     names = [t["name"] for t in _rpc(cfg, "tools/list")["result"]["tools"]]
     assert "ingest" not in names
     assert set(names) == {"search", "expand", "documents", "list_scopes", "status"}
-    resp = _rpc(cfg, "tools/call", {"name": "ingest", "arguments": {"scope": "atlas"}})
-    assert resp["error"]["code"] == -32602 and "unknown tool" in resp["error"]["message"]
+    for write in ("ingest", "amend"):
+        resp = _rpc(cfg, "tools/call", {"name": write, "arguments": {"scope": "atlas"}})
+        assert resp["error"]["code"] == -32602 and "unknown tool" in resp["error"]["message"]
 
 
 def test_the_snapshot_is_opened_read_only(world):

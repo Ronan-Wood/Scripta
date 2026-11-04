@@ -52,7 +52,7 @@ class _Recorder:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def registry_disagreement(self, local) -> None:
+    def registry_disagreement(self, local, *, tool: str = "ingest") -> None:
         return None
 
     def __call__(self, rid, name, arguments) -> dict:
@@ -116,6 +116,79 @@ def test_ingest_never_crosses_the_socket() -> None:
 
     _tools_call(cfg, "search", {"scope": "demo", "query": "x"})
     assert rec.calls == ["search"], "every read tool must be forwarded"
+
+
+def test_amend_never_crosses_the_socket() -> None:
+    """`amend` is a write, so the same control applies: plan and commit run in the bridge."""
+    from test_mcp_server import _AMENDED, _amend_fixture
+
+    _, registry, note = _amend_fixture()
+    rec = _Recorder()
+    cfg = _bridge(registry, rec)
+    args = {"scope": "demo", "path": "04-synthesis/d.md", "content": _AMENDED}
+    plan = json.loads(_tools_call(cfg, "amend", args)["result"]["content"][0]["text"])["plan"]
+    out = _tools_call(cfg, "amend", {**args, "confirm_token": plan["confirm_token"]})
+    assert not out["result"].get("isError"), out
+    assert note.read_text(encoding="utf-8") == _AMENDED
+    assert rec.calls == [], f"amend reached the socket: {rec.calls}"
+
+
+def test_amend_refusal_names_amend_when_the_engine_reads_another_registry() -> None:
+    """The refusal used to be a fixed string naming `ingest`. Sent for an `amend`, it would name a
+    tool the caller never called."""
+    from test_mcp_server import _AMENDED, _amend_fixture
+
+    _, registry, note = _amend_fixture()
+    _, other = _fixture()
+    with _socket_dir() as d, _engine(d / "s.sock", _cfg(other)):
+        cfg = _bridge(registry, bridge.Remote(d / "s.sock"))
+        out = _tools_call(cfg, "amend", {"scope": "demo", "path": "04-synthesis/d.md",
+                                         "content": _AMENDED})
+        text = out["result"]["content"][0]["text"]
+        assert out["result"]["isError"] is True
+        assert text.startswith("`amend` is refused"), text
+    assert note.read_text(encoding="utf-8") != _AMENDED
+
+
+def test_a_registry_refusal_burns_the_amend_token() -> None:
+    """Refused before the handler runs, so the handler's own burn never saw it."""
+    from test_mcp_server import _AMENDED, _amend_fixture
+
+    _, registry, note = _amend_fixture()
+    _, other = _fixture()
+    args = {"scope": "demo", "path": "04-synthesis/d.md", "content": _AMENDED}
+    cfg = _bridge(registry, _Recorder())
+    token = json.loads(_tools_call(cfg, "amend", args)["result"]["content"][0]["text"])[
+        "plan"]["confirm_token"]
+    with _socket_dir() as d, _engine(d / "s.sock", _cfg(other)):
+        cfg.remote = bridge.Remote(d / "s.sock")
+        assert _tools_call(cfg, "amend", {**args, "confirm_token": token})["result"]["isError"]
+    cfg.remote = _Recorder()
+    out = _tools_call(cfg, "amend", {**args, "confirm_token": token})["result"]
+    assert out["isError"] and "not issued" in out["content"][0]["text"], out
+    assert note.read_text(encoding="utf-8") != _AMENDED
+
+
+def test_a_registry_check_that_raises_burns_the_amend_token() -> None:
+    """A raise from the check reached only the dispatcher's fault handler, never `_tool_amend`, so
+    the token survived for a retry once the check stopped raising (adversary, 2026-11-04)."""
+    from test_mcp_server import _AMENDED, _amend_fixture
+
+    class _Raising(_Recorder):
+        def registry_disagreement(self, local, *, tool="ingest"):
+            raise RuntimeError("check blew up")
+
+    _, registry, note = _amend_fixture()
+    args = {"scope": "demo", "path": "04-synthesis/d.md", "content": _AMENDED}
+    cfg = _bridge(registry, _Recorder())
+    token = json.loads(_tools_call(cfg, "amend", args)["result"]["content"][0]["text"])[
+        "plan"]["confirm_token"]
+    cfg.remote = _Raising()
+    assert _tools_call(cfg, "amend", {**args, "confirm_token": token})["result"]["isError"]
+    cfg.remote = _Recorder()
+    out = _tools_call(cfg, "amend", {**args, "confirm_token": token})["result"]
+    assert out["isError"] and "not issued" in out["content"][0]["text"], out
+    assert note.read_text(encoding="utf-8") != _AMENDED
 
 
 def test_ingest_works_while_scripta_is_closed() -> None:
@@ -371,7 +444,7 @@ def test_a_fault_in_the_forward_is_a_tool_fault() -> None:
         def __call__(self, rid, name, arguments):
             raise RuntimeError("forward blew up")
 
-        def registry_disagreement(self, local):
+        def registry_disagreement(self, local, *, tool="ingest"):
             raise RuntimeError("check blew up")
 
     _, registry = _fixture()
