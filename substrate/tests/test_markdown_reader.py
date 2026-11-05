@@ -158,10 +158,22 @@ def test_document_shape_feeds_chunker() -> None:
 
 def test_no_docling_or_torch_imported() -> None:
     """The vault path must run on a fresh download with nothing installed. Assert the reader
-    pulled in no heavy extractor dependency when it parsed."""
-    _pipeline(_write(_tmp(), SAMPLE))
-    assert "docling" not in sys.modules
-    assert "torch" not in sys.modules
+    pulled in no heavy extractor dependency when it parsed.
+
+    In a SUBPROCESS, for the reason `test_importing_the_converter_pulls_in_no_docling` gives:
+    another test may already have imported Docling into this process."""
+    import subprocess
+
+    src = ("import importlib.util, sys, tempfile\n"
+           "from pathlib import Path\n"
+           "s = importlib.util.spec_from_file_location('reader_probe', %r)\n"
+           "m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
+           "with tempfile.TemporaryDirectory() as d:\n"
+           "    m._pipeline(m._write(Path(d), m.SAMPLE))\n"
+           "print('docling' in sys.modules, 'torch' in sys.modules)\n" % __file__)
+    out = subprocess.run([sys.executable, "-c", src], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "False False", out.stdout
 
 
 # ---------------------------------------------------------------- frontmatter

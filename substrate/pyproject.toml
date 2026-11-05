@@ -48,6 +48,9 @@ build-constraint-dependencies = [
     "packaging==26.3",
     "pip==26.2.1",
     "ninja==1.13.2",
+    # setuptools 69 asks for `wheel` to build any sdist (pylatexenc, under docling), and so does
+    # scikit-build; unpinned, each clean build took whatever release was newest.
+    "wheel==0.48.0",
 ]
 
 [tool.uv.extra-build-dependencies]
@@ -58,6 +61,8 @@ opencv-python-headless = { ENABLE_HEADLESS = "1", ENABLE_CONTRIB = "0", CMAKE_AR
 
 [dependency-groups]
 dev = ["ipykernel", "ruff>=0.16.7"]
+# The `engine docling` CI job's runner, locked with hashes like the engine it tests.
+test = ["pytest==9.2.0"]
 
 [tool.ruff]
 target-version = "py311"
