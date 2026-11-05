@@ -70,6 +70,17 @@ def _refuses(fn, *, containing: str = "") -> str:
     raise AssertionError("expected a NoteError")
 
 
+def _pinned(content: bytes, base: bytes = CURRENT, stem: str = "decision") -> bytes:
+    """`content` as amend writes it over an undeclared `base`: with the id `base` has now pinned as
+    its first frontmatter line."""
+    import hashlib
+
+    from substrate.extract.base import doc_id_from
+
+    did = doc_id_from(stem, hashlib.sha256(base).hexdigest())
+    return content.replace(b"---\n", b"---\ndoc_id: " + did.encode() + b"\n", 1)
+
+
 def _no_staging_left(d: Path) -> None:
     left = [p.name for p in d.iterdir() if p.name.endswith(".tmp")]
     assert not left, f"a staging file was left behind: {left}"
@@ -87,7 +98,7 @@ def test_plan_writes_nothing_and_shows_the_diff() -> None:
     assert "+**Amended 2026-11-04:**" in plan.diff
     import hashlib
     assert plan.base_sha256 == hashlib.sha256(CURRENT).hexdigest()
-    assert plan.new_sha256 == hashlib.sha256(AMENDED).hexdigest()
+    assert plan.new_sha256 == hashlib.sha256(_pinned(AMENDED)).hexdigest()
     assert plan.passages >= 1
 
 
@@ -103,16 +114,327 @@ def test_plan_names_every_spine_field_that_changes() -> None:
     assert any("confidence changes proposed → verified" in w for w in plan.warnings)
 
 
-def test_an_undeclared_doc_id_changes_and_the_plan_says_so() -> None:
-    """With no `doc_id:` line the id derives from the content, so ANY edit changes it — the same
-    as an edit in Obsidian. Hiding that would let a reviewer believe links to it survive."""
+def test_an_undeclared_id_is_pinned_as_the_id_the_note_has_now() -> None:
+    """With no `doc_id:` line the id derives from the stem and a hash of the bytes, so every edit
+    gave the note a new identity and broke whatever named it. The id it has now is written into
+    the frontmatter in the same edit, where the diff shows it, and the reader takes it as given
+    from then on — the new line changing the hashed bytes does not matter."""
+    from substrate.extract.base import doc_id_for
+    from substrate.markdown.reader import read_markdown
+
     v, book = _vault(), notes.PlanBook()
-    _note(v)
+    p = _note(v)
+    now = doc_id_for(p)
     plan = _plan(v, book)
+    assert plan.pinned_doc_id == now
+    assert f"+doc_id: {now}" in plan.diff.split("\n")
+    assert plan.spine_before["doc_id"] == plan.spine_after["doc_id"] == now
+    assert "doc_id" not in plan.spine_changed
+    assert any("doc_id pinned" in w and now in w for w in plan.warnings), plan.warnings
+
+    _commit(v, book, plan.confirm_token)
+    assert doc_id_for(p) != now, "the bytes changed, so a derived id would have moved"
+    assert read_markdown(p)[0].doc_id == now, "the declared id is the one the reader takes"
+
+    p.rename(p.with_name("renamed.md"))
+    assert read_markdown(p.with_name("renamed.md"))[0].doc_id == now, "a rename keeps the id"
+
+
+def test_compose_accepts_a_pinned_note_under_the_same_id() -> None:
+    """The duplicate-id gate keys on the EFFECTIVE id, and the pin is the id the note had, so the
+    scope composes and the note keeps its identity."""
+    from substrate import vault as vault_mod
+    from substrate.extract.base import doc_id_for
+
+    v, book = _vault(), notes.PlanBook()
+    (v / ".substrate.toml").write_text('name = "demo"\ninherits = []\n', encoding="utf-8")
+    p = _note(v)
+    _note(v, "02-areas/other.md", CURRENT + b"\nAnother note.\n")
+    now = doc_id_for(p)
+    plan = _plan(v, book)
+    _commit(v, book, plan.confirm_token)
+    scope = vault_mod.resolve_scope(v)
+    assert any(n.path.resolve() == p.resolve() for n in scope.notes)
+    from substrate.markdown.reader import read_markdown
+    assert read_markdown(p)[0].doc_id == now
+
+
+def test_a_crlf_note_is_pinned_with_its_own_line_ending() -> None:
+    v = _vault()
+    crlf = CURRENT.replace(b"\n", b"\r\n")
+    _note(v, data=crlf)
+    plan = _plan(v, notes.PlanBook(), content=crlf + b"\r\nA CRLF addition.\r\n")
+    assert plan.pinned_doc_id
+    assert f"+doc_id: {plan.pinned_doc_id}\u27e8U+000D\u27e9" in plan.diff.split("\n")
+
+
+def test_a_hand_written_pin_must_be_the_current_id() -> None:
+    from substrate.extract.base import doc_id_for
+
+    v, book = _vault(), notes.PlanBook()
+    p = _note(v)
+    now = doc_id_for(p)
+    hand = AMENDED.replace(b"---\n", f"---\ndoc_id: {now}\n".encode(), 1)
+    plan = _plan(v, book, content=hand)
+    assert plan.pinned_doc_id == now
+    assert plan.diff.count("doc_id:") == 1, "the pin is not added a second time"
+    other = AMENDED.replace(b"---\n", b"---\ndoc_id: something-else\n", 1)
+    _refuses(lambda: _plan(v, book, content=other), containing=f"Write the line as `doc_id: {now}`")
+
+
+def test_a_hand_written_pin_the_reader_would_ignore_is_refused() -> None:
+    """A note named `café.md` derives `café-xxxxxxxx`, outside the declared shape. Written by hand
+    it matched the current id, so the plan reported it pinned, while the reader ignored the line
+    and derived a new id from the changed bytes (crosscheck, 2026-11-04)."""
+    from substrate.extract.base import doc_id_for
+
+    v = _vault()
+    p = _note(v, "04-synthesis/caf\u00e9.md")
+    hand = AMENDED.replace(b"---\n", f"---\ndoc_id: {doc_id_for(p)}\n".encode(), 1)
+    _refuses(lambda: _plan(v, notes.PlanBook(), path="04-synthesis/caf\u00e9.md", content=hand),
+             containing="amend does not assign a new id")
+
+
+def test_an_empty_or_ill_shaped_doc_id_line_is_pinned_not_honoured() -> None:
+    """A blank `doc_id:` property, or `doc_id: Not Valid`, is ignored by the reader, so the note
+    derives its id like an undeclared one. It counted as declared, so it was never pinned, moved on
+    every edit, and could not even be fixed by hand (crosscheck, 2026-11-04)."""
+    from substrate.extract.base import doc_id_for
+
+    for bad in (b"doc_id:\n", b"doc_id: Not Valid\n"):
+        v, book = _vault(), notes.PlanBook()
+        base = CURRENT.replace(b"---\n", b"---\n" + bad, 1)
+        p = _note(v, data=base)
+        now = doc_id_for(p)
+        # Sent back as it was, the bad line would switch the pin off: refused, with the fix.
+        _refuses(lambda base=base, v=v, book=book: _plan(v, book, content=base + b"\nedited\n"),
+                 containing=f"Write the line as `doc_id: {now}`")
+        # Written as the current id: accepted, and reported as the pin.
+        fixed = base.replace(bad, f"doc_id: {now}\n".encode()) + b"\nedited\n"
+        plan = _plan(v, book, content=fixed)
+        assert plan.pinned_doc_id == now
+        assert "doc_id" not in plan.spine_changed
+        # Left out: amend writes it in.
+        plan = _plan(v, book, content=base.replace(bad, b"") + b"\nedited\n")
+        assert plan.pinned_doc_id == now
+
+
+def test_a_bare_cr_note_is_pinned() -> None:
+    """The reader normalises a lone `\\r` to a line break, so it finds this frontmatter; the pin
+    did not, and the id moved."""
+    v = _vault()
+    cr = CURRENT.replace(b"\n", b"\r")
+    _note(v, data=cr)
+    plan = _plan(v, notes.PlanBook(), content=cr + b"\rA CR addition.\r")
+    assert plan.pinned_doc_id
+    assert "doc_id" not in plan.spine_changed
+
+
+def test_the_recovery_warning_says_to_restore_in_place() -> None:
+    """A pre-amend copy restored beside the note either declares the same id (a note that
+    already declared one) and compose refuses the scope, or derives its own and composes as a
+    second, duplicate note. Restoring in place is the only clean recovery."""
+    v = _vault()
+    _note(v)
+    warning = next(w for w in _plan(v, notes.PlanBook()).warnings if "restore it IN PLACE" in w)
+    assert "claims the same doc_id" in warning and "duplicate note" in warning, warning
+
+
+def test_a_second_doc_id_line_is_refused() -> None:
+    """The reader keeps the last `doc_id:` of several, so a decoy above the real line passed the
+    identity gate while the approved diff showed an identity being added, and YAML tooling that
+    rejects duplicate keys drops the whole block (crosscheck, 2026-11-04)."""
+    from substrate.extract.base import doc_id_for
+
+    v = _vault()
+    p = _note(v)
+    now = doc_id_for(p)
+    decoy = AMENDED.replace(b"---\n", f"---\ndoc_id: someone-else\ndoc_id: {now}\n".encode(), 1)
+    _refuses(lambda: _plan(v, notes.PlanBook(), content=decoy),
+             containing=f"keep exactly one, `doc_id: {now}`")
+
+    declared = CURRENT.replace(b"---\n", b"---\ndoc_id: kept-id\n", 1)
+    _note(v, "02-areas/declared.md", declared)
+    decoy = declared.replace(b"---\n", b"---\ndoc_id: someone-else\n", 1) + b"\nedited\n"
+    _refuses(lambda: _plan(v, notes.PlanBook(), path="02-areas/declared.md", content=decoy),
+             containing="keep exactly one, `doc_id: kept-id`")
+
+    # Hidden behind a separator the reader's `splitlines` breaks on but a plain `\\n` split does
+    # not: the count must see it, because the reader does (crosscheck, 2026-11-04).
+    for sep in ("\u2028", "\u2029", "\x85", "\x0c", "\x0b", "\x1c"):
+        hidden = AMENDED.replace(
+            b"---\n", f"---\ntitle: x{sep}doc_id: someone-else\ndoc_id: {now}\n".encode(), 1)
+        _refuses(lambda hidden=hidden: _plan(v, notes.PlanBook(), content=hidden),
+                 containing="2 `doc_id:` lines")
+
+
+def test_an_empty_doc_id_line_sent_back_is_called_empty_not_missing() -> None:
+    v = _vault()
+    base = CURRENT.replace(b"---\n", b"---\ndoc_id:\n", 1)
+    _note(v, data=base)
+    _refuses(lambda: _plan(v, notes.PlanBook(), content=base + b"\nedited\n"),
+             containing="`doc_id:` line is empty")
+
+
+def test_the_pin_warning_names_the_copies_it_turns_into_a_refusal() -> None:
+    """Before the pin an edited copy derived its own id and composed beside the note; after it,
+    the copy claims the same id and compose refuses the scope. On OneDrive, conflict copies are
+    routine, so the plan says so."""
+    v = _vault()
+    _note(v)
+    warning = next(w for w in _plan(v, notes.PlanBook()).warnings if "doc_id pinned" in w)
+    assert "sync conflict" in warning and "compose refuses the scope" in warning, warning
+
+
+def test_the_unpinnable_refusal_tells_empty_from_absent() -> None:
+    v = _vault()
+    _note(v, "04-synthesis/caf\u00e9.md", CURRENT.replace(b"---\n", b"---\ndoc_id:\n", 1))
+    msg = _refuses(lambda: _plan(v, notes.PlanBook(), path="04-synthesis/caf\u00e9.md",
+                                 content=AMENDED.replace(b"---\n", b"---\ndoc_id: foo\n", 1)),
+                   containing="as it was (empty), or leave it out")
+    assert "absent" not in msg
+
+
+def test_an_unchanged_note_with_a_bad_doc_id_line_is_told_the_line_to_write() -> None:
+    """Sent back unchanged, `doc_id:` empty: the note still needs its pin, and "nothing to amend"
+    hid the one line that would fix it (adversary, 2026-11-04)."""
+    from substrate.extract.base import doc_id_for
+
+    v = _vault()
+    base = CURRENT.replace(b"---\n", b"---\ndoc_id:\n", 1)
+    p = _note(v, data=base)
+    _refuses(lambda: _plan(v, notes.PlanBook(), content=base),
+             containing=f"Write the line as `doc_id: {doc_id_for(p)}`")
+
+
+def test_a_pin_that_would_end_the_block_early_is_not_written() -> None:
+    """A first frontmatter line that starts with `---` is a legal key, but once a line sits above
+    it, it reads as the closing fence and the block ends at the pin, moving every key into the
+    body. Unpinned, the caller's own content is judged instead (crosscheck, 2026-11-04)."""
+    content = b"---\n---title: x\nstatus: active\n---\n\n# Body\n"
+    assert notes._pin(content, "pinned-x") == content
+
+
+def test_a_pin_amend_could_not_write_says_where_to_write_it() -> None:
+    """`_pin` declines when the first frontmatter line starts with `---`. The content still has a
+    status, so it reached the identity gate, which called the line "empty" and said to leave it out
+    — advice that refuses again forever (adversary, 2026-11-04)."""
+    from substrate.extract.base import doc_id_for
+
+    v = _vault()
+    odd = b"---\n---title: x\n" + CURRENT[len(b"---\n"):]
+    p = _note(v, data=odd)
+    now = doc_id_for(p)
+    _refuses(lambda: _plan(v, notes.PlanBook(), content=odd + b"\nedited\n"),
+             containing="directly below the '---title: x' line (the first key")
+    written_below = odd.replace(b"---title: x\n", f"---title: x\ndoc_id: {now}\n".encode(), 1)
+    plan = _plan(v, notes.PlanBook(), content=written_below + b"\nedited\n")
+    assert plan.pinned_doc_id == now
+
+
+def test_an_unchanged_note_amend_could_not_pin_says_where_to_write_it() -> None:
+    v = _vault()
+    odd = b"---\n---title: x\n" + CURRENT[len(b"---\n"):]
+    _note(v, data=odd)
+    _refuses(lambda: _plan(v, notes.PlanBook(), content=odd),
+             containing="directly below the '---title: x' line (the first key")
+
+
+def test_the_declined_pin_advice_is_accepted_even_with_a_later_fence_like_line() -> None:
+    """Advice to write the line "before the closing `---`" pointed at body text when a later key
+    also started with `---` (the reader ends the block at the first `\\n---`), and the same refusal
+    came back. Directly after the first line is a place a new line cannot move the end."""
+    from substrate.extract.base import doc_id_for
+
+    v = _vault()
+    odd = (b"---\n---title: x\nstatus: active\ndoc_type: decision\nconfidence: proposed\n"
+           b"---note: y\n---\n\n# Retrieval stack decision\n\nThe MCP surface runs the measured "
+           b"stack, so a caller can tell a 0.698 answer from a lexical one.\n")
+    p = _note(v, data=odd)
+    now = doc_id_for(p)
+    _refuses(lambda: _plan(v, notes.PlanBook(), content=odd + b"\nedited\n"),
+             containing="directly below the '---title: x' line (the first key")
+    followed = odd.replace(b"---title: x\n", f"---title: x\ndoc_id: {now}\n".encode(), 1)
+    assert _plan(v, notes.PlanBook(), content=followed + b"\nedited\n").pinned_doc_id == now
+
+
+def test_the_declined_pin_names_the_key_line_not_the_fence() -> None:
+    """"The first line" also reads as the opening `---` fence, and a line written directly under
+    the fence is exactly the placement that closes the block, so the refusal names the key line by
+    its content, and the placement it rules out is refused (crosscheck, 2026-11-04)."""
+    from substrate.extract.base import doc_id_for
+
+    v = _vault()
+    odd = b"---\n---title: x\n" + CURRENT[len(b"---\n"):]
+    p = _note(v, data=odd)
+    now = doc_id_for(p)
+    msg = _refuses(lambda: _plan(v, notes.PlanBook(), content=odd + b"\nedited\n"),
+                   containing="directly below the '---title: x' line (the first key")
+    assert "not the opening `---` fence" in msg
+    under_fence = odd.replace(b"---\n", f"---\ndoc_id: {now}\n".encode(), 1)
+    _refuses(lambda: _plan(v, notes.PlanBook(), content=under_fence + b"\nedited\n"),
+             containing="no status")
+
+
+def test_the_named_key_line_is_marked_quoted_and_bounded() -> None:
+    """The first key line is note content echoed into an error. Raw, a backtick broke the quoting,
+    a bidi override or escape sequence reached the reader as-is, and a long line came back twice
+    (crosscheck, 2026-11-05)."""
+    v = _vault()
+    first = "---title: `a` b \u202e x \x1b[2J " + "y" * 5_000
+    odd = b"---\n" + first.encode() + b"\n" + CURRENT[len(b"---\n"):]
+    _note(v, data=odd)
+    msg = _refuses(lambda: _plan(v, notes.PlanBook(), content=odd + b"\nedited\n"),
+                   containing="(the first key, not the opening `---` fence)")
+    assert len(msg) < 1_000, len(msg)
+    assert "\u202e" not in msg and "\x1b" not in msg
+    assert "\u27e8U+202E\u27e9" in msg and "\u27e8U+001B\u27e9" in msg
+    assert "'---title: `a` b" in msg
+
+
+def test_an_unchanged_note_with_no_keys_has_nothing_to_amend() -> None:
+    """The declined-pin refusal blamed a `---` first line for notes that have none: no frontmatter,
+    an empty block, a thematic break. Sent back unchanged, those truly have nothing to amend."""
+    v = _vault()
+    for i, data in enumerate((b"# No frontmatter\n\nBody text.\n",
+                              b"---\n\n---\n\nBody text.\n",
+                              b"---\nprose line, not a key\n---\n\nBody text.\n")):
+        _note(v, f"04-synthesis/n{i}.md", data)
+        msg = _refuses(lambda i=i, data=data: _plan(v, notes.PlanBook(),
+                                                    path=f"04-synthesis/n{i}.md", content=data),
+                       containing="nothing to amend")
+        assert "could not write" not in msg
+
+
+def test_the_size_cap_is_exact_on_the_bytes_written() -> None:
+    """Checked on the caller's bytes before the pin and on the bytes WRITTEN after it. A note whose
+    pinned bytes land exactly on the cap passes the size checks and reaches the diff; one byte more
+    is refused for its size."""
+    from substrate.extract.base import doc_id_for
+
+    v = _vault()
+    p = _note(v)
+    line = len(b"doc_id: \n") + len(doc_id_for(p))
+    exact = CURRENT + b"x" * (notes.MAX_NOTE_BYTES - len(CURRENT) - line)
+    assert _reaches_the_diff(lambda: _plan(v, notes.PlanBook(), content=exact)), \
+        "pinned bytes exactly on the cap must pass the size check"
+    _refuses(lambda: _plan(v, notes.PlanBook(), content=exact + b"x"),
+             containing="with its pinned doc_id line is")
+    by_hand = _pinned(CURRENT)
+    full = by_hand + b"x" * (notes.MAX_NOTE_BYTES - len(by_hand))
+    assert _reaches_the_diff(lambda: _plan(v, notes.PlanBook(), content=full)), \
+        "a hand-written pin needs no room reserved"
+
+
+def test_an_id_that_cannot_be_declared_is_left_unpinned_and_said_so() -> None:
+    """A filename that is not ASCII derives an id outside the declared shape, which the reader
+    would ignore and derive anyway. It is not pinned, and the plan says the id will change."""
+    v = _vault()
+    _note(v, "04-synthesis/caf\u00e9.md")
+    plan = _plan(v, notes.PlanBook(), path="04-synthesis/caf\u00e9.md")
+    assert plan.pinned_doc_id is None
     assert "doc_id" in plan.spine_changed
-    assert plan.spine_before["doc_id"].startswith("decision-")
-    assert plan.spine_before["doc_id"] != plan.spine_after["doc_id"]
-    assert any("declares no doc_id" in w for w in plan.warnings)
+    assert any("cannot be pinned" in w for w in plan.warnings), plan.warnings
 
 
 def test_plan_says_no_copy_of_the_old_version_is_kept() -> None:
@@ -128,9 +450,12 @@ def test_commit_with_the_plan_token_replaces_the_note() -> None:
     p = _note(v)
     os.chmod(p, 0o640)
     plan = _plan(v, book)
-    target, previous = _commit(v, book, plan.confirm_token)
+    target, previous, written = _commit(v, book, plan.confirm_token)
     assert target == p.resolve()
-    assert p.read_bytes() == AMENDED
+    assert p.read_bytes() == _pinned(AMENDED)
+    import hashlib
+    assert hashlib.sha256(p.read_bytes()).hexdigest() == plan.new_sha256, "the plan's bytes are written"
+    assert written == plan.new_sha256
     assert previous == plan.base_sha256
     assert stat.S_IMODE(os.stat(p).st_mode) == 0o640, "the note's permissions must survive"
     assert not p.is_symlink()
@@ -145,7 +470,7 @@ def test_a_nested_area_note_is_reachable() -> None:
     p = _note(v, "02-areas/backend/decision.md")
     plan = _plan(v, book, path="02-areas/backend/decision.md")
     _commit(v, book, plan.confirm_token, path="02-areas/backend/decision.md")
-    assert p.read_bytes() == AMENDED
+    assert p.read_bytes() == _pinned(AMENDED)
 
 
 def test_an_absolute_path_inside_the_vault_is_accepted() -> None:
@@ -154,7 +479,7 @@ def test_an_absolute_path_inside_the_vault_is_accepted() -> None:
     p = _note(v)
     plan = _plan(v, book, path=str(p.resolve()))
     _commit(v, book, plan.confirm_token, path=str(p.resolve()))
-    assert p.read_bytes() == AMENDED
+    assert p.read_bytes() == _pinned(AMENDED)
 
 
 # ---------------------------------------------------------------- compare-and-swap
@@ -316,8 +641,19 @@ def test_a_missing_note_points_at_ingest() -> None:
 
 def test_an_identical_note_is_refused() -> None:
     v = _vault()
+    declared = CURRENT.replace(b"---\n", b"---\ndoc_id: decision\n", 1)
+    _note(v, data=declared)
+    _refuses(lambda: _plan(v, notes.PlanBook(), content=declared), containing="nothing to amend")
+
+
+def test_an_unchanged_undeclared_note_can_be_amended_to_pin_its_id() -> None:
+    """Sending the note back unchanged is a pin and nothing else: one added line."""
+    v = _vault()
     _note(v)
-    _refuses(lambda: _plan(v, notes.PlanBook(), content=CURRENT), containing="nothing to amend")
+    plan = _plan(v, notes.PlanBook(), content=CURRENT)
+    changed = [line for line in plan.diff.split("\n")
+               if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))]
+    assert changed == [f"+doc_id: {plan.pinned_doc_id}"], changed
 
 
 def test_frozen_classes_are_never_edited() -> None:
@@ -385,12 +721,7 @@ def test_a_declared_doc_id_is_identity() -> None:
     # Kept: the id does not change, so it is not reported as changing.
     plan = _plan(v, book, content=declared + b"\nedited\n")
     assert "doc_id" not in plan.spine_changed
-
-    # Added to a note that had none: also refused — adding an identity is its own decision.
-    _note(v, "02-areas/plain.md")
-    added = CURRENT.replace(b"---\nstatus", b"---\ndoc_id: plain-note\nstatus", 1)
-    _refuses(lambda: _plan(v, book, path="02-areas/plain.md", content=added),
-             containing="declared doc_id changes")
+    assert plan.pinned_doc_id is None
 
 
 def test_the_write_gate_requires_a_confidence_to_amend_an_unjudged_note() -> None:
@@ -475,7 +806,7 @@ def test_a_folder_swapped_for_a_symlink_after_the_walk_cannot_redirect_the_write
     assert (outside / "decision.md").read_bytes() == CURRENT, "the write followed the swapped link"
     assert not [p.name for p in outside.iterdir() if p.name.endswith(".tmp")]
     # It landed in the folder that was checked, wherever that folder now sits.
-    assert (v / "02-areas" / "backend-moved" / "decision.md").read_bytes() == AMENDED
+    assert (v / "02-areas" / "backend-moved" / "decision.md").read_bytes() == _pinned(AMENDED)
 
 
 def test_a_tilde_path_is_expanded() -> None:
@@ -514,7 +845,8 @@ def test_the_diff_splits_on_newlines_only() -> None:
                  content=CURRENT + "page\fbreak and a\u2028separator\nadded line\n".encode())
     assert "No newline at end of file" not in plan.diff
     assert "+added line" in plan.diff.splitlines()
-    assert sum(1 for line in plan.diff.split("\n") if line.startswith("+") and not line.startswith("+++")) == 1
+    assert sum(1 for line in plan.diff.split("\n") if line.startswith("+")
+               and not line.startswith(("+++", "+doc_id:"))) == 1
 
 
 def test_characters_a_viewer_would_hide_are_shown_in_the_diff() -> None:
@@ -613,20 +945,9 @@ def test_the_emoji_exemption_does_not_cover_ascii_modifier_letters() -> None:
 def test_an_oversized_note_is_refused_before_any_work() -> None:
     v = _vault()
     _note(v)
-    import substrate.markdown.ingest as ingest
-
-    real = ingest.ingest_markdown
-
-    def must_not_run(*a, **k):
-        raise AssertionError("the gate ran on content already over the size limit")
-
-    ingest.ingest_markdown = must_not_run
-    try:
-        _refuses(lambda: _plan(v, notes.PlanBook(),
-                               content=CURRENT + b"x" * (notes.MAX_NOTE_BYTES + 1)),
-                 containing="limit for a note")
-    finally:
-        ingest.ingest_markdown = real
+    assert not _reaches_the_diff(lambda: _refuses(
+        lambda: _plan(v, notes.PlanBook(), content=CURRENT + b"x" * (notes.MAX_NOTE_BYTES + 1)),
+        containing="bytes, over the"))
 
 
 def test_a_token_for_another_note_is_not_reported_as_this_note_moving() -> None:
@@ -660,11 +981,364 @@ def test_a_failed_chmod_closes_the_staging_descriptor() -> None:
     _no_staging_left(p.parent)
 
 
-def test_a_diff_too_large_to_show_whole_is_refused() -> None:
+def _reaches(owner, name: str, fn) -> bool:
+    """Whether `fn` got as far as `owner.name`, stubbed to a sentinel while it runs. What these
+    tests prove is how far a plan got, not what the stubbed step would have said."""
+
+    class Reached(Exception):
+        pass
+
+    def sentinel(*a, **k):
+        raise Reached
+
+    real = getattr(owner, name)
+    setattr(owner, name, sentinel)
+    try:
+        fn()
+    except Reached:
+        return True
+    finally:
+        setattr(owner, name, real)
+    return False
+
+
+def _reaches_the_diff(fn) -> bool:
+    return _reaches(notes, "_render_diff", fn)
+
+
+def _reaches_the_gates(fn) -> bool:
+    import substrate.markdown.ingest as ingest
+
+    return _reaches(ingest, "ingest_markdown", fn)
+
+
+def _lines_of(n: int, head: bytes = CURRENT) -> bytes:
+    """`head` padded with distinct lines to exactly `n` lines."""
+    return head + b"".join(b"line %d\n" % i for i in range(n - head.count(b"\n")))
+
+
+def test_the_line_count_is_the_diffs_line_count() -> None:
+    for data in (b"", b"a", b"a\n", b"a\nb", b"a\n\n", b"\n", b"a\rb\n", "a b\n".encode(),
+                 b"\xff\n\xfe"):
+        assert notes._line_count(data) == len(notes._lines(data)), data
+
+
+def test_an_amended_note_over_the_line_cap_is_refused_before_the_diff() -> None:
+    """Exact: a note at the cap reaches the diff, one line more does not."""
+    cap = notes.AMEND_LINE_CAP
+    v = _vault()
+    near = _lines_of(cap - 1, _pinned(CURRENT))
+    _note(v, data=near)
+    assert _reaches_the_diff(lambda: _plan(v, notes.PlanBook(), content=near + b"at the cap\n"))
+    assert not _reaches_the_diff(lambda: _refuses(
+        lambda: _plan(v, notes.PlanBook(), content=near + b"at the cap\none over\n"),
+        containing=f"has {cap + 1} lines, over"))
+
+
+def test_the_line_cap_counts_the_pinned_doc_id_line() -> None:
+    """The line amend adds is a line the diff compares: a caller's note at the cap is one over it
+    once pinned, and one line under the cap lands on it exactly."""
+    cap = notes.AMEND_LINE_CAP
+    v = _vault()
+    _note(v, data=_lines_of(cap - 1))
+    assert not _reaches_the_diff(lambda: _refuses(
+        lambda: _plan(v, notes.PlanBook(), content=_lines_of(cap)),
+        containing=f"with its pinned doc_id line has {cap + 1} lines"))
+    assert _reaches_the_diff(lambda: _plan(v, notes.PlanBook(), content=_lines_of(cap - 1)))
+
+
+def test_a_current_note_over_the_line_cap_is_refused_before_it_is_parsed() -> None:
+    """Reading a long note as markdown is the costly part — 4 s for an 8 MiB list — so the cap is
+    checked on the raw bytes, before it."""
+    v = _vault()
+    _note(v, data=_lines_of(notes.AMEND_LINE_CAP + 1))
+    assert not _reaches(notes, "_spine_of", lambda: _refuses(
+        lambda: _plan(v, notes.PlanBook()), containing="that one plan can diff"))
+
+
+def test_the_bounded_diff_is_difflibs_diff() -> None:
+    """`_unified` copies `unified_diff`'s formatting to put a clock on its matcher; this holds the
+    copy to the original, empty sides and unterminated last lines included."""
+    import difflib
+    import random
+
+    rng = random.Random(7)
+    for _ in range(400):
+        a = [rng.choice("abcdefg") + "\n" for _ in range(rng.randrange(0, 40))]
+        b = [x for x in a if rng.random() > 0.2] + [rng.choice("abxyz") + "\n"
+                                                   for _ in range(rng.randrange(0, 6))]
+        if rng.random() < 0.3:
+            rng.shuffle(b)
+        for side in (a, b):
+            if side and rng.random() < 0.3:
+                side[-1] = side[-1].rstrip("\n")
+        assert list(notes._unified(a, b, "a/x.md", "b/x.md")) == \
+            list(difflib.unified_diff(a, b, fromfile="a/x.md", tofile="b/x.md")), (a, b)
+
+
+def test_a_costly_reordering_is_refused_within_the_diff_budget() -> None:
+    """Values each repeated just under `difflib`'s 1% junk cut-off, permuted: 10,000 lines of this
+    held one plan for 32.6 s. Under the line cap, so only the clock stops it."""
+    import time
+
+    v = _vault()
+    head = _pinned(CURRENT)
+    n = 9_000 - head.count(b"\n")
+    _note(v, data=head + b"".join(b"v%d\n" % (i % 300) for i in range(n)))
+    content = head + b"".join(b"v%d\n" % ((i * 3) % 300) for i in range(n))
+    t = time.perf_counter()
+    _refuses(lambda: _plan(v, notes.PlanBook(), content=content), containing="to work out")
+    # Unbounded, this input runs for 25 s here; the margin is for a slower CI runner.
+    assert time.perf_counter() - t < notes.AMEND_DIFF_SECONDS + 5
+
+
+def test_the_clock_is_what_refuses_a_costly_diff() -> None:
     v = _vault()
     _note(v)
-    huge = CURRENT + b"\n" + b"".join(b"Line %d of a rewrite.\n\n" % i for i in range(6000))
-    _refuses(lambda: _plan(v, notes.PlanBook(), content=huge), containing="split the change")
+    real = notes.AMEND_DIFF_SECONDS
+    notes.AMEND_DIFF_SECONDS = -1.0
+    try:
+        assert not _reaches_the_gates(lambda: _refuses(lambda: _plan(v, notes.PlanBook()),
+                                                       containing="to work out"))
+    finally:
+        notes.AMEND_DIFF_SECONDS = real
+
+
+def test_a_few_huge_lines_are_refused_before_any_is_rendered_or_gated() -> None:
+    """The line cap says nothing about long lines: one 2 MB line spent seconds being marked for
+    hidden characters, after the gates had run over it, and was then refused for its length."""
+    v = _vault()
+    _note(v)
+    seen = []
+    real = notes._visible
+
+    def recording(text):
+        seen.append(len(text))
+        return real(text)
+
+    notes._visible = recording
+    try:
+        assert not _reaches_the_gates(lambda: _refuses(
+            lambda: _plan(v, notes.PlanBook(), content=CURRENT + b"y" * 2_000_000 + b"\n"),
+            containing=f"over the {notes.AMEND_DIFF_CHAR_CAP} characters"))
+    finally:
+        notes._visible = real
+    assert max(seen, default=0) <= notes.AMEND_DIFF_CHAR_CAP, max(seen)
+
+
+def test_a_diff_that_grows_past_the_cap_when_marked_is_refused() -> None:
+    """Under the cap as raw text, over it once each zero-width space shows as `⟨U+200B⟩`."""
+    v = _vault()
+    _note(v)
+    marks = AMENDED + "\u200b".encode() * 8_000 + b"\n"
+    _refuses(lambda: _plan(v, notes.PlanBook(), content=marks), containing="show whole")
+
+
+def test_a_commit_does_not_diff() -> None:
+    """The plan showed the diff and the binding holds the bytes to it. Diffing again, against the
+    clock, could refuse the approved edit because the second run was slower."""
+    v, book = _vault(), notes.PlanBook()
+    p = _note(v)
+    plan = _plan(v, book)
+    assert not _reaches_the_diff(lambda: _commit(v, book, plan.confirm_token))
+    assert p.read_bytes() == _pinned(AMENDED)
+
+
+def test_a_real_token_sent_with_other_content_buys_no_gates() -> None:
+    v, book = _vault(), notes.PlanBook()
+    p = _note(v)
+    plan = _plan(v, book)
+    assert not _reaches_the_gates(lambda: _refuses(
+        lambda: _commit(v, book, plan.confirm_token, content=AMENDED + b"\nUnapproved.\n"),
+        containing="not issued"))
+    assert p.read_bytes() == CURRENT
+    _refuses(lambda: _commit(v, book, plan.confirm_token), containing="not issued")
+
+
+def test_a_diff_too_large_to_show_is_refused_before_the_gates() -> None:
+    v = _vault()
+    _note(v)
+    huge = CURRENT + b"\n" + b"".join(b"Line %d of a rewrite.\n\n" % i for i in range(3000))
+    assert not _reaches_the_gates(lambda: _refuses(
+        lambda: _plan(v, notes.PlanBook(), content=huge), containing="split the change"))
+
+
+def test_an_invented_token_buys_no_work() -> None:
+    """Commit ran every gate and the whole diff before looking the token up, so a token nobody
+    issued cost as much as a plan — 32.8 s on the costliest note — with no human anywhere."""
+    v, book = _vault(), notes.PlanBook()
+    p = _note(v)
+    add_token = book.issue("an add plan's binding")
+    _note(v, "02-areas/other.md", CURRENT + b"\nA different note.\n")
+    other = _plan(v, book, path="02-areas/other.md", content=AMENDED).confirm_token
+    for token in ("made-up", add_token, other):
+        assert not _reaches(notes, "_read_at", lambda t=token: _refuses(
+            lambda: _commit(v, book, t), containing="not issued"))
+    assert p.read_bytes() == CURRENT
+
+
+def test_a_read_only_note_is_refused_at_plan() -> None:
+    """`rename` replaces the folder entry and never asks the note's own permissions, so a note made
+    read-only was replaced as if it were writable."""
+    _needs_non_root()
+    v = _vault()
+    p = _note(v)
+    p.chmod(0o444)
+    try:
+        _refuses(lambda: _plan(v, notes.PlanBook()), containing="read-only")
+    finally:
+        p.chmod(0o644)
+    assert p.read_bytes() == CURRENT
+
+
+def test_a_read_only_note_amend_would_refuse_anyway_is_told_the_real_reason() -> None:
+    _needs_non_root()
+    v = _vault()
+    p = _note(v, data=CURRENT.replace(b"status: active",
+                                      b"status: superseded\nsuperseded_by: decision-v2"))
+    p.chmod(0o444)
+    try:
+        msg = _refuses(lambda: _plan(v, notes.PlanBook()), containing="is superseded")
+    finally:
+        p.chmod(0o644)
+    assert "read-only" not in msg
+
+
+def test_a_note_made_read_only_after_the_plan_is_not_replaced() -> None:
+    _needs_non_root()
+    v, book = _vault(), notes.PlanBook()
+    p = _note(v)
+    plan = _plan(v, book)
+    p.chmod(0o444)
+    try:
+        _refuses(lambda: _commit(v, book, plan.confirm_token), containing="read-only")
+        assert p.read_bytes() == CURRENT
+        assert stat.S_IMODE(p.stat().st_mode) == 0o444
+    finally:
+        p.chmod(0o644)
+    _refuses(lambda: _commit(v, book, plan.confirm_token), containing="not issued")
+    assert p.read_bytes() == CURRENT
+    _no_staging_left(p.parent)
+
+
+def test_a_note_made_read_only_while_the_commit_runs_its_gates_is_not_replaced() -> None:
+    """A `chmod` changes no byte, so the last checksum before the rename cannot see it, and the
+    gates and the diff before it are seconds long. The check sits beside the rename."""
+    _needs_non_root()
+    v, book = _vault(), notes.PlanBook()
+    p = _note(v)
+    plan = _plan(v, book)
+    real = notes._check_amend
+
+    def then_chmod(**kw):
+        out = real(**kw)
+        p.chmod(0o444)
+        return out
+
+    notes._check_amend = then_chmod
+    try:
+        _refuses(lambda: _commit(v, book, plan.confirm_token), containing="read-only")
+    finally:
+        notes._check_amend = real
+        p.chmod(0o644)
+    assert p.read_bytes() == CURRENT
+    _no_staging_left(p.parent)
+
+
+def test_a_folder_made_read_only_during_the_commit_is_refused_not_raised() -> None:
+    """The staging file cannot be removed from a folder that turned read-only under it. The
+    cleanup's own error replaced the refusal, so the caller got a bare PermissionError and the
+    token survived it."""
+    _needs_non_root()
+    v, book = _vault(), notes.PlanBook()
+    p = _note(v)
+    plan = _plan(v, book)
+    real = notes._require_writable_note
+
+    def then_lock_the_folder(*a):
+        real(*a)
+        p.parent.chmod(0o555)
+
+    notes._require_writable_note = then_lock_the_folder
+    try:
+        _refuses(lambda: _commit(v, book, plan.confirm_token), containing="failed replacing")
+    finally:
+        notes._require_writable_note = real
+        p.parent.chmod(0o755)
+    assert p.read_bytes() == CURRENT
+    _refuses(lambda: _commit(v, book, plan.confirm_token), containing="not issued")
+
+
+def _needs_non_root() -> None:
+    """Root is granted write access whatever a file's mode says, so a read-only note cannot be made
+    for it. The CI runner is not root; a container might be."""
+    if os.geteuid() == 0:
+        import pytest
+
+        pytest.skip("root can write a read-only file")
+
+
+def _needs_chflags() -> None:
+    """Finder's Locked is a BSD file flag; the engine CI job runs on Linux, which has none."""
+    if not hasattr(os, "chflags"):
+        import pytest
+
+        pytest.skip("no file flags (Finder's Locked) on this platform")
+
+
+def test_a_finder_locked_note_is_refused_at_plan_not_at_the_rename() -> None:
+    """Finder's Locked is the user-immutable flag. The rename onto it fails, so the note planned
+    fine and every commit of that plan failed."""
+    _needs_chflags()
+    v = _vault()
+    p = _note(v)
+    os.chflags(p, stat.UF_IMMUTABLE)
+    try:
+        _refuses(lambda: _plan(v, notes.PlanBook()), containing="read-only")
+    finally:
+        os.chflags(p, 0)
+    assert p.read_bytes() == CURRENT
+
+
+def test_a_note_in_a_folder_that_cannot_take_the_staging_file_is_refused_at_plan() -> None:
+    """The commit writes a staging file beside the note. A read-only or Locked folder planned fine
+    and then refused every commit with "cannot stage"."""
+    _needs_non_root()
+    locks = [(lambda d: d.chmod(0o555), lambda d: d.chmod(0o755))]
+    if hasattr(os, "chflags"):
+        locks.append((lambda d: os.chflags(d, stat.UF_IMMUTABLE), lambda d: os.chflags(d, 0)))
+    for lock, unlock in locks:
+        v = _vault()
+        p = _note(v)
+        lock(p.parent)
+        try:
+            msg = _refuses(lambda v=v: _plan(v, notes.PlanBook()), containing="read-only")
+        finally:
+            unlock(p.parent)
+        assert str(p.parent) in msg
+
+
+def test_a_note_name_at_the_length_limit_commits() -> None:
+    """The staging file was the note's name plus 22 characters, so any name over 233 characters
+    planned and then failed every commit. 255 is the filesystem's limit: in characters on APFS, in
+    bytes on Linux, where 252 `é` do not fit and that name is not tried."""
+    import errno
+    import hashlib
+
+    for stem in ("a" * 252, "é" * 252):
+        v, book = _vault(), notes.PlanBook()
+        rel = f"04-synthesis/{stem}.md"
+        try:
+            p = _note(v, rel)
+        except OSError as e:
+            if e.errno != errno.ENAMETOOLONG or stem.isascii():
+                raise
+            continue
+        plan = _plan(v, book, path=rel)
+        _commit(v, book, plan.confirm_token, path=rel)
+        assert hashlib.sha256(p.read_bytes()).hexdigest() == plan.new_sha256
+        assert b"Amended 2026-11-04" in p.read_bytes()
+        _no_staging_left(p.parent)
 
 
 if __name__ == "__main__":

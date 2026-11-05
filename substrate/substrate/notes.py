@@ -47,6 +47,7 @@ import os
 import secrets
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -97,9 +98,9 @@ class PlanBook:
 
     def __init__(self) -> None:
         # token -> (binding, note). `note` is (target, sha256 of the bytes an amend plan's diff
-        # was taken from), None for an add. It is not part of what the token authorises — the
-        # binding already covers both — it is kept so a commit can say WHY it is refused when the
-        # note moved under the plan.
+        # was taken from), None for an add. The binding is what authorises a write; `note` lets a
+        # commit say WHY it is refused when the note moved under the plan, and refuse a token not
+        # issued for this note before it reads or checks anything.
         self._issued: dict[str, tuple[str, tuple[str, str] | None]] = {}
 
     def issue(self, binding: str, *, note: tuple[str, str] | None = None) -> str:
@@ -111,6 +112,11 @@ class PlanBook:
         """(target, base sha256) an issued amend plan was for; None for an unknown token or an add."""
         entry = self._issued.get(token)
         return entry[1] if entry else None
+
+    def matches(self, token: str, binding: str) -> bool:
+        """Whether `redeem` would accept, without spending the token."""
+        entry = self._issued.get(token)
+        return entry is not None and secrets.compare_digest(entry[0], binding)
 
     def discard(self, token: str) -> None:
         self._issued.pop(token, None)
@@ -295,8 +301,17 @@ AMEND_DIFF_CHAR_CAP = 64_000
 # The largest note amend reads. Matches the MCP server's source cap and agent mode's note cap.
 MAX_NOTE_BYTES = 8 * 1024 * 1024
 
-# The spine fields a plan compares. `doc_id` is here because an undeclared id is DERIVED from the
-# content, so an edit changes it, and the reviewer should see that.
+# What the diff may cost, every tool call waiting on it under the server's one lock. A line cap
+# alone did not bound it: `difflib` matches repeated lines quadratically, and 10,000 lines held a
+# plan for 32.6 s, 5,000 for 8.8 s (measured 2026-11-05). So the matching runs against a clock,
+# and the line cap bounds the one step the clock cannot interrupt: a single longest-match pass,
+# about N·max(N/100, 200) comparisons (autojunk drops lines over 1% popular, from 200 lines up) —
+# 77-102 ms at the cap, measured. The gates after the diff are not on the clock.
+AMEND_LINE_CAP = 10_000
+AMEND_DIFF_SECONDS = 2.0
+
+# The spine fields a plan compares. `doc_id` is here for the one case pinning cannot cover: a
+# filename whose derived id is outside the declared shape, which still changes with every edit.
 SPINE_FIELDS = ("doc_id", "status", "doc_type", "confidence", "document_class", "domains",
                 "supersedes", "superseded_by")
 
@@ -313,6 +328,7 @@ class AmendPlan:
     passages: int
     confirm_token: str
     warnings: list[str]
+    pinned_doc_id: str | None
 
 
 def _amend_binding(target: Path, base_sha256: str, content: bytes) -> str:
@@ -476,6 +492,11 @@ def _lines(data: bytes) -> list[str]:
     return lines
 
 
+def _line_count(data: bytes) -> int:
+    """`len(_lines(data))` without decoding: what the diff will have to compare."""
+    return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+
+
 # What a viewer would hide, by Unicode CATEGORY rather than a list: controls (Cc), format characters
 # (Cf — zero-width spaces, bidi overrides, and the tag block U+E0000–E007F that smuggles ASCII text
 # no viewer draws), line and paragraph separators (Zl, Zp), private-use (Co) and unassigned (Cn).
@@ -546,11 +567,12 @@ def _spine_of(staged: Path) -> tuple[dict, str]:
     function, so a field reported as changed changed in the file, not in how it was read.
     """
     from substrate.classes import UNCLASSIFIED_CLASS
-    from substrate.markdown.reader import _parse_frontmatter, doc_id_list, read_markdown
+    from substrate.markdown.reader import (
+        _parse_frontmatter, doc_id_list, normalized_text, read_markdown,
+    )
 
     doc, _body, _stats = read_markdown(staged)
-    text = staged.read_bytes().decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-    front, _ = _parse_frontmatter(text)
+    front, _ = _parse_frontmatter(normalized_text(staged.read_bytes()))
     return {
         "doc_id": doc.doc_id,
         "status": doc.status,
@@ -563,24 +585,120 @@ def _spine_of(staged: Path) -> tuple[dict, str]:
     }, front.get("doc_id", "")
 
 
-def _check_amend(*, target: Path, rel: str, base: bytes, content: bytes) -> dict:
-    """Every gate an amend must pass, against the current bytes `base`. Issues NOTHING."""
-    import difflib
+def _require_within_caps(data: bytes, what: str) -> None:
+    """The byte cap (a note over it no later amend could read back) and the line cap (one over it
+    no plan could diff in bounded time), with `what` naming the bytes in the refusal."""
+    if len(data) > MAX_NOTE_BYTES:
+        raise NoteError(f"{what} is {len(data)} bytes, over the {MAX_NOTE_BYTES}-byte limit for a "
+                        f"note.")
+    n = _line_count(data)
+    if n > AMEND_LINE_CAP:
+        raise NoteError(f"{what} has {n} lines, over the {AMEND_LINE_CAP} that one plan can diff.")
 
+
+def _diff_too_costly() -> NoteError:
+    return NoteError(
+        f"the diff took more than {AMEND_DIFF_SECONDS:g} s to work out, the most one diff may "
+        f"take. Changes that reorder many repeated lines cost the most; split the change into "
+        f"smaller amends."
+    )
+
+
+def _diff_too_large() -> NoteError:
+    return NoteError(
+        f"the diff is over the {AMEND_DIFF_CHAR_CAP} characters that one plan can show whole. A "
+        f"truncated diff cannot be reviewed; split the change into smaller amends."
+    )
+
+
+def _unified(a: list[str], b: list[str], fromfile: str, tofile: str):
+    """`difflib.unified_diff`'s lines, from a matcher that stops at the clock. Its formatting is
+    copied rather than called because `unified_diff` builds its own `SequenceMatcher` with no way
+    in; `test_the_bounded_diff_is_difflibs_diff` holds the two to the same output."""
+    import difflib
+    import time
+
+    deadline = time.monotonic() + AMEND_DIFF_SECONDS
+
+    class Bounded(difflib.SequenceMatcher):
+        def find_longest_match(self, alo=0, ahi=None, blo=0, bhi=None):
+            if time.monotonic() > deadline:
+                raise _diff_too_costly()
+            return super().find_longest_match(alo, ahi, blo, bhi)
+
+    def span(start: int, stop: int) -> str:
+        length = stop - start
+        if length == 1:
+            return f"{start + 1}"
+        return f"{start + 1 if length else start},{length}"
+
+    for k, group in enumerate(Bounded(None, a, b).get_grouped_opcodes(3)):
+        if not k:
+            yield f"--- {fromfile}\n"
+            yield f"+++ {tofile}\n"
+        first, last = group[0], group[-1]
+        yield f"@@ -{span(first[1], last[2])} +{span(first[3], last[4])} @@\n"
+        for tag, i1, i2, j1, j2 in group:
+            if tag == "equal":
+                yield from (" " + line for line in a[i1:i2])
+                continue
+            if tag in ("replace", "delete"):
+                yield from ("-" + line for line in a[i1:i2])
+            if tag in ("replace", "insert"):
+                yield from ("+" + line for line in b[j1:j2])
+
+
+def _render_diff(base: bytes, content: bytes, rel: str) -> tuple[str, dict, int]:
+    """The diff a human approves, with what a viewer would hide marked, and how many marks fell on
+    each side. Refused once it is longer than one plan can show whole — counted on the RAW lines
+    as they arrive, so a note of a few huge lines is refused before any of it is rendered."""
+    # A final line without a newline is marked the way GNU diff marks it. Left bare, it ran into
+    # the next diff line, so `-old last line+new last line` read as one removed line and hid the
+    # added one — in the only text the human approves. Obsidian often saves without a final newline.
+    rendered, literal, raw = [], 0, 0
+    hidden = {"+": 0, "-": 0, " ": 0}
+    for k, line in enumerate(_unified(_lines(base), _lines(content), f"a/{rel}", f"b/{rel}")):
+        raw += len(line)
+        if raw > AMEND_DIFF_CHAR_CAP:
+            raise _diff_too_large()
+        ended = line.endswith("\n")
+        shown, n, lit = _visible(line[:-1] if ended else line)
+        # Counted by the side of the diff the line is on: a mark in a removed line is something
+        # the amend takes OUT, and saying the note will hold it would misdescribe the change.
+        # The two file headers are told apart by POSITION, which `unified_diff` fixes, not by their
+        # `---`/`+++` prefix: a removed YAML fence renders as `----` and an added `++x` as `+++x`.
+        side = line[:1] if k >= 2 and line[:1] in hidden else " "
+        hidden[side] += n
+        literal += lit
+        rendered.append(shown + ("\n" if ended else "\n\\ No newline at end of file\n"))
+    diff = "".join(rendered)
+    # Again on the RENDERED text: a hidden character grows into a `⟨U+XXXX⟩` mark.
+    if len(diff) > AMEND_DIFF_CHAR_CAP:
+        raise _diff_too_large()
+    return diff, hidden, literal
+
+
+def _check_amend(*, target: Path, rel: str, base: bytes, content: bytes,
+                 issued: Callable[[bytes], bool] | None = None) -> tuple[dict, bytes]:
+    """Every gate an amend must pass, against the current bytes `base`. Issues NOTHING.
+
+    Returns (the plan's fields, the bytes to WRITE): `content` with a `doc_id:` line added when the
+    note is pinnable, `content` has no `doc_id` key, and `_pin` can write one; `content` itself
+    otherwise.
+    The caller binds and writes these bytes, never the content it was handed.
+
+    `issued` is None for a plan. A commit passes whether its token was issued for the bytes to
+    write, asked as soon as they are known, so a token that cannot redeem buys no diff or gate;
+    and a commit does not diff at all — the plan showed the diff, the binding holds these bytes to
+    it, and a diff against the clock could refuse an approved edit on a slower second run."""
     from substrate import classes
     from substrate.markdown.ingest import CoverageError, ingest_markdown
     from substrate.spine import SpineError
 
-    # Before any work: a note over the cap no later amend could read back, and the gate run should
-    # not be spent on it. This does NOT bound the diff's cost — `difflib` is roughly quadratic in the
-    # line count (~49 s at 813 KB, measured 2026-11-04), so a large note under the cap can still hold
-    # the server for a long time before the diff cap refuses it.
-    if len(content) > MAX_NOTE_BYTES:
-        raise NoteError(f"the amended note is {len(content)} bytes, over the {MAX_NOTE_BYTES}-byte "
-                        f"limit for a note.")
-    if base == content:
-        raise NoteError(f"{target} already holds exactly this content; there is nothing to amend.")
-
+    # The caps, before anything is parsed: a current note over the line cap costs seconds to read
+    # as markdown, and is refused regardless. The pinned bytes are capped again below.
+    _require_within_caps(base, str(target))
+    _require_within_caps(content, "the amended note")
     tmp = Path(tempfile.mkdtemp())
     try:
         # The SAME filename on both sides, so an undeclared doc_id derives exactly as it will in
@@ -605,6 +723,57 @@ def _check_amend(*, target: Path, rel: str, base: bytes, content: bytes) -> dict
                 f"({before_policy.description}) — it is never edited in place."
             )
 
+        # PIN AN UNDECLARED ID. Without a `doc_id:` line a note's id is its stem plus a hash of its
+        # bytes (`extract/base.py:57`), so every edit gave it a new identity and broke whatever named
+        # it — a `supersedes` list, a `superseded_by`. The id it has NOW is written into the
+        # frontmatter as part of this same edit, where the diff shows it. Once declared, the reader
+        # takes it as given (`reader.py`) and never derives one again, so the new line changing the
+        # hashed bytes does not matter, and neither does a later rename in Obsidian.
+        # DECLARED means declared in a shape the reader honours. An empty `doc_id:` (a blank
+        # Obsidian property) or an ill-shaped one is ignored by the reader, so such a note derives
+        # its id like an undeclared one — and must be pinned like one (crosscheck, 2026-11-04).
+        from substrate.markdown.reader import _DOC_ID
+
+        declared = bool(_DOC_ID.fullmatch(before_fid))
+        pinnable = not declared and bool(_DOC_ID.fullmatch(before["doc_id"]))
+        if pinnable:
+            with_pin = _pin(content, before["doc_id"])
+            if with_pin != content:
+                _require_within_caps(with_pin, "the amended note with its pinned doc_id line")
+            content = with_pin
+        if issued is not None and not issued(content):
+            raise _not_issued()
+        # ONE `doc_id:` line at most. The reader keeps the last of several, so a decoy line above
+        # the real one passed the identity gate while the approved diff showed an identity being
+        # added — and YAML tooling that rejects duplicate keys drops the whole block (crosscheck).
+        id_lines = _doc_id_lines(content)
+        if id_lines > 1:
+            keep = before["doc_id"] if pinnable else before_fid
+            raise NoteError(
+                f"the amended note has {id_lines} `doc_id:` lines in its frontmatter. A note has "
+                f"one identity: " + (f"keep exactly one, `doc_id: {keep}`." if keep
+                                     else "remove them all; this note's id cannot be declared.")
+            )
+        if base == content:
+            # A pinnable note sent back unchanged still needs its pin, and "nothing to amend" would
+            # hide the one line that would fix it: either its `doc_id:` line is empty or ill-shaped,
+            # or `_pin` declined to write one. Only a note WITH frontmatter keys can be the second
+            # case; one with none (no block, an empty one, a thematic break) truly has nothing to
+            # amend, and blaming a `---` first line it does not have would be false.
+            if pinnable and _declined_by_block(content):
+                raise _pin_declined(before["doc_id"], content)
+            if pinnable and id_lines:
+                raise NoteError(
+                    f"the note's id is {before['doc_id']}, and its `doc_id:` line is "
+                    f"{'empty' if not before_fid else repr(before_fid)}. Write the line as "
+                    f"`doc_id: {before['doc_id']}`."
+                )
+            raise NoteError(f"{target} already holds exactly this content; there is nothing to "
+                            f"amend.")
+        # Before the gates: a diff no plan could show is refused without spending them on it.
+        diff, hidden, literal = (_render_diff(base, content, rel) if issued is None
+                                 else ("", {"+": 0, "-": 0, " ": 0}, 0))
+
         (tmp / "after").mkdir()
         after_path = tmp / "after" / target.name
         after_path.write_bytes(content)
@@ -624,44 +793,51 @@ def _check_amend(*, target: Path, rel: str, base: bytes, content: bytes) -> dict
                 f"the amended note would be `{after['document_class']}`, a frozen class "
                 f"({after_policy.description}). A frozen note is never produced by an edit."
             )
-        if before_fid != after_fid:
+        # A declared id may not change. An undeclared one may only BECOME declared, as the id the
+        # note has now — by the pin above, or by the caller writing that same line. A note that can
+        # be pinned MUST leave pinned: an empty or ill-shaped `doc_id:` sent back (copied from the
+        # note) would otherwise switch the pin off, and the id would move on every edit.
+        if declared:
+            if after_fid != before_fid:
+                raise NoteError(
+                    f"the declared doc_id changes ({before_fid} → {after_fid or '<none>'}). A "
+                    f"declared id is the note's identity: an amend may not change or remove it."
+                )
+        elif pinnable:
+            if not id_lines:
+                # ABSENT, so `_pin` declined: the spine gate passed, so frontmatter keys exist, and
+                # the only remaining reason is a first line starting with `---`, which a line above
+                # it would turn into a closing fence. "Leave it out" would loop; say what works.
+                raise _pin_declined(before["doc_id"], content)
+            if after_fid != before["doc_id"]:
+                state = "empty" if not after_fid else repr(after_fid)
+                raise NoteError(
+                    f"the note's id is {before['doc_id']}, and its `doc_id:` line is {state}. "
+                    f"Write the line as `doc_id: {before['doc_id']}`."
+                )
+        elif after_fid not in ("", before_fid):
+            # Unpinnable: the id this filename derives cannot be declared, and amend never ASSIGNS
+            # an id — a new one could collide with another note's and refuse the scope. A
+            # hand-written line here was once reported pinned while the id quietly changed.
+            was = (f"`doc_id: {before_fid}`" if before_fid
+                   else "empty" if _doc_id_lines(base) else "absent")
             raise NoteError(
-                f"the declared doc_id changes ({before_fid or '<none>'} → {after_fid or '<none>'}). "
-                f"A declared id is the note's identity: an amend may not add, remove or change it."
+                f"amend does not assign a new id, and the id this filename derives "
+                f"({before['doc_id']}) is outside the shape a declared id must have, so this note "
+                f"keeps deriving its id. Leave the `doc_id:` line as it was ({was}), or leave it "
+                f"out."
             )
+        pinned = before["doc_id"] if pinnable else None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-
-    # A final line without a newline is marked the way GNU diff marks it. Left bare, it ran into
-    # the next diff line, so `-old last line+new last line` read as one removed line and hid the
-    # added one — in the only text the human approves. Obsidian often saves without a final newline.
-    rendered, literal = [], 0
-    hidden = {"+": 0, "-": 0, " ": 0}
-    for k, line in enumerate(difflib.unified_diff(
-        _lines(base), _lines(content), fromfile=f"a/{rel}", tofile=f"b/{rel}",
-    )):
-        ended = line.endswith("\n")
-        shown, n, lit = _visible(line[:-1] if ended else line)
-        # Counted by the side of the diff the line is on: a mark in a removed line is something
-        # the amend takes OUT, and saying the note will hold it would misdescribe the change.
-        # The two file headers are told apart by POSITION, which `unified_diff` fixes, not by their
-        # `---`/`+++` prefix: a removed YAML fence renders as `----` and an added `++x` as `+++x`.
-        side = line[:1] if k >= 2 and line[:1] in hidden else " "
-        hidden[side] += n
-        literal += lit
-        rendered.append(shown + ("\n" if ended else "\n\\ No newline at end of file\n"))
-    diff = "".join(rendered)
-    if len(diff) > AMEND_DIFF_CHAR_CAP:
-        raise NoteError(
-            f"the diff is {len(diff)} characters, over the {AMEND_DIFF_CHAR_CAP} that one plan can "
-            f"show whole. A truncated diff cannot be reviewed; split the change into smaller amends."
-        )
 
     changed = [f for f in SPINE_FIELDS if before[f] != after[f]]
     warnings = [
         "the per-note A22 assertion sweep runs at compose, not in this plan",
         "the engine keeps no copy of the current version; recovering it after the write means the "
-        "sync provider's version history",
+        "sync provider's version history — restore it IN PLACE: a copy restored beside the note "
+        "either claims the same doc_id (compose refuses the scope) or composes as a second, "
+        "duplicate note",
     ]
     if any(hidden.values()):
         where = ", ".join(f"{n} in {label}" for n, label in (
@@ -674,11 +850,18 @@ def _check_amend(*, target: Path, rel: str, base: bytes, content: bytes) -> dict
     if literal:
         warnings.append(f"a literal `⟨` in the note is shown as `⟨U+27E8⟩` ({literal}), so that "
                         f"every `⟨` in the diff opens a mark")
+    if pinned is not None:
+        warnings.append(
+            f"doc_id pinned: the note declared no usable id, so this amend sets `doc_id: {pinned}` "
+            f"— the id it has now — and it keeps that id through this and later edits and renames. "
+            f"From now on any copy of the note (a sync conflict, an Obsidian duplicate) claims the "
+            f"same id, and compose refuses the scope until the copy is removed or given its own"
+        )
     if "doc_id" in changed:
         warnings.append(
-            f"doc_id changes {before['doc_id']} → {after['doc_id']}: the note declares no doc_id, "
-            f"so its id derives from its content (as with any edit in Obsidian). Nothing that "
-            f"names the old id — a `superseded_by`, a `supersedes` entry — is updated."
+            f"doc_id changes {before['doc_id']} → {after['doc_id']}: the id derived from this "
+            f"filename is not a valid declared id, so it cannot be pinned. Nothing that names the "
+            f"old id — a `superseded_by`, a `supersedes` entry — is updated."
         )
     if "confidence" in changed:
         warnings.append(
@@ -699,7 +882,101 @@ def _check_amend(*, target: Path, rel: str, base: bytes, content: bytes) -> dict
         "spine_changed": changed,
         "passages": int((result.run.get("chunk") or {}).get("passages", 0)),
         "warnings": warnings,
-    }
+        "pinned_doc_id": pinned,
+    }, content
+
+
+def _pin_declined(doc_id: str, content: bytes) -> NoteError:
+    """The refusal for a pin `_pin` would not write, naming the line to write it under by its
+    CONTENT: "the first line" also reads as the opening `---` fence, and a line written directly
+    under the fence is exactly the placement that closes the block (crosscheck, 2026-11-04)."""
+    # The line is NOTE CONTENT echoed into an error: marked like the diff marks it (a bidi override
+    # or an escape sequence would otherwise reach the reader raw), quoted with repr so a backtick
+    # in it cannot end the quote, and cut short — it only has to identify a line that is unique,
+    # and an 8 MiB first line would otherwise come back twice (crosscheck, 2026-11-05).
+    shown, _, _ = _visible(_first_key_line(content))
+    first = repr(shown if len(shown) <= 80 else shown[:80] + "…")
+    return NoteError(
+        f"amend could not write `doc_id: {doc_id}` into this frontmatter: its first key line, "
+        f"{first}, starts with `---`, so a line placed above it would close the block. Write "
+        f"`doc_id: {doc_id}` yourself, on its own line directly below the {first} line (the "
+        f"first key, not the opening `---` fence), where a new line cannot move where the block "
+        f"ends."
+    )
+
+
+def _first_key_line(content: bytes) -> str:
+    """The first non-blank line inside the frontmatter block, as the reader sees it."""
+    from substrate.markdown.reader import _FRONTMATTER, normalized_text
+
+    m = _FRONTMATTER.match(normalized_text(content))
+    return next((line for line in m.group(1).splitlines() if line.strip()), "") if m else ""
+
+
+def _declined_by_block(content: bytes) -> bool:
+    """GIVEN that `_pin` returned a pinnable note's content unchanged, whether that was because of
+    the block's layout: it has frontmatter keys and none is `doc_id`, so only the check that the
+    reader still sees the same keys can have refused the pin. False for content with no keys to pin
+    into at all. Not a predicate on its own: ordinary keyed content `_pin` pins fine answers True."""
+    from substrate.markdown.reader import frontmatter_pairs, normalized_text
+
+    try:
+        pairs = frontmatter_pairs(normalized_text(content))
+    except UnicodeDecodeError:
+        return False
+    return bool(pairs) and not any(k == "doc_id" for k, _ in pairs)
+
+
+def _pin(content: bytes, doc_id: str) -> bytes:
+    """`content` with `doc_id: <doc_id>` as its first frontmatter line, or `content` unchanged when
+    there is nothing to pin into. Called only for an id the reader would honour as declared
+    (`_check_amend` decides that, and reports the pin).
+
+    Left unchanged: content the caller already gave a `doc_id:` line (the identity gate judges it);
+    content with no frontmatter, an empty block, or a block the reader takes for a thematic break
+    (the spine gate refuses it); and content whose first frontmatter line starts with `---`, which
+    a line inserted above it would turn into a closing fence (`_pin_declined` says where to write
+    the line instead). The note's own line ending is used, so a CRLF or CR note does not gain one LF
+    line.
+    """
+    from substrate.markdown.reader import frontmatter_pairs, normalized_text
+
+    for opener in (b"---\r\n", b"---\n", b"---\r"):
+        if content.startswith(opener):
+            break
+    else:
+        return content
+    try:
+        text = normalized_text(content)
+    except UnicodeDecodeError:
+        return content
+    # Only an ABSENT line is written in. A `doc_id:` line the caller sent — usable, empty or
+    # ill-shaped — is theirs, and the identity gate judges it rather than this rewriting it.
+    pairs = frontmatter_pairs(text)
+    if not pairs or any(k == "doc_id" for k, _ in pairs):
+        return content
+    eol = opener[3:]
+    pinned = opener + b"doc_id: " + doc_id.encode("ascii") + eol + content[len(opener):]
+    # The reader must see EXACTLY the old keys plus this one. A first line that itself starts
+    # with `---` (`---title: x` is a legal key) becomes a closing fence once a line sits above it,
+    # and the block would end at the pin (crosscheck, 2026-11-04). Unpinned, the spine gate
+    # judges the caller's own content instead of a block this function broke.
+    if frontmatter_pairs(normalized_text(pinned)) != [("doc_id", doc_id)] + pairs:
+        return content
+    return pinned
+
+
+def _doc_id_lines(content: bytes) -> int:
+    """How many `doc_id` keys the frontmatter holds, as the reader reads it — its dict keeps only
+    the last of several, so it cannot see a duplicate; `frontmatter_pairs` can. 0 when there is no
+    frontmatter, or the bytes are not UTF-8."""
+    from substrate.markdown.reader import frontmatter_pairs, normalized_text
+
+    try:
+        text = normalized_text(content)
+    except UnicodeDecodeError:
+        return 0
+    return sum(1 for k, _ in frontmatter_pairs(text) or () if k == "doc_id")
 
 
 def plan_amend(*, project_vault: Path, path: str, content: bytes, book: PlanBook) -> AmendPlan:
@@ -709,13 +986,50 @@ def plan_amend(*, project_vault: Path, path: str, content: bytes, book: PlanBook
     dfd = _open_note_dir(root, parts)
     try:
         base = _read_at(dfd, parts[-1], target)
+        fields, final = _check_amend(target=target, rel=rel, base=base, content=content)
+        # After the gates, so a note amend would refuse anyway is not answered "make it writable".
+        _require_writable_note(dfd, parts[-1], target)
+        _require_writable_folder(dfd, target)
     finally:
         os.close(dfd)
-    fields = _check_amend(target=target, rel=rel, base=base, content=content)
+    # The token is bound to what will be WRITTEN — the pinned note when a pin was added — and the
+    # commit re-derives the same pin from the same base, so the two agree byte for byte.
     base_sha = _sha(base)
-    token = book.issue(_amend_binding(target, base_sha, content), note=(str(target), base_sha))
-    return AmendPlan(target=target, base_sha256=base_sha, new_sha256=_sha(content),
+    token = book.issue(_amend_binding(target, base_sha, final), note=(str(target), base_sha))
+    return AmendPlan(target=target, base_sha256=base_sha, new_sha256=_sha(final),
                      confirm_token=token, **fields)
+
+
+def _require_writable_note(dfd: int, name: str, target: Path) -> None:
+    """`rename` replaces a folder ENTRY, so it never asks the note's own permissions: a note made
+    read-only (`chmod`, an ACL) was replaced as if it were writable, and a Finder-Locked one planned
+    fine and then failed every commit. Asked the way a write in place would ask, at plan and again
+    just before the rename."""
+    if not os.access(name, os.W_OK, dir_fd=dfd, effective_ids=True, follow_symlinks=False):
+        raise NoteError(
+            f"{target} is read-only (its permissions, an ACL, or Finder's Locked). amend replaces "
+            f"a note only where it could write it in place; make it writable first if the edit "
+            f"is meant."
+        )
+
+
+def _require_writable_folder(dfd: int, target: Path) -> None:
+    """The commit stages a file beside the note. A folder that cannot take it planned fine and then
+    refused every commit with "cannot stage"; asked at plan, and again before staging."""
+    if not os.access(".", os.W_OK | os.X_OK, dir_fd=dfd, effective_ids=True):
+        raise NoteError(
+            f"{target.parent} is read-only (its permissions, an ACL, or Finder's Locked), and amend "
+            f"replaces a note by writing beside it; make the folder writable first if the edit is "
+            f"meant."
+        )
+
+
+def _not_issued() -> NoteError:
+    return NoteError(
+        "confirm_token was not issued by this server for this amend, or has already been used. "
+        "Call again without a token to get a current plan, confirm it with the human, and pass "
+        "THAT token."
+    )
 
 
 def _changed_since_plan(target: Path) -> NoteError:
@@ -728,12 +1042,13 @@ def _changed_since_plan(target: Path) -> NoteError:
 
 def commit_amend(
     *, project_vault: Path, path: str, content: bytes, confirm_token: str, book: PlanBook,
-) -> tuple[Path, str]:
-    """Replace the note, only for a token issued for exactly these bytes over exactly the bytes
-    on disk now. Returns (target, previous_sha256).
+) -> tuple[Path, str, str]:
+    """Replace the note, only for a token issued for exactly the bytes these would be written as
+    (a pinned doc_id included) over exactly the bytes on disk now. Returns (target,
+    previous_sha256, written_sha256).
 
-    The compare-and-swap runs FIRST, so a note that moved under the plan is reported as that,
-    rather than as whichever gate the moved note happens to fail. ANY refusal burns the token: a
+    The token is looked up first, then the compare-and-swap, before any gate, so a note that moved
+    under the plan is reported as that, rather than as whichever gate the moved note fails. ANY refusal burns the token: a
     plan only issues once every gate has passed, so a commit that is refused means something moved,
     and the plan the human approved no longer describes what would be written.
     """
@@ -744,47 +1059,50 @@ def commit_amend(
         book.discard(confirm_token)
         raise
     try:
-        previous = _commit_at(dfd, parts[-1], target=target, rel=rel, content=content,
-                              confirm_token=confirm_token, book=book)
+        previous, written = _commit_at(dfd, parts[-1], target=target, rel=rel, content=content,
+                                       confirm_token=confirm_token, book=book)
     except NoteError:
         book.discard(confirm_token)
         raise
     finally:
         os.close(dfd)
-    return target, previous
+    return target, previous, written
 
 
 def _commit_at(dfd: int, name: str, *, target: Path, rel: str, content: bytes,
-               confirm_token: str, book: PlanBook) -> str:
-    """The write itself, relative to the note's folder descriptor. Returns the replaced sha256."""
+               confirm_token: str, book: PlanBook) -> tuple[str, str]:
+    """The write itself, relative to the note's folder descriptor. Returns (replaced sha256,
+    written sha256) — the written bytes may carry a pinned doc_id the caller did not send."""
     import stat as _stat
 
+    planned = book.note_of(confirm_token)
+    # A token no amend plan for THIS note issued is refused before anything is read or checked:
+    # the parse and the gates cost seconds under the server's lock, and an invented token must not
+    # buy them.
+    if planned is None or planned[0] != str(target):
+        raise _not_issued()
     base = _read_at(dfd, name, target)
     base_sha = _sha(base)
-    planned = book.note_of(confirm_token)
-    # Only a token issued for THIS note can say this note moved. A token for another note falls
-    # through to `redeem`, which refuses it as not issued for this amend.
-    if planned is not None and planned[0] == str(target) \
-            and not secrets.compare_digest(planned[1], base_sha):
+    if not secrets.compare_digest(planned[1], base_sha):
         raise _changed_since_plan(target)
 
-    _check_amend(target=target, rel=rel, base=base, content=content)
+    _fields, content = _check_amend(
+        target=target, rel=rel, base=base, content=content,
+        issued=lambda final: book.matches(confirm_token, _amend_binding(target, base_sha, final)))
     if not book.redeem(confirm_token, _amend_binding(target, base_sha, content)):
-        raise NoteError(
-            "confirm_token was not issued by this server for this amend, or has already been used. "
-            "Call again without a token to get a current plan, confirm it with the human, and pass "
-            "THAT token."
-        )
+        raise _not_issued()
 
     try:
         mode = _stat.S_IMODE(os.stat(name, dir_fd=dfd, follow_symlinks=False).st_mode)
     except OSError as e:
         raise NoteError(f"cannot inspect {target}: {e}") from e
-    tmp = f".{name}.{secrets.token_hex(8)}.tmp"
+    _require_writable_folder(dfd, target)
+    tmp = f".substrate-amend.{secrets.token_hex(8)}.tmp"
     # Staged beside the note so `rename` stays on one filesystem and is atomic. Random, O_EXCL and
     # O_NOFOLLOW: a staging name that could be predicted could be pre-planted as a symlink, which is
     # how the add path once wrote outside the vault. The `.tmp` suffix keeps a crash's leftover out
-    # of compose, which only discovers `*.md`.
+    # of compose, which only discovers `*.md`. The name is fixed-length, NOT the note's name plus a
+    # suffix: that made any note name over 233 characters plan but never commit.
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
     except OSError as e:
@@ -805,6 +1123,9 @@ def _commit_at(dfd: int, name: str, *, target: Path, rel: str, content: bytes,
         # refused here; only a write inside the gap between this read and `rename` is not seen.
         if _sha(_read_at(dfd, name, target)) != base_sha:
             raise _changed_since_plan(target)
+        # Here, not before the gates: a `chmod` changes no byte the checksum above could see, and
+        # the gates are seconds in which one could land.
+        _require_writable_note(dfd, name, target)
         try:
             # Relative to the folder descriptor, so neither name is re-resolved through a path.
             # `rename` replaces the final directory ENTRY rather than writing through it.
@@ -814,7 +1135,9 @@ def _commit_at(dfd: int, name: str, *, target: Path, rel: str, content: bytes,
     except BaseException:
         try:
             os.unlink(tmp, dir_fd=dfd)
-        except FileNotFoundError:
+        except OSError:
+            # Gone already, or its folder turned read-only: the refusal on its way out is what the
+            # caller needs, and a cleanup error raised over it would hide it.
             pass
         raise
 
@@ -824,4 +1147,4 @@ def _commit_at(dfd: int, name: str, *, target: Path, rel: str, content: bytes,
         # The rename has happened; a filesystem that cannot fsync a directory (some sync providers)
         # leaves its durability to that provider. Not a failure of the amend.
         pass
-    return base_sha
+    return base_sha, _sha(content)

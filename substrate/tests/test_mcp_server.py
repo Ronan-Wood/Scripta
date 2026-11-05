@@ -1145,7 +1145,10 @@ def test_amend_with_the_token_replaces_the_note_and_declares_the_index_stale() -
     assert out["previous_sha256"] == hashlib.sha256(_NOTE.encode()).hexdigest()
     assert out["sha256"] == plan["new_sha256"]
     assert "substrate compose" in out["next"]
-    assert note.read_text(encoding="utf-8") == _AMENDED
+    pin = plan["pinned_doc_id"]
+    assert pin and pin.startswith("d-")
+    assert note.read_text(encoding="utf-8") == _AMENDED.replace("---\n", f"---\ndoc_id: {pin}\n", 1)
+    assert hashlib.sha256(note.read_bytes()).hexdigest() == out["sha256"]
 
 
 def test_amend_refuses_when_the_note_changed_since_the_plan() -> None:

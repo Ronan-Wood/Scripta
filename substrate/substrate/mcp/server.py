@@ -53,7 +53,6 @@ from __future__ import annotations
 
 import copy
 import functools
-import hashlib
 import json
 import os
 import socketserver
@@ -401,9 +400,18 @@ TOOLS = [
             "than overwriting the old reasoning.\n\n"
             "Refused: a note that does not exist (use `ingest`), anything outside this scope's "
             "project vault (never the shared core tier), a path through a symlink, a superseded "
-            "note, a `conversation` or `reference-frozen` note, a change to a declared `doc_id`, "
-            "and a diff too large to show whole. The same frontmatter gates as `ingest` apply, "
-            "`confidence` included. The index is not updated; the response says so."
+            "note, a `conversation` or `reference-frozen` note, a read-only note, a change to a "
+            f"declared `doc_id`, a note over {notes.AMEND_LINE_CAP:,} lines, and a diff too large "
+            "to show whole or too costly to work out. The same frontmatter gates as `ingest` "
+            "apply, `confidence` included. The index is not updated; the response says so.\n\n"
+            "IDENTITY: a note with no usable `doc_id` (none, an empty one, or a malformed one) has "
+            "the id it has now pinned into its frontmatter (`pinned_doc_id`, shown in the diff), so "
+            "the edit does not change its identity. Leave the `doc_id:` line out and amend writes "
+            "it (unless the first frontmatter key itself starts with `---`: then the plan is "
+            "refused and names the line to write it under); send a bad one back, or two "
+            "`doc_id:` lines, and the plan is refused with the exact line to write. amend never assigns a NEW id. The one exception is a filename "
+            "whose derived id cannot be declared (not ASCII, or punctuation only): it is not "
+            "pinned, and the plan warns that its id changes."
         ),
         "inputSchema": {
             "type": "object",
@@ -861,15 +869,16 @@ def _tool_amend(args: dict, cfg: Config) -> dict:
                     "spine": {"before": p.spine_before, "after": p.spine_after,
                               "changed": p.spine_changed},
                     "passages": p.passages, "warnings": p.warnings,
+                    "pinned_doc_id": p.pinned_doc_id,
                     "confirm_token": p.confirm_token,
                 },
                 "next": ("NOTHING HAS BEEN WRITTEN. Show the diff to the human, and only with "
                          "their agreement call amend again with the same arguments plus "
                          "`confirm_token`."),
             }
-        target, previous = notes.commit_amend(project_vault=entry.vault, path=path,
-                                              content=content, confirm_token=token,
-                                              book=cfg.plans)
+        target, previous, written = notes.commit_amend(project_vault=entry.vault, path=path,
+                                                       content=content, confirm_token=token,
+                                                       book=cfg.plans)
     except notes.NoteError as e:
         raise ToolError(str(e)) from e
 
@@ -878,7 +887,7 @@ def _tool_amend(args: dict, cfg: Config) -> dict:
         "scope": name,
         "target": str(target),
         "previous_sha256": previous,
-        "sha256": hashlib.sha256(content).hexdigest(),
+        "sha256": written,
         # The vault holds the new version and the index still holds the old one.
         "index_stale": True,
         "next": ("the vault holds the amended note and the index still holds the previous "
@@ -1819,7 +1828,7 @@ def _serve(cfg: Config, make: Callable[[type], Any], where: str, *, reach: str,
                   f"{SHUTDOWN_GRACE_SECONDS:.0f}s — exiting anyway. If it was an `ingest`, check "
                   f"the target note: it is written with a plain write() and may be truncated. An "
                   f"`amend` replaces its note by rename, so the note is whole, but a "
-                  f"`.<note>.<hex>.tmp` may be left beside it.",
+                  f"`.substrate-amend.<hex>.tmp` may be left in its folder.",
                   file=sys.stderr)
     return 0
 

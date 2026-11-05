@@ -129,7 +129,8 @@ def test_amend_never_crosses_the_socket() -> None:
     plan = json.loads(_tools_call(cfg, "amend", args)["result"]["content"][0]["text"])["plan"]
     out = _tools_call(cfg, "amend", {**args, "confirm_token": plan["confirm_token"]})
     assert not out["result"].get("isError"), out
-    assert note.read_text(encoding="utf-8") == _AMENDED
+    assert note.read_text(encoding="utf-8").endswith(_AMENDED.split("---\n", 2)[2])
+    assert "doc_id: " + plan["pinned_doc_id"] in note.read_text(encoding="utf-8")
     assert rec.calls == [], f"amend reached the socket: {rec.calls}"
 
 

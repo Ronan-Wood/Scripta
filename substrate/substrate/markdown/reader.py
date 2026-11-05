@@ -156,21 +156,47 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     treating it as frontmatter would silently swallow the prose between the two rules — a
     dropped-content bug the A18 check, which runs on the post-frontmatter body, could not see.
     """
+    pairs, end = _frontmatter_scan(text)
+    if pairs is None:
+        return {}, text
+    return dict(pairs), text[end:]
+
+
+def normalized_text(data: bytes) -> str:
+    """`data` decoded as the reader reads a note: strict UTF-8 (raises UnicodeDecodeError), with
+    CRLF and lone CR turned into LF so the LF-anchored frontmatter regex sees the same block on
+    every platform. One definition, because a caller that decoded or normalised differently
+    would be answering questions about a different text than the one the reader parses."""
+    return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def frontmatter_pairs(text: str) -> list[tuple[str, str]] | None:
+    """The frontmatter's (key, value) pairs IN ORDER, duplicates kept, or None when `text` has no
+    frontmatter — exactly the lines `_parse_frontmatter` reads, by the same rules, because it is
+    built from this. A caller that must see what the dict collapses (a repeated key: the dict keeps
+    the last) reads this instead of re-splitting the block itself; a second splitter, one that broke
+    lines on `\\n` while this breaks on everything `splitlines` does, let a key hidden behind U+2028
+    go uncounted (crosscheck, 2026-11-04)."""
+    return _frontmatter_scan(text)[0]
+
+
+def _frontmatter_scan(text: str) -> tuple[list[tuple[str, str]] | None, int]:
+    """(pairs or None, offset where the body starts). One regex match serves both callers."""
     m = _FRONTMATTER.match(text)
     if not m:
-        return {}, text
-    fields: dict[str, str] = {}
+        return None, 0
+    pairs: list[tuple[str, str]] = []
     for line in m.group(1).splitlines():
         if not line.strip():
             continue
         if ":" not in line:
-            return {}, text  # a prose line → this is a thematic break, not frontmatter
+            return None, 0  # a prose line → this is a thematic break, not frontmatter
         k, _, v = line.partition(":")
         v = v.strip()
         if len(v) >= 2 and v[0] == v[-1] == '"':
             v = v[1:-1]
-        fields[k.strip()] = v
-    return fields, text[m.end():]
+        pairs.append((k.strip(), v))
+    return pairs, m.end()
 
 
 def _is_close_fence(line: str, ch: str, n: int) -> bool:
@@ -357,14 +383,14 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
     data = path.read_bytes()
     if len(data) > _MAX_MD_BYTES:
         raise ValueError(f"{path} is {len(data)} bytes (> {_MAX_MD_BYTES} cap)")
+    # Line endings are normalised (`normalized_text`) so the LF-anchored frontmatter regex (and
+    # everything after) works on CRLF / CR files; otherwise a Windows-authored note's frontmatter
+    # is silently unrecognised and its doc_id/version/sha never recovered. Not content — coverage
+    # tokens are unaffected.
     try:
-        raw = data.decode("utf-8")
+        raw = normalized_text(data)
     except UnicodeDecodeError as e:
         raise ValueError(f"{path} is not valid UTF-8: {e}") from e
-    # Normalize line endings so the LF-anchored frontmatter regex (and everything after) works on
-    # CRLF / CR files; otherwise a Windows-authored note's frontmatter is silently unrecognised
-    # and its doc_id/version/sha never recovered. Not content — coverage tokens are unaffected.
-    raw = raw.replace("\r\n", "\n").replace("\r", "\n")
     sha = hashlib.sha256(data).hexdigest()
 
     front, body_md = _parse_frontmatter(raw)
