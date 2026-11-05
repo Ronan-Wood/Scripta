@@ -1093,7 +1093,8 @@ def cmd_compose(args: argparse.Namespace) -> int:
     # rather than after the gates: every refusal below has already rewritten the ingest tree, and a
     # scope that keeps failing compose would leak each new edit for as long as it stayed frozen.
     # A warning, not a refusal: the content is already exposed, and refusing does not undo that.
-    unsealed = private.seal(private.index_paths(db, index_root))
+    # Only what the engine owns is changed; `seal_index` says where that line is and why.
+    unsealed = private.seal_index(db, index_root, home=scopes.engine_home())
     if unsealed:
         print(f"WARNING (permissions): {len(unsealed)} path(s) of this index are still readable "
               f"by other users:", file=sys.stderr)
@@ -1106,15 +1107,13 @@ def cmd_compose(args: argparse.Namespace) -> int:
     # scope if any failed — a composed index missing notes is exactly the silent-loss shape, so it
     # is never indexed partially. The out-dir name flattens the note's vault-relative path so two
     # notes (even same filename in different sources) never share an ingest dir.
-    import hashlib as _hl
     ingested: set[str] = set()
     ingest_dirs: list[tuple[Path, Path]] = []   # (note path, its ingest dir) for the A22 sweep
     failures: list[tuple[Path, str]] = []
     for n in scope.notes:
         # A per-note out dir: vault + filename stem + a short path hash, so two same-named files
         # (e.g. each source's passages/00-*.md) never collide on one ingest directory.
-        checksum = _hl.sha256(str(n.path).encode()).hexdigest()[:8]
-        out_dir = index_root / f"{n.vault}__{n.path.stem}__{checksum}"
+        out_dir = index_root / private.ingest_dir_name(n.vault, n.path)
         try:
             r = ingest_markdown(
                 n.path, out_dir, doc_class=n.doc_class, require_status=True,

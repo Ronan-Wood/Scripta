@@ -94,6 +94,13 @@ class ScopeEntry:
     composed: str
 
 
+def engine_home() -> Path:
+    """The folder the engine owns outright: the default registry's, `~/.substrate`. Not whatever
+    folder an explicit registry sits in — `--registry ~/Documents/scopes.toml` must not make
+    `~/Documents` the engine's."""
+    return DEFAULT_REGISTRY.parent
+
+
 def registry_path(explicit: str | Path | None = None) -> Path:
     """Where the registry lives: an explicit path, else $SUBSTRATE_REGISTRY, else the default.
 

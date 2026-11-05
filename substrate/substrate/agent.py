@@ -40,7 +40,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
-from substrate import guard, refresh_state, scopes
+from substrate import guard, private, refresh_state, scopes
 
 SNAPSHOT_SUFFIX = ".snapshot.db"
 MANIFEST_SUFFIX = ".snapshot.json"
@@ -142,31 +142,37 @@ def _trusted_dir(directory: Path) -> None:
 
     The publisher runs as the OPERATOR and writes into /Users/Shared, which every local user can
     write. So the folder must be a real directory (not a symlink) owned by the operator and not
-    writable by anyone else, and every ancestor — as written and as resolved — must be owned by
-    root or the operator and, if others can write it, be a root-owned sticky directory like
-    /Users/Shared itself. Otherwise whoever created `/Users/Shared/atlas-agent` first could swap
-    the folder for one whose group they choose, plant a snapshot the agent would serve, or point
-    the manifest at an operator-only file.
+    writable by anyone else, and every folder on the way to it — each link's folder included, one
+    hop at a time (`private.untrusted`) — must be owned by root or the operator and, if others can
+    write it, be a root-owned sticky directory like /Users/Shared itself. Otherwise whoever
+    created `/Users/Shared/atlas-agent` first could swap the folder for one whose group they
+    choose, plant a snapshot the agent would serve, or point the manifest at an operator-only file.
     """
     uid = os.geteuid()
-    path = Path(os.path.abspath(directory))
+    path = private.absolute(directory)  # `link/..` is the kernel's, not the spelling's
     try:
-        st = os.lstat(path)
+        written = os.lstat(path)
     except OSError as e:
         raise AgentError(f"{directory} does not exist. Create it first — who may read a "
                          f"snapshot is decided by that folder's owner and group, so it is never "
                          f"created here.") from e
-    if (stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or st.st_uid != uid
-            or st.st_mode & 0o022):
-        raise AgentError(f"{directory} must be a real directory owned by you and writable by "
-                         f"nobody else; refusing to publish into it.")
-    for anc in (*path.parents, *Path(os.path.realpath(path)).parents):
-        a = os.lstat(anc)
-        shared = a.st_uid == 0 and a.st_mode & stat.S_ISVTX
-        if a.st_uid not in (0, uid) or (a.st_mode & 0o022 and not stat.S_ISLNK(a.st_mode)
-                                        and not shared):
-            raise AgentError(f"{anc} is owned or writable by another user, so {directory} "
-                             f"could be redirected; refusing to publish into it.")
+    not_a_folder = (f"{directory} must be a real directory owned by you and writable by nobody "
+                    f"else; refusing to publish into it.")
+    if stat.S_ISLNK(written.st_mode):
+        raise AgentError(not_a_folder)
+    r = private.untrusted(path)
+    if r.why:
+        raise AgentError(f"{r.why}, so {directory} could be redirected; refusing to publish into "
+                         f"it.")
+    vanished = f"{directory} disappeared while it was checked; refusing to publish into it."
+    if not r.exists:
+        raise AgentError(vanished)
+    try:
+        st = os.lstat(r.path)  # the folder the checked resolution names
+    except OSError as e:
+        raise AgentError(vanished) from e
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != uid or st.st_mode & 0o022:
+        raise AgentError(not_a_folder)
 
 
 def load_config(registry: str | Path | None = None) -> dict[str, Path]:

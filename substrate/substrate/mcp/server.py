@@ -1846,19 +1846,22 @@ def warn_exposed(registry: str | None) -> None:
     """Name, at startup, every registered scope whose index another local user can read.
 
     Warned, never refused and never repaired: this process is a reader, and a leak that has already
-    happened is not undone by refusing to answer. The next compose seals the scope. A registry that
-    cannot be read is skipped here because every call reports that fault on its own.
+    happened is not undone by refusing to answer. The next compose seals what the engine owns, which
+    stops at its own folder — so the advice names both. A registry that cannot be read is
+    skipped here because every call reports that fault on its own.
     """
     try:
         entries = scopes.load(registry)
     except scopes.ScopeError:
         return
+    home = scopes.engine_home()
     for name, entry in sorted(entries.items()):
-        loose = private.exposed(private.index_paths(entry.db, entry.index_root))
+        loose = private.exposed_index(entry.db, entry.index_root)
         if loose:
             print(f"substrate-mcp: scope {name!r} is readable by other users on this machine: "
-                  f"{', '.join(loose)}. Recompose it, or run `chmod -R go-rwx` on each path.",
-                  file=sys.stderr)
+                  f"{', '.join(loose)}. Recompose it; what a recompose leaves listed is not the "
+                  f"engine's to change (anything outside {home} among it), and compose's own "
+                  f"warning says why for each path.", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
