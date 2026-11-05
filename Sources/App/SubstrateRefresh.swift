@@ -158,20 +158,29 @@ final class SubstrateRefresh: ObservableObject {
             state = .unavailable(engine: "\(source.label) — no scopes are registered")
             return
         }
+        // An agent-mode engine answers from published snapshots and names no vault for any of them,
+        // so there is nothing here to compose, and recording `compose_failed` for each would freeze
+        // the operator's scopes of the same names.
+        guard !rows.namesNoVault else {
+            state = .unavailable(engine: "\(source.label) — serves published snapshots, no vaults")
+            return
+        }
 
         state = .running(since: Date())
         var firstFailure: SubstrateRun?
         var last: SubstrateRun?
         for row in rows {
             if Task.isCancelled { break }
-            // A scope whose inheritance no longer resolves is listed WITH its fault and has no
-            // vault to compose. Recording `compose_failed` is right: it is frozen, and saying so is
-            // the difference between a scope that is broken and one that reads as fine.
-            guard row.error == nil, !row.vault.isEmpty else {
+            // A scope whose inheritance no longer resolves is listed WITH its fault. Recording
+            // `compose_failed` is right: it is frozen, and saying so is the difference between a
+            // scope that is broken and one that reads as fine. A row naming no vault reaches here
+            // only beside rows that do name one, which no engine sends — so it is frozen too, rather
+            // than skipped into serving its last healthy verdict.
+            guard case .named(let path) = row.vaultState else {
                 await record(cli: cli, scope: row.scope, outcome: "compose_failed")
                 continue
             }
-            let vault = URL(fileURLWithPath: row.vault, isDirectory: true)
+            let vault = URL(fileURLWithPath: path, isDirectory: true)
             let composed = await SubstrateLibraryModel.composeVault(cli: cli, vault: vault,
                                                                     name: row.scope, clean: false)
             let run = composed.run

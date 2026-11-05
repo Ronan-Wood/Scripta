@@ -723,7 +723,7 @@ private struct LibraryScopeLine: View {
                         .typeface(Register.monoMicro, Ink.textHelper)
                 }
                 Spacer(minLength: Gap.s4)
-                Text(SubstrateCLI.abbreviated(row.vault))
+                Text(SubstrateCLI.abbreviated(row.vault ?? ""))
                     .typeface(Register.monoMicro, Ink.textHelper).lineLimit(1)
             }
             if expanded {

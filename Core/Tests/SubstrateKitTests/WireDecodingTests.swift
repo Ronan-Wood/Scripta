@@ -227,6 +227,9 @@ final class WireDecodingTests: XCTestCase {
         XCTAssertEqual(row.error, "no manifest at /vaults/gone-vault")
         XCTAssertEqual(row.refresh.frozen, .noBasis,
                        "an unresolvable scope has no refresh verdict, not a clean one")
+        XCTAssertEqual(row.vaultState, .faulted, "it names a vault, but its fault is what it reports")
+        XCTAssertEqual(row.vaultPath, "/vaults/gone-vault",
+                       "a scope that fails to resolve still names a directory another can collide with")
         try JSONDiff.assertLossless(WireScopeRow.self, payload: Data(json.utf8))
     }
 
@@ -324,5 +327,150 @@ final class WireDecodingTests: XCTestCase {
         // A null vault is empty rather than a stand-in word: invented provenance is worse than none.
         XCTAssertEqual(mapped.vault, "")
         XCTAssertNil(mapped.tier)
+    }
+
+    // MARK: - agent mode
+
+    /// An agent-mode server names no vault and no registry, and these declared both as `String`, so
+    /// every agent-mode `status` and `list_scopes` threw `valueNotFound` before reaching a field.
+    func testAgentModeStatusDecodesWithNoVault() throws {
+        let status = try JSONDecoder().decode(
+            WireStatusResult.self, from: try GoldenFixture.payload(GoldenFixture.agentStatus))
+        XCTAssertNil(status.vault)
+        XCTAssertNotNil(status.composed, "a published snapshot still says when it was composed")
+        XCTAssertEqual(status.exposed, .notChecked)
+        try JSONDiff.assertLossless(WireStatusResult.self,
+                                    payload: try modelledPart(of: GoldenFixture.agentStatus))
+    }
+
+    func testAgentModeStatusWithNoManifestDecodesWithNoComposedStamp() throws {
+        let status = try JSONDecoder().decode(
+            WireStatusResult.self,
+            from: try GoldenFixture.payload(GoldenFixture.agentStatusUnpublished))
+        XCTAssertNil(status.vault)
+        XCTAssertNil(status.composed)
+        try JSONDiff.assertLossless(
+            WireStatusResult.self,
+            payload: try modelledPart(of: GoldenFixture.agentStatusUnpublished))
+    }
+
+    func testAgentModeScopeListDecodesWithNoVaultOrRegistry() throws {
+        let list = try JSONDecoder().decode(
+            WireScopeList.self, from: try GoldenFixture.payload(GoldenFixture.agentListScopes))
+        XCTAssertNil(list.registry)
+        let row = try XCTUnwrap(list.scopes.first)
+        XCTAssertEqual(list.scopes.count, 1)
+        XCTAssertEqual(row.scope, "atlas")
+        XCTAssertNil(row.vault)
+        XCTAssertNotNil(row.composed)
+        try JSONDiff.assertLossless(WireScopeList.self,
+                                    payload: try modelledPart(of: GoldenFixture.agentListScopes))
+    }
+
+    /// An agent-mode row names no vault, and nothing about it failed. The distinction is what lets
+    /// a refresh pass report an all-agent roster unavailable, instead of recording `compose_failed`
+    /// for each row and freezing the operator's scopes of the same names.
+    func testARowThatNamesNoVaultIsNotAFaultedOne() throws {
+        let agent = try JSONDecoder().decode(
+            WireScopeList.self, from: try GoldenFixture.payload(GoldenFixture.agentListScopes))
+        XCTAssertEqual(agent.scopes.map(\.vaultState), [.notNamed])
+        XCTAssertNil(agent.scopes.first?.vaultPath)
+        XCTAssertTrue(agent.scopes.namesNoVault)
+
+        let operatorRows = try JSONDecoder().decode(
+            WireScopeList.self, from: try GoldenFixture.payload(GoldenFixture.listScopes)).scopes
+        XCTAssertFalse(operatorRows.isEmpty)
+        for row in operatorRows {
+            XCTAssertEqual(row.vaultState, .named(try XCTUnwrap(row.vault)), row.scope)
+            XCTAssertEqual(row.vaultPath, row.vault, row.scope)
+        }
+        XCTAssertFalse(operatorRows.namesNoVault)
+        // Mixed is no engine's roster; it must not read as an agent one, or its operator rows would
+        // never be composed.
+        XCTAssertFalse((operatorRows + agent.scopes).namesNoVault)
+        XCTAssertFalse([WireScopeRow]().namesNoVault, "an empty roster is not an agent-mode one")
+    }
+
+    /// A null vault is agent mode's whatever else the row says. Read as faulted, one agent row with
+    /// an `error` would stop the roster reading as agent-only, and every row would be frozen.
+    func testANullVaultIsNotNamedEvenBesideAnError() throws {
+        let json = """
+            {"scope": "atlas", "db": "/agent-snapshots/atlas.snapshot.db", "vault": null,
+             "composed": null, "index_present": false, "sources": null,
+             "error": "no snapshot published yet"}
+            """
+        let row = try JSONDecoder().decode(WireScopeRow.self, from: Data(json.utf8))
+        XCTAssertEqual(row.vaultState, .notNamed)
+        XCTAssertTrue([row].namesNoVault)
+    }
+
+    /// A GUARD, NOT A CAPTURE: no engine sends these (`scopes.record` stores an absolute path,
+    /// `agent.py` writes null), but a hand-edited registry can. `URL(fileURLWithPath:)` resolves an
+    /// empty or relative vault against the working directory, and the root is no vault, so none of
+    /// them is a path to compose.
+    func testAnEmptyRelativeOrRootVaultIsFaultedRatherThanAPath() throws {
+        // `\u{0600}` is a prepend scalar: it fuses with the `/` after it into one Character, so a
+        // split by Character would miss that separator and read this as a directory.
+        for vault in ["", "/", "//", "/.", "/./", "/./.", "/..", "/../", "/a/..", "/a/./..",
+                      "/a/b/../..", "/\u{0600}/..", "vaults/blank-vault", "~/vaults/blank-vault"] {
+            let json = """
+                {"scope": "blank", "db": "/tmp/blank.db", "vault": "\(vault)",
+                 "composed": "2026-07-29T14:33:44+00:00", "index_present": true,
+                 "sources": ["blank-vault"]}
+                """
+            let row = try JSONDecoder().decode(WireScopeRow.self, from: Data(json.utf8))
+            XCTAssertNil(row.error)
+            XCTAssertEqual(row.vaultState, .faulted, "`\(vault)`")
+            XCTAssertNil(row.vaultPath, "`\(vault)`")
+        }
+    }
+
+    /// The other side of the root check: a dot or dot-dot that leaves a directory below the root
+    /// is still that directory, and the row keeps naming it exactly as the engine sent it.
+    func testADotOrDotDotThatStaysBelowRootIsStillNamed() throws {
+        for vault in ["/a/../b", "/a/./b", "///a", "/../a", "/a/b/.."] {
+            let json = """
+                {"scope": "kept", "db": "/tmp/kept.db", "vault": "\(vault)",
+                 "composed": "2026-07-29T14:33:44+00:00", "index_present": true,
+                 "sources": ["kept-vault"]}
+                """
+            let row = try JSONDecoder().decode(WireScopeRow.self, from: Data(json.utf8))
+            XCTAssertEqual(row.vaultState, .named(vault), "`\(vault)`")
+        }
+    }
+
+    /// Null is a value the engine sends; a MISSING key is a different engine. Optional must not have
+    /// turned into "absent is fine".
+    func testAMissingVaultKeyStillRefusesToDecode() throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: try GoldenFixture.payload(GoldenFixture.agentStatus)) as? [String: Any])
+        object.removeValue(forKey: "vault")
+        let payload = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertThrowsError(try JSONDecoder().decode(WireStatusResult.self, from: payload)) {
+            guard case DecodingError.keyNotFound(let key, _) = $0 else {
+                return XCTFail("expected keyNotFound, got \($0)")
+            }
+            XCTAssertEqual(key.stringValue, "vault")
+        }
+    }
+
+    /// An agent frame minus the two keys only agent mode sends and the app does not model —
+    /// `snapshot_dir`, and `snapshot` inside each `refresh` — so the lossless gate can run on the rest.
+    private func modelledPart(of fixture: String) throws -> Data {
+        func strip(_ object: [String: Any]) -> [String: Any] {
+            var object = object
+            object.removeValue(forKey: "snapshot_dir")
+            if var refresh = object["refresh"] as? [String: Any] {
+                refresh.removeValue(forKey: "snapshot")
+                object["refresh"] = refresh
+            }
+            if let scopes = object["scopes"] as? [[String: Any]] {
+                object["scopes"] = scopes.map(strip)
+            }
+            return object
+        }
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: try GoldenFixture.payload(fixture)) as? [String: Any])
+        return try JSONSerialization.data(withJSONObject: strip(object))
     }
 }

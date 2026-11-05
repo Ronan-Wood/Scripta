@@ -37,7 +37,7 @@ struct HubView: View {
     @State private var workspaceRefusal: String?
     /// The existing scope a new workspace would collide with, held while the operator decides
     /// whether to connect to it. Nil at every other moment.
-    @State private var adoptable: WireScopeRow?
+    @State private var adoptable: (scope: String, vault: String)?
     @State private var workspaceHovering = false
     @State private var clovisDrawerOpen = false
 

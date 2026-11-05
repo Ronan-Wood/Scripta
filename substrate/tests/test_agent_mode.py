@@ -15,6 +15,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
@@ -789,3 +790,124 @@ def test_the_rosters_alias_merges_do_not_reach_the_agent(world, tmp_path):
     status, _ = _call(_cfg(shared), "status", {"scope": "atlas"})
     assert sorted(e["name"] for e in status["entities"]) == ["Ada", "Countess"]
     assert len({e["entity_id"] for e in status["entities"]}) == 2
+
+
+# --------------------------------------------------------------------------- the app's decoder
+
+# The app's SubstrateKit decodes these payloads (`WireStatusResult`, `WireScopeList`), and it once
+# declared `vault`, `composed` and `registry` non-optional — so every agent-mode `status` and
+# `list_scopes` failed to decode. Its regression fixtures are CAPTURED here, from this fixture,
+# rather than written by hand: set SUBSTRATE_CAPTURE_SWIFT_FIXTURES=1 to rewrite them. Without it
+# the test compares their SHAPE (every key, and which values are null) against what the engine
+# emits now, so neither side can move without the other noticing.
+SWIFT_FIXTURES = (Path(__file__).resolve().parents[2]
+                  / "Core" / "Tests" / "SubstrateKitTests" / "Fixtures")
+# Stands in for pytest's tmp folder, which would put this machine's temp layout in the repo and
+# change the bytes of every recapture.
+SNAPSHOT_DIR_STAND_IN = "/agent-snapshots"
+
+
+def _shape(value):
+    if isinstance(value, dict):
+        return {k: _shape(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_shape(v) for v in value]
+    return "null" if value is None else type(value).__name__
+
+
+_PATH_TOKEN = re.compile(r"(?<![\w.-])/[\w.~-]+(?:/[\w.~-]+)*")
+
+
+def _strings(value):
+    """Every key and string value, decoded — so an escaped newline cannot hide a path."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield k
+            yield from _strings(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _strings(v)
+    elif isinstance(value, str):
+        yield value
+
+
+def _leaked_paths(payload) -> list[str]:
+    """Every path-shaped token in every key and value — prose included, so a path an engine message
+    embeds mid-sentence is caught as surely as one in a `db` field — that is not the stand-in."""
+    paths = [p for s in _strings(payload) for p in _PATH_TOKEN.findall(s)]
+    assert paths, "no path at all: the scan would pass vacuously"
+    inside = SNAPSHOT_DIR_STAND_IN + "/"
+    return [p for p in paths
+            if p != SNAPSHOT_DIR_STAND_IN and not (p.startswith(inside) and "/.." not in p)]
+
+
+def _agent_frames(shared: Path) -> dict[str, dict]:
+    cfg = _cfg(shared)
+    frames = {
+        "agent-status.frame.json": _rpc(cfg, "tools/call",
+                                        {"name": "status", "arguments": {"scope": "atlas"}}),
+        "agent-list_scopes.frame.json": _rpc(cfg, "tools/call",
+                                             {"name": "list_scopes", "arguments": {}}),
+    }
+    # No manifest: the snapshot's `published` stamp is unknown, so `composed` is null too.
+    (shared / "atlas.snapshot.json").unlink()
+    frames["agent-status-unpublished.frame.json"] = _rpc(
+        cfg, "tools/call", {"name": "status", "arguments": {"scope": "atlas"}})
+    return frames
+
+
+def _payload(frame: dict) -> dict:
+    assert not frame["result"].get("isError"), frame
+    return json.loads(frame["result"]["content"][0]["text"])
+
+
+def test_agent_status_and_list_scopes_name_no_vault_and_no_registry(world):
+    """The nulls are the point: an agent server has no vault and no registry to name, and the
+    operator's paths are not another user's to read. A placeholder here would be invented
+    provenance that a client would treat as a directory."""
+    shared, registry = world
+    _hide(registry)
+    frames = {k: _payload(v) for k, v in _agent_frames(shared).items()}
+
+    status = frames["agent-status.frame.json"]
+    assert status["vault"] is None
+    assert isinstance(status["composed"], str)
+
+    listing = frames["agent-list_scopes.frame.json"]
+    assert listing["registry"] is None
+    assert [(r["scope"], r["vault"]) for r in listing["scopes"]] == [("atlas", None)]
+    assert isinstance(listing["scopes"][0]["composed"], str)
+
+    unpublished = frames["agent-status-unpublished.frame.json"]
+    assert unpublished["vault"] is None and unpublished["composed"] is None
+
+
+def test_the_swift_decoders_fixtures_are_what_agent_mode_sends(world):
+    shared, registry = world
+    _hide(registry)
+    frames = _agent_frames(shared)
+    if os.environ.get("SUBSTRATE_CAPTURE_SWIFT_FIXTURES") == "1":
+        assert SWIFT_FIXTURES.resolve() == SWIFT_FIXTURES, "the fixture folder is a symlink"
+        for name, frame in frames.items():
+            # The bytes the HTTP transport writes (`_Handler.do_POST`), so the fixture is a response
+            # body exactly as the app would receive one.
+            body = json.dumps(frame, ensure_ascii=False).replace(str(shared),
+                                                                 SNAPSHOT_DIR_STAND_IN)
+            # Checked BEFORE the write, so a missed replace never leaves a file to commit. The
+            # parent holds both the shared folder and the operator's home, whatever --basetemp is.
+            for local in (shared.parent, Path.home(), SWIFT_FIXTURES.parents[3]):
+                if str(local) != "/":
+                    assert str(local) not in body, f"{name} would carry {local}"
+            assert not _leaked_paths(_payload(json.loads(body))), f"{name} would carry a path"
+            target = SWIFT_FIXTURES / name
+            assert not target.is_symlink(), f"{target} is a symlink; refusing to write through it"
+            target.write_text(body, encoding="utf-8")
+    for name, frame in frames.items():
+        path = SWIFT_FIXTURES / name
+        assert path.is_file(), f"{name} missing — recapture with SUBSTRATE_CAPTURE_SWIFT_FIXTURES=1"
+        captured = _payload(json.loads(path.read_text(encoding="utf-8")))
+        assert not (leaked := _leaked_paths(captured)), (
+            f"{name} carries a path other than {SNAPSHOT_DIR_STAND_IN}: {leaked}")
+        assert _shape(captured) == _shape(_payload(frame)), (
+            f"{name} no longer matches what agent mode sends — recapture it and re-run the Swift "
+            f"decoder tests")

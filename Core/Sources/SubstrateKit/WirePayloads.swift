@@ -891,8 +891,11 @@ public enum WireExposure: Equatable, Sendable {
 public struct WireStatusResult: Codable, Equatable, Sendable {
     public let scope: String
     public let db: String
-    public let vault: String
-    public let composed: String
+    /// `null` from an agent-mode server (`substrate.agent`): it answers from a published snapshot,
+    /// has no vault to name, and must not hand another user the operator's path.
+    public let vault: String?
+    /// `null` from an agent-mode server whose snapshot manifest carries no `published` stamp.
+    public let composed: String?
     public let indexVersion: String
     public let documents: Int
     public let passages: Int
@@ -912,7 +915,7 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
     public let drift: WireDriftReport
     public let exposed: WireExposure
 
-    public init(scope: String, db: String, vault: String, composed: String, indexVersion: String,
+    public init(scope: String, db: String, vault: String?, composed: String?, indexVersion: String,
                 documents: Int, passages: Int, outlines: Int, schemaVersion: Int,
                 byVault: [String: Int], byTier: [String: Int], byStatus: [String: Int],
                 byDocType: [String: Int], byConfidence: [String: Int],
@@ -961,8 +964,10 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         scope = try c.decode(String.self, forKey: .scope)
         db = try c.decode(String.self, forKey: .db)
-        vault = try c.decode(String.self, forKey: .vault)
-        composed = try c.decode(String.self, forKey: .composed)
+        // `decode(String?.self)`, not `decodeIfPresent`: the key is always sent, and only its VALUE
+        // may be null. An absent key is a different engine, not an agent-mode one.
+        vault = try c.decode(String?.self, forKey: .vault)
+        composed = try c.decode(String?.self, forKey: .composed)
         indexVersion = try c.decode(String.self, forKey: .indexVersion)
         documents = try c.decode(Int.self, forKey: .documents)
         passages = try c.decode(Int.self, forKey: .passages)
@@ -993,8 +998,8 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(scope, forKey: .scope)
         try c.encode(db, forKey: .db)
-        try c.encode(vault, forKey: .vault)
-        try c.encode(composed, forKey: .composed)
+        try c.encodeExplicitNull(vault, forKey: .vault)
+        try c.encodeExplicitNull(composed, forKey: .composed)
         try c.encode(indexVersion, forKey: .indexVersion)
         try c.encode(documents, forKey: .documents)
         try c.encode(passages, forKey: .passages)
@@ -1024,8 +1029,11 @@ public struct WireStatusResult: Codable, Equatable, Sendable {
 public struct WireScopeRow: Codable, Equatable, Sendable {
     public let scope: String
     public let db: String
-    public let vault: String
-    public let composed: String
+    /// `null` from an agent-mode server (`substrate.agent`): it answers from a published snapshot,
+    /// has no vault to name, and must not hand another user the operator's path.
+    public let vault: String?
+    /// `null` from an agent-mode server whose snapshot manifest carries no `published` stamp.
+    public let composed: String?
     public let indexPresent: Bool
     public let refresh: WireRefreshReport
     /// The vaults this scope composes, resolved fresh from the manifest. `null` when resolution
@@ -1035,7 +1043,7 @@ public struct WireScopeRow: Codable, Equatable, Sendable {
     /// listed WITH its fault, because omitting it would read as "that scope was never composed".
     public let error: String?
 
-    public init(scope: String, db: String, vault: String, composed: String, indexPresent: Bool,
+    public init(scope: String, db: String, vault: String?, composed: String?, indexPresent: Bool,
                 refresh: WireRefreshReport, sources: [String]?, error: String?) {
         self.scope = scope
         self.db = db
@@ -1057,8 +1065,10 @@ public struct WireScopeRow: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         scope = try c.decode(String.self, forKey: .scope)
         db = try c.decode(String.self, forKey: .db)
-        vault = try c.decode(String.self, forKey: .vault)
-        composed = try c.decode(String.self, forKey: .composed)
+        // `decode(String?.self)`, not `decodeIfPresent`: the key is always sent, and only its VALUE
+        // may be null. An absent key is a different engine, not an agent-mode one.
+        vault = try c.decode(String?.self, forKey: .vault)
+        composed = try c.decode(String?.self, forKey: .composed)
         indexPresent = try c.decode(Bool.self, forKey: .indexPresent)
         refresh = try c.decodeRefresh(forKey: .refresh)
         sources = try c.decodeIfPresent([String].self, forKey: .sources)
@@ -1069,8 +1079,8 @@ public struct WireScopeRow: Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(scope, forKey: .scope)
         try c.encode(db, forKey: .db)
-        try c.encode(vault, forKey: .vault)
-        try c.encode(composed, forKey: .composed)
+        try c.encodeExplicitNull(vault, forKey: .vault)
+        try c.encodeExplicitNull(composed, forKey: .composed)
         try c.encode(indexPresent, forKey: .indexPresent)
         if refresh.wasSent { try c.encode(refresh, forKey: .refresh) }
         try c.encodeExplicitNull(sources, forKey: .sources)
@@ -1082,14 +1092,27 @@ public struct WireScopeRow: Codable, Equatable, Sendable {
 
 public struct WireScopeList: Codable, Equatable, Sendable {
     public let scopes: [WireScopeRow]
-    public let registry: String
+    /// `null` from an agent-mode server, which never reads the operator's registry.
+    public let registry: String?
 
-    public init(scopes: [WireScopeRow], registry: String) {
+    public init(scopes: [WireScopeRow], registry: String?) {
         self.scopes = scopes
         self.registry = registry
     }
 
     enum CodingKeys: String, CodingKey { case scopes, registry }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        scopes = try c.decode([WireScopeRow].self, forKey: .scopes)
+        registry = try c.decode(String?.self, forKey: .registry)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(scopes, forKey: .scopes)
+        try c.encodeExplicitNull(registry, forKey: .registry)
+    }
 }
 
 // MARK: - expand

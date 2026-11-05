@@ -294,3 +294,58 @@ extension WireSearchResult {
         return EngineScope(raw)
     }
 }
+
+// MARK: - Scope row
+
+extension WireScopeRow {
+    /// The vault directory this row names, when it names one as an absolute path below the root.
+    /// `nil` for `vault: null`, for any lexical spelling of `/` itself, and for an empty or
+    /// relative value, which `URL(fileURLWithPath:)` would resolve against the working directory.
+    /// Says nothing about `error`: a scope whose manifest no longer resolves still names a real
+    /// directory.
+    public var vaultPath: String? {
+        guard let vault, vault.hasPrefix("/"), Self.isLexicallyBelowRoot(vault) else {
+            return nil
+        }
+        return vault
+    }
+
+    /// LEXICAL, so the answer cannot change with the OS: Foundation's normalizers disagree about
+    /// `/.` across versions and between `URL.standardized` and `NSString.standardizingPath`. Split
+    /// by UTF-8 byte, as the kernel reads a path — a Character can fuse a `/` into a neighbour.
+    /// Symlinks are not followed: this refuses the root as spelled, not every path that reaches it.
+    private static func isLexicallyBelowRoot(_ path: String) -> Bool {
+        let dot = UInt8(ascii: ".")
+        var depth = 0
+        for component in path.utf8.split(separator: UInt8(ascii: "/")) {
+            if component.elementsEqual([dot]) { continue }
+            if component.elementsEqual([dot, dot]) { depth = max(0, depth - 1) } else { depth += 1 }
+        }
+        return depth > 0
+    }
+
+    /// What the row says about its vault.
+    public enum VaultState: Equatable, Sendable {
+        /// The vault directory the engine names.
+        case named(String)
+        /// The row names a vault but carries a resolution `error`, or names no usable path (see
+        /// `vaultPath`).
+        case faulted
+        /// `vault: null` — an agent-mode server, which names no vault by design, whatever else the
+        /// row reports. Only agent mode sends null; an operator engine always sends a path.
+        case notNamed
+    }
+
+    public var vaultState: VaultState {
+        guard vault != nil else { return .notNamed }
+        if error != nil { return .faulted }
+        return vaultPath.map(VaultState.named) ?? .faulted
+    }
+}
+
+extension Collection where Element == WireScopeRow {
+    /// Every row names no vault: an agent-mode roster, served from published snapshots.
+    public var namesNoVault: Bool {
+        !isEmpty && allSatisfy { $0.vaultState == .notNamed }
+    }
+}

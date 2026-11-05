@@ -3,9 +3,10 @@ import XCTest
 
 // MARK: - Real frames from the real engine
 //
-// PROVENANCE. Every file in `Fixtures/` is the byte-for-byte HTTP response body of a live
-// `substrate-mcp --http 127.0.0.1:8765`, RE-CAPTURED 2026-08-03 against the operator's real composed
-// scopes. Nothing was hand-written, reformatted or trimmed.
+// PROVENANCE. Every file in `Fixtures/` except the `agent-*` frames is the byte-for-byte HTTP
+// response body of a live `substrate-mcp --http 127.0.0.1:8765`, RE-CAPTURED 2026-08-03 against the
+// operator's real composed scopes. Nothing was hand-written, reformatted or trimmed. The `agent-*`
+// frames come from the engine's test suite instead; their provenance is on `agentStatus` below.
 //
 // THE THREE FRAMES CARRYING `filters` WERE RE-CAPTURED 2026-08-07 (index_version v9:6bdb6f801987)
 // when `applied_filters` gained the `vaults` axis — `search`, `search-sources` and `documents`.
@@ -78,6 +79,20 @@ enum GoldenFixture {
     /// exists for, so a fixture where it did not hold would prove the wrong thing.
     static let documents = "documents.frame.json"
     static let toolFault = "tool-fault.frame.json"
+    /// AGENT MODE (`substrate-mcp --agent-mode`), and a different provenance from every frame above:
+    /// captured from the engine's own `world` fixture in `substrate/tests/test_agent_mode.py`, not
+    /// from the operator's scopes, because agent mode answers only from a published snapshot. They
+    /// are the bytes `server.handle` returns, written by
+    /// `test_the_swift_decoders_fixtures_are_what_agent_mode_sends` with
+    /// `SUBSTRATE_CAPTURE_SWIFT_FIXTURES=1`; without it that test fails when the engine's shape
+    /// moves away from these. `vault` and `registry` are null in all of them, by design: an agent
+    /// server has no vault or registry to name. `unpublished` is the same `status` with the snapshot
+    /// manifest removed, which is what nulls `composed`.
+    /// The snapshot folder is written as `/agent-snapshots` rather than pytest's tmp path, so a
+    /// recapture moves only values that changed — and the timestamps, which always do.
+    static let agentStatus = "agent-status.frame.json"
+    static let agentStatusUnpublished = "agent-status-unpublished.frame.json"
+    static let agentListScopes = "agent-list_scopes.frame.json"
     static let rpcError = "rpc-error.frame.json"
 
     static let all = [search, searchIncludingSources, status, listScopes, expand, documents,

@@ -173,13 +173,13 @@ final class AppModel: ObservableObject {
     ///
     /// Nil when the roster has not been listed — an engine still starting is not evidence of no
     /// conflict, and the caller treats nil as "nothing to ask about" rather than "verified clear".
-    func vaultAlreadyNamed(_ raw: String) -> WireScopeRow? {
-        let rows = SubstrateScopes.shared.rows
-        guard let hit = ScriptaVault.conflictingScope(
+    func vaultAlreadyNamed(_ raw: String) -> (scope: String, vault: String)? {
+        ScriptaVault.conflictingScope(
             forWorkspaceNamed: raw,
-            registered: rows.map { (scope: $0.scope, vault: $0.vault) },
-            outputFolder: AppSettings.outputFolder) else { return nil }
-        return rows.first { $0.scope == hit.scope && $0.vault == hit.vault }
+            registered: SubstrateScopes.shared.rows.compactMap { row in
+                row.vault.map { (scope: row.scope, vault: $0) }
+            },
+            outputFolder: AppSettings.outputFolder)
     }
 
     /// - Parameter inheriting: a vault the new workspace should read, on top of whatever its binding

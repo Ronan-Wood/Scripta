@@ -1151,17 +1151,18 @@ struct WorkspaceContextVaults: View {
                 let options = rows.filter {
                     // Not this workspace's OWN vault: it is the source, always composed, and
                     // offering it as context to itself would be a checkbox that means nothing.
-                    $0.scope != ScriptaVault.slug(workspace) && !$0.vault.isEmpty
+                    $0.scope != ScriptaVault.slug(workspace) && !($0.vault ?? "").isEmpty
                 }
                 if options.isEmpty {
                     Text("No other composed vaults to pull from yet.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     ForEach(options, id: \.scope) { row in
-                        Toggle(isOn: binding(for: row.vault)) {
+                        let vault = row.vault ?? ""
+                        Toggle(isOn: binding(for: vault)) {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(row.scope)
-                                Text(row.vault).font(.caption).foregroundStyle(.secondary)
+                                Text(vault).font(.caption).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                         }

@@ -938,8 +938,12 @@ final class SubstrateLibraryModel: ObservableObject {
         // The vault's own directory name, which is how a manifest names an inherited vault and so
         // how `sources` reports it.
         let vaultName = root.standardizedFileURL.lastPathComponent
-        let affected = SubstrateScopes.shared.rows.filter { row in
-            row.indexPresent && (row.sources?.contains(vaultName) ?? false)
+        // Only rows naming a vault to compose: one naming none leaves the note served by nothing,
+        // which is what the empty-roster step below reports.
+        let affected: [(scope: String, vault: String)] = SubstrateScopes.shared.rows.compactMap {
+            guard $0.indexPresent, $0.sources?.contains(vaultName) ?? false,
+                  let vault = $0.vaultPath else { return nil }
+            return (scope: $0.scope, vault: vault)
         }
 
         task = Task { [weak self] in
