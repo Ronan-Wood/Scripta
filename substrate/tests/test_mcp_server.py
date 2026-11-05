@@ -1418,7 +1418,8 @@ def _http_server(cfg: server.Config):
     return f"http://127.0.0.1:{port}", _stop
 
 
-def _raw(base: str, payload: bytes, *, half_close: bool = False, timeout: float = 10.0):
+def _raw(base: str, payload: bytes, *, half_close: bool = False, timeout: float = 10.0,
+         before_half_close=None):
     """One raw-socket exchange with the server: send `payload`, read until it closes or stalls.
     Returns (everything seen, whether the SERVER closed).
 
@@ -1430,17 +1431,33 @@ def _raw(base: str, payload: bytes, *, half_close: bool = False, timeout: float 
 
     `half_close` shuts the write half after sending, which ends `_linger`'s discard budget at once
     instead of a second later. OFF by default: with it on, our own FIN is what ends the connection,
-    so `closed` stops being evidence that the SERVER closed it.
+    so `closed` stops being evidence that the SERVER closed it. `before_half_close(sock)` runs
+    between the send and the half-close, so a test can fix which of the two the server's reset
+    lands before.
     """
+    import errno
     import socket
 
+    # A hook on the other path would run nothing and report nothing: a test that kept passing
+    # without ever testing the order it set.
+    assert half_close or before_half_close is None, "before_half_close needs half_close=True"
     s = socket.create_connection(("127.0.0.1", _port(base)), timeout=timeout)
     seen, closed = b"", False
     try:
         try:
             s.sendall(payload)
             if half_close:
-                s.shutdown(socket.SHUT_WR)
+                if before_half_close is not None:
+                    before_half_close(s)
+                try:
+                    s.shutdown(socket.SHUT_WR)
+                except OSError as e:
+                    # ENOTCONN means the server's RST already landed: a refusal that closes with
+                    # our request unread resets the connection. The bytes that arrived before the
+                    # RST stay readable, so the answer is still in the buffer — raising here threw
+                    # it away unread, which is how CI saw a bare OSError instead of an assertion.
+                    if e.errno != errno.ENOTCONN:
+                        raise
             while True:
                 try:
                     chunk = s.recv(65536)
@@ -1881,12 +1898,8 @@ def test_the_read_only_default_follows_the_transport() -> None:
         server.serve_http, server.serve = real
 
 
-def test_the_connection_ceiling_refuses_with_a_response_not_a_bare_close() -> None:
-    """A socket closed with nothing written on it is indistinguishable from the hung server this
-    cap exists to prevent — which was the stated reason for refusing rather than queueing, and then
-    the refusal said nothing at all. It is written from `process_request`, on the ACCEPT thread,
-    before any handler exists for the connection, so it is pre-rendered bytes rather than a normal
-    response path.
+def _assert_the_ceiling_refuses_readably(before_half_close=None) -> None:
+    """A caller past the connection ceiling, lowered to 1, reads a complete 503.
 
     The ceiling is lowered instead of opening 65 sockets: what is under test is the refusal, and 64
     parked connections would make it a load test that fails on whatever else the machine is doing.
@@ -1909,7 +1922,8 @@ def test_the_connection_ceiling_refuses_with_a_response_not_a_bare_close() -> No
                 # keep-alive holds the connection after the response. Polling for that state
                 # instead would be a race.
                 assert b"200" in held.recv(65536).split(b"\r\n")[0]
-                seen, closed = _raw(base, req, half_close=True)
+                seen, closed = _raw(base, req, half_close=True,
+                                    before_half_close=before_half_close)
             finally:
                 # FIN rather than RST. The handler is parked in `readline`, and closing on it
                 # outright makes socketserver print a ConnectionResetError traceback that looks
@@ -1935,6 +1949,45 @@ def test_the_connection_ceiling_refuses_with_a_response_not_a_bare_close() -> No
     # so there is no id to answer with.
     assert body["id"] is None and body["error"]["code"] == -32603, body
     assert "connection ceiling" in body["error"]["message"], body
+
+
+def test_the_connection_ceiling_refuses_with_a_response_not_a_bare_close() -> None:
+    """A socket closed with nothing written on it is indistinguishable from the hung server this
+    cap exists to prevent — which was the stated reason for refusing rather than queueing, and then
+    the refusal said nothing at all. It is written from `process_request`, on the ACCEPT thread,
+    before any handler exists for the connection, so it is pre-rendered bytes rather than a normal
+    response path.
+    """
+    _assert_the_ceiling_refuses_readably()
+
+
+def test_the_ceiling_refusal_is_still_read_when_the_reset_lands_first() -> None:
+    """The refusal closes with the caller's request unread, so the kernel answers it with an RST,
+    and the caller can see that RST before it half-closes. A half-close on a reset socket raises
+    ENOTCONN: that failed a macOS CI run, and reproduces about once in 2000 runs locally, before
+    any assertion had looked at what arrived. Waiting here for the reset makes that order certain.
+
+    Asserted twice over: that the reset really landed first, so this keeps testing the race rather
+    than the ordinary path, and that the 503 written before it is still read.
+    """
+    import time
+
+    def _until_reset(sock) -> None:
+        # A reset socket has no peer: getpeername raises once the RST is processed (EINVAL on
+        # macOS, ENOTCONN on Linux). Nothing else observable says it arrived without reading,
+        # and reading here would consume the refusal before `_raw` sees it.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                sock.getpeername()
+            except OSError:
+                return
+            time.sleep(0.001)
+        raise AssertionError("the server never reset the refused connection, so this test no "
+                             "longer exercises the reset-before-half-close order it was "
+                             "written for")
+
+    _assert_the_ceiling_refuses_readably(_until_reset)
 
 
 def test_http_has_no_stream_and_says_so() -> None:
