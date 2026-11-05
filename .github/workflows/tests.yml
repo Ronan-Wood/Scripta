@@ -88,6 +88,24 @@ jobs:
           from importlib.metadata import version;
           print('docling', version('docling'), 'torch', torch.__version__,
           'mps', torch.backends.mps.is_available())"
+      # The interpreter pin's tests on uv's real output need it AT THE PIN'S PATH: uv writes its
+      # install path into libpython and `_sysconfigdata`, so an install anywhere else is other bytes
+      # (measured 2026-11-05 on the operator's Mac: those two files are the only difference, and uv
+      # re-ids libpython with the host's install_name_tool). That path is under the operator's home,
+      # hence sudo. WHICH BUILD comes from this job's uv, not the pin: a re-pin made with a newer uv
+      # fails here or in the pin's tests, so move `version` above with it.
+      - run: |
+          pin=tools/engine-interpreter.pin
+          prefix=$(awk -F '\t' '$1 == "prefix" { print $2; exit }' "$pin")
+          build=$(sed -n 's/^# python [^,]*, python-build-standalone \([0-9][0-9]*\)$/\1/p' "$pin")
+          case "$prefix" in /*/*[!/]) ;; *) echo "no usable prefix in $pin: '$prefix'" >&2; exit 1 ;; esac
+          case "${prefix##*/}" in cpython-[0-9]*.[0-9]*.[0-9]*-*) ;;
+            *) echo "$pin's prefix '$prefix' is not a uv CPython install" >&2; exit 1 ;; esac
+          test -n "$build" || { echo "no python-build-standalone release in $pin" >&2; exit 1; }
+          sudo -n install -d -o "$(id -un)" "${prefix%/*}"
+          uv python install --no-bin --install-dir "${prefix%/*}" "${prefix##*/}"
+          got=$(cat "$prefix/BUILD") || { echo "uv wrote no BUILD into $prefix" >&2; exit 1; }
+          test "$got" = "$build" || { echo "uv installed build $got, $pin is $build" >&2; exit 1; }
       # ZERO SKIPS is the point of this job. The one deselected test needs a path that exists only on
       # the operator's Mac, so it skips on every runner.
       - run: >-

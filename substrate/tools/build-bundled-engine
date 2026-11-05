@@ -137,7 +137,8 @@ fingerprint() {
     shasum -a 256 "$REPO/uv.lock" "$REPO/pyproject.toml" "$0" "$REPO/tools/slim-bundled-engine" \
       "$REPO/tools/embed-apple.swift" "$REPO/tools/hyde-fm.swift" \
       "$REPO/tools/rerank-fm.swift" "$REPO/tools/extract-apple.swift" \
-      "$REPO/tools/engine-interpreter.entitlements" "$REPO/tools/check-page-render.py" | cut -d' ' -f1
+      "$REPO/tools/engine-interpreter.entitlements" "$REPO/tools/check-page-render.py" \
+      "$REPO/tools/engine-interpreter.pin" "$REPO/tools/engine-interpreter-pin.py" | cut -d' ' -f1
     ( cd "$REPO" && find substrate \( -type f -o -type l \) \
         ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 \
         | LC_ALL=C sort -z | xargs -0 shasum -a 256 )
@@ -204,17 +205,66 @@ mkdir -p "$STAGE"
 trap 'rm -rf "$STAGE"' EXIT
 
 say "vendoring $PY_ROOT"
-# `cp -Rp`, and BOTH flags are load-bearing.
+# `cp -Rp`, not `-L`: bin/python and bin/python3 are symlinks to python3.14, and dereferencing them
+# writes the 18 MB interpreter three times for 36 MB of duplication.
 #
-# Not `-L`: bin/python and bin/python3 are symlinks to python3.14, and dereferencing them writes the
-# 18 MB interpreter three times for 36 MB of duplication.
-#
-# `-p` PRESERVES MTIMES, and without it the app breaks its own code signature on first launch.
-# CPython invalidates a .pyc by comparing the source's mtime against the header; a plain `cp` stamps
-# every .py with "now", so the interpreter's own shipped bytecode reads as stale and gets REWRITTEN
-# — inside a sealed bundle. Observed, not reasoned: `codesign --verify` went from clean to
-# "file modified: runtime/lib/python3.14/re/__pycache__/_casefix.cpython-314.pyc" after one run.
+# `-p` keeps the mtimes uv installed. It used to be what kept the store's bytecode valid in the
+# bundle — a plain `cp` stamped every .py with "now", the copied .pyc read as stale, and CPython
+# rewrote it inside the sealed bundle (`codesign --verify`: "file modified: runtime/lib/python3.14/re/
+# __pycache__/_casefix.cpython-314.pyc"). That bytecode is now deleted below and compiled again from
+# the checked copy before signing, so it matches the copy's mtimes whatever they are.
 cp -Rp "$PY_ROOT/" "$STAGE/runtime/"
+
+# THE COPY IS CHECKED AGAINST A PIN BEFORE ANYTHING RUNS IT. The guards above say WHERE the
+# interpreter is and nothing said WHAT it is: uv's store is writable by anything running as this
+# user, and whatever was in it got the Developer ID signature and, on `python3.14`, allow-jit. The
+# pin names every file and symlink of the tree uv installed; `tools/engine-interpreter-pin.py` says
+# why it is a manifest rather than the archive checksum, and why it is per install path.
+#
+# THE COPY, NOT THE STORE, so a store changed after the copy cannot reach the bundle. Before the first
+# `uv venv` below, because that is the first thing that executes it. The copy is checked AGAIN just
+# before signing (`--recheck`), because `uv sync` and the import checks run third-party code on it.
+#
+# BEFORE EACH CHECK THE COPY IS CLEANED (`clean_copy`). Its bytecode is deleted: the interpreter
+# writes `.pyc` into its store as it is used, so it cannot be pinned, and a `.pyc` with a valid header
+# is imported instead of its `.py`. Both checks refuse a tree that still holds any, and it is compiled
+# once, after the recheck, from the sources that check has just read. Its ACLs are stripped: the pin
+# sees bytes and modes, and `cp -p` carries an ACL — `everyone allow write`, say — into the signed
+# bundle. The checker refuses setuid, setgid, sticky and group- or other-writable modes itself.
+#
+# THEN THE COPY IS POINTED AT ITSELF (`--relocate`). Its `_sysconfigdata` names the store, and the
+# OpenCV source build reads `Python.h` from what it names: unrelocated, cv2 would compile against
+# headers nobody checked.
+#
+# `/usr/bin/python3 -I`, never the interpreter being checked. PROBED BY RUNNING IT, not with `-x`:
+# without the command line tools it is a stub that exists, is executable, and exits non-zero — which
+# would read as a refusal.
+say "checking the interpreter against tools/engine-interpreter.pin"
+PIN="$REPO/tools/engine-interpreter.pin"
+/usr/bin/python3 -I -c 'import sys; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1 \
+  || die "/usr/bin/python3 does not run as Python 3.9 or later — it checks the interpreter (install Xcode's command line tools)"
+pin_tool() {
+  local status=0
+  /usr/bin/python3 -I "$REPO/tools/engine-interpreter-pin.py" "$@" || status=$?
+  case "$status" in
+    0) ;;
+    1) die "the interpreter's copy was refused against tools/engine-interpreter.pin — not signing it (the reason is above)" ;;
+    *) die "the interpreter pin check could not run (exit $status) — its message above says why" ;;
+  esac
+}
+# `-name __pycache__` WITHOUT `-type d`: a symlink or a file of that name is bytecode too, and
+# `find -type d` does not match a symlink. `rm -rf` removes a link, not what it points at.
+clean_copy() {
+  find "$STAGE/runtime" -name __pycache__ -prune -exec rm -rf {} + \
+    || die "could not delete the interpreter's bytecode"
+  find "$STAGE/runtime" -name '*.pyc' -exec rm -f {} + || die "could not delete the interpreter's bytecode"
+  if [ "$(uname)" = Darwin ]; then
+    chmod -RN "$STAGE/runtime" || die "could not strip ACLs from the interpreter's copy"
+  fi
+}
+clean_copy
+pin_tool --check "$STAGE/runtime" "$PY_ROOT" "$PIN"
+pin_tool --relocate "$STAGE/runtime" "$PY_ROOT"
 
 cp "$REPO/pyproject.toml" "$REPO/uv.lock" "$STAGE/"
 
@@ -422,6 +472,22 @@ done
 # compileall reports every file; a non-zero exit is a genuine syntax error and must not be ignored.
 "$STAGE/.venv/bin/python" -m compileall -q "$STAGE/substrate" >/dev/null \
   || die "the engine package does not byte-compile"
+
+# THE COPY IS CHECKED AGAIN, now that third-party code has run on it, with the relocation undone.
+# Here and not later: signing rewrites every Mach-O in it. Cleaned first, so whatever bytecode those
+# steps wrote — a `.pyc` with a valid header at any optimisation level, a symlinked `__pycache__` — is
+# gone, and an ACL they added does not ship. Files the slimming step deleted may be missing; nothing
+# may be changed or added.
+say "checking the interpreter against tools/engine-interpreter.pin again"
+clean_copy
+pin_tool --recheck "$STAGE/runtime" "$PY_ROOT" "$PIN"
+
+# THEN ITS STDLIB IS COMPILED, once, from the sources just checked, and nothing but checked code runs
+# until signing: `-S` keeps `site` and every `.pth` out of it, `-I` the environment and the user's
+# site-packages. After the slimming step, so nothing it removes is compiled. Measured: 1,059 files,
+# under a second.
+"$STAGE/runtime/bin/python3.14" -I -S -m compileall -q -j0 "$STAGE/runtime/lib/python3.14" >/dev/null \
+  || die "the interpreter's standard library does not byte-compile"
 
 # ------------------------------------------------------------------ the two entry points
 #
