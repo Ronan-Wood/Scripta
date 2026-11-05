@@ -316,7 +316,7 @@ final class RenderContractTests: XCTestCase {
     /// every entry goes through `_unreachable`, whose f-string puts the arm first.
     func testEveryUnavailableEntryIsBuiltByTheOneSpellingThatLeadsWithItsArm() throws {
         let stack = try PythonSource.load("substrate/substrate/stack.py")
-        XCTAssertTrue(stack.text.contains("return f\"{arm} {model!r} unreachable at {where}\""),
+        XCTAssertTrue(stack.text.contains("return f\"{arm} {model!r} {why}\""),
                       "`_unreachable` no longer leads with the arm name, so `Stack.unavailable_arms`"
                       + " cannot recover it and `health.arms` will read healthy over a dead arm")
 

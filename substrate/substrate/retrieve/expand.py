@@ -23,11 +23,12 @@ from __future__ import annotations
 import json
 import re
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from substrate.net import open_local, require_loopback
 from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
+from substrate.retrieve.local_models import CLOUD, LOCAL, is_cloud, locality
 
 # MEASURED, and bigger is NOT better. Semantic mrr by generator, 24 cases:
 #   none 0.375 | apple-fm 0.422 | llama3.2:3b 0.478 | qwen2.5:7b 0.531 | qwen2.5:14b 0.472
@@ -88,21 +89,6 @@ TIMEOUT = 45
 # purpose — never "unavailable", which would say a daemon is down.
 AUTO = "auto"
 OFF = "off"
-
-
-def is_cloud(entry: dict) -> bool:
-    """A model Ollama serves from its cloud through the local daemon: `remote_host` says so, and
-    the tag does (`gpt-oss:120b-cloud`, `glm-4.6:cloud`) when the listing says nothing more. The
-    socket is loopback either way, and the query still leaves the machine — so HyDE never uses
-    one, picked or named. Same test as the app's `ModelResolver.isRemote`."""
-    tag = str(entry.get("name") or "").lower().rsplit(":", 1)[-1]
-    return bool(entry.get("remote_host")) or tag == "cloud" or tag.endswith("-cloud")
-
-
-def _bare(name: str) -> str:
-    """A model name as Ollama matches it: case-insensitively, `:latest` implied."""
-    low = name.lower()
-    return low[: -len(":latest")] if low.endswith(":latest") else low
 
 
 def pick_auto(models: list[dict]) -> str | None:
@@ -197,6 +183,8 @@ class HyDE:
     max_tokens: int = 160
     cache: object | None = None
     prompt_id: str = "canonical"
+    # Set by `available()`: False was a cloud model, not a missing one, so the caller can say so.
+    refused_cloud: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         require_loopback(self.host, sends="the query", suggest=DEFAULT_HOST)
@@ -209,26 +197,10 @@ class HyDE:
         return f"{self.model}#{self.prompt_id}"
 
     def available(self) -> bool:
-        """Listed, and not a cloud model. A cloud model is refused even when named outright: the
-        query it would be sent carries what the caller is searching their vault for.
-
-        ONE matching rule for both halves, so "refused" and "available" cannot disagree about which
-        listing entry this model is: the exact name if listed, else its family (the older loose
-        match, kept). Any cloud entry among the matches refuses — a differently-cased or bare spelling
-        of a cloud model must not slip past the cloud test and then match by family.
-        """
-        if is_cloud({"name": self.model}):
-            return False
-        try:
-            with open_local(f"{self.host}/api/tags", timeout=30) as r:
-                listed = [m for m in json.loads(r.read()).get("models", [])
-                          if isinstance(m, dict) and isinstance(m.get("name"), str)]
-        except Exception:
-            return False
-        want = _bare(self.model)
-        matched = ([m for m in listed if _bare(m["name"]) == want]
-                   or [m for m in listed if _bare(m["name"]).split(":")[0] == want.split(":")[0]])
-        return bool(matched) and not any(is_cloud(m) for m in matched)
+        """Listed, and not a cloud model (`local_models.locality`)."""
+        verdict = locality(self.model, self.host)
+        self.refused_cloud = verdict == CLOUD
+        return verdict == LOCAL
 
     def expand(self, query: str) -> str:
         """Return `query + hypothetical passage`, or the bare query on any failure."""

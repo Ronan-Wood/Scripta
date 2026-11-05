@@ -28,12 +28,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-# The two imports this module takes at load time, for the values it needs before any function
-# runs: the rerank default and the HyDE sentinels. Everything else here is imported lazily inside
-# `build` on purpose — wiring an arm should not cost a caller who never asks for it. Both modules
-# pull only stdlib plus `substrate.net`/`substrate.retrieve`, so these are names, not models.
+# The imports this module takes at load time, for the values it needs before any function runs:
+# the rerank default, the HyDE sentinels and the cloud refusal's reason. Everything else here is
+# imported lazily inside `build` on purpose — wiring an arm should not cost a caller who never asks
+# for it. These modules pull only stdlib plus `substrate.net`/`substrate.retrieve`, so these are
+# names, not models.
 from substrate.retrieve.expand import AUTO as HYDE_AUTO
 from substrate.retrieve.expand import OFF as HYDE_OFF
+from substrate.retrieve.local_models import CLOUD_REASON
 from substrate.retrieve.rerank_cross import DEFAULT_MODEL as CROSS_MODEL
 
 # The all-Ollama CEILING tier (retriever._STACKS): this embedder key with these models is a MEASURED
@@ -97,13 +99,16 @@ ARM_UNAVAILABLE = "unavailable"    # asked for, could not start
 ARM_OFF = "off"                    # nobody asked
 
 
-def _unreachable(arm: str, model: object, where: object) -> str:
+def _unreachable(arm: str, model: object, where: object, *, cloud: bool = False) -> str:
     """The ONE spelling of an `unavailable` entry, so the arm name is always its leading token.
 
     Three hand-written f-strings agreed on that shape by habit; `unavailable_arms` now depends on
     it, and a habit that something depends on is a rule that should be enforced in one place.
+    `cloud` is an arm its own `available()` refused as a cloud model: still the arm first, but not
+    pointing the reader at a daemon that is fine.
     """
-    return f"{arm} {model!r} unreachable at {where}"
+    why = f"refused as a cloud model: {CLOUD_REASON}" if cloud else f"unreachable at {where}"
+    return f"{arm} {model!r} {why}"
 
 
 @dataclass(frozen=True)
@@ -219,7 +224,8 @@ def build(
         if expander is None:
             unavailable.append(_unreachable("hyde", named or hyde_model,
                                             getattr(hc, "host", "the local daemon") if hc
-                                            else HYDE_HOST))
+                                            else HYDE_HOST,
+                                            cloud=getattr(hc, "refused_cloud", False)))
 
     reranker = None
     if rerank_model:
@@ -272,7 +278,8 @@ def build(
             # value of naming an unreachable arm is that the reader can act on it — which means
             # printing the tag they have to pull, not the alias they typed.
             unavailable.append(_unreachable("reranker", getattr(rc, "model", rerank_model),
-                                            getattr(rc, "host", "the local daemon")))
+                                            getattr(rc, "host", "the local daemon"),
+                                            cloud=getattr(rc, "refused_cloud", False)))
 
     return Stack(embedder=embedder, expander=expander, reranker=reranker,
                  unavailable=tuple(unavailable))

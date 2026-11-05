@@ -11,6 +11,8 @@ Runnable with `python tests/test_hyde_auto.py` or under pytest.
 
 from __future__ import annotations
 
+import contextlib
+import importlib
 import sys
 import tempfile
 from pathlib import Path
@@ -108,16 +110,29 @@ def _auto_rechecked(cache_path: str) -> None:
     assert after.unavailable == ()
 
 
+@contextlib.contextmanager
 def _tags(body: object):
-    """`open_local` answering `/api/tags` with `body`, so no daemon is contacted."""
-    import contextlib
+    """`open_local` answering `/api/tags` with `body`, so no daemon is contacted — in every module
+    that reads the listing (`resolve_auto` here, `HyDE.available` through `local_models`).
+    Patched on entering the `with`, inside it, so a patch that fails undoes the ones before it."""
     import io
     import json
 
     @contextlib.contextmanager
     def fake(*args, **kwargs):
         yield io.BytesIO(json.dumps(body).encode())
-    return mock.patch.object(expand, "open_local", fake)
+    with contextlib.ExitStack() as patches:
+        for mod in _LISTING_READERS:
+            patches.enter_context(mock.patch.object(mod, "open_local", fake))
+        yield
+
+
+# Looked up rather than imported, so this file still loads against code from before
+# `local_models` existed and fails there on behaviour, not on an import.
+try:
+    _LISTING_READERS = (expand, importlib.import_module("substrate.retrieve.local_models"))
+except ImportError:
+    _LISTING_READERS = (expand,)
 
 
 def test_hyde_refuses_a_cloud_model_even_when_named() -> None:
@@ -148,21 +163,30 @@ def test_a_cloud_tag_is_refused_without_asking_the_daemon() -> None:
     asked = []
     local = {"models": [{"name": "glm-4.6:cloud", "capabilities": ["completion"]},
                         {"name": "gpt-oss:120b-cloud", "capabilities": ["completion"]}]}
-    with _tags(local):
-        real = expand.open_local
-        with mock.patch.object(expand, "open_local",
-                               lambda *a, **k: asked.append(a) or real(*a, **k)):
-            assert not HyDE(model="glm-4.6:cloud").available()
-            assert not HyDE(model="gpt-oss:120b-Cloud").available()
+    with _tags(local), contextlib.ExitStack() as recording:
+        for mod in _LISTING_READERS:
+            real = mod.open_local
+            recording.enter_context(mock.patch.object(
+                mod, "open_local", lambda *a, _real=real, **k: asked.append(a) or _real(*a, **k)))
+        assert not HyDE(model="glm-4.6:cloud").available()
+        assert not HyDE(model="gpt-oss:120b-Cloud").available()
     assert asked == []
 
 
 def test_a_named_cloud_model_leaves_the_arm_unavailable() -> None:
-    with tempfile.TemporaryDirectory() as tmp, _tags({"models": [
-            {"name": "gpt-oss:120b-cloud", "capabilities": ["completion"]}]}):
-        st = stack.build(embed_model=None, hyde_model="gpt-oss:120b-cloud", rerank_model=None,
-                         cache_path=str(Path(tmp) / "cache.db"))
-    assert st.expander is None and st.unavailable_arms == ("hyde",)
+    """Refused, and said as a cloud refusal — by name, or by the listing's `remote_host` alone
+    ("big") — never as a daemon that could not be reached, which sends the reader to a healthy
+    one. The rerankers say it the same way, through the same `stack._unreachable`."""
+    listing = {"models": [{"name": "gpt-oss:120b-cloud", "capabilities": ["completion"]},
+                          {"name": "big:latest", "capabilities": ["completion"],
+                           "remote_host": "https://ollama.com:443"}]}
+    for model in ("gpt-oss:120b-cloud", "big"):
+        with tempfile.TemporaryDirectory() as tmp, _tags(listing):
+            st = stack.build(embed_model=None, hyde_model=model, rerank_model=None,
+                             cache_path=str(Path(tmp) / "cache.db"))
+        assert st.expander is None and st.unavailable_arms == ("hyde",), model
+        assert "cloud" in st.unavailable[0] and "unreachable" not in st.unavailable[0], \
+            st.unavailable
 
 
 def test_a_malformed_listing_is_no_pick_not_a_crash() -> None:

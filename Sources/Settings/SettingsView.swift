@@ -719,7 +719,7 @@ struct SettingsView: View {
         } header: {
             Text("Local Model (advanced)")
         } footer: {
-            Text("Point the app at an OpenAI-compatible server on this Mac or your LAN (Ollama, LM Studio) and assign a bigger model per task. Apple Intelligence stays the default and the automatic fallback. Only a server on localhost or a private address is accepted — public hosts are refused. Setup: `brew install ollama`, then e.g. `ollama pull qwen2.5:14b` (≈9 GB, smarter) or `qwen2.5:7b` (≈4.5 GB, faster).")
+            Text("Point the app at an OpenAI-compatible server on this Mac or your LAN (Ollama, LM Studio) and assign a bigger model per task. Apple Intelligence stays the default and the automatic fallback. Only a server on localhost or a private address is accepted — public hosts are refused. Setup: `brew install ollama`, then `ollama pull` any chat model. On Ollama, Auto picks by size: the largest model for Ask, the smallest for titles and captions. Other servers report no sizes, so there Auto goes by name, and captioning needs a model picked by hand. Search always runs on the local Ollama, where Auto picks its smallest chat model. Auto never picks a cloud model, and Search never uses one.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

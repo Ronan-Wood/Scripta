@@ -28,6 +28,7 @@ from pathlib import Path
 
 from substrate.net import open_local, require_loopback
 from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
+from substrate.retrieve.local_models import CLOUD, LOCAL, locality
 from substrate.store.index_store import Hit
 
 # The same model as HyDE's named default (`expand.DEFAULT_MODEL`, what `auto` picks on the
@@ -64,6 +65,8 @@ class LLMReranker:
     # default of 0 and could never fire for the arm actually shipped.
     transport_failures: int = field(default=0, init=False)
     fallback_queries: int = field(default=0, init=False)
+    # Set by `available()`: False was a cloud model, not a missing one, so the caller can say so.
+    refused_cloud: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         require_loopback(self.host, sends="the query and passages", suggest=DEFAULT_HOST)
@@ -73,14 +76,12 @@ class LLMReranker:
         return f"{self.model}#rerank{self.pool}"
 
     def available(self) -> bool:
-        try:
-            with open_local(f"{self.host}/api/tags", timeout=30) as r:
-                names = {m["name"] for m in json.loads(r.read()).get("models", [])}
-            return self.model in names or self.model.split(":")[0] in {
-                n.split(":")[0] for n in names
-            }
-        except Exception:
-            return False
+        """Listed, and not a cloud model: HyDE's rule (`local_models.locality`), because this arm
+        sends the query AND the passages it reorders. It used to accept any listed name, so
+        `--rerank-model gpt-oss:120b-cloud` sent vault passages to Ollama's cloud."""
+        verdict = locality(self.model, self.host)
+        self.refused_cloud = verdict == CLOUD
+        return verdict == LOCAL
 
     @staticmethod
     def _listing(hits: list[Hit], snippet: int = SNIPPET) -> str:

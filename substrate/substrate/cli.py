@@ -1906,6 +1906,14 @@ def cmd_eval(args: argparse.Namespace) -> int:
         if args.rerank_pool < 1:
             print("FATAL: --rerank-pool must be >= 1.", file=sys.stderr)
             return 2
+        from substrate.retrieve.local_models import RERANK_SENDS, cloud_message, cloud_refusal
+
+        # Before the reranker is built, so the refusal says "cloud" rather than "not available".
+        refusal = args.rerank_model and cloud_refusal(
+            "--rerank-model", args.rerank_model, sends=RERANK_SENDS)
+        if refusal:
+            print(f"FATAL: {refusal}", file=sys.stderr)
+            return 2
 
         if args.rerank_model in ("apple", "apple-fm"):
             from substrate.retrieve.rerank import AppleFMReranker
@@ -1935,6 +1943,12 @@ def cmd_eval(args: argparse.Namespace) -> int:
         # gate — those are computed on the LEXICAL cohort, which the gate mostly skips — so
         # it would exit 0 while semantic MRR quietly drops by the ~0.095 the reranker is worth.
         if not cand.available():
+            if getattr(cand, "refused_cloud", False):     # by the listing's `remote_host`
+                # The arm's own default when no flag named it: there is no flag to leave out.
+                flag = "--rerank-model" if args.rerank_model else None
+                why = cloud_message(flag, model, sends=RERANK_SENDS)
+                print(f"FATAL: {why}" if flag else f"FATAL: reranker {why}", file=sys.stderr)
+                return 2
             print(f"FATAL: reranker {model!r} is not available at {cand.host}. "
                   f"Refusing to report an unreranked run under a reranked label.",
                   file=sys.stderr)

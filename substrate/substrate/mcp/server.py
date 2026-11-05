@@ -69,6 +69,7 @@ from substrate import (
     agent, guard, introspect, local_socket, net, notes, private, render, scopes, stack,
 )
 from substrate.mcp import bridge
+from substrate.retrieve.local_models import RERANK_SENDS, cloud_refusal
 from substrate.store import schema
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -1952,6 +1953,15 @@ def _main(argv: list[str] | None) -> int:
             bind = parse_bind(args.http)
         except ValueError as e:
             print(f"substrate-mcp: {e}", file=sys.stderr)
+            return 2
+
+    # Refused here, at launch, not left to `stack.build`: there the reranker would be dropped as
+    # "unreachable", which points at a daemon that is fine. Only the name can be judged before the
+    # daemon is asked; a cloud model the listing alone gives away is still never wired.
+    if args.rerank_model and not args.lexical_only:
+        refusal = cloud_refusal("--rerank-model", args.rerank_model, sends=RERANK_SENDS)
+        if refusal:
+            print(f"substrate-mcp: {refusal}", file=sys.stderr)
             return 2
 
     build_args = _build_args(args)

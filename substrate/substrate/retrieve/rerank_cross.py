@@ -72,6 +72,7 @@ from dataclasses import dataclass, field
 
 from substrate.net import open_local, require_loopback
 from substrate.retrieve import _TRANSPORT_ERRORS, _response_field
+from substrate.retrieve.local_models import is_cloud
 from substrate.store.index_store import Hit
 
 DEFAULT_MODEL = "dengcao/Qwen3-Reranker-4B:Q4_K_M"
@@ -191,6 +192,8 @@ class CrossEncoderReranker:
     # Deliberately NOT counted in fallback_queries: the arm ran and judged. Separate so the
     # distinction between "declined to reorder" and "could not" stays visible in a sweep.
     declined_all_no: int = field(default=0, init=False)
+    # Set by `available()`: False was a cloud model, not a missing one.
+    refused_cloud: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         require_loopback(self.host, sends="the query and passages", suggest=DEFAULT_HOST)
@@ -205,14 +208,23 @@ class CrossEncoderReranker:
         return f"{self.model}#{self.host}#cross#{_CONFIG_SIG}"
 
     def available(self) -> bool:
+        # Never a cloud model, by its name or by the listing's `remote_host`
+        # (`local_models.is_cloud`, HyDE's test): each scoring pass sends the query and a passage.
+        # `eval --cross-encoder --rerank-model` names this model freely. `refused_cloud` says
+        # which False this was, so the caller can say "cloud" rather than "unreachable".
+        self.refused_cloud = is_cloud({"name": self.model})
+        if self.refused_cloud:
+            return False
         try:
             with open_local(f"{self.host}/api/tags", timeout=30) as r:
-                names = {m["name"] for m in json.loads(r.read()).get("models", [])}
+                listed = {m["name"]: m for m in json.loads(r.read()).get("models", [])}
             # Exact tag, since a cross-encoder's quant IS its identity here — but honour Ollama's
             # tagless == ":latest" convention, so a model named without a tag still resolves.
-            return self.model in names or f"{self.model}:latest" in names
+            entry = listed.get(self.model) or listed.get(f"{self.model}:latest")
         except Exception:
             return False
+        self.refused_cloud = entry is not None and is_cloud(entry)
+        return entry is not None and not self.refused_cloud
 
     def _score(self, query: str, doc: str) -> float | None:
         """Relevance. 1.0/0.0 on a verdict, ABSTAIN if unparseable, None on transport failure.
