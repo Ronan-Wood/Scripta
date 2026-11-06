@@ -26,7 +26,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from substrate import classes, identity, private, render, scopes
+from substrate import blobs, classes, identity, private, render, scopes
 from substrate.checks import document_checks, partition_check_failures
 from substrate.paths import ModelsFolderError, configure, internal_cache_footprint, models_folder
 
@@ -36,6 +36,35 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
         "\n".join(json.dumps(r, ensure_ascii=False, sort_keys=True) for r in rows) + "\n",
         encoding="utf-8",
     )
+
+
+def _store_original(doc) -> None:
+    """Keep the original `doc` was read from in the blob store. Raises blobs.BlobError.
+
+    Stored only when the file at `source_path` IS the original the note declares — its own checksum
+    equals `source_sha256`. A markdown file that declares a different source (the engine's own
+    output, re-ingested) is not that original, and filing it under its own checksum would store
+    something no note names.
+    """
+    if not doc.note_sha256 or doc.note_sha256 != doc.source_sha256:
+        print(f"original  : not stored — {Path(doc.source_path).name} declares its original "
+              f"({doc.source_sha256[:12]}…) rather than being it")
+        return
+    try:
+        r = blobs.put(Path(doc.source_path), expected=doc.source_sha256)
+    except OSError as e:
+        raise blobs.BlobError(f"{e.filename or doc.source_path}: {e.strerror or e}.") from e
+    if r.outcome == "discarded":
+        print(f"original  : not stored — {r.checksum[:12]}… was forgotten "
+              "(`substrate blobs forget`), and stays forgotten")
+    else:
+        print(f"original  : {r.outcome} in the blob store as {r.checksum[:12]}…")
+
+
+def _store_failed(e: Exception) -> int:
+    print(f"\nFATAL (blob store): {e} Nothing was written; the original could not be kept.",
+          file=sys.stderr)
+    return 2
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
@@ -148,6 +177,11 @@ def _ingest_pdf(args: argparse.Namespace, pdf: Path, models: Path | None) -> int
     body, estats = emit(doc)
     chunks, cstats = chunk(doc)
 
+    try:
+        _store_original(doc)
+    except blobs.BlobError as e:
+        return _store_failed(e)
+
     (out / "document.md").write_text(frontmatter(doc, {"version_source": None}) + body, "utf-8")
     # EVERY block, including furniture we dropped and contents we excluded (char_start=-1).
     # Retaining them is what makes the drop auditable — a silently discarded block cannot be
@@ -249,7 +283,10 @@ def _ingest_markdown_file(args: argparse.Namespace, src: Path, spec) -> int:
     try:
         # Standalone ingest carries no composition provenance — vault/tier are set only by the
         # `compose` path (from the resolved manifest), which calls ingest_markdown() directly.
-        r = ingest_markdown(src, out, doc_class=args.doc_class, require_status=False, origin=origin)
+        r = ingest_markdown(src, out, doc_class=args.doc_class, require_status=False, origin=origin,
+                            before_write=_store_original)
+    except blobs.BlobError as e:
+        return _store_failed(e)
     except ValueError as e:  # over-size file or non-UTF-8 bytes — refuse cleanly, no traceback
         print(f"\nFATAL: cannot read {src.name}: {e}", file=sys.stderr)
         return 2
@@ -332,8 +369,11 @@ def _ingest_converted(args: argparse.Namespace, src: Path, spec, models: Path | 
         tmp.write_text(conv.markdown, "utf-8")
         try:
             r = ingest_markdown(
-                tmp, out, doc_class=args.doc_class, require_status=False, origin=origin
+                tmp, out, doc_class=args.doc_class, require_status=False, origin=origin,
+                before_write=_store_original,
             )
+        except blobs.BlobError as e:
+            return _store_failed(e)
         except ValueError as e:
             print(f"\nFATAL: cannot read the converted markdown for {src.name}: {e}",
                   file=sys.stderr)
@@ -1709,6 +1749,112 @@ def _refresh_outcomes() -> list[str]:
     return sorted(refresh_state.OUTCOMES)
 
 
+def _mb(n: int) -> str:
+    return f"{n / 1e6:,.1f} MB"
+
+
+def cmd_blobs(args: argparse.Namespace) -> int:
+    """The blob store: `status`, `forget`, and the two plan-then-confirm sweeps, `gc` and `adopt`.
+
+    Exit 2 is a store or registry that cannot be used, or a plan refused (incomplete knowledge, or
+    a `--confirm` token that no longer matches what would run). Nothing is done on a refusal.
+    """
+    import shlex
+
+    from substrate import blob_lifecycle as life
+
+    def again(*extra: str) -> str:
+        argv = ["substrate", "blobs", args.blobs_cmd]
+        if args.registry:
+            argv += ["--registry", args.registry]
+        return shlex.join([*argv, *extra])
+
+    try:
+        store = blobs.root()
+        if args.blobs_cmd == "status":
+            st = life.status(args.registry, store)
+            if args.json:
+                print(json.dumps(st, indent=2))
+                return 0
+            o, a = st["originals"], st["audio"]
+            print(f"store       : {st['store']}  (location from {st['config']}, else the default)")
+            print(f"held        : {st['blobs']} blob(s), {_mb(st['bytes'])}  ·  "
+                  f"{st['discarded']} forgotten")
+            print(f"originals   : {o['named']} named by notes — {o['stored']} stored, "
+                  f"{o['missing']} missing, {o['discarded']} forgotten")
+            print(f"audio       : {a['named']} named, {a['stored']} held on this Mac")
+            print(f"unreferenced: {st['unreferenced']}  (`substrate blobs gc --unreferenced`)")
+            print(f"only copy   : {st['only_copy']} stored original(s) no longer where a note last "
+                  "saw them — this store is their only local copy")
+            print(f"read        : {len(st['vaults'])} vault(s) registered in {st['registry']}")
+            for c in st["still_held"]:
+                print(f"STILL HELD  : {c} was forgotten but is still stored; `substrate blobs "
+                      "forget` it again", file=sys.stderr)
+            for line in st["exposed"]:
+                print(f"EXPOSED     : {line}", file=sys.stderr)
+            for line in st["leftovers"]:
+                print(f"leftover    : {line} (an interrupted write; never served)")
+            if not st["complete"]:
+                print("\nINCOMPLETE: counts above omit what could not be read:", file=sys.stderr)
+                for line in st["problems"][:20]:
+                    print(f"  {line}", file=sys.stderr)
+            return 0
+        if args.blobs_cmd == "forget":
+            had = blobs.forget(args.checksum, store=store)
+            print(f"forgot {args.checksum}: " + ("deleted, and tombstoned so ingest will not "
+                  "re-add it" if had else "not held; tombstoned so ingest will not add it"))
+            return 0
+        if args.blobs_cmd == "gc":
+            if not args.unreferenced:
+                print("FATAL: name what to collect: `--unreferenced` is the only sweep.",
+                      file=sys.stderr)
+                return 2
+            retire = [Path(v).expanduser() for v in args.retire_vault]
+            plan = (life.gc_apply(args.confirm, args.registry, store, retire=retire)
+                    if args.confirm else life.gc_plan(args.registry, store, retire=retire))
+            verb = "removed" if args.confirm else "would remove"
+            print(f"read {len(plan.vaults)} vault(s) registered in {plan.registry}:")
+            for v in plan.vaults:
+                print(f"  {v}")
+            for c, n in sorted(plan.remove.items()):
+                print(f"  {verb} {c}  ({_mb(n)})")
+            print(f"{verb} {len(plan.remove)} blob(s) none of those vaults' notes name, "
+                  f"{_mb(sum(plan.remove.values()))}.")
+            if plan.recent:
+                print(f"kept {len(plan.recent)} unreferenced blob(s) stored or seen in the last "
+                      f"{life.MIN_AGE_DAYS} days: an ingest may not have promoted its note yet.")
+            if not args.confirm and (plan.remove or plan.retired):
+                flags = [x for v in args.retire_vault for x in ("--retire-vault", v)]
+                print(f"\nTo remove them: "
+                      f"{again('--unreferenced', *flags, '--confirm', plan.token)}")
+            return 0
+        if args.blobs_cmd == "adopt":
+            search = [Path(d).expanduser() for d in args.search]
+            plan = (life.adopt_apply(args.confirm, search, args.registry, store) if args.confirm
+                    else life.adopt_plan(search, args.registry, store))
+            verb = "adopted" if args.confirm else "would adopt"
+            for c, src in sorted(plan.found.items()):
+                print(f"  {verb} {c}  from {src}")
+            print(f"{verb} {len(plan.found)} original(s); {len(plan.missing)} still missing "
+                  "(re-extraction cannot run for those).")
+            for line in plan.scan_errors[:20]:
+                print(f"  not read: {line}", file=sys.stderr)
+            if not args.confirm and plan.found:
+                flags = [x for d in args.search for x in ("--search", d)]
+                print(f"\nTo adopt them: {again(*flags, '--confirm', plan.token)}")
+            return 0
+    except life.Refused as e:
+        print(f"REFUSED: {e}", file=sys.stderr)
+        return 2
+    except blobs.BlobError as e:
+        print(f"FATAL (blob store): {e}", file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"FATAL (blob store): {e.filename or ''}: {e.strerror or e}", file=sys.stderr)
+        return 2
+    raise AssertionError(args.blobs_cmd)
+
+
 def cmd_refresh_record(args: argparse.Namespace) -> int:
     """Record what an unattended refresh pass did to one or more scopes.
 
@@ -2290,6 +2436,28 @@ def main(argv: list[str] | None = None) -> int:
                          f"else {scopes.DEFAULT_REGISTRY})")
     dg.add_argument("--json", action="store_true")
     dg.set_defaults(func=cmd_digests)
+
+    bl = sub.add_parser("blobs", help="the store of originals behind derived notes")
+    blsub = bl.add_subparsers(dest="blobs_cmd", required=True)
+    bst = blsub.add_parser("status", help="what the store holds and what notes name")
+    bst.add_argument("--registry", default=None)
+    bst.add_argument("--json", action="store_true")
+    bfg = blsub.add_parser("forget", help="delete one blob and tombstone it, so ingest will not "
+                                          "re-add it")
+    bfg.add_argument("checksum")
+    bfg.set_defaults(registry=None)
+    bgc = blsub.add_parser("gc", help="plan-then-confirm removal of blobs no note names")
+    bgc.add_argument("--unreferenced", action="store_true")
+    bgc.add_argument("--confirm", default=None, metavar="TOKEN")
+    bgc.add_argument("--registry", default=None)
+    bgc.add_argument("--retire-vault", action="append", default=[], metavar="VAULT",
+                     help="a vault an earlier sweep read that is gone for good")
+    bad = blsub.add_parser("adopt", help="plan-then-confirm: store missing originals found at "
+                                         "their source_path or under --search")
+    bad.add_argument("--search", action="append", default=[], metavar="DIR")
+    bad.add_argument("--confirm", default=None, metavar="TOKEN")
+    bad.add_argument("--registry", default=None)
+    bl.set_defaults(func=cmd_blobs)
 
     rr = sub.add_parser("refresh-record",
                         help="record what an unattended refresh pass did to a scope, so a search "

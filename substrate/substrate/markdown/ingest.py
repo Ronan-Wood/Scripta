@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from substrate.extract.base import doc_id_for, doc_id_from  # stdlib-only; no Do
 from substrate.markdown.emit import emit, frontmatter
 from substrate.markdown import reader
 from substrate.markdown.reader import content_coverage, read_markdown, uncovered_content_blocks
-from substrate.models import Kind, SourceOrigin
+from substrate.models import Document, Kind, SourceOrigin
 
 # A18 aggregate floor. Markdown ingestion must not silently drop source content end-to-end.
 MD_COVERAGE_GATE = 0.99
@@ -104,6 +105,7 @@ def ingest_markdown(
     vault: str | None = None,
     tier: int | None = None,
     origin: SourceOrigin | None = None,
+    before_write: Callable[[Document], None] | None = None,
 ) -> IngestResult:
     """Ingest one markdown file into `out_dir`. Raises on any refusal; never writes a partial set.
 
@@ -121,6 +123,11 @@ def ingest_markdown(
     three gates as a vault note rather than getting a second ingest body of their own: this
     function is where the class policy, the spine contract and A18 live, and a parallel
     implementation would be a second place to forget one. See models.SourceOrigin.
+
+    `before_write` runs once every gate has passed and before anything is written to `out_dir`.
+    `substrate ingest` stores the original there, so a refused file never enters the blob store
+    and an accepted one never yields a note whose original failed to store. An exception from it
+    propagates, and nothing is written.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.monotonic()
@@ -313,6 +320,8 @@ def ingest_markdown(
             f"{len(drops)} content block(s) dropped {drops[:8]}; missing tokens {src_missing}"
         )
 
+    if before_write is not None:
+        before_write(doc)
     (out_dir / "document.md").write_text(frontmatter(doc, {"version_source": None}) + body, "utf-8")
     _write_jsonl(out_dir / "blocks.jsonl", [b.to_json() for b in doc.blocks])
     _write_jsonl(out_dir / "chunks.jsonl", [c.to_json() for c in chunks])
