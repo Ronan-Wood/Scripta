@@ -1119,6 +1119,42 @@ public struct WireScopeRow: Codable, Equatable, Sendable {
     }
 }
 
+/// `list_scopes`' `server` block: what kind of server this is, for a client deciding whether to
+/// use an engine it did not start.
+public struct WireServerInfo: Codable, Equatable, Sendable {
+    public let readOnly: Bool
+    public let agentMode: Bool
+    /// Seconds between the server's own refresh passes (`substrate serve`), or nil when it
+    /// refreshes nothing and leaves that to whoever runs it.
+    public let refreshEvery: Double?
+
+    public init(readOnly: Bool, agentMode: Bool, refreshEvery: Double?) {
+        self.readOnly = readOnly
+        self.agentMode = agentMode
+        self.refreshEvery = refreshEvery
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case readOnly = "read_only"
+        case agentMode = "agent_mode"
+        case refreshEvery = "refresh_every"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        readOnly = try c.decode(Bool.self, forKey: .readOnly)
+        agentMode = try c.decode(Bool.self, forKey: .agentMode)
+        refreshEvery = try c.decodeIfPresent(Double.self, forKey: .refreshEvery)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(readOnly, forKey: .readOnly)
+        try c.encode(agentMode, forKey: .agentMode)
+        try c.encodeExplicitNull(refreshEvery, forKey: .refreshEvery)
+    }
+}
+
 public struct WireScopeList: Codable, Equatable, Sendable {
     public let scopes: [WireScopeRow]
     /// `null` from an agent-mode server, which never reads the operator's registry.
@@ -1127,15 +1163,20 @@ public struct WireScopeList: Codable, Equatable, Sendable {
     /// from an engine older than the field. The MCP server always has a stack to describe, so the
     /// wire has two states, absent or the arms, and nil round-trips as absent.
     public let retrievalArms: WireRetrievalArms?
+    /// What kind of server answered (`_tool_list_scopes`): read-only, agent mode, and whether it
+    /// refreshes its own scopes. Nil from an engine older than the field.
+    public let server: WireServerInfo?
 
-    public init(scopes: [WireScopeRow], registry: String?, retrievalArms: WireRetrievalArms? = nil) {
+    public init(scopes: [WireScopeRow], registry: String?, retrievalArms: WireRetrievalArms? = nil,
+                server: WireServerInfo? = nil) {
         self.scopes = scopes
         self.registry = registry
         self.retrievalArms = retrievalArms
+        self.server = server
     }
 
     enum CodingKeys: String, CodingKey {
-        case scopes, registry
+        case scopes, registry, server
         case retrievalArms = "retrieval_arms"
     }
 
@@ -1144,6 +1185,7 @@ public struct WireScopeList: Codable, Equatable, Sendable {
         scopes = try c.decode([WireScopeRow].self, forKey: .scopes)
         registry = try c.decode(String?.self, forKey: .registry)
         retrievalArms = try c.decodeIfPresent(WireRetrievalArms.self, forKey: .retrievalArms)
+        server = try c.decodeIfPresent(WireServerInfo.self, forKey: .server)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1151,6 +1193,7 @@ public struct WireScopeList: Codable, Equatable, Sendable {
         try c.encode(scopes, forKey: .scopes)
         try c.encodeExplicitNull(registry, forKey: .registry)
         try c.encodeIfPresent(retrievalArms, forKey: .retrievalArms)
+        try c.encodeIfPresent(server, forKey: .server)
     }
 }
 

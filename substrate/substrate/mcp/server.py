@@ -903,6 +903,11 @@ def _tool_list_scopes(args: dict, cfg: Config) -> dict:
     # because `status` needs a scope to ask about. It is how a client shows the engine's HyDE Auto
     # pick without keeping a copy of the rule (`introspect.arms`).
     payload["retrieval_arms"] = introspect.arms(cfg.stack)
+    # WHAT KIND OF SERVER THIS IS, for a client deciding whether to use an engine it did not start:
+    # a writable one, an agent-mode one, or one that leaves refreshing to its client is not the
+    # engine a host app would have started.
+    payload["server"] = {"read_only": cfg.read_only, "agent_mode": cfg.agent is not None,
+                         "refresh_every": cfg.refresh_every}
     return payload
 
 
@@ -1057,6 +1062,9 @@ class Config:
         # AGENT MODE (`substrate.agent`): serve only these scopes, from published snapshots. It
         # implies read-only and goes further — the write tools are not registered at all.
         self.agent = agent
+        # Seconds between this server's own refresh passes (`substrate serve`), or None when it
+        # refreshes nothing: a plain `substrate-mcp`, which leaves refreshing to whoever runs it.
+        self.refresh_every: float | None = None
         # `stack.recheck` bound to the arguments the stack was built with, or None to keep the
         # stack exactly as built — every test, and any caller that did not ask for recovery.
         self._recheck = recheck
@@ -1884,14 +1892,17 @@ def warn_exposed(registry: str | None) -> None:
                   f"warning says why for each path.", file=sys.stderr)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, refresh_every: float | None = None) -> int:
+    """`refresh_every` is `substrate serve`'s: refresh every registered scope on that many seconds'
+    timer, from once the socket is bound. Not a flag here, so a plain `substrate-mcp` never starts a
+    loop by accident."""
     # Everything this process creates — the vector cache, a note `ingest` writes — is the
     # operator's alone. See `private`.
     with private.restricted():
-        return _main(argv)
+        return _main(argv, refresh_every)
 
 
-def _main(argv: list[str] | None) -> int:
+def _main(argv: list[str] | None, refresh_every: float | None = None) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(prog="substrate-mcp", description=__doc__.split("\n")[0])
@@ -1933,6 +1944,10 @@ def _main(argv: list[str] | None) -> int:
     args = ap.parse_args(argv)
 
     if args.connect is not None:
+        if refresh_every is not None:
+            print("substrate serve: --connect is a client of the shared server, and refreshes "
+                  "nothing", file=sys.stderr)
+            return 2
         return _connect(args, ap)
 
     agent_scopes = None
@@ -1976,6 +1991,14 @@ def _main(argv: list[str] | None) -> int:
         except ValueError as e:
             print(f"substrate-mcp: {e}", file=sys.stderr)
             return 2
+
+    # REFUSED, not ignored, and before the stack is built: an agent-mode server reads no vault, and
+    # a refresh loop on any transport but the shared socket would be a second engine refreshing
+    # the same scopes.
+    if refresh_every is not None and (agent_scopes is not None or socket_path is None):
+        print("substrate serve: refreshes only as the shared --socket server, never in agent "
+              "mode", file=sys.stderr)
+        return 2
 
     # BEFORE the stack is built: a refused bind should cost nothing, and building the stack first
     # means a typo'd --http pays for model probes before it fails.
@@ -2025,11 +2048,75 @@ def _main(argv: list[str] | None) -> int:
     # re-check writes nothing either.
     cfg = Config(args.registry, retrieval, read_only=read_only,
                  recheck=functools.partial(stack.recheck, **build_args), agent=agent_scopes)
+    if refresh_every is not None:
+        cfg.refresh_every = refresh_every
+        return _serve_refreshing(cfg, socket_path, args.registry, refresh_every,
+                                 allow_writes=not read_only)
     if socket_path is not None:
         return serve_unix(cfg, socket_path, allow_writes=not read_only)
     if bind is not None:
         return serve_http(cfg, *bind, allow_writes=not read_only)
     return serve(cfg)
+
+
+def _serve_refreshing(cfg: Config, socket_path: Path, registry: str | None, every: float, *,
+                      allow_writes: bool) -> int:
+    """`serve_unix` with the refresh loop (`substrate serve`), started once the socket is bound.
+
+    A SIGTERM ends it as Ctrl-C does, so the server closes its socket, the loop stops, and any
+    compose or embed the loop is running is ended rather than left composing with its output pipes
+    gone. A supervisor that signals only this process, not its group, otherwise orphans that child
+    mid-write."""
+    import signal
+
+    from substrate import refresh
+
+    loop = refresh.Loop(registry, every=every)
+    # Only the main thread may install a handler; a caller running this elsewhere keeps its own.
+    main = threading.current_thread() is threading.main_thread()
+    stops = (signal.SIGTERM, signal.SIGINT)
+
+    def _ignore_stops() -> None:
+        # FIRST, whenever stopping begins: a second SIGTERM (a supervisor escalating) or Ctrl-C
+        # must neither re-enter the handler while it holds a lock, nor raise out of the cleanup
+        # before the children are ended. A child spawned in the instant before `begin_closing`
+        # would inherit the ignore; `terminate_children` KILLs it after its grace.
+        if main:
+            for sig in stops:
+                signal.signal(sig, signal.SIG_IGN)
+
+    def _stopping() -> None:
+        loop.stop.set()
+        refresh.begin_closing()
+
+    def _interrupt(_signum, _frame) -> None:
+        _ignore_stops()
+        _stopping()
+        raise KeyboardInterrupt
+
+    previous = {sig: signal.getsignal(sig) for sig in stops} if main else {}
+    if main:
+        # Both through the one handler, whose first act ignores both: a Ctrl-C cannot land inside
+        # a SIGTERM's handling, or the other way round.
+        for sig in stops:
+            signal.signal(sig, _interrupt)
+    try:
+        return serve_unix(cfg, socket_path, allow_writes=allow_writes,
+                          ready=lambda _httpd: loop.start())
+    finally:
+        _ignore_stops()
+        _stopping()
+        refresh.terminate_children()
+        # Joined only if it ever started: a bind that failed never ran the `ready` callback.
+        if loop.ident is not None:
+            loop.join(15)
+        # Children may start again in this process only once nothing of this server's still runs.
+        if not loop.is_alive():
+            refresh.end_closing()
+        for sig, handler in previous.items():
+            # None: a handler installed outside Python, which cannot be put back from here; the
+            # default is, rather than leaving this server's handler or the ignore behind.
+            signal.signal(sig, handler if handler is not None else signal.SIG_DFL)
 
 
 def _connect(args: Any, ap: Any) -> int:

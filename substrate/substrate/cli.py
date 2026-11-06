@@ -18,7 +18,9 @@ with it".
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -26,7 +28,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from substrate import blobs, classes, identity, private, render, scopes
+from substrate import blobs, classes, identity, private, refresh, render, scopes
 from substrate.checks import document_checks, partition_check_failures
 from substrate.paths import ModelsFolderError, configure, internal_cache_footprint, models_folder
 
@@ -1872,8 +1874,10 @@ def cmd_refresh_record(args: argparse.Namespace) -> int:
 
     failed = 0
     for name in args.scope:
+        # Held until the record line is printed, so the snapshot's line still comes after it.
+        said: list[str] = []
         try:
-            path = refresh_state.record(name, args.outcome, registry=args.registry)
+            path = refresh.record_and_publish(name, args.outcome, args.registry, say=said.append)
         except refresh_state.RefreshStateError as e:
             # Per scope, and the loop continues: one unusable name must not silently cost the
             # other six their record, which would leave them looking un-refreshed forever.
@@ -1882,29 +1886,12 @@ def cmd_refresh_record(args: argparse.Namespace) -> int:
             continue
         if not args.quiet:
             print(f"  {name}: {args.outcome}  ->  {path}")
-        _publish_agent_snapshot(name, args.outcome, args.registry, quiet=args.quiet)
+        for line in said:
+            if line.startswith("WARNING"):
+                print(line, file=sys.stderr)
+            elif not args.quiet:
+                print(line)
     return 2 if failed else 0
-
-
-def _publish_agent_snapshot(name: str, outcome: str, registry: str | None, *,
-                            quiet: bool) -> None:
-    """The agent-snapshot publisher, run where a refresh pass COMPLETES — this is the one call the
-    app's refresh makes per scope once compose and embed are done, so a scope listed in
-    `agent-publish.toml` is republished on the same pass that verified it (`substrate.agent`).
-
-    A failure is a WARNING and never the exit status: the outcome above is recorded and true, and
-    the app reads a non-zero exit here as "could not record", which would be a false report. The
-    catch is broad for the same reason — a full disk or a missing shared folder must not turn a
-    recorded refresh into a failed one."""
-    from substrate import agent
-
-    try:
-        line = agent.after_refresh_record(name, outcome, registry=registry)
-    except Exception as e:  # noqa: BLE001 — see the docstring
-        print(f"WARNING (agent snapshot {name}): {type(e).__name__}: {e}", file=sys.stderr)
-        return
-    if line and not quiet:
-        print(f"  {line}")
 
 
 def cmd_publish_snapshot(args: argparse.Namespace) -> int:
@@ -2362,6 +2349,7 @@ def main(argv: list[str] | None = None) -> int:
                            "no stale dir. Does NOT drop the database: rows are converged by "
                            "reconcile, which re-indexes on any change to chunks, class, spine, "
                            "provenance or source path. To truly start over, delete the --db file.")
+    _add_lock_wait(comp)
     comp.add_argument("--registry", default=None,
                       help=f"scope registry to record into (default ${scopes.ENV_VAR}, else "
                            f"{scopes.DEFAULT_REGISTRY})")
@@ -2523,6 +2511,10 @@ def main(argv: list[str] | None = None) -> int:
     ev.set_defaults(func=cmd_eval)
 
     emb = sub.add_parser("embed")
+    _add_lock_wait(emb)
+    emb.add_argument("--registry", default=None,
+                     help=f"the registry whose vaults lock to take (default ${scopes.ENV_VAR}, "
+                          f"else {scopes.DEFAULT_REGISTRY}); embed reads nothing else from it")
     emb.add_argument("--db", default="out/substrate.db")
     emb.add_argument("--model", default="qwen3-embedding:0.6b")
     emb.add_argument("--embed-style", default="auto", choices=["auto","nomic","none","qwen3"])
@@ -2539,9 +2531,108 @@ def main(argv: list[str] | None = None) -> int:
     rev.add_argument("--seed", type=int, default=7)
     rev.set_defaults(func=cmd_review)
 
-    args = ap.parse_args(argv)
+    rf = sub.add_parser("refresh",
+                        help="compose and embed every registered scope now, recording each outcome; "
+                             "the pass `substrate serve` runs on its timer")
+    rf.add_argument("--scope", action="append", default=[], help="only this scope (repeatable)")
+    rf.add_argument("--registry", default=None,
+                    help=f"scope registry (default ${scopes.ENV_VAR}, else {scopes.DEFAULT_REGISTRY})")
+    rf.set_defaults(func=cmd_refresh)
+
+    sv = sub.add_parser("serve",
+                        help="the shared engine on its Unix socket, refreshing every registered "
+                             "scope on a timer; any other flag goes to substrate-mcp")
+    sv.add_argument("--socket", default=None, metavar="PATH",
+                    help="the socket to serve (default ~/.substrate/run/substrate.sock)")
+    sv.add_argument("--every", type=float, default=refresh.DEFAULT_EVERY, metavar="SECONDS",
+                    help=f"seconds between refresh passes (default {refresh.DEFAULT_EVERY:.0f})")
+    sv.add_argument("--no-refresh", action="store_true", help="serve without refreshing")
+    sv.add_argument("--registry", default=None,
+                    help=f"scope registry (default ${scopes.ENV_VAR}, else {scopes.DEFAULT_REGISTRY})")
+    sv.set_defaults(func=cmd_serve)
+
+    # ONE PARSE. `serve` hands every flag it does not own to the server, so the rest is kept for
+    # it; for any other command an unknown flag is the error it always was.
+    args, rest = ap.parse_known_args(argv)
+    if rest and args.cmd != "serve":
+        ap.error(f"unrecognized arguments: {' '.join(rest)}")
+    args.server_argv = rest
     with private.restricted():
-        return args.func(args)
+        if not getattr(args, "vaults_lock", False):
+            return args.func(args)
+        # COMPOSE AND EMBED HOLD THE VAULTS LOCK, whoever runs them (`substrate.refresh`). Taken
+        # here, around the command, so the commands themselves are untouched. Only TAKING it is
+        # guarded below: an error the command raises is the command's, not the lock's.
+        with contextlib.ExitStack() as held:
+            try:
+                held.enter_context(refresh.vaults_lock(getattr(args, "registry", None),
+                                                       wait=args.wait))
+            except refresh.Declined as e:
+                print(f"DECLINED ({args.cmd}): {e}. Nothing was written; run it again, or pass "
+                      f"--wait SECONDS to wait longer.", file=sys.stderr)
+                return refresh.EX_DECLINED
+            except scopes.ScopeError as e:
+                # The registry path names nothing: the refusal the command would make, made
+                # before it runs, so nothing is written.
+                print(f"FATAL (scope registry): {e}", file=sys.stderr)
+                return 2
+            except OSError as e:
+                print(f"FATAL (vaults lock): {e}", file=sys.stderr)
+                return 2
+            return args.func(args)
+
+
+def _seconds(text: str) -> float:
+    """A wait of zero or more finite seconds, for argparse."""
+    value = float(text)
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError(f"{text!r} is not zero or more seconds")
+    return value
+
+
+def _add_lock_wait(parser: argparse.ArgumentParser) -> None:
+    parser.set_defaults(vaults_lock=True)
+    parser.add_argument("--wait", type=_seconds, default=refresh.DEFAULT_WAIT, metavar="SECONDS",
+                        help=f"how long to wait for another compose, embed or refresh to finish "
+                             f"(default {refresh.DEFAULT_WAIT:.0f}); then exit "
+                             f"{refresh.EX_DECLINED} having written nothing")
+    parser.add_argument("--no-wait", dest="wait", action="store_const", const=0.0,
+                        help="decline at once if another holds the lock")
+
+
+def cmd_refresh(args: argparse.Namespace) -> int:
+    """One refresh pass, now: compose and embed each registered scope and record what happened.
+    The same pass `substrate serve` runs on its timer."""
+    try:
+        results = refresh.run_pass(args.registry, args.scope or None)
+    except scopes.ScopeError as e:
+        # Before anything ran: an unreadable registry, or a --scope it does not hold.
+        print(f"FATAL (scope registry): {e}", file=sys.stderr)
+        return 2
+    if not results:
+        print("nothing to refresh: no scope is registered", file=sys.stderr)
+        return 0
+    # Every outcome is a recorded verdict, compose_failed included, so this exits 0 for them. It
+    # exits 2 only when a verdict could NOT be recorded, which is the one thing the reader of the
+    # state cannot otherwise see.
+    unrecorded = [r for r in results if r.outcome is not None and not r.recorded]
+    return 2 if unrecorded else 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    """The shared engine on its Unix socket, refreshing every registered scope on a timer: the
+    engine running on its own, with no host app. Every other flag goes to the server unchanged."""
+    from substrate import local_socket
+    from substrate.mcp import server
+
+    argv = ["--socket", args.socket or local_socket.DEFAULT_SOCKET, *args.server_argv]
+    if args.registry:
+        argv = ["--registry", args.registry, *argv]
+    every = None if args.no_refresh else args.every
+    if every is not None and not (math.isfinite(every) and every > 0):
+        print("substrate serve: --every must be a positive number of seconds", file=sys.stderr)
+        return 2
+    return server.main(argv, refresh_every=every)
 
 
 if __name__ == "__main__":

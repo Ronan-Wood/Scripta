@@ -1241,7 +1241,11 @@ final class SubstrateLibraryModel: ObservableObject {
         /// callers with no compiler link between the places that spell it, so hand-copying
         /// `cancelled && status == nil` is how a decline silently becomes a failure in a log or a
         /// recorded outcome.
-        var declined: Bool { run.cancelled && run.status == nil }
+        ///
+        /// The engine declines too: `compose` exits 75 (`refresh.EX_DECLINED`) when another
+        /// compose, embed or refresh held the vaults lock past its wait, having written nothing.
+        /// Reading that as a failure would record `compose_failed` for a scope that never ran.
+        var declined: Bool { (run.cancelled && run.status == nil) || run.status == 75 }
     }
 
     static func composeVault(cli: SubstrateEngine.Command, vault: URL, name: String,

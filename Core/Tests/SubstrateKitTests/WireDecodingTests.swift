@@ -85,6 +85,22 @@ final class WireDecodingTests: XCTestCase {
         try JSONDiff.assertLossless(WireScopeList.self, payload: payload)
     }
 
+    /// `list_scopes` says what kind of server answered. The golden capture predates the field;
+    /// a `substrate serve` engine says it refreshes, and a plain one says it does not.
+    func testTheScopeListsServerBlockDecodesAndRoundTrips() throws {
+        let golden = try GoldenFixture.payload(GoldenFixture.listScopes)
+        XCTAssertNil(try JSONDecoder().decode(WireScopeList.self, from: golden).server)
+        for every in [900.0, nil] as [Double?] {
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: golden) as? [String: Any])
+            object["server"] = ["read_only": true, "agent_mode": false,
+                                "refresh_every": every.map { $0 as Any } ?? NSNull()]
+            let payload = try JSONSerialization.data(withJSONObject: object)
+            let server = try XCTUnwrap(JSONDecoder().decode(WireScopeList.self, from: payload).server)
+            XCTAssertEqual(server, WireServerInfo(readOnly: true, agentMode: false, refreshEvery: every))
+            try JSONDiff.assertLossless(WireScopeList.self, payload: payload)
+        }
+    }
+
     func testScopeListRoundTripsLosslessly() throws {
         try JSONDiff.assertLossless(WireScopeList.self,
                                     payload: try GoldenFixture.payload(GoldenFixture.listScopes))

@@ -39,7 +39,7 @@ Non-negotiables from that file:
   manifest, domain, capability). **Reserved:** `status` = the note lifecycle only
   (active / complete / archived / superseded); the retrieval-stack state is `capability`.
 
-## Refresh is IN-APP now — there is no launchd agent
+## Refresh belongs to the engine (`substrate serve`) — there is no launchd agent
 
 **`com.ronanwood.substrate-refresh` was retired 2026-08-12.** No plist is installed and
 `launchctl list` shows nothing. This section described it in the present tense for five days after
@@ -48,16 +48,26 @@ today" straight out of this file — having verified the retirement itself hours
 `CLAUDE.md` is worse than a stale doc: it is loaded into every session before anyone looks at the
 machine.**
 
-What composes today: `SubstrateRefresh` drives `bin/substrate compose` per scope on a timer while
-Scripta is open, plus the recording and Library paths. All go through
-`SubstrateLibraryModel.composeVault`, which serializes them **in-process only** — a CLI invocation
-is a separate process and is not covered. `~/.substrate/refresh.lock` still exists and
-`tools/substrate-deploy` still takes it, but its counterparty retired with the agent, so it now
-guards against nothing.
+What refreshes, as of PR C1 (2026-11-05):
 
-**The consequence to know:** vaults refresh only while the app is open. A week without opening
-Scripta means a week-old index — and `refresh.frozen` reads `false`, because nothing failed;
-nothing ran.
+- `substrate serve` is the shared socket server plus a refresh loop (`substrate/refresh.py`). It
+  runs a pass at bind and every `--every` seconds after, with no host app. `substrate refresh` runs
+  one pass now.
+- `compose` and `embed` take `vaults.lock` (an `flock` beside the registry), whoever runs them.
+  Interactive callers wait up to 60 s, then exit 75 having written nothing. The loop's compose
+  declines at once and records nothing.
+- **Scripta still drives its own loop** (`SubstrateRefresh`) and still spawns `substrate-mcp
+  --socket`, which refreshes nothing, until PR C2 moves it onto `substrate serve`. Its composes now
+  wait on the lock like any caller. One that loses the 60 s wait exits 75 and the app reads that as
+  declined (`ComposeOutcome.declined`), recording nothing. An embed that loses it is still recorded
+  `embed_failed`, which is true: that scope is unvectored until the next pass.
+- `~/.substrate/refresh.lock` is still taken by `tools/substrate-deploy` and the retired
+  `tools/substrate-refresh`. It guards against nothing until C2 moves the deploy onto
+  `vaults.lock`.
+
+**The consequence to know, until C2 lands:** with only Scripta running, vaults refresh only while
+the app is open. A week without it means a week-old index, and `refresh.frozen` reads `false`,
+because nothing failed; nothing ran. Run `substrate serve` to have them refresh without it.
 
 ### The deployment pin still matters, for a different reason
 

@@ -42,11 +42,12 @@ def _parser_of(main_fn) -> argparse.ArgumentParser:
 
     argparse offers no accessor for a parser built inside a function, and copying the flag list
     here would be a second source of truth for the one thing these tests measure. So the parser is
-    caught the only way that does not restate it: `parse_args` is patched to raise with the parser
-    it was called on, and the exception carries it back out.
+    caught the only way that does not restate it: `parse_known_args` (which `parse_args` calls, and
+    which `substrate`'s own `main` calls directly) is patched to raise with the parser it was called
+    on, and the exception carries it back out.
     """
     captured: dict[str, argparse.ArgumentParser] = {}
-    original = argparse.ArgumentParser.parse_args
+    original = argparse.ArgumentParser.parse_known_args
 
     class _Caught(Exception):
         pass
@@ -55,7 +56,7 @@ def _parser_of(main_fn) -> argparse.ArgumentParser:
         captured["parser"] = self
         raise _Caught
 
-    argparse.ArgumentParser.parse_args = spy
+    argparse.ArgumentParser.parse_known_args = spy
     try:
         main_fn([])
     except _Caught:
@@ -63,7 +64,7 @@ def _parser_of(main_fn) -> argparse.ArgumentParser:
     except SystemExit:
         pass
     finally:
-        argparse.ArgumentParser.parse_args = original
+        argparse.ArgumentParser.parse_known_args = original
     parser = captured.get("parser")
     assert parser is not None, "could not capture the parser"
     return parser

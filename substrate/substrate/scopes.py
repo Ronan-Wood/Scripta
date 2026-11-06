@@ -24,9 +24,12 @@ same reason: composition must not depend on where the process happens to be stan
 
 from __future__ import annotations
 
+import math
 import os
 import re
+import stat
 import tempfile
+import time
 import tomllib
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -51,13 +54,62 @@ class ScopeError(RuntimeError):
     """A scope is not registered, its registry is malformed, or its index has gone missing."""
 
 
+class LockBusy(TimeoutError):
+    """`flocked` waited as long as it was allowed and the lock was still held."""
+
+
+@contextmanager
+def flocked(path: Path, *, wait: float | None = None, poll: float = 0.2):
+    """Hold an exclusive `flock` on the file at `path` for the body: THE one lock helper here.
+
+    `wait` None blocks until the lock is free; a number waits that many seconds (0: not at all),
+    then raises `LockBusy`. The kernel releases it if the process dies, so a crashed holder never
+    leaves it taken.
+
+    The file is created 0600 and opened without following a symlink, and is refused unless it is
+    a regular file this user owns. A lock file another account planted in a shared folder, or a
+    FIFO left where it should be, would otherwise make every holder fail or wait forever. Every
+    refusal is an OSError (`PermissionError` for a file that is not ours), which every caller
+    already reports for its own scope rather than taking a whole batch down.
+    """
+    if wait is not None and math.isnan(wait):
+        raise ValueError("a lock wait must be a number of seconds, not NaN")
+    if fcntl is None:
+        yield
+        return
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                 0o600)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+            raise PermissionError(f"{path} is not a regular file owned by this user; refusing to "
+                                  f"lock on it")
+        if wait is None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            deadline = time.monotonic() + max(wait, 0.0)
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        raise LockBusy(f"{path} is held") from None
+                    time.sleep(min(poll, left))
+        yield
+    finally:
+        os.close(fd)
+
+
 @contextmanager
 def exclusive(registry: Path):
     """Hold an exclusive lock across a whole read-modify-write of the registry.
 
     Public because `refresh_state` writes the OTHER machine-local file in this directory and needs
     exactly this guarantee. One definition rather than two near-identical ones: a lock helper that
-    exists twice is a lock helper that will be fixed once.
+    exists twice is a lock helper that will be fixed once. Built on `flocked`, which the vaults
+    lock (`substrate.refresh`) uses too.
 
     `record` reads the file, adds one entry, and writes the WHOLE thing back. An atomic replace
     makes each write all-or-nothing but does nothing about two composes interleaving: both read
@@ -70,16 +122,8 @@ def exclusive(registry: Path):
     happens (a missing lock must not stop a single-process compose from registering) and the
     concurrent case degrades to the behaviour described above.
     """
-    lock_path = registry.parent / f".{registry.name}.lock"
-    if fcntl is None:
+    with flocked(registry.parent / f".{registry.name}.lock"):
         yield
-        return
-    with open(lock_path, "w") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 @dataclass(frozen=True)
