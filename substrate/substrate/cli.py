@@ -159,6 +159,7 @@ def _ingest_pdf(args: argparse.Namespace, pdf: Path, models: Path | None) -> int
         "doc_id": doc.doc_id,
         "source": str(pdf),
         "source_sha256": doc.source_sha256,
+        "note_sha256": doc.note_sha256,
         "pages": doc.source_pages,
         "elapsed_s": round(time.monotonic() - t0, 1),
         "class": meta,
@@ -1608,7 +1609,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         # refuse. It is computed; until now it was never said.
         caveats = []
         if d["unverifiable"]:
-            caveats.append(f"{d['unverifiable']} unverifiable (declared source checksum)")
+            caveats.append(f"{d['unverifiable']} unverifiable (indexed without note_sha256; "
+                           "recompose to check them)")
         if d["unreadable"]:
             caveats.append(f"{len(d['unreadable'])} UNREADABLE")
         head = "no changes detected" if d["unreadable"] else "current"

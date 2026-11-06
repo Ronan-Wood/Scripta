@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import sqlite3
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # v1 (2026-07-21) initial: documents, chunks, chunks_fts (external-content), chunk_vectors.
 # v2 (2026-07-21) chunks.section_kind — references sections were acting as retrieval
@@ -110,6 +110,11 @@ SCHEMA_VERSION = 10
 #     survive that — a hand-made "these two names are one person" decision that a rebuild could
 #     erase is worse than no identity layer at all. So nothing here is authored here; it is
 #     re-derived from the declared file on every compose, and losing it costs a compose.
+# v11 (2026-11-05) documents gains `note_sha256`: the checksum of the file at `source_path` as
+#     ingest read it. `source_sha256` holds a DECLARED checksum for a note that names its original
+#     (a PDF-derived note names the PDF), so an edit to such a note was invisible to freshness and
+#     counted `unverifiable`, and an agent snapshot carried the edited note. Adds a column, so it
+#     bumps: `CREATE TABLE IF NOT EXISTS` cannot add one to a v10 file. No indexed text moves.
 
 DDL = """CREATE TABLE IF NOT EXISTS documents(
     doc_id            TEXT PRIMARY KEY,
@@ -152,6 +157,9 @@ DDL = """CREATE TABLE IF NOT EXISTS documents(
     raw               TEXT,
     raw_sha256        TEXT,
     raw_location      TEXT,
+    -- The checksum of the file at `source_path` as ingest read it — what freshness compares, and
+    -- the sync design's content key for a note. NULL only for a run.json older than v11.
+    note_sha256       TEXT,
     vault             TEXT,
     tier              INTEGER,
     coverage          REAL

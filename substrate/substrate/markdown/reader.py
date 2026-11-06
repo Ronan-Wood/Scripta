@@ -414,6 +414,7 @@ def read_markdown(path: Path, doc_class: str | None = None) -> tuple[Document, s
         doc_id=fid if _DOC_ID.fullmatch(fid) else doc_id_for(path),
         source_path=str(path),
         source_sha256=fsha if _SHA256.fullmatch(fsha) else sha,
+        note_sha256=sha,
         source_pages=_bounded_int(front.get("source_pages", ""), 1, _I64)
         or (max(anchors) if anchors else 1),
         # Doc 2 §3 writes the document class as `class:` in a source's `_meta.md`, and vault.py

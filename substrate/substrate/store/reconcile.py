@@ -67,6 +67,11 @@ def _load_dir(d: Path) -> tuple[Document, list[Chunk], dict, bytes, str] | None:
         doc_id=run["doc_id"],
         source_path=run["source"],
         source_sha256=run["source_sha256"],
+        # Shape-checked like every checksum the reader takes: a malformed value would make every
+        # freshness comparison read `changed`. Absent (an artifact older than the field) stays None,
+        # which freshness reports as `unverifiable` rather than guessing.
+        note_sha256=(note if isinstance(note := run.get("note_sha256"), str)
+                     and reader._SHA256.fullmatch(note) else None),
         source_pages=run["pages"],
         # `or`, not a dict default, so a missing key and an empty string land in the same place —
         # and that place is the ABSENCE marker, never `reference-frozen`. `classes.apply` writes
@@ -170,6 +175,11 @@ def reconcile(store: IndexStore, out_root: Path) -> Report:
                 # reference is read from, so the key has to move when that moves and not when
                 # something upstream of it happens to be spelled differently.
                 str(doc.source_path).encode("utf-8"),
+                # And the note's own checksum. For a note that DECLARES an original, chunks carry the
+                # declared `source_sha256`, so an edit that moves no chunk (a frontmatter key nothing
+                # indexes) changed none of the above. The stored `note_sha256` then kept the old
+                # value and `freshness.drift` reported the note `changed` after every recompose.
+                (doc.note_sha256 or "").encode("ascii"),
             ))
         ).hexdigest()
         known = store.stage_hash(doc.doc_id, "index")

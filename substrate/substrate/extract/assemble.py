@@ -65,10 +65,13 @@ def assemble(
     # matching a block's text against the document's own heading vocabulary.
     toc_report = toc.mark(blocks)
 
+    # One read for both: the PDF is the file at `source_path`, so its checksum is the note's too.
+    sha = sha256_file(pdf)
     doc = Document(
         doc_id=doc_id_for(pdf),
         source_path=str(pdf),
-        source_sha256=sha256_file(pdf),
+        source_sha256=sha,
+        note_sha256=sha,
         source_pages=total_pages,
         document_class=doc_class,
         blocks=blocks,

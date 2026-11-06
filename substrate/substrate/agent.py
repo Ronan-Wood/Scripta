@@ -237,7 +237,8 @@ def _doc_rows(store) -> list[tuple]:
     after the copy sees a document that was added, removed, moved to another vault or repointed
     while the notes were being read — `index_version` hashes content, not where it lives."""
     return [tuple(r) for r in store.db.execute(
-        "SELECT doc_id, source_path, source_sha256, vault FROM documents ORDER BY doc_id")]
+        "SELECT doc_id, source_path, source_sha256, vault, note_sha256 FROM documents "
+        "ORDER BY doc_id")]
 
 
 def _read_notes(rows: list[tuple], roots: dict[str, Path],
@@ -258,7 +259,7 @@ def _read_notes(rows: list[tuple], roots: dict[str, Path],
     from substrate.freshness import read_bounded, stale_verdict
 
     out, excluded = [], set()
-    for doc_id, source_path, source_sha256, vault in rows:
+    for doc_id, source_path, source_sha256, vault, note_sha256 in rows:
         if vault in withheld:
             continue
         try:
@@ -269,13 +270,15 @@ def _read_notes(rows: list[tuple], roots: dict[str, Path],
         except (OSError, RuntimeError):
             excluded.add(doc_id)
             continue
-        verdict = stale_verdict(raw, source_sha256)
-        if verdict:
+        # Carried only on a MATCH. `None` is a note whose edit cannot be seen — a row with no
+        # `note_sha256` (`index --migrate` over pre-v11 run.json) whose declared checksum hides the
+        # body — and carrying it on a falsy verdict is how an edited PDF-derived note reached the
+        # snapshot. A recompose gives every row its checksum and brings these back.
+        if stale_verdict(raw, source_sha256, note_sha256) is not False:
             excluded.add(doc_id)
             continue
         out.append(_NoteCopy(doc_id, _relative(source_path, roots, vault),
-                             raw.decode("utf-8", errors="replace"),
-                             None if verdict is None else 0))
+                             raw.decode("utf-8", errors="replace"), 0))
     return out, frozenset(excluded)
 
 

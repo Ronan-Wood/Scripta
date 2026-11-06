@@ -184,6 +184,11 @@ class Document:
     source_pages: int
     document_class: str
     blocks: list[Block] = field(default_factory=list)
+    # The checksum of the FILE AT `source_path` as ingest read it — never a declared value. It
+    # differs from `source_sha256` exactly when the note declares an original (a PDF-derived
+    # note names the PDF there), which is the case where `source_sha256` cannot see an edit to the
+    # note. Freshness compares against this. `None` only for an artifact written before it existed.
+    note_sha256: str | None = None
 
     title: str | None = None
     version: str | None = None

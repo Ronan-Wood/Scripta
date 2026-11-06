@@ -504,9 +504,10 @@ TOOLS = [
             "whether the VAULT has changed since the index was built.\n\n"
             "Read `drift` before concluding something is absent: a note listed under `added` is "
             "one the scope composes but the index does not hold, which looks exactly like a "
-            "question the corpus cannot answer. `unverifiable` counts notes whose stored checksum "
-            "names a source PDF rather than themselves, so an edit to them cannot be seen from "
-            "the index alone.\n\n"
+            "question the corpus cannot answer. `unverifiable` counts notes indexed without their own "
+            "checksum (`note_sha256`, from an ingest older than it) whose stored checksum names a "
+            "source PDF rather than themselves, so an edit to them cannot be seen from the index "
+            "alone. A recompose brings it to zero.\n\n"
             "`refresh` is the same block `search` returns — what the background job last managed "
             "on this scope. Read it WITH `drift`, not instead of it: `drift.stale` with "
             "`refresh.frozen` is an index whose rebuild refused, while `drift.stale` with a clean "
@@ -657,14 +658,14 @@ def _note_text(store, doc_id: str) -> dict:
     hand the caller a normalized copy of the note rather than the note — always agreeing with the
     index and therefore never able to report that the vault had moved on.
 
-    Freshness uses the reader's own checksum rule (a declared `source_sha256` wins, else the
-    file's own), so a PDF-derived passage — whose stored checksum names the PDF — is `unverifiable`
-    rather than a false `stale`.
+    Freshness compares the note file's own checksum (`note_sha256`), so a PDF-derived passage —
+    whose `source_sha256` names the PDF — is checked like any other. Only a row older than that
+    column falls back to `null`.
     """
     from substrate.freshness import stale_verdict
 
     row = store.db.execute(
-        "SELECT source_path, source_sha256 FROM documents WHERE doc_id=?", (doc_id,)
+        "SELECT source_path, source_sha256, note_sha256 FROM documents WHERE doc_id=?", (doc_id,)
     ).fetchone()
     if row is None:
         raise ToolError(f"no document {doc_id!r} in this index.")
@@ -689,9 +690,9 @@ def _note_text(store, doc_id: str) -> dict:
         "n_chars": len(text),
         "truncated": len(text) > NOTE_CHAR_CAP,
         # A note that no longer matches what was indexed: the passages came from the OLD content.
-        # `null` where the stored checksum is a declared one and an edit cannot be seen from here —
-        # false is a claim, and this is the case where no claim can honestly be made.
-        "stale": stale_verdict(raw, row["source_sha256"]),
+        # `null` only for a row with no `note_sha256` whose stored checksum is a declared one, where
+        # an edit cannot be seen from here — false is a claim, and there no claim can honestly be made.
+        "stale": stale_verdict(raw, row["source_sha256"], row["note_sha256"]),
     }
 
 

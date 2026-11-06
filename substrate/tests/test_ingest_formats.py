@@ -623,7 +623,8 @@ def test_a_document_with_no_retrievable_unit_is_refused() -> None:
                                            "utf-8")
     try:
         ingest_markdown(root / "headings-only.md", root / "o",
-                        origin=SourceOrigin(source_format="image", path="/x/sign.jpg", title="sign"))
+                        origin=SourceOrigin(source_format="image", path="/x/sign.jpg",
+                                           sha256="0" * 64, title="sign"))
     except UnretrievableError as e:
         assert "0 chunks" in str(e)
         assert "sign.jpg" in str(e)  # the REAL artifact, not the throwaway markdown

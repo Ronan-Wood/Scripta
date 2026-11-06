@@ -292,3 +292,14 @@ def test_cli_ingests_a_text_pdf_with_no_models_and_records_the_reader(tmp_path):
     assert cli.main(argv) == 0
     run = json.loads((out / "run.json").read_text("utf-8"))
     assert (run["extract"]["extractor_arm"], run["extract"]["layout_model"]) == ("pdf-text", "")
+
+
+def test_a_pdf_documents_note_checksum_is_the_pdfs_own(tmp_path):
+    """The file at `source_path` is the PDF, so freshness re-reads the PDF: `note_sha256` must be
+    its checksum, on the Document itself and not only in run.json."""
+    import hashlib
+
+    pdf = _report(tmp_path)
+    doc = TextLayerExtractor().extract(pdf, "reference-frozen", **QUIET)
+    own = hashlib.sha256(pdf.read_bytes()).hexdigest()
+    assert doc.note_sha256 == doc.source_sha256 == own

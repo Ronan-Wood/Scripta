@@ -418,8 +418,8 @@ class IndexStore:
                     version_date, page_label_offset, extractor, extractor_arm, layout_model,
                     pipeline_version, ingested_at, last_verified_at, supersedes,
                     superseded_by, status, domains, doc_type, confidence, vault, tier, coverage,
-                    raw, raw_sha256, raw_location)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    raw, raw_sha256, raw_location, note_sha256)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     doc.doc_id, doc.source_path, doc.source_sha256, doc.source_pages,
                     markdown_path, markdown_mtime, markdown_sha256, doc.title,
@@ -439,6 +439,7 @@ class IndexStore:
                     doc.superseded_by,
                     status, json.dumps(list(doc.domains)), doc_type, confidence, doc.vault,
                     doc.tier, coverage, doc.raw, doc.raw_sha256, doc.raw_location,
+                    doc.note_sha256,
                 ),
             )
             db.executemany(

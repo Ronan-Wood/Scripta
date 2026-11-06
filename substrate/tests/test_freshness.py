@@ -18,6 +18,7 @@ Runnable with plain `python tests/test_freshness.py`; discovered by pytest if ad
 
 from __future__ import annotations
 
+import hashlib
 import sys
 import tempfile
 from pathlib import Path
@@ -44,13 +45,18 @@ def _note(vault: Path, name: str, *, declared_sha: str | None = None) -> Path:
     return p
 
 
-def _index(paths: list[Path]) -> IndexStore:
-    """An index whose documents point at those notes, digested the way the reader would."""
+def _index(paths: list[Path], *, legacy: bool = False) -> IndexStore:
+    """An index whose documents point at those notes, digested the way the reader would.
+
+    `legacy` leaves `note_sha256` out, as a row indexed from a run.json older than v11 has it, so
+    the declared-checksum fallback is what gets exercised."""
     store = IndexStore(str(Path(tempfile.mkdtemp()) / "index.db"))
     for p in paths:
-        sha, _ = freshness._effective_sha(p)
+        raw = p.read_bytes()
+        sha, _ = freshness.effective_sha_of(raw)
         doc = Document(doc_id=p.stem, source_path=str(p), source_sha256=sha, source_pages=1,
-                       document_class="reference-frozen", title=p.stem, status="active")
+                       document_class="reference-frozen", title=p.stem, status="active",
+                       note_sha256=None if legacy else hashlib.sha256(raw).hexdigest())
         ch = Chunk(chunk_id=f"{p.stem}#c0", doc_id=p.stem, kind="passage", text=BODY,
                    path=[p.stem], level=1, n_chars=len(BODY),
                    document_class="reference-frozen")
@@ -117,10 +123,11 @@ def test_deleted_note_is_removed() -> None:
 
 def test_declared_digest_is_counted_unverifiable_not_fresh() -> None:
     """A PDF-derived passage stores the PDF's digest (Doc 2 §3b), so a body edit leaves it
-    unchanged. Counting it as verified would overstate what `stale: false` means."""
+    unchanged. Counting it as verified would overstate what `stale: false` means. Only a row
+    without `note_sha256` is in this position now — `test_note_sha256.py` covers the rest."""
     v = _vault()
     note = _note(v, "a", declared_sha="b" * 64)
-    with _index([note]) as s:
+    with _index([note], legacy=True) as s:
         note.write_text(f"---\nsource_sha256: {'b' * 64}\n---\n\n# a\n\nEDITED\n",
                         encoding="utf-8")
         d = freshness.drift(s, [note])
@@ -137,13 +144,29 @@ def test_a_changed_declaration_is_a_change_not_an_unknown() -> None:
     near it."""
     v = _vault()
     note = _note(v, "a", declared_sha="b" * 64)
-    with _index([note]) as s:
+    with _index([note], legacy=True) as s:
         note.write_text(f"---\nsource_sha256: {'c' * 64}\n---\n\n# a\n\n{BODY}\n",
                         encoding="utf-8")
         d = freshness.drift(s, [note])
     assert d["changed"] == [str(note.resolve())], d
     assert d["unverifiable"] == 0
     assert d["stale"] is True
+    # The verdict `expand` and the agent publisher read agrees: a changed declaration is a change.
+    assert freshness.stale_verdict(note.read_bytes(), "b" * 64, None) is True
+
+
+def test_a_declared_note_with_its_own_checksum_is_checked() -> None:
+    """The v11 case: the row carries `note_sha256`, so a body edit behind a declared digest is a
+    change rather than an unknown."""
+    v = _vault()
+    note = _note(v, "a", declared_sha="b" * 64)
+    with _index([note]) as s:
+        clean = freshness.drift(s, [note])
+        note.write_text(f"---\nsource_sha256: {'b' * 64}\n---\n\n# a\n\nEDITED\n",
+                        encoding="utf-8")
+        d = freshness.drift(s, [note])
+    assert clean["stale"] is False and clean["checked"] == 1 and clean["unverifiable"] == 0
+    assert d["changed"] == [str(note.resolve())] and d["unverifiable"] == 0, d
 
 
 def test_unreadable_note_gets_its_own_bucket() -> None:

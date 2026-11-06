@@ -134,6 +134,13 @@ def ingest_markdown(
     if origin is not None:
         doc.source_path = origin.path or doc.source_path
         doc.source_sha256 = origin.sha256 or doc.source_sha256
+        # `note_sha256` names the file at `source_path`, so it moves with it. When the path moves
+        # to the real artifact, the temp file's checksum would describe a file nobody can re-read.
+        if origin.path:
+            if not origin.sha256:
+                raise ValueError(f"{origin.path}: an origin that names a file must carry its "
+                                 "checksum, or the note's freshness could not be checked")
+            doc.note_sha256 = origin.sha256
         doc.extractor = origin.extractor or doc.extractor
         doc.extractor_arm = origin.extractor_arm or doc.extractor_arm
         doc.source_pages = origin.pages or doc.source_pages
@@ -314,6 +321,7 @@ def ingest_markdown(
         "doc_id": doc.doc_id,
         "source": doc.source_path,
         "source_sha256": doc.source_sha256,
+        "note_sha256": doc.note_sha256,
         "pages": doc.source_pages,
         # The ORIGINAL format — "markdown" for a note, "docx"/"image"/… for a converted document.
         # `ingest_arm` is the separate fact and the two must not be conflated: checks.py picks the
