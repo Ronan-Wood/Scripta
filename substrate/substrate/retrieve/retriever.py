@@ -427,7 +427,8 @@ def _retrieve(
     for variant in queries[1:]:
         vlist = store.search(variant, k=k * 2, kind="passage", doc_id=doc_id,
                              document_class=document_class, statuses=statuses,
-                             include_sources=include_sources, vaults=vaults)
+                             include_sources=include_sources, vaults=vaults,
+                             withheld_vaults=withheld_vaults, entity=entity)
         if vlist:
             lists.append((VARIANT_WEIGHT, vlist))
         if embedder is not None:
