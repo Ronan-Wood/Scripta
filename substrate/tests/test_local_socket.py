@@ -14,6 +14,7 @@ Runnable with `python tests/test_local_socket.py` or under pytest.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import socket
@@ -213,7 +214,14 @@ def test_a_client_refuses_a_listener_of_another_uid_before_writing_anything() ->
         assert bytes(seen) == b"", f"the client wrote {bytes(seen)!r} to an untrusted listener"
 
 
-def test_the_engine_drops_a_caller_of_another_uid_unanswered() -> None:
+def _assert_another_uid_is_dropped_unanswered(*, after_the_drop: bool) -> None:
+    """Send `tools/list` to the engine as another uid; nothing may answer it or reach the dispatcher.
+
+    The engine drops such a caller at accept, so the drop can land before the request is written
+    (EPIPE on the send, or on macOS rarely ENOTCONN) or while the reply is read (ECONNRESET). Each
+    is the engine refusing. The read still runs after a failed send, so a reply written before the
+    close would be seen. `after_the_drop` waits for the close before sending, forcing the EPIPE
+    order."""
     with _socket_dir() as d:
         path = d / "substrate.sock"
         handled: list = []
@@ -225,19 +233,39 @@ def test_the_engine_drops_a_caller_of_another_uid_unanswered() -> None:
 
         with _engine(path), _patched(server, "handle", _spy), \
                 _patched(local_socket, "peer_uid", lambda sock: OTHER_UID):
-            raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            raw.settimeout(5)
-            raw.connect(str(path))
-            raw.sendall(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
-                        b"Content-Length: " + str(len(TOOLS_LIST)).encode() + b"\r\n\r\n"
-                        + TOOLS_LIST)
-            try:
-                reply = raw.recv(65536)
-            except ConnectionResetError:
-                reply = b""
-            raw.close()
-        assert reply == b"", f"another uid was answered: {reply!r}"
-        assert handled == [], "another uid's request reached the dispatcher"
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as raw:
+                raw.settimeout(5)
+                raw.connect(str(path))
+                if after_the_drop:
+                    try:
+                        early = raw.recv(1, socket.MSG_PEEK)
+                    except TimeoutError:
+                        raise AssertionError("the engine kept another uid's connection open") from None
+                    assert early == b"", "the engine answered before the request"
+                try:
+                    raw.sendall(b"POST / HTTP/1.1\r\nHost: localhost\r\n"
+                                b"Content-Type: application/json\r\n"
+                                b"Content-Length: " + str(len(TOOLS_LIST)).encode() + b"\r\n\r\n"
+                                + TOOLS_LIST)
+                except OSError as e:
+                    if e.errno not in (errno.EPIPE, errno.ENOTCONN):
+                        raise
+                try:
+                    reply = raw.recv(65536)
+                except ConnectionResetError:
+                    reply = b""
+    assert reply == b"", f"another uid was answered: {reply!r}"
+    assert handled == [], "another uid's request reached the dispatcher"
+
+
+def test_the_engine_drops_a_caller_of_another_uid_unanswered() -> None:
+    _assert_another_uid_is_dropped_unanswered(after_the_drop=False)
+
+
+def test_a_drop_that_lands_before_the_request_still_reads_as_unanswered() -> None:
+    """Forces the order the unforced test reaches only by chance. Only the peek can fail here: the
+    request is never delivered, so the answer and dispatch proof rests on the test above."""
+    _assert_another_uid_is_dropped_unanswered(after_the_drop=True)
 
 
 def test_a_stale_socket_is_replaced_and_a_live_one_is_not() -> None:
