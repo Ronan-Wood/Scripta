@@ -211,6 +211,11 @@ extension SubstrateEngine.Occupant {
             return "Scripta will not use \(socket), because it is not provably this user's: "
                 + "\(why). Nothing was sent to it. Remove whatever is holding that path, or "
                 + "tighten its folder to 700, and press below."
+        case .otherRelease(let why):
+            return "A substrate engine from another release is answering on \(socket), and its "
+                + "replies are in a format this version of Scripta does not read: \(why). Update "
+                + "whichever of the two is older, or quit that engine so Scripta can start its "
+                + "own, and press below."
         }
     }
 }
@@ -1001,6 +1006,11 @@ extension VaultRefusal {
             return [EngineNote(
                 id: "transport", marker: "transport", tone: Ink.danger,
                 text: "The engine answered, but not with a JSON-RPC response: \(failure).")]
+        case .otherRelease(let why):
+            return [EngineNote(
+                id: "release", marker: "release", tone: Ink.danger,
+                text: "The engine is from another release of substrate, and its replies are in a "
+                    + "format this version of Scripta does not read, so none were decoded: \(why).")]
         case .unknownScope(let registered, _):
             return [EngineNote(
                 id: "scope", marker: "scope", tone: Ink.danger,
@@ -1055,6 +1065,7 @@ extension VaultRefusal {
         switch self {
         case .engineDown(let reason): return reason
         case .transport: return nil
+        case .otherRelease: return nil
         case .unknownScope(_, let sentence): return sentence
         case .schemaMismatch(_, _, let sentence): return sentence
         case .emptyIndex(let sentence): return sentence

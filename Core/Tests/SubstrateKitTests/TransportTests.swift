@@ -188,7 +188,7 @@ final class TransportTests: XCTestCase {
 
     /// One `tools/call` straight to the socket, returning `content[0].text` as bytes.
     private func liveToolPayload(_ tool: String, arguments: String) async throws -> Data {
-        let (_, data) = try await UnixSocketHTTP.post(
+        let (_, data, _) = try await UnixSocketHTTP.post(
             path: SubstrateClient.defaultSocketPath,
             body: Data("""
                 {"jsonrpc": "2.0", "id": 1, "method": "tools/call", \

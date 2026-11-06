@@ -38,7 +38,9 @@ The app spawns the engine as a child process. The same engine serves Claude Code
 `:8765`. The engine has since moved off TCP to a Unix socket in a 0700 directory
 (`~/.substrate/run/substrate.sock`, in the engine's own home), and both ends refuse a peer of
 another uid: loopback TCP let every user on the Mac query every scope. The socket's 0.3.4 path,
-which clients were registered with, is kept as a symlink to it (`LegacyEngineSocket`).
+which clients were registered with, is kept as a symlink to it (`LegacyEngineSocket`). Both
+ends state and check a wire version (`Substrate-Wire`, `substrate/substrate/wire.py`), so an app
+and an engine from different releases refuse each other's replies rather than mis-decode them.
 
 ---
 

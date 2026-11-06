@@ -23,6 +23,11 @@ enum VaultRefusal {
     /// description, which names which of the six guards refused.
     case transport(SubstrateTransportFailure)
 
+    /// The engine speaks another substrate wire (`SubstrateTransportFailure.wireMismatch`). Split
+    /// from `transport` because the frame was often a perfectly good JSON-RPC error, and the remedy
+    /// is updating whichever side is older, not anything about the socket.
+    case otherRelease(String)
+
     /// `isError` inside a 200, classified. The engine writes an actionable sentence there and
     /// every case below carries it VERBATIM alongside whatever this build managed to recognise —
     /// so a sentence this classifier does not know still reaches the reader intact.
@@ -72,6 +77,7 @@ extension VaultRefusal {
     /// travel with it because a socket that died mid-call and a host that refused the connection
     /// put the reader in the same place: start the engine.
     static func of(_ failure: SubstrateTransportFailure) -> VaultRefusal {
+        if case .wireMismatch(let why) = failure { return .otherRelease(why) }
         guard case .unreachable(let reason, let code) = failure else { return .transport(failure) }
         switch code {
         case .some(.cannotConnectToHost), .some(.cannotFindHost),

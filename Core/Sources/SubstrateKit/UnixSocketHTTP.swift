@@ -57,7 +57,7 @@ enum UnixSocketHTTP {
     /// per call, closed afterwards. `timeout` bounds each read and write, as URLSession's
     /// `timeoutIntervalForRequest` did. It is not a deadline on the whole call.
     static func post(path: String, body: Data, timeout: TimeInterval,
-                     trust: Trust = Trust()) async throws -> (status: Int, body: Data) {
+                     trust: Trust = Trust()) async throws -> (status: Int, body: Data, wire: [String]) {
         let connection = Connection()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -77,7 +77,7 @@ enum UnixSocketHTTP {
     // MARK: The exchange
 
     private static func exchange(path: String, body: Data, timeout: TimeInterval, trust: Trust,
-                                 connection: Connection) throws -> (status: Int, body: Data) {
+                                 connection: Connection) throws -> (status: Int, body: Data, wire: [String]) {
         let pathBytes = Array(path.utf8)
         guard pathBytes.count <= maxPathBytes else {
             throw URLError(.badURL, userInfo: [NSLocalizedDescriptionKey:
@@ -105,7 +105,7 @@ enum UnixSocketHTTP {
 
     private static func converse(_ fd: Int32, path: String, body: Data, timeout: TimeInterval,
                                  trust: Trust,
-                                 connection: Connection) throws -> (status: Int, body: Data) {
+                                 connection: Connection) throws -> (status: Int, body: Data, wire: [String]) {
         let pathBytes = Array(path.utf8)
         var on: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
@@ -144,13 +144,13 @@ enum UnixSocketHTTP {
                             + "not as this user (\(trust.owner))")
         }
 
-        var request = Data((
-            "POST / HTTP/1.1\r\n"
+        let head: String = "POST / HTTP/1.1\r\n"
             + "Host: localhost\r\n"
             + "Content-Type: application/json\r\n"
             + "Content-Length: \(body.count)\r\n"
+            + "\(SubstrateWire.header): \(SubstrateWire.version)\r\n"
             + "Connection: close\r\n\r\n"
-        ).utf8)
+        var request = Data(head.utf8)
         request.append(body)
         try request.withUnsafeBytes { raw in
             var sent = 0
@@ -192,7 +192,7 @@ enum UnixSocketHTTP {
     /// Headers up to the blank line, then exactly Content-Length bytes. The engine always sends
     /// Content-Length (its 202 carries `0`), so a reply without one is malformed rather than
     /// read to EOF.
-    private static func readResponse(_ fd: Int32) throws -> (status: Int, body: Data) {
+    private static func readResponse(_ fd: Int32) throws -> (status: Int, body: Data, wire: [String]) {
         var buffer = Data()
         let separator = Data("\r\n\r\n".utf8)
         var chunk = [UInt8](repeating: 0, count: 65536)
@@ -233,13 +233,19 @@ enum UnixSocketHTTP {
               let status = Int(statusParts[1]) else {
             throw Malformed(description: "not an HTTP status line: \(lines[0].prefix(80))")
         }
-        let lengths = lines.dropFirst().compactMap { line -> String? in
-            let pair = line.split(separator: ":", maxSplits: 1)
-            guard pair.count == 2,
-                  pair[0].trimmingCharacters(in: .whitespaces).lowercased() == "content-length"
-            else { return nil }
-            return pair[1].trimmingCharacters(in: .whitespaces)
+        /// Every value of the header `name`, untrimmed. The caller judges the value.
+        func values(_ name: String) -> [String] {
+            lines.dropFirst().compactMap { line -> String? in
+                // Empty pieces KEPT: `Substrate-Wire:` with no value is a value to refuse, and
+                // dropping it read the reply as stating no version at all.
+                let pair = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                guard pair.count == 2,
+                      pair[0].trimmingCharacters(in: .whitespaces).lowercased() == name.lowercased()
+                else { return nil }
+                return String(pair[1])
+            }
         }
+        let lengths = values("content-length").map { $0.trimmingCharacters(in: .whitespaces) }
         guard lengths.count == 1, let length = Int(lengths[0]), length >= 0,
               lengths[0].allSatisfy(\.isASCII), lengths[0].allSatisfy(\.isNumber) else {
             throw Malformed(description: "expected exactly one numeric Content-Length, got "
@@ -258,7 +264,8 @@ enum UnixSocketHTTP {
                     + "\(length) body bytes"])
             }
         }
-        return (status, Data(buffer[bodyStart..<(bodyStart + length)]))
+        return (status, Data(buffer[bodyStart..<(bodyStart + length)]),
+                values(SubstrateWire.header))
     }
 
     /// The URLError URLSession would have reported for the same condition. Every caller reads

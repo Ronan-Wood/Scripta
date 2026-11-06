@@ -32,7 +32,7 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-from substrate import local_socket
+from substrate import local_socket, wire
 
 # One forwarded call, end to end. The shared server serializes every tool call on one lock, so this
 # covers waiting behind other clients' calls as well as a wired `search` (HyDE plus a cross-encoder
@@ -109,7 +109,9 @@ class Remote:
         Unknown is not a disagreement. A closed or busy Scripta is the case `ingest` must still
         serve, so only a server that ANSWERS with a different registry refuses the write. A
         listener that is not this user's never gets to answer: `local_socket` refuses it before the
-        question is sent, so it cannot vouch for a registry either.
+        question is sent, so it cannot vouch for a registry either. An engine from another release
+        (`wire.WireMismatch`) is unknown too, deliberately: its registry cannot be read, and every
+        read in this session already fails loudly saying so, so no search is silently narrowed.
 
         Asked on EVERY write, never cached. The engine is restartable without touching its
         clients, and a restart can come up on another registry.
@@ -137,6 +139,8 @@ class Remote:
         return local_socket.post(self.path, body, timeout=timeout or self.timeout)
 
     def _unreachable(self, rid: Any, name: str, reason: object) -> dict:
+        if isinstance(reason, wire.WireMismatch):
+            return self._other_release(rid, name, str(reason))
         if isinstance(reason, local_socket.UntrustedSocket):
             return _tool_error(rid, (
                 f"`{name}` was NOT sent: the path to the substrate engine's socket, "
@@ -160,6 +164,13 @@ class Remote:
             f"the shared substrate engine on {self.endpoint} dropped `{name}`: "
             f"{type(reason).__name__}: {reason}"))
 
+    def _other_release(self, rid: Any, name: str, why: str) -> dict:
+        """The same fact from either side: this client's reply format is not the engine's."""
+        return _tool_error(rid, (
+            f"`{name}` was not answered in a format this client reads: {why}. This client and "
+            f"the shared engine on {self.endpoint} come from releases that do not share a reply "
+            f"format. `ingest` does not need the engine and still works."))
+
     def _relay(self, rid: Any, name: str, status: int, raw: bytes) -> dict:
         try:
             payload = json.loads(raw)
@@ -170,6 +181,9 @@ class Remote:
                 f"{self.endpoint} answered `{name}` with HTTP {status} and a body that is not a "
                 f"JSON-RPC response. Something other than the substrate engine may hold the "
                 f"socket."))
+        error = payload.get("error")
+        if isinstance(error, dict) and error.get("code") == wire.MISMATCH:
+            return self._other_release(rid, name, str(error.get("message")))
         # REWRITTEN, not trusted. Refusals made before the request is read (a 503 at the connection
         # ceiling, a guard's 4xx) carry `id: null`, and a client only resolves a pending call by
         # its own id. Passing null through would leave the call to hang until the client's timeout.

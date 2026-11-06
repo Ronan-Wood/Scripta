@@ -33,6 +33,8 @@ import struct
 import sys
 from pathlib import Path
 
+from substrate import wire
+
 # Where the shared engine listens: under the engine's own home (`scopes.engine_home()`), which an
 # app hosting the engine reaches like any other client. It is not under any app's directory. One
 # level down, because `~/.substrate` is 0755 and the socket needs a 0700 parent, which `claim`
@@ -248,12 +250,21 @@ def post(path: Path, body: bytes, *, timeout: float) -> tuple[int, bytes]:
     """One JSON-RPC POST to the engine on `path`: (HTTP status, body), whatever the status.
 
     One connection per call. The server closes an idle connection after 30s, and a client's next
-    call can come minutes later. Raises OSError (UntrustedSocket among them) or HTTPException.
+    call can come minutes later. Raises OSError (UntrustedSocket and `wire.WireMismatch` among
+    them) or HTTPException.
+
+    The request states this client's wire version, and the reply's is checked before its body is
+    handed to anything that decodes it (`substrate.wire`).
     """
     conn = UnixHTTPConnection(path, timeout=timeout)
     try:
-        conn.request("POST", "/", body=body, headers={"Content-Type": "application/json"})
+        conn.request("POST", "/", body=body, headers={"Content-Type": "application/json",
+                                                      wire.HEADER: str(wire.VERSION)})
         resp = conn.getresponse()
-        return resp.status, resp.read()
+        raw = resp.read()
+        unread = wire.unread(resp.headers.get_all(wire.HEADER))
+        if unread is not None:
+            raise wire.WireMismatch(f"{path}: {unread}")
+        return resp.status, raw
     finally:
         conn.close()

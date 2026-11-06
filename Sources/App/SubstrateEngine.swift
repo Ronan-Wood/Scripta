@@ -87,6 +87,10 @@ final class SubstrateEngine: ObservableObject {
         /// another user, or the listener runs as another uid. Split from `aStranger` because only
         /// here is "nothing was sent" true, and the remedy is about ownership, not a port clash.
         case untrusted(String)
+        /// An engine that speaks another substrate wire, so it is from another release. Split from
+        /// `anEngine` because the remedy is not quitting it: it may be one the operator runs on
+        /// purpose, and the fix is updating whichever of the two is older.
+        case otherRelease(String)
     }
 
     /// One process to run, resolved: what to exec, with what leading arguments, from where.
@@ -521,6 +525,7 @@ final class SubstrateEngine: ObservableObject {
             // is what acts on it, so this must not read as "the socket is free and yours to take".
             if failure.isCancellation { return .free }
             if case .undecodablePayload = failure { return .held(.anEngine(scopes: nil)) }
+            if case .wireMismatch(let why) = failure { return .held(.otherRelease(why)) }
             if case .untrusted(let why) = failure { return .held(.untrusted(why)) }
             // The one mapping of URLError codes to "nothing is listening" lives in `VaultRefusal`;
             // duplicating the set here is how the two drift.

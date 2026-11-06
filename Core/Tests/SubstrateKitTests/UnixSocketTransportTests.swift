@@ -21,8 +21,8 @@ final class UnixSocketTransportTests: XCTestCase {
         return httpReply(status: "200 OK", body: Data(frame.utf8))
     }()
 
-    private static func httpReply(status: String, body: Data) -> Data {
-        var data = Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\n\r\n".utf8)
+    private static func httpReply(status: String, body: Data, headers: String = "") -> Data {
+        var data = Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\n\(headers)Content-Length: \(body.count)\r\n\r\n".utf8)
         data.append(body)
         return data
     }
@@ -47,6 +47,56 @@ final class UnixSocketTransportTests: XCTestCase {
         XCTAssertFalse(request.lowercased().contains("origin:"), request)
         XCTAssertTrue(request.contains(#""method":"tools\/call""#)
                       || request.contains(#""method":"tools/call""#), request)
+    }
+
+    private static func okReply(headers: String) -> Data {
+        let text = #"{\"answer\": 42}"#
+        let frame = #"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"\#(text)"}]}}"#
+        return httpReply(status: "200 OK", body: Data(frame.utf8), headers: headers)
+    }
+
+    func testTheRequestStatesThisClientsWireVersion() async throws {
+        let listener = try TestListener(reply: Self.okReply(headers: "Substrate-Wire: 1\r\n"))
+        let call: SubstrateCall<Echo> = await makeClient(listener).call(
+            tool: "status", arguments: SubstrateNoArguments())
+        XCTAssertEqual(call.payloadIfOK, Echo(answer: 42), "\(call)")
+        let request = String(decoding: listener.received(), as: UTF8.self)
+        XCTAssertTrue(request.contains("\r\nSubstrate-Wire: \(SubstrateWire.version)\r\n"), request)
+    }
+
+    /// Every engine before the header existed spoke version 1.
+    func testAReplyStatingNoVersionIsReadAsVersionOne() async throws {
+        let listener = try TestListener(reply: Self.okReply)
+        let call: SubstrateCall<Echo> = await makeClient(listener).call(
+            tool: "status", arguments: SubstrateNoArguments())
+        XCTAssertEqual(call.payloadIfOK, Echo(answer: 42), "\(call)")
+    }
+
+    /// Decoding a reply in a shape this build does not know produces something plausible and
+    /// wrong. It is refused instead, whatever the body looks like.
+    func testAReplyInAnUnreadVersionIsRefusedBeforeItsBodyIsDecoded() async throws {
+        for stated in ["2", "one", "0", ""] {
+            let listener = try TestListener(
+                reply: Self.okReply(headers: "Substrate-Wire: \(stated)\r\n"))
+            let call: SubstrateCall<Echo> = await makeClient(listener).call(
+                tool: "status", arguments: SubstrateNoArguments())
+            guard case .transportFailure(.wireMismatch(let why)) = call else {
+                return XCTFail("wire \(stated): expected .wireMismatch, got \(call)")
+            }
+            XCTAssertTrue(why.contains("Substrate-Wire") || why.contains(stated), why)
+        }
+    }
+
+    /// An engine stating two versions is still an engine, and still not one this app reads.
+    func testTwoWireHeadersAreAMismatchNotAStranger() async throws {
+        let listener = try TestListener(
+            reply: Self.okReply(headers: "Substrate-Wire: 1\r\nSubstrate-Wire: 2\r\n"))
+        let call: SubstrateCall<Echo> = await makeClient(listener).call(
+            tool: "status", arguments: SubstrateNoArguments())
+        guard case .transportFailure(.wireMismatch(let why)) = call else {
+            return XCTFail("expected .wireMismatch, got \(call)")
+        }
+        XCTAssertTrue(why.contains("2 times"), why)
     }
 
     func testAListenerOfAnotherUIDIsSentNothing() async throws {

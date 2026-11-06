@@ -78,6 +78,12 @@ public enum SubstrateTransportFailure: Equatable, Sendable, CustomStringConverti
     /// Carries the decoder's own description, which names the key or type that disagreed.
     case undecodablePayload(String)
 
+    /// This client and the engine speak different versions of the wire (`SubstrateWire`), so the
+    /// reply was not decoded: either the engine refused this client's version, or it stated one this
+    /// client does not read. It is an engine, so neither "start it" nor "something else holds the
+    /// socket" is the remedy. The remedy is updating whichever of the two is older.
+    case wireMismatch(String)
+
     /// Whether this "failure" is really the caller's own cancellation coming back as one.
     ///
     /// It arrives as `.unreachable` because that is literally what URLSession reports — a request
@@ -108,6 +114,9 @@ public enum SubstrateTransportFailure: Equatable, Sendable, CustomStringConverti
             return "the substrate engine's reply is not a JSON-RPC response: \(why)"
         case .undecodablePayload(let why):
             return "the tool's payload did not decode: \(why)"
+        case .wireMismatch(let why):
+            return "this app and the substrate engine come from releases that do not share a reply "
+                + "format, so the reply was not read: \(why)"
         }
     }
 }
@@ -301,9 +310,10 @@ public actor SubstrateClient {
 
         let status: Int
         let data: Data
+        let wire: [String]
         do {
-            (status, data) = try await UnixSocketHTTP.post(path: socketPath, body: body,
-                                                           timeout: timeout, trust: trust)
+            (status, data, wire) = try await UnixSocketHTTP.post(path: socketPath, body: body,
+                                                                 timeout: timeout, trust: trust)
         } catch let error as UnixSocketHTTP.Untrusted {
             return .transportFailure(.untrusted(error.description))
         } catch let error as UnixSocketHTTP.Malformed {
@@ -315,6 +325,11 @@ public actor SubstrateClient {
             return .transportFailure(.unreachable(reason: "\(error)", code: nil))
         }
 
+        // CHECKED BEFORE THE BODY IS DECODED, refusals included: a reply in a shape this build
+        // does not know decodes into something plausible and wrong, which is worse than no answer.
+        if let unread = SubstrateWire.unread(wire) {
+            return .transportFailure(.wireMismatch(unread))
+        }
         return Self.interpret(body: data, status: status, expectedID: id)
     }
 
@@ -360,6 +375,10 @@ public actor SubstrateClient {
         // `_internal_error` says so explicitly. Requiring a matching id here would turn the most
         // informative failures into "malformed response".
         if let rpcError = envelope.error {
+            // The engine refusing THIS CLIENT's version is the same fact, seen from its side.
+            if rpcError.code == SubstrateWire.mismatchCode {
+                return .transportFailure(.wireMismatch(rpcError.message))
+            }
             return .rpcError(code: rpcError.code, message: rpcError.message)
         }
 

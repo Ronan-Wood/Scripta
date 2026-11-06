@@ -65,7 +65,7 @@ from pathlib import Path
 from typing import Any
 
 from substrate import (
-    agent, guard, introspect, local_socket, net, notes, private, render, scopes, stack,
+    agent, guard, introspect, local_socket, net, notes, private, render, scopes, stack, wire,
 )
 from substrate.mcp import bridge
 from substrate.retrieve.local_models import RERANK_SENDS, cloud_refusal
@@ -1433,6 +1433,13 @@ class _Handler(BaseHTTPRequestHandler):
         # the same rule main() follows for its startup notes.
         sys.stderr.write("substrate-mcp[http]: " + (fmt % args) + "\n")
 
+    def end_headers(self) -> None:
+        # EVERY reply, refusals included, says which wire this engine speaks (`substrate.wire`).
+        # The one reply that does not pass through here, the connection ceiling's 503, carries
+        # the same header in its fixed bytes.
+        self.send_header(wire.HEADER, str(wire.VERSION))
+        super().end_headers()
+
     def _refuse(self, code: int, why: str) -> None:
         # CLOSE THE CONNECTION. Every refusal here replies without reading the request body, and
         # HTTP/1.1 keep-alive would then leave those unread bytes in the socket for the next
@@ -1573,19 +1580,26 @@ class _Handler(BaseHTTPRequestHandler):
             # the client unable to tell "rejected" from "still working".
             payload = _error(None, -32700, "parse error")
         else:
+            # A WIRE THIS ENGINE DOES NOT SPEAK is refused before the lock and never dispatched,
+            # notifications included: a refusal needs no shared state, and must not queue behind
+            # another client's minutes-long search (`substrate.wire`).
+            unserved = wire.unserved(self.headers.get_all(wire.HEADER))
             # SERIALIZED. Every tool was written under stdio, where one frame is handled at a time,
             # and Config carries mutable state that assumption protects — the PlanBook holding
             # two-phase ingest plans above all. Threads accept connections so one slow caller
             # cannot block the listener; the lock keeps what they run one-at-a-time, which is the
             # concurrency the tools were actually built for.
-            with self.lock:
-                try:
-                    payload = handle(msg, self.cfg)
-                except Exception as e:  # noqa: BLE001 — the server outlives any single message
-                    # `msg`, not None — same reason and the same helper as the stdio loop: an
-                    # error carrying `id: null` never resolves the call it answers, so the client
-                    # hangs to its own timeout instead of failing.
-                    payload = _internal_error(msg, e)
+            if unserved is not None:
+                payload = wire.refusal(msg, unserved)
+            else:
+                with self.lock:
+                    try:
+                        payload = handle(msg, self.cfg)
+                    except Exception as e:  # noqa: BLE001 — the server outlives any message
+                        # `msg`, not None — same reason and the same helper as the stdio loop: an
+                        # error carrying `id: null` never resolves the call it answers, so the
+                        # client hangs to its own timeout instead of failing.
+                        payload = _internal_error(msg, e)
 
         if payload is None:
             # A notification takes no reply. 202 is Streamable HTTP's way of saying "accepted, and
@@ -1647,7 +1661,8 @@ class _ConnectionCeiling:
             b"Content-Type: application/json\r\n"
             b"Connection: close\r\n"
             b"Retry-After: 1\r\n"
-            b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+            + f"{wire.HEADER}: {wire.VERSION}\r\n".encode()
+            + b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
         )
 
     def process_request(self, request: Any, client_address: Any) -> None:
