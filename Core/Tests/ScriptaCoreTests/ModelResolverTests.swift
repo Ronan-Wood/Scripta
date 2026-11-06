@@ -130,11 +130,35 @@ final class ModelResolverTests: XCTestCase {
 
     // MARK: - Search (the engine's query expansion)
 
-    /// Smallest chat model, as for enrichment: the 2026-11-01 sweep measured the 9B no better than
-    /// the 4B at HyDE, and HyDE runs on every new query. The reranker, the smaller of the two, is
-    /// skipped by name.
-    func testAutoSearchPicksTheSmallestChatModel() {
-        XCTAssertEqual(resolve("auto", .search, ollama), .model("qwen3.5:4b-mlx", .auto))
+    /// The app keeps NO copy of the engine's Search rule. It used to pick "the smallest chat model"
+    /// itself, against the Settings server's catalog, and draw that as the Auto row: a second answer
+    /// to a question the engine answers, wrong whenever the two looked at different servers. The
+    /// engine now reports its pick, and the label is drawn from that.
+    func testTheAppDoesNotPickTheEnginesSearchModel() {
+        XCTAssertNil(ModelResolver.best(for: .search, in: ollama))
+        XCTAssertEqual(resolve("auto", .search, ollama), .none)
+    }
+
+    func testTheSearchAutoRowSaysWhatTheEngineReported() {
+        XCTAssertEqual(ModelResolver.searchAutoLabel(.asked("auto", resolved: "qwen3.5:4b-mlx")),
+                       "Auto (qwen3.5:4b-mlx)")
+        // Not "pull a model": nothing to pick and an Ollama that is down look alike from here.
+        XCTAssertEqual(ModelResolver.searchAutoLabel(.asked("auto", resolved: nil)),
+                       "Auto (not running in the engine yet)")
+        // An engine running a named pick, or Off, has not run Auto, so it cannot say what Auto picks.
+        for report in [EngineSearchReport.asked("mistral:7b", resolved: "mistral:7b"), .off] {
+            XCTAssertEqual(ModelResolver.searchAutoLabel(report),
+                           "Auto (the engine picks once this is chosen)")
+        }
+        XCTAssertEqual(ModelResolver.searchAutoLabel(.unknown), "Auto (chosen by the engine)")
+    }
+
+    func testAStaleSearchPicksStandInIsTheEnginesAuto() {
+        XCTAssertEqual(ModelResolver.searchStandIn(.asked("auto", resolved: "qwen3.5:4b-mlx")),
+                       "the engine's Auto runs instead: qwen3.5:4b-mlx")
+        for report in [EngineSearchReport.unknown, .off, .asked("auto", resolved: nil)] {
+            XCTAssertEqual(ModelResolver.searchStandIn(report), "the engine's Auto runs instead")
+        }
     }
 
     func testSearchArgumentPassesANamedPickTheServerHas() {
@@ -152,10 +176,9 @@ final class ModelResolverTests: XCTestCase {
 
     /// The bug this binding exists for: a pick the server no longer has went to the engine as-is,
     /// and search silently lost expansion. Nothing is passed instead, so the engine's Auto stands
-    /// in — the model the picker's stale row names.
+    /// in — which the picker's stale row says, from the engine's own report.
     func testAStaleSearchPickIsNotPassed() {
         XCTAssertNil(ModelResolver.searchArgument(binding: "qwen2.5:7b", catalog: ollama, servesEngine: true))
-        XCTAssertEqual(resolve("qwen2.5:7b", .search, ollama), .model("qwen3.5:4b-mlx", .substituted(for: "qwen2.5:7b")))
     }
 
     /// Off is only ever the user's choice. "No suitable model yet" is not Off: the engine reports
@@ -188,7 +211,7 @@ final class ModelResolverTests: XCTestCase {
 
     /// Search's query is vault content, and the engine is loopback-only by design; Ollama proxying a
     /// cloud model would defeat that while the socket stays local. So Search never offers one, and a
-    /// saved one behaves like a stale pick: not passed, with Auto's local model standing in.
+    /// saved one behaves like a stale pick: not passed, with the engine's Auto standing in.
     func testSearchNeverUsesACloudModel() {
         let cloud = ServerModel(name: "qwen3-vl:235b-cloud", capabilities: chat, sizeBytes: 400, isRemote: true)
         let proxied = ServerModel(name: "big:latest", capabilities: chat, sizeBytes: 9 * gb, isRemote: true)
@@ -196,7 +219,6 @@ final class ModelResolverTests: XCTestCase {
         XCTAssertFalse(ModelResolver.offers(cloud, for: .search))
         XCTAssertFalse(ModelResolver.offers(proxied, for: .search))
         XCTAssertTrue(ModelResolver.offers(cloud, for: .ask), "an explicit cloud pick stays the user's for Ask")
-        XCTAssertEqual(resolve("big:latest", .search, catalog), .model("qwen3.5:4b-mlx", .substituted(for: "big:latest")))
         for binding in ["big:latest", "qwen3-vl:235b-cloud"] {
             XCTAssertNil(ModelResolver.searchArgument(binding: binding, catalog: catalog, servesEngine: true))
         }

@@ -48,6 +48,18 @@ public enum ResolvedModel: Equatable, Sendable {
     }
 }
 
+/// What the engine says about its Search model (`list_scopes` → `retrieval_arms`), in the terms the
+/// Search picker needs. ScriptaCore cannot see SubstrateKit's wire types; the app maps them onto
+/// this once.
+public enum EngineSearchReport: Equatable, Sendable {
+    /// No engine answered, or it is older than the report.
+    case unknown
+    /// The engine's HyDE is off.
+    case off
+    /// What HyDE was asked for (`auto` or a model name) and what that resolved to, if anything.
+    case asked(String, resolved: String?)
+}
+
 /// Turns a stored binding into the model a task actually runs on. A saved pick used to go to the
 /// server as-is, so removing that model from the server broke Ask outright and quietly switched
 /// captioning off. A binding now resolves against the last catalog the server reported.
@@ -67,7 +79,8 @@ public enum ModelResolver {
             return best(for: role, in: catalog).map { .model($0, .auto) } ?? .none
         }
         // A cloud model is never Search's, even when saved: the query carries what is being
-        // searched for in the vault. It is treated as gone, so Auto's local pick stands in.
+        // searched for in the vault. It is treated as gone. For Search nothing is resolved in its
+        // place here (`best` has no Search rule): the engine's own Auto stands in.
         if let present = catalog.first(where: { sameModel($0.name, binding) }),
            !(role == .search && isRemote(present)) {
             return .model(present.name, .asSaved)
@@ -76,13 +89,18 @@ public enum ModelResolver {
     }
 
     /// Auto's choice for a role: the largest model on disk for Ask, where answer quality matters
-    /// most, and the smallest for enrichment and captions, which run after every call, and for
-    /// search, which runs on every new query and measured no better on a bigger model. Size on disk
+    /// most, and the smallest for enrichment and captions, which run after every call. Size on disk
     /// rather than parameter count, because a 1-bit 27B model is smaller and weaker than a 4-bit 9B
     /// one, and MLX builds report no parameter count at all. Equal or unknown sizes fall back to
     /// name order so the choice is stable across launches.
+    ///
+    /// NEVER FOR SEARCH. Search's Auto runs in the engine, against the engine's Ollama, and the
+    /// engine reports what it picked (`list_scopes` → `retrieval_arms`). A copy of its rule here,
+    /// run against the Settings server's catalog, is a second answer that can disagree with the one
+    /// that runs. `searchAutoLabel` draws the engine's answer instead.
     public static func best(for role: ModelRole, in catalog: [ServerModel]) -> String? {
-        catalog.filter { canRun(role, on: $0) }
+        guard role != .search else { return nil }
+        return catalog.filter { canRun(role, on: $0) }
             .sorted { a, b in
                 switch (a.sizeBytes, b.sizeBytes) {
                 case let (x?, y?) where x != y: return role == .ask ? x > y : x < y
@@ -99,8 +117,8 @@ public enum ModelResolver {
     public static let searchOff = "off"
 
     /// What the app passes the retrieval engine as `--hyde-model`, or nil to pass nothing and let
-    /// the engine choose for itself — its own Auto, the same rule as `best(for: .search)`, applied
-    /// to what its Ollama lists NOW and re-applied by its background re-check.
+    /// the engine choose for itself — its own Auto, applied to what its Ollama lists NOW and
+    /// re-applied by its background re-check.
     ///
     /// So only a choice the app can vouch for is passed: Off, or a named pick the catalog still
     /// has (or that there is no catalog yet to doubt). Auto, and a stale pick's stand-in, are left
@@ -121,6 +139,28 @@ public enum ModelResolver {
         return nil
     }
 
+    /// The Search picker's Auto row, from what the ENGINE reports. Only an engine running Auto can
+    /// say what Auto picked.
+    public static func searchAutoLabel(_ report: EngineSearchReport) -> String {
+        switch report {
+        case .unknown: return "Auto (chosen by the engine)"
+        case .asked(auto, resolved: let model?): return "Auto (\(model))"
+        // Nothing to pick, an Ollama that is down, a pick that would not start: the engine's
+        // `unavailable` says which, so this does not guess.
+        case .asked(auto, resolved: nil): return "Auto (not running in the engine yet)"
+        case .off, .asked: return "Auto (the engine picks once this is chosen)"
+        }
+    }
+
+    /// What runs instead of a Search pick the server no longer has: nothing is passed for it
+    /// (`searchArgument`), so the engine's own Auto. Named only when the engine says so.
+    public static func searchStandIn(_ report: EngineSearchReport) -> String {
+        guard case .asked(auto, resolved: let model?) = report else {
+            return "the engine's Auto runs instead"
+        }
+        return "the engine's Auto runs instead: \(model)"
+    }
+
     /// What the Search picker shows: the binding, except a named pick the engine is not running.
     /// When the Settings server is not the engine's, a named pick is not passed (`searchArgument`)
     /// and the engine's Auto runs — so Auto is what is shown, never a choice it is not in.
@@ -128,7 +168,8 @@ public enum ModelResolver {
         servesEngine || binding.isEmpty ? binding : auto
     }
 
-    /// Whether Auto may pick `model` for `role`. Stricter than `offers`: it never picks a cloud
+    /// Whether Auto may pick `model` for `role` — for the roles whose Auto runs in the app; Search's
+    /// runs in the engine (`best`). Stricter than `offers`: it never picks a cloud
     /// model, because the user didn't choose to send transcripts or screenshots off the machine;
     /// and with no capabilities to go on it never picks a vision model, because a wrong guess sends
     /// screenshots to a model that can't see them.

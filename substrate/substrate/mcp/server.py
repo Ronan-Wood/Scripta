@@ -897,9 +897,13 @@ def _tool_amend(args: dict, cfg: Config) -> dict:
 
 
 def _tool_list_scopes(args: dict, cfg: Config) -> dict:
-    if cfg.agent is not None:
-        return cfg.agent.scopes_payload()
-    return introspect.scopes_payload(cfg.registry)
+    payload = (cfg.agent.scopes_payload() if cfg.agent is not None
+               else introspect.scopes_payload(cfg.registry))
+    # THE SERVING PROCESS'S WIRING rides on the roster, the one call every client already makes,
+    # because `status` needs a scope to ask about. It is how a client shows the engine's HyDE Auto
+    # pick without keeping a copy of the rule (`introspect.arms`).
+    payload["retrieval_arms"] = introspect.arms(cfg.stack)
+    return payload
 
 
 def _tool_status(args: dict, cfg: Config) -> dict:

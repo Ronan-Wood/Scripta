@@ -27,11 +27,16 @@ from substrate import vault as _vault
 
 def arms(stack) -> dict:
     """Which arms this PROCESS is wired with — distinct from what any one query achieved, which is
-    what the per-response capability envelope reports."""
+    what the per-response capability envelope reports.
+
+    `hyde_requested` is what HyDE was asked for (`auto`, a name, or None for off) and `hyde` is what
+    it resolved to. Together they are the engine's Auto pick, said by the engine: a client that
+    wants to show it reads it here rather than keeping a copy of `expand.pick_auto`."""
     return {
         "embedder": getattr(stack.embedder, "key", getattr(stack.embedder, "model", None))
         if stack.embedder else None,
         "hyde": getattr(stack.expander, "model", None) if stack.expander else None,
+        "hyde_requested": stack.hyde_requested,
         "reranker": getattr(stack.reranker, "model", None) if stack.reranker else None,
         "unavailable": list(stack.unavailable),
     }

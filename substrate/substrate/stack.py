@@ -72,7 +72,8 @@ from substrate.retrieve.rerank_cross import DEFAULT_MODEL as CROSS_MODEL
 # app passed the engine no model, so a pinned tag was every user's HyDE model, lost by anyone who had
 # not pulled that exact one. The app now passes Settings → Search's Off, or a named local pick when
 # its Settings server is this engine's Ollama and lists it, and otherwise nothing, leaving Auto here. `auto` resolves in `build` to the smallest local chat model
-# (`expand.pick_auto`, the app's `ModelResolver` rule). The tier contract is untouched by this:
+# (`expand.pick_auto`, the one copy of the rule; clients read the result from `introspect.arms`).
+# The tier contract is untouched by this:
 # `_measured_tier` still matches the RESOLVED model exactly, so on a machine where auto lands on
 # `qwen3.5:4b-mlx` the default stack reports its measured 0.667, and anywhere else an honest None.
 # 0.667 is below the 0.675 measured with HyDE off on the same stack, by under one case — a
@@ -123,6 +124,10 @@ class Stack:
     expander: object | None = None
     reranker: object | None = None
     unavailable: tuple[str, ...] = ()
+    # What HyDE was ASKED for: `auto`, a model name, or None when the arm is off. `expander` is
+    # what that resolved to. Both are reported, so a client never re-derives the engine's Auto pick
+    # with a copy of its rule (`introspect.arms`).
+    hyde_requested: str | None = None
 
     @property
     def unavailable_arms(self) -> tuple[str, ...]:
@@ -174,10 +179,13 @@ def build(
     Vector COMPLETENESS is deliberately not checked here — it is a property of an index, not of a
     stack, and one stack serves many scopes. `_retrieve` checks it per query and degrades.
     """
-    if hyde_model == HYDE_OFF:
+    # Off, and an empty name, are one fact: no HyDE was asked for (`Stack.hyde_requested`).
+    if hyde_model == HYDE_OFF or not hyde_model:
         hyde_model = None
     if lexical_only or not (embed_model or hyde_model or rerank_model):
-        return Stack()
+        # Still says what HyDE was asked for: a lexical-only engine asked for Auto is not one whose
+        # user chose Off, and a client reading the report must be able to tell.
+        return Stack(hyde_requested=hyde_model)
 
     unavailable: list[str] = []
     cache = None
@@ -282,7 +290,7 @@ def build(
                                             cloud=getattr(rc, "refused_cloud", False)))
 
     return Stack(embedder=embedder, expander=expander, reranker=reranker,
-                 unavailable=tuple(unavailable))
+                 unavailable=tuple(unavailable), hyde_requested=hyde_model)
 
 
 # The `build` parameter that asks for each arm — what `recheck` turns off for an arm that is up.
@@ -311,4 +319,5 @@ def recheck(current: Stack, **build_kwargs) -> Stack:
         expander=current.expander if current.expander is not None else fresh.expander,
         reranker=current.reranker if current.reranker is not None else fresh.reranker,
         unavailable=fresh.unavailable,
+        hyde_requested=current.hyde_requested,
     )

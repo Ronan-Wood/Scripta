@@ -808,22 +808,37 @@ public enum WireDriftReport: Codable, Equatable, Sendable {
 public struct WireRetrievalArms: Codable, Equatable, Sendable {
     public let embedder: String?
     public let hyde: String?
+    /// What HyDE was ASKED for. `hyde` is what it resolved to. Together they are the engine's Auto
+    /// pick, which this app reads rather than re-deriving with a copy of the engine's rule.
+    public let hydeRequested: WireHydeRequest
     public let reranker: String?
     public let unavailable: [String]
 
-    public init(embedder: String?, hyde: String?, reranker: String?, unavailable: [String]) {
+    public init(embedder: String?, hyde: String?, hydeRequested: WireHydeRequest = .notSent,
+                reranker: String?, unavailable: [String]) {
         self.embedder = embedder
         self.hyde = hyde
+        self.hydeRequested = hydeRequested
         self.reranker = reranker
         self.unavailable = unavailable
     }
 
-    enum CodingKeys: String, CodingKey { case embedder, hyde, reranker, unavailable }
+    enum CodingKeys: String, CodingKey {
+        case embedder, hyde, reranker, unavailable
+        case hydeRequested = "hyde_requested"
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         embedder = try c.decodeIfPresent(String.self, forKey: .embedder)
         hyde = try c.decodeIfPresent(String.self, forKey: .hyde)
+        if !c.contains(.hydeRequested) {
+            hydeRequested = .notSent
+        } else if try c.decodeNil(forKey: .hydeRequested) {
+            hydeRequested = .off
+        } else {
+            hydeRequested = .asked(try c.decode(String.self, forKey: .hydeRequested))
+        }
         reranker = try c.decodeIfPresent(String.self, forKey: .reranker)
         unavailable = try c.decode([String].self, forKey: .unavailable)
     }
@@ -832,9 +847,23 @@ public struct WireRetrievalArms: Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeExplicitNull(embedder, forKey: .embedder)
         try c.encodeExplicitNull(hyde, forKey: .hyde)
+        switch hydeRequested {
+        case .notSent: break
+        case .off: try c.encodeNil(forKey: .hydeRequested)
+        case .asked(let model): try c.encode(model, forKey: .hydeRequested)
+        }
         try c.encodeExplicitNull(reranker, forKey: .reranker)
         try c.encode(unavailable, forKey: .unavailable)
     }
+}
+
+/// `introspect.arms`' `hyde_requested`. Three states, because the wire has three, the same as
+/// `WireExposure`: an engine older than the field sends no key; `null` is the arm switched off; a
+/// string is what HyDE was asked for, `auto` or a model name.
+public enum WireHydeRequest: Equatable, Sendable {
+    case notSent
+    case off
+    case asked(String)
 }
 
 /// `introspect.vector_status` — COMPLETENESS of the configured embedder's coverage, not presence.
@@ -1094,24 +1123,34 @@ public struct WireScopeList: Codable, Equatable, Sendable {
     public let scopes: [WireScopeRow]
     /// `null` from an agent-mode server, which never reads the operator's registry.
     public let registry: String?
+    /// The serving process's wiring (`introspect.arms`), which `_tool_list_scopes` attaches. Nil
+    /// from an engine older than the field. The MCP server always has a stack to describe, so the
+    /// wire has two states, absent or the arms, and nil round-trips as absent.
+    public let retrievalArms: WireRetrievalArms?
 
-    public init(scopes: [WireScopeRow], registry: String?) {
+    public init(scopes: [WireScopeRow], registry: String?, retrievalArms: WireRetrievalArms? = nil) {
         self.scopes = scopes
         self.registry = registry
+        self.retrievalArms = retrievalArms
     }
 
-    enum CodingKeys: String, CodingKey { case scopes, registry }
+    enum CodingKeys: String, CodingKey {
+        case scopes, registry
+        case retrievalArms = "retrieval_arms"
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         scopes = try c.decode([WireScopeRow].self, forKey: .scopes)
         registry = try c.decode(String?.self, forKey: .registry)
+        retrievalArms = try c.decodeIfPresent(WireRetrievalArms.self, forKey: .retrievalArms)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(scopes, forKey: .scopes)
         try c.encodeExplicitNull(registry, forKey: .registry)
+        try c.encodeIfPresent(retrievalArms, forKey: .retrievalArms)
     }
 }
 

@@ -46,6 +46,45 @@ final class WireDecodingTests: XCTestCase {
         }
     }
 
+    /// `hyde_requested` has three wire states, like `exposed`: absent (an engine older than the
+    /// field, which is what the golden capture is), `null` (HyDE off), and what HyDE was asked for.
+    /// It is the engine's own account of its Search pick, which this app reads instead of keeping
+    /// a copy of the engine's rule.
+    func testTheHydeRequestDecodesAndRoundTripsEachWireState() throws {
+        let golden = try GoldenFixture.payload(GoldenFixture.status)
+        XCTAssertEqual(try JSONDecoder().decode(WireStatusResult.self, from: golden)
+            .retrievalArms.hydeRequested, .notSent)
+        let cases: [(Any, WireHydeRequest)] = [
+            (NSNull(), .off), ("auto", .asked("auto")), ("mistral:7b", .asked("mistral:7b")),
+        ]
+        for (value, expected) in cases {
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: golden) as? [String: Any])
+            var arms = try XCTUnwrap(object["retrieval_arms"] as? [String: Any])
+            arms["hyde_requested"] = value
+            object["retrieval_arms"] = arms
+            let payload = try JSONSerialization.data(withJSONObject: object)
+            XCTAssertEqual(try JSONDecoder().decode(WireStatusResult.self, from: payload)
+                .retrievalArms.hydeRequested, expected)
+            try JSONDiff.assertLossless(WireStatusResult.self, payload: payload)
+        }
+    }
+
+    /// `list_scopes` carries the serving process's arms (`_tool_list_scopes`). The golden capture
+    /// predates the field, so it is absent there, and both states round-trip.
+    func testTheScopeListsArmsDecodeAndRoundTrip() throws {
+        let golden = try GoldenFixture.payload(GoldenFixture.listScopes)
+        XCTAssertNil(try JSONDecoder().decode(WireScopeList.self, from: golden).retrievalArms)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: golden) as? [String: Any])
+        object["retrieval_arms"] = ["embedder": "qwen3-embedding:0.6b#raw", "hyde": "qwen3.5:4b-mlx",
+                                    "hyde_requested": "auto", "reranker": NSNull(),
+                                    "unavailable": [String]()] as [String: Any]
+        let payload = try JSONSerialization.data(withJSONObject: object)
+        let arms = try XCTUnwrap(JSONDecoder().decode(WireScopeList.self, from: payload).retrievalArms)
+        XCTAssertEqual(arms.hyde, "qwen3.5:4b-mlx")
+        XCTAssertEqual(arms.hydeRequested, .asked("auto"))
+        try JSONDiff.assertLossless(WireScopeList.self, payload: payload)
+    }
+
     func testScopeListRoundTripsLosslessly() throws {
         try JSONDiff.assertLossless(WireScopeList.self,
                                     payload: try GoldenFixture.payload(GoldenFixture.listScopes))

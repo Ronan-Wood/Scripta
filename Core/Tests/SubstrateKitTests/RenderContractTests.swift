@@ -212,7 +212,7 @@ final class RenderContractTests: XCTestCase {
             "entities", "retrieval_arms", "vectors", "refresh", "exposed", "drift",
         ])
         XCTAssertEqual(try source.payload(of: "arms").keys(),
-                       ["embedder", "hyde", "reranker", "unavailable"])
+                       ["embedder", "hyde", "hyde_requested", "reranker", "unavailable"])
         XCTAssertEqual(try source.payload(of: "vector_status").keys(),
                        ["model", "stored", "chunks", "complete", "note"])
     }

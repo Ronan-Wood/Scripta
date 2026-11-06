@@ -38,6 +38,40 @@ final class SubstrateScopes: ObservableObject {
 
     @Published private(set) var roster: Roster = .unasked
 
+    /// The serving engine's wiring, from the same call (`WireScopeList.retrievalArms`). Nil until an
+    /// engine has answered, and from the moment an engine is (re)started or exits (`forgetArms`).
+    /// A listing that fails leaves it alone: one failed call is not news about the arms.
+    @Published private(set) var arms: WireRetrievalArms?
+
+    /// Which engine the current `arms` may come from. Bumped by `forgetArms`, and checked before
+    /// every write, so an answer still in flight from an engine that has since been replaced can
+    /// never write its report back over the new one's.
+    private var armsEpoch = 0
+
+    /// Whether an answer to a call made at `epoch` may become `arms`. Only while THIS app's engine
+    /// is serving: a call made just after a restart can still be answered by the engine that is
+    /// leaving, and the epoch alone cannot tell, because the call began after `forgetArms`.
+    private func accepts(_ epoch: Int) -> Bool {
+        epoch == armsEpoch && SubstrateEngine.shared.lifecycle.isServing
+    }
+
+    /// The engine is being started, restarted or has exited, so what it reported no longer holds.
+    func forgetArms() {
+        armsEpoch += 1
+        arms = nil
+    }
+
+    /// Ask the engine for its wiring WITHOUT touching the roster: when an engine starts serving, and
+    /// when Settings appears (the engine's background re-check can resolve Auto later). The roster
+    /// has its own rule for when it is listed (`activate`), and a listing that races a restart must
+    /// not leave a refusal behind for a healthy engine.
+    func refreshArms() async {
+        let epoch = armsEpoch
+        if case .ok(let list) = await client.listScopes(), accepts(epoch) {
+            arms = list.retrievalArms
+        }
+    }
+
     /// The rows, or none. For a caller that wants to read the list without switching on the state
     /// it arrived in — never for one that has to DRAW the state, which must switch.
     var rows: [WireScopeRow] {
@@ -59,9 +93,11 @@ final class SubstrateScopes: ObservableObject {
         // from the bar's own scope segment, and dropping to `.listing` would blank the answer the
         // reader was looking at in order to re-fetch a list of seven names.
         if !roster.isListed { roster = .listing }
+        let epoch = armsEpoch
         switch await client.listScopes() {
         case .ok(let list):
             roster = .listed(list.scopes)
+            if accepts(epoch) { arms = list.retrievalArms }
         case .toolFault(let text):
             roster = .refused(VaultRefusal.classify(fault: text))
         case .rpcError(let code, let message):

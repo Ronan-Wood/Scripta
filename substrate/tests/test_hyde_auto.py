@@ -3,8 +3,9 @@
 A pinned `qwen2.5:7b` was every user's HyDE model, because the app passed the engine none, and it
 cost HyDE to everyone the day that model left the machine. The app now passes Settings → Search's
 Off, or a named pick its server has; Auto still comes here. These pin three things: the pick rule
-(the app's `ModelResolver.best(for: .search)`, mirrored), that `off` is a choice and not a fault,
-and that `auto` with nothing to pick is retried by `recheck` rather than frozen at startup.
+(the one copy of it; the app reads the result, `test_hyde_reported.py`), that `off` is a choice
+and not a fault, and that `auto` with nothing to pick is retried by `recheck` rather than frozen at
+startup.
 
 Runnable with `python tests/test_hyde_auto.py` or under pytest.
 """
@@ -108,6 +109,8 @@ def _auto_rechecked(cache_path: str) -> None:
     assert rebuilt.call_args.kwargs["hyde_model"] == stack.DEFAULT_HYDE
     assert after.expander is not None and after.expander.model == "qwen3.5:4b-mlx"
     assert after.unavailable == ()
+    # What was asked for survives the rebuild that answered it (`test_hyde_reported.py`).
+    assert after.hyde_requested == stack.DEFAULT_HYDE
 
 
 @contextlib.contextmanager

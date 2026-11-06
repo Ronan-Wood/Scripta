@@ -92,6 +92,8 @@ struct SettingsView: View {
     @State private var searchRestart: Task<Void, Never>?
     @State private var automaticUpdates: Bool = AppUpdater.shared.automaticallyChecksForUpdates
     @ObservedObject private var updater = AppUpdater.shared
+    /// The engine's own report of its Search pick (`retrieval_arms`), which the Auto row shows.
+    @ObservedObject private var engineScopes = SubstrateScopes.shared
 
     private static var versionString: String {
         let info = Bundle.main.infoDictionary
@@ -699,7 +701,16 @@ struct SettingsView: View {
                         modelOptions(.search, selection: searchModel, none: "Off — no query expansion")
                     } else {
                         Text("Off — no query expansion").tag("")
-                        Text("Auto (chosen on the local Ollama)").tag(ModelResolver.auto)
+                        Text(autoLabel(.search)).tag(ModelResolver.auto)
+                    }
+                }
+                // What the engine runs NOW, re-asked while this is on screen: its background
+                // re-check can resolve Auto at any time after it starts. The call does not touch
+                // the roster, and is ignored unless this app's engine is serving.
+                .task {
+                    while !Task.isCancelled {
+                        await SubstrateScopes.shared.refreshArms()
+                        try? await Task.sleep(nanoseconds: 30_000_000_000)
                     }
                 }
                 .onChange(of: searchModel) { _, v in
@@ -719,7 +730,7 @@ struct SettingsView: View {
         } header: {
             Text("Local Model (advanced)")
         } footer: {
-            Text("Point the app at an OpenAI-compatible server on this Mac or your LAN (Ollama, LM Studio) and assign a bigger model per task. Apple Intelligence stays the default and the automatic fallback. Only a server on localhost or a private address is accepted — public hosts are refused. Setup: `brew install ollama`, then `ollama pull` any chat model. On Ollama, Auto picks by size: the largest model for Ask, the smallest for titles and captions. Other servers report no sizes, so there Auto goes by name, and captioning needs a model picked by hand. Search always runs on the local Ollama, where Auto picks its smallest chat model. Auto never picks a cloud model, and Search never uses one.")
+            Text("Point the app at an OpenAI-compatible server on this Mac or your LAN (Ollama, LM Studio) and assign a bigger model per task. Apple Intelligence stays the default and the automatic fallback. Only a server on localhost or a private address is accepted — public hosts are refused. Setup: `brew install ollama`, then `ollama pull` any chat model. On Ollama, Auto picks by size: the largest model for Ask, the smallest for titles and captions. Other servers report no sizes, so there Auto goes by name, and captioning needs a model picked by hand. Search always runs on the local Ollama, and its Auto row shows what the engine picked. Auto never picks a cloud model, and Search never uses one.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -863,7 +874,25 @@ struct SettingsView: View {
         endpointModels = fresh.map(\.name)
     }
 
+    /// What the engine says about its Search pick, mapped once onto the picker's terms. Unknown when
+    /// no engine has answered since it last started, or it is older than `hyde_requested`.
+    private var engineSearchPick: EngineSearchReport {
+        guard SubstrateEngine.shared.lifecycle.isServing, let arms = engineScopes.arms else {
+            return .unknown
+        }
+        switch arms.hydeRequested {
+        case .notSent: return .unknown
+        case .off: return .off
+        case .asked(let requested): return .asked(requested, resolved: arms.hyde)
+        }
+    }
+
     private func autoLabel(_ role: ModelRole) -> String {
+        // SEARCH'S AUTO IS THE ENGINE'S, and is drawn from its report rather than this server's
+        // catalog: the engine resolves it against its own Ollama, which need not be this server.
+        if role == .search {
+            return ModelResolver.searchAutoLabel(engineSearchPick)
+        }
         // Without a catalog Auto resolves to nothing, so say so rather than promise a pick.
         guard let catalog else { return "Auto (test connection to choose)" }
         if let name = ModelResolver.best(for: role, in: catalog) { return "Auto (\(name))" }
@@ -880,7 +909,7 @@ struct SettingsView: View {
         if let saved = all.first(where: { ModelResolver.sameModel($0, selection) }), !rows.contains(saved),
            !(role == .search && isCloud(saved)) {
             // Search never runs a cloud model, so a saved one is left to the stale row below,
-            // which names the local model standing in rather than showing the cloud one chosen.
+            // which says the engine's Auto runs instead rather than showing the cloud one chosen.
             rows.append(saved)
         }
         return rows.map { ModelResolver.sameModel($0, selection) ? selection : $0 }
@@ -889,17 +918,19 @@ struct SettingsView: View {
     private func staleLabel(_ role: ModelRole, _ selection: String) -> String {
         // "Not on server" would be false for a cloud Search pick: it is listed, and refused.
         let gone = role == .search && isCloud(selection) ? "cloud, not used for search" : "not on server"
+        // Nothing is passed for a stale Search pick, so the engine's own Auto runs: say that, as
+        // the engine reports it, rather than "off" or a stand-in this side computed.
+        if role == .search {
+            return "\(selection) (\(gone) — \(ModelResolver.searchStandIn(engineSearchPick)))"
+        }
         switch ModelResolver.resolve(binding: selection, role: role, catalog: catalog) {
         case .model(let name, .substituted):
             return "\(selection) (\(gone) — using \(name))"
         case .model:
             return "\(selection) (\(gone))"
         case .none:
-            let fallback = switch role {
-            case .vision: "captioning off"
-            case .search: "search expansion off"
-            case .ask, .enrich: "using Apple Intelligence"
-            }
+            // Search returned above; of the rest, only captions have no Apple fallback.
+            let fallback = role == .vision ? "captioning off" : "using Apple Intelligence"
             return "\(selection) (\(gone) — \(fallback))"
         }
     }

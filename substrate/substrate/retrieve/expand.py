@@ -94,8 +94,9 @@ OFF = "off"
 def pick_auto(models: list[dict]) -> str | None:
     """The smallest local chat model in an Ollama `/api/tags` listing, or None.
 
-    The same rule as the app's `ModelResolver.best(for: .search)` (Core/Sources/ScriptaCore/
-    ModelResolver.swift), so the app and a standalone engine agree on a machine. Smallest on disk,
+    The ONE copy of the rule. A client that shows the engine's pick reads it from the engine
+    (`retrieval_arms.hyde` with `hyde_requested: "auto"`, on `list_scopes`) rather than re-deriving
+    it, so a host and the engine cannot disagree about which model Auto runs. Smallest on disk,
     because HyDE runs on every novel query and the sweep found no gain from size. Never a cloud
     model (the query would leave the machine), an embedder, or a reranker — Ollama lists rerankers
     as `completion` and only the name gives them away. Equal or unknown sizes fall back to name

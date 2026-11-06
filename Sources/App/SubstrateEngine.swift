@@ -239,6 +239,8 @@ final class SubstrateEngine: ObservableObject {
 
     func start() {
         teardown()
+        // A new engine is about to answer; what the last one said about its arms no longer holds.
+        SubstrateScopes.shared.forgetArms()
         linkLegacySocket()
         let (source, searched) = Self.discover()
         guard let source else {
@@ -280,6 +282,7 @@ final class SubstrateEngine: ObservableObject {
     /// looks at it.
     func stop() {
         teardown()
+        SubstrateScopes.shared.forgetArms()
         lifecycle = .idle
     }
 
@@ -378,6 +381,8 @@ final class SubstrateEngine: ObservableObject {
                 Self.log.info("engine answering on \(endpoint, privacy: .public)")
                 // Again once serving: an old engine still exiting at `start` held the old path.
                 keepLinkingLegacySocket()
+                // What this engine runs, which Settings' Search row draws (`SubstrateScopes.arms`).
+                Task { await SubstrateScopes.shared.refreshArms() }
                 return
             }
             guard !Task.isCancelled else { return }
@@ -443,6 +448,7 @@ final class SubstrateEngine: ObservableObject {
     /// nobody sees, and the card this produces carries the stderr and a Restart control.
     private func childExited(status: Int32) {
         guard let source = runningSource else { return }
+        SubstrateScopes.shared.forgetArms()
         task?.cancel()
         task = nil
         process = nil
