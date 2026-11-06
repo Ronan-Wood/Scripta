@@ -240,9 +240,10 @@ public struct SubstrateNoArguments: Encodable, Sendable {
 /// engine is a subprocess on a socket and no view is wired to this yet.
 public actor SubstrateClient {
     /// What `substrate-mcp --socket` binds by default (`local_socket.DEFAULT_SOCKET`), and where
-    /// `SubstrateEngine` runs it. The two are one string on each side of the language boundary.
-    public static let defaultSocketPath = NSHomeDirectory()
-        + "/Library/Application Support/Scripta/engine/substrate.sock"
+    /// `SubstrateEngine` runs it. The two are one string on each side of the language boundary,
+    /// and `SocketPathParityTests` holds them together. It is in the engine's home, not in any
+    /// app's folder: the engine runs without a host app.
+    public static let defaultSocketPath = NSHomeDirectory() + "/.substrate/run/substrate.sock"
 
     public let socketPath: String
     private let timeout: TimeInterval

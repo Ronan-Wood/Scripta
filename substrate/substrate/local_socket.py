@@ -33,9 +33,11 @@ import struct
 import sys
 from pathlib import Path
 
-# Where Scripta's engine listens. Under the app's own support directory, in a directory of its own,
-# because the support directory itself is 0755 and the socket needs a 0700 parent.
-DEFAULT_SOCKET = "~/Library/Application Support/Scripta/engine/substrate.sock"
+# Where the shared engine listens: under the engine's own home (`scopes.engine_home()`), which an
+# app hosting the engine reaches like any other client. It is not under any app's directory. One
+# level down, because `~/.substrate` is 0755 and the socket needs a 0700 parent, which `claim`
+# creates.
+DEFAULT_SOCKET = "~/.substrate/run/substrate.sock"
 
 # `sun_path` is 104 bytes on macOS (108 on Linux), and that includes the terminating NUL. A longer
 # path is truncated by some callers and refused by others, so it is refused here, loudly, whichever
@@ -102,9 +104,18 @@ def connect(path: Path, timeout: float | None) -> socket.socket:
 
     FileNotFoundError and ConnectionRefusedError both mean "no engine is serving", and callers treat
     them the same. UntrustedSocket means something IS there and it is not ours.
+
+    A path that is a symlink is followed ONE level, and the directory it points into is checked
+    too. That is how a client registered with a host app's old socket path reaches the engine's
+    socket, through a link the host keeps there. Checking only the link's own directory would let a
+    loosened engine directory pass for exactly those clients. Connecting to the checked target,
+    rather than to the link again, means a link that was there at the check is never re-read. A
+    link swapped in after the check is outside what this guards: only this uid can write inside a
+    0700 directory, and the peer-uid check below still runs.
     """
     check_length(path)
     check_directory(path.parent)
+    path = _through_link(path)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         sock.settimeout(timeout)
@@ -117,6 +128,46 @@ def connect(path: Path, timeout: float | None) -> socket.socket:
         sock.close()
         raise
     return sock
+
+
+def link_target(path: Path) -> Path | None:
+    """The absolute path `path` links to, or None when it is not a link (or names nothing).
+    Nothing is checked here: this says where an engine would have to listen, not whether to trust
+    it."""
+    try:
+        if not stat.S_ISLNK(os.lstat(path).st_mode):
+            return None
+        target = Path(os.readlink(path))
+    except OSError:
+        return None
+    return target if target.is_absolute() else None
+
+
+def _through_link(path: Path) -> Path:
+    """`path`, or the socket its symlink names once that target's directory has been checked."""
+    try:
+        if not stat.S_ISLNK(os.lstat(path).st_mode):
+            return path
+    except FileNotFoundError:
+        return path
+    try:
+        target = Path(os.readlink(path))
+    except OSError as e:
+        # It was a link at the lstat. Connecting to `path` now would follow whatever replaced it,
+        # unchecked.
+        raise UntrustedSocket(f"{path} changed while it was being checked ({e})") from None
+    if not target.is_absolute():
+        raise UntrustedSocket(f"{path} is a symlink to a relative path ({target}); only an "
+                              f"absolute target is followed")
+    check_length(target)
+    check_directory(target.parent)
+    try:
+        if stat.S_ISLNK(os.lstat(target).st_mode):
+            raise UntrustedSocket(f"{path} links to {target}, which is itself a symlink; only one "
+                                  f"level is followed")
+    except FileNotFoundError:
+        pass
+    return target
 
 
 def claim(path: Path) -> int:

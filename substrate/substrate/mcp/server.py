@@ -1891,12 +1891,12 @@ def _main(argv: list[str] | None) -> int:
     ap.add_argument("--connect", nargs="?", const=local_socket.DEFAULT_SOCKET, default=None,
                     metavar="PATH",
                     help=f"serve stdio by forwarding reads to the shared --socket server (default "
-                         f"{local_socket.DEFAULT_SOCKET}, the one Scripta runs); the write tools "
+                         f"{local_socket.DEFAULT_SOCKET}); the write tools "
                          f"(`ingest`, `amend`) still run here")
     ap.add_argument("--socket", nargs="?", const=local_socket.DEFAULT_SOCKET, default=None,
                     metavar="PATH",
                     help=f"serve that shared server on a Unix-domain socket only this user can "
-                         f"reach (default {local_socket.DEFAULT_SOCKET}, where Scripta runs it)")
+                         f"reach (default {local_socket.DEFAULT_SOCKET})")
     ap.add_argument("--read-only", action=argparse.BooleanOptionalAction, default=None,
                     help="refuse the tools that write: `ingest` (adds notes) and `amend` "
                          "(overwrites existing notes). ON by default under --http "

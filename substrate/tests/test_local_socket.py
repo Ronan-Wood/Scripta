@@ -414,6 +414,106 @@ def test_socket_and_http_together_are_refused() -> None:
         assert server.main(["--socket", "/tmp/s.sock", "--http"]) == 2
 
 
+def test_the_default_socket_lives_in_the_engines_own_home() -> None:
+    """The engine's default used to be under Scripta's Application Support folder, so an engine run
+    on its own listened inside an app's directory and depended on that app's layout. It is under
+    the engine's home now, one level down so its parent can be 0700."""
+    from substrate import scopes
+
+    assert local_socket.default_path() == scopes.engine_home() / "run" / "substrate.sock"
+    local_socket.check_length(local_socket.default_path())
+
+
+def test_a_client_reaches_the_engine_through_a_symlinked_socket_path() -> None:
+    """How a client registered with an app's old path keeps working: the host app puts a symlink
+    there pointing at the engine's socket. The directory holding the link must still pass the
+    directory check, and the listener's uid is still read off the connection."""
+    with _socket_dir() as real_dir, _socket_dir() as old_dir:
+        path = real_dir / "substrate.sock"
+        link = old_dir / "substrate.sock"
+        link.symlink_to(path)
+        with _engine(path):
+            assert "search" in _tools(local_socket.post(link, TOOLS_LIST, timeout=10))
+            with _patched(local_socket, "peer_uid", lambda _s: OTHER_UID):
+                try:
+                    local_socket.post(link, TOOLS_LIST, timeout=10)
+                except local_socket.UntrustedSocket:
+                    pass
+                else:
+                    raise AssertionError("a symlinked path skipped the peer-uid check")
+
+
+def test_a_link_into_a_loose_directory_is_refused_though_its_own_directory_is_private() -> None:
+    """Checking only the link's directory would let a loosened engine directory pass for exactly
+    the clients that reach it through the host's link."""
+    with _socket_dir() as real_dir, _socket_dir() as old_dir:
+        path = real_dir / "substrate.sock"
+        link = old_dir / "substrate.sock"
+        link.symlink_to(path)
+        with _engine(path):
+            os.chmod(real_dir, 0o755)
+            try:
+                local_socket.post(link, TOOLS_LIST, timeout=10)
+            except local_socket.UntrustedSocket as e:
+                assert "must be 700" in str(e), e
+            else:
+                raise AssertionError("a link into a 0755 directory was followed")
+            finally:
+                os.chmod(real_dir, 0o700)
+
+
+def test_a_link_replaced_between_the_check_and_the_read_is_refused() -> None:
+    """Connecting to the path after its link vanished would follow whatever replaced it,
+    unchecked."""
+    with _socket_dir() as old_dir:
+        link = old_dir / "substrate.sock"
+        link.symlink_to("/tmp/elsewhere.sock")
+
+        def _gone(_p):
+            raise OSError(22, "Invalid argument")
+
+        with _patched(os, "readlink", _gone):
+            try:
+                local_socket.connect(link, timeout=1)
+            except local_socket.UntrustedSocket as e:
+                assert "changed while it was being checked" in str(e), e
+            else:
+                raise AssertionError("a link that changed mid-check was connected to")
+
+
+def test_a_link_into_an_engine_folder_not_made_yet_reads_as_no_engine() -> None:
+    """Before any engine has run, the folder the host's link points into does not exist. That is
+    "start the engine", not a trust failure."""
+    with _socket_dir() as old_dir:
+        link = old_dir / "substrate.sock"
+        link.symlink_to(old_dir.parent / "never-made" / "substrate.sock")
+        try:
+            local_socket.connect(link, timeout=1)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("connected through a link into a folder that does not exist")
+
+
+def test_only_one_absolute_level_of_link_is_followed() -> None:
+    with _socket_dir() as real_dir, _socket_dir() as old_dir, _socket_dir() as mid_dir:
+        path = real_dir / "substrate.sock"
+        with _engine(path):
+            relative = old_dir / "relative.sock"
+            relative.symlink_to(os.path.relpath(path, old_dir))
+            chained = old_dir / "chained.sock"
+            middle = mid_dir / "substrate.sock"
+            middle.symlink_to(path)
+            chained.symlink_to(middle)
+            for link in (relative, chained):
+                try:
+                    local_socket.post(link, TOOLS_LIST, timeout=10)
+                except local_socket.UntrustedSocket:
+                    pass
+                else:
+                    raise AssertionError(f"{link.name} was followed")
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_") and callable(_fn):

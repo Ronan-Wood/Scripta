@@ -249,7 +249,7 @@ def test_local_refusals_happen_before_forwarding() -> None:
     assert rec.calls == []
 
 
-def test_a_closed_scripta_is_a_readable_tool_error() -> None:
+def test_an_absent_engine_is_a_readable_tool_error() -> None:
     _, registry = _fixture()
     cfg = _bridge(registry, bridge.Remote(_no_engine()))
     resp = _tools_call(cfg, "search", {"scope": "demo", "query": "x"})
@@ -257,7 +257,7 @@ def test_a_closed_scripta_is_a_readable_tool_error() -> None:
     body = resp["result"]
     assert body["isError"] is True
     text = body["content"][0]["text"]
-    assert "Open Scripta" in text and "ingest" in text, text
+    assert "Start the engine" in text and "ingest" in text, text
 
 
 def test_a_null_id_refusal_comes_back_under_the_callers_id() -> None:

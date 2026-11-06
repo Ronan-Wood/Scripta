@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,28 @@ class Remote:
     @property
     def endpoint(self) -> str:
         return str(self.path)
+
+    @property
+    def start_hint(self) -> str:
+        """How a reader brings up an engine THIS client reaches, without naming whatever app may
+        host it. The engine is a server any host can run, so a message that names one host is
+        wrong for every other.
+
+        Starting an engine on a client's own non-default path is never suggested. That path may be
+        one a host still means to link to the default (an app's old socket path), and an engine
+        started there holds it for life, which leaves two engines serving the same scopes. The
+        exception is a link: an engine refuses to bind over one, so the hint names where the link
+        points, shell-quoted."""
+        default = local_socket.default_path()
+        command = "`substrate-mcp --socket`, or the app that hosts it"
+        endpoint = self.path.expanduser()
+        target = local_socket.link_target(endpoint)
+        if endpoint == default or target == default:
+            return command
+        if target is not None:
+            return f"`substrate-mcp --socket {shlex.quote(str(target))}`, where this path links"
+        return (f"{command}; this client is registered with {endpoint}, not the engine's default "
+                f"{default}, so re-register it with `substrate-mcp --connect` and no path")
 
     def __call__(self, rid: Any, name: str, arguments: dict) -> dict:
         frame = {"jsonrpc": "2.0", "id": rid, "method": "tools/call",
@@ -104,7 +127,7 @@ class Remote:
         return (f"`{tool}` is refused: this process resolves scopes against {local}, but the "
                 f"shared engine on {self.endpoint} reads {theirs}. Every search in this session "
                 f"comes from the engine, so a note written here would go to a vault those reads "
-                f"may never cover. Start this client with the same registry as Scripta's engine "
+                f"may never cover. Start this client with the same registry as the shared engine "
                 f"(unset SUBSTRATE_REGISTRY, or pass --registry {theirs}).")
 
     def _post(self, body: bytes, timeout: float | None = None) -> tuple[int, bytes]:
@@ -116,22 +139,23 @@ class Remote:
     def _unreachable(self, rid: Any, name: str, reason: object) -> dict:
         if isinstance(reason, local_socket.UntrustedSocket):
             return _tool_error(rid, (
-                f"`{name}` was NOT sent: what holds the substrate engine's socket is not this "
-                f"user's engine ({reason}). Nothing was sent to it, so no answer from it can be "
-                f"relayed. Remove whatever holds {self.endpoint}, then open Scripta. `ingest` does "
-                f"not need the engine and still works."))
-        # No socket file is the ordinary state while Scripta is closed; a refused connection is a
-        # crashed engine's leftover. Both mean the same thing to the reader.
+                f"`{name}` was NOT sent: the path to the substrate engine's socket, "
+                f"{self.endpoint}, did not pass this user's trust checks ({reason}). Nothing was "
+                f"sent, so no answer can be relayed. Make what that names this user's, or remove "
+                f"it, then start the engine ({self.start_hint}). `ingest` does not need the engine "
+                f"and still works."))
+        # No socket file is the ordinary state while no engine is running; a refused connection is
+        # a crashed engine's leftover. Both mean the same thing to the reader.
         if isinstance(reason, (ConnectionRefusedError, FileNotFoundError)):
             return _tool_error(rid, (
-                f"`{name}` runs in the shared substrate engine, which the Scripta app hosts, and "
-                f"nothing is listening on {self.endpoint}. Open Scripta (it starts the engine on "
-                f"launch) and call again. `ingest` does not need it and still works."))
+                f"`{name}` runs in the shared substrate engine, and nothing is listening on "
+                f"{self.endpoint}. Start the engine ({self.start_hint}) and call again. "
+                f"`ingest` does not need it and still works."))
         if isinstance(reason, TimeoutError):
             return _tool_error(rid, (
                 f"the shared substrate engine on {self.endpoint} did not answer `{name}` within "
                 f"{self.timeout:.0f}s. It runs one call at a time for every client, so it may be "
-                f"busy, or it may be hung. Scripta's Ask pane shows its state and can restart it."))
+                f"busy, or it may be hung. Whatever started the engine can restart it."))
         return _tool_error(rid, (
             f"the shared substrate engine on {self.endpoint} dropped `{name}`: "
             f"{type(reason).__name__}: {reason}"))

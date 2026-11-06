@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import ScriptaCore
 import SubstrateKit
 
 /// The substrate engine's process, owned by this app.
@@ -234,6 +235,7 @@ final class SubstrateEngine: ObservableObject {
 
     func start() {
         teardown()
+        linkLegacySocket()
         let (source, searched) = Self.discover()
         guard let source else {
             let looked = searched.joined(separator: ", ")
@@ -370,6 +372,8 @@ final class SubstrateEngine: ObservableObject {
                 guard !Task.isCancelled else { return }
                 lifecycle = .serving(source, since: Date())
                 Self.log.info("engine answering on \(endpoint, privacy: .public)")
+                // Again once serving: an old engine still exiting at `start` held the old path.
+                keepLinkingLegacySocket()
                 return
             }
             guard !Task.isCancelled else { return }
@@ -387,6 +391,46 @@ final class SubstrateEngine: ObservableObject {
                 return
             }
             try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+    }
+
+    /// Clients registered through 0.3.4 hold the socket's old path; it links to the new one
+    /// (`LegacyEngineSocket`). Run at every start, and again once serving.
+    @discardableResult
+    private func linkLegacySocket() -> LegacyEngineSocket.Outcome {
+        let outcome = LegacyEngineSocket.link(to: Self.socketPath)
+        switch outcome {
+        case .linked, .noLegacyFolder:
+            break
+        case .liveListener:
+            Self.log.notice("""
+                the socket's old path is in use (an engine on it, or another Scripta linking it); \
+                not linked yet
+                """)
+        case .foreignFile, .failed:
+            Self.log.error("""
+                clients registered with the socket's old path cannot reach the engine: \
+                \(String(describing: outcome), privacy: .public)
+                """)
+        }
+        return outcome
+    }
+
+    /// How often, and how many times, a still-held old path is tried again once serving. An engine
+    /// of 0.3.4 that is exiting lets go within seconds. One started by hand on the old path may
+    /// never let go, and is not waited on past this.
+    private static let legacyRetryInterval: UInt64 = 15_000_000_000
+    private static let legacyRetries = 8
+    private var legacyLink: Task<Void, Never>?
+
+    private func keepLinkingLegacySocket() {
+        legacyLink?.cancel()
+        legacyLink = Task { [weak self] in
+            for attempt in 0...Self.legacyRetries {
+                if attempt > 0 { try? await Task.sleep(nanoseconds: Self.legacyRetryInterval) }
+                guard !Task.isCancelled, let self else { return }
+                guard self.linkLegacySocket() == .liveListener else { return }
+            }
         }
     }
 
@@ -437,6 +481,8 @@ final class SubstrateEngine: ObservableObject {
     private func teardown() {
         task?.cancel()
         task = nil
+        legacyLink?.cancel()
+        legacyLink = nil
         process?.terminationHandler = nil
         if let process, process.isRunning {
             process.terminate()
