@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 REPO = Path(__file__).resolve().parent.parent
 
-from substrate import render, scopes, stack  # noqa: E402
+from substrate import guard, render, scopes, stack  # noqa: E402
 from substrate.mcp import server  # noqa: E402
 from substrate.models import Chunk, Document  # noqa: E402
 from substrate.store.index_store import IndexStore  # noqa: E402
@@ -646,6 +646,44 @@ def test_ingest_refuses_outright_rather_than_withholding() -> None:
     planned = _call_raw("ingest", {"scope": "demo", "content": "B" * 300, "title": "T",
                                    "doc_type": "reference"}, registry)
     assert "refused entirely" not in planned["content"][0]["text"]
+
+
+def test_expand_refuses_a_passage_of_a_vault_the_guard_withholds() -> None:
+    """`expand` is a read path and was the one that skipped the wall: it opened the scope, dropped
+    the verdict and returned the passage and the whole note. The ref here is issued while the guard
+    vouches and used after it stops — the case a caller meets without trying — but nothing about a
+    ref is secret: it is `scope/chunk_id`, and the refusal must not depend on where it came from."""
+    import time as _time
+
+    root, registry = _guard_fixture({"heartbeat": _time.time(), "activeScope": "demo"})
+    hits = _call("search", {"scope": "demo", "query": "composition"}, registry)["passages"]
+    refs = {p["vault"]: p["expand_ref"] for p in hits}
+    assert set(refs) == {"demo", "core-vault"}, "both refs are issued while the guard vouches"
+    assert refs["demo"] == render.expand_ref("demo", "mine#c00000"), \
+        "the guarded note is one passage, so the probe below is of an absent one"
+
+    # The app moves to another workspace. A clock-free lapse: a stale beat's reason carries its
+    # age in seconds, which can tick between the check below and the server's own.
+    (root / "mcp-state.json").write_text(
+        json.dumps({"heartbeat": _time.time(), "activeScope": "something-else"}), encoding="utf-8")
+    reason = guard.check(root / "demo-vault", "demo").reason
+    assert reason, "the fixture must actually be withholding now"
+
+    for mode in ("passage", "note"):
+        refused = _call_raw("expand", {"expand_ref": refs["demo"], "mode": mode}, registry)
+        assert refused.get("isError"), mode
+        text = refused["content"][0]["text"]
+        assert reason in text, (mode, text[:300])
+        assert _LONG[:40] not in text, f"{mode}: the refusal must not carry the passage"
+
+        # Probing a sibling that does not exist reads exactly like the one that is withheld.
+        absent = render.expand_ref("demo", "mine#c00001")
+        probed = _call_raw("expand", {"expand_ref": absent, "mode": mode}, registry)
+        assert probed["content"][0]["text"] == text.replace("#c00000", "#c00001"), mode
+
+        # The inherited tier was never the guarded party's to withhold.
+        kept = _call("expand", {"expand_ref": refs["core-vault"], "mode": mode}, registry)
+        assert kept["passage"]["vault"] == "core-vault", mode
 
 
 # ---------------------------------------------------------------- refusals

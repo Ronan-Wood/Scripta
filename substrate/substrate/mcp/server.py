@@ -629,6 +629,16 @@ def _tool_expand(args: dict, cfg: Config) -> dict:
     entry, store, verdict = _open(scope, cfg)
     try:
         hit = store.chunk(chunk_id)
+        # A READ PATH, so the same wall `search` and `documents` apply — whatever the ref's origin.
+        # A ref is `scope/chunk_id`, buildable without the guard ever vouching, and one issued while
+        # it did still names the passage after it lapses. An unattributed row (`vault` NULL) passes,
+        # as in `_add_vault_exclusion`. While anything is withheld, a missing passage and a withheld
+        # one get the SAME refusal, or walking `#c{seq}` would count the withheld note's passages.
+        if verdict.withhold and (hit is None or hit.vault in verdict.withhold):
+            raise ToolError(
+                f"{verdict.reason} No passage {chunk_id!r} can be expanded from scope {scope!r}: "
+                f"it is withheld, or the index was recomposed since that ref was issued."
+            )
         if hit is None:
             raise ToolError(
                 f"no passage {chunk_id!r} in scope {scope!r}. The index may have been recomposed "
