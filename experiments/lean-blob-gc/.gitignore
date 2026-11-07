@@ -1,0 +1,4 @@
+.venv/
+lean/.lake/
+harness/__pycache__/
+.hypothesis/

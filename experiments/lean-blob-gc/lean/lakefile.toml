@@ -1,0 +1,9 @@
+name = "blobgc"
+defaultTargets = ["blobgc"]
+
+[[lean_lib]]
+name = "BlobGc"
+
+[[lean_exe]]
+name = "blobgc"
+root = "Main"
