@@ -355,6 +355,28 @@ def test_publishing_strips_guarded_notes_and_operator_paths(tmp_path):
     assert res["total"] == 1
 
 
+def test_a_snapshot_carries_no_trace_of_its_sources_vector_writes(tmp_path):
+    """`vector_generation` counts every write to the live index's vectors, and removing a withheld
+    note's vector from the copy moved it once more. Carried into the snapshot, it would tell the
+    agent how much of the guarded vault there is. A snapshot gets its own epoch and starts at 0."""
+    home = tmp_path / "operator"
+    home.mkdir()
+    registry = home / "scopes.toml"
+    _scope(home, registry, "atlas", guarded=True)
+    with IndexStore(str(home / "atlas.db")) as s:
+        s.store_vectors([("decision#c00000", [1.0, 0.0]), ("call#c00000", [0.0, 1.0])], "m#raw")
+        live = tuple(s.db.execute("SELECT epoch, n FROM vector_generation").fetchone())
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    agent.publish("atlas", shared, registry=registry)
+    with IndexStore(str(shared / "atlas.snapshot.db"), migrate=False, immutable=True) as snap:
+        epoch, n = snap.db.execute("SELECT epoch, n FROM vector_generation").fetchone()
+        kept = [r[0] for r in snap.db.execute("SELECT chunk_id FROM chunk_vectors")]
+    assert kept == ["decision#c00000"], "the premise: the guarded note's vector was removed"
+    assert live[1] == 2 and n == 0
+    assert epoch != live[0]
+
+
 def test_an_unchanged_index_is_verified_not_rewritten(world):
     shared, registry = world
     before = (shared / "atlas.snapshot.db").stat().st_mtime_ns

@@ -115,6 +115,19 @@ SCHEMA_VERSION = 11
 #     (a PDF-derived note names the PDF), so an edit to such a note was invisible to freshness and
 #     counted `unverifiable`, and an agent snapshot carried the edited note. Adds a column, so it
 #     bumps: `CREATE TABLE IF NOT EXISTS` cannot add one to a v10 file. No indexed text moves.
+#     2026-11-06, still v11: `vector_generation`, a row that triggers bump on every write to
+#     `chunk_vectors`, under an `epoch` drawn when the table is created. It is how the vector arm's
+#     in-memory matrix (`vector_matrix`) knows it still describes the file: `index_version` does
+#     not cover vectors, `chunk_id` is positional and rowids are reused, so nothing derivable from
+#     the other tables is a sound key. NO BUMP, because nothing here needs one: every statement is
+#     `IF NOT EXISTS`, so the next compose adds the table and triggers to a v11 file in place, and
+#     a file without them is read by the scan it always was. The triggers live in the file, so an
+#     engine that predates them still moves `n` when it writes.
+
+# The triggers that keep `vector_generation.n` moving. A reader trusts `n` only while all of them
+# exist: an engine that predates them can rebuild `chunk_vectors` without them and then write
+# vectors that move nothing (`IndexStore._vector_search_cached`).
+VECTOR_GENERATION_TRIGGERS = ("chunk_vectors_gen_ai", "chunk_vectors_gen_au", "chunk_vectors_gen_ad")
 
 DDL = """CREATE TABLE IF NOT EXISTS documents(
     doc_id            TEXT PRIMARY KEY,
@@ -268,6 +281,25 @@ CREATE TABLE IF NOT EXISTS chunk_vectors(
 );
 CREATE INDEX IF NOT EXISTS idx_vectors_model ON chunk_vectors(embed_model);
 
+-- Which state of `chunk_vectors` this is (added within v11; the history above says why). `n` moves
+-- on every row written or removed, by trigger, so no write path can forget it. `epoch` is drawn
+-- once when the table is created, so a rebuilt index cannot repeat an (epoch, n) an older had.
+CREATE TABLE IF NOT EXISTS vector_generation(
+    id    INTEGER PRIMARY KEY CHECK (id = 1),
+    epoch TEXT NOT NULL,
+    n     INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO vector_generation(id, epoch, n) VALUES (1, lower(hex(randomblob(16))), 0);
+CREATE TRIGGER IF NOT EXISTS chunk_vectors_gen_ai AFTER INSERT ON chunk_vectors BEGIN
+    UPDATE vector_generation SET n = n + 1 WHERE id = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS chunk_vectors_gen_au AFTER UPDATE ON chunk_vectors BEGIN
+    UPDATE vector_generation SET n = n + 1 WHERE id = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS chunk_vectors_gen_ad AFTER DELETE ON chunk_vectors BEGIN
+    UPDATE vector_generation SET n = n + 1 WHERE id = 1;
+END;
+
 -- Per-(doc, stage) staleness ledger, ported from ScriptaCore's enrichment_ledger. Hash is
 -- over DERIVED content, so a frontmatter edit does not invalidate embeddings but a body
 -- edit does. model_version is load-bearing: it pins the extractor + layout model.
@@ -288,6 +320,7 @@ DROP TABLE IF EXISTS document_entities;
 DROP TABLE IF EXISTS entities;
 DROP TABLE IF EXISTS chunks_fts;
 DROP TABLE IF EXISTS chunk_vectors;
+DROP TABLE IF EXISTS vector_generation;
 DROP TABLE IF EXISTS stage_ledger;
 DROP TABLE IF EXISTS chunks;
 DROP TABLE IF EXISTS documents;

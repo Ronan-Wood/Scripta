@@ -338,6 +338,12 @@ def _fill(tmp: Path, withheld: frozenset[str], excluded: frozenset[str],
                 store.remove(doc_id)
             db.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
         _strip_roster(db)
+        # `vector_generation` came across with `VACUUM INTO`: the live index's epoch, and an `n`
+        # the removals above just moved once per withheld vector, which would tell the agent how
+        # much of a guarded vault there is. Redrawn, it says nothing about the source, and no two
+        # snapshots share a generation.
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'vector_generation'").fetchone():
+            db.execute("UPDATE vector_generation SET epoch = lower(hex(randomblob(16))), n = 0")
 
         # The copy must hold exactly the documents the notes were read for — anything else would
         # keep an operator path, or carry text for a row that is not there. `_publish` refuses a

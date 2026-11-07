@@ -712,7 +712,7 @@ def _refuse_index_root(index_root: Path, scope, *, db: Path,
 # anything else is somebody else's, and bootstrapping into it would write our schema over their
 # data — so the set is an allow-list, not a deny-list: an unrecognised table refuses.
 _SUBSTRATE_TABLES = frozenset({
-    "documents", "chunks", "chunk_vectors", "stage_ledger",
+    "documents", "chunks", "chunk_vectors", "stage_ledger", "vector_generation",
     "chunks_fts", "chunks_fts_data", "chunks_fts_idx",
     "chunks_fts_docsize", "chunks_fts_config", "chunks_fts_content",
 })

@@ -20,12 +20,15 @@ import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from substrate.markdown import reader
 from substrate.models import Chunk, Document
 from substrate.spine import UNJUDGED_CONFIDENCE
 from substrate.store import fts, schema, sections
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 class StatusPartitionError(RuntimeError):
@@ -239,6 +242,29 @@ def _add_entity_filter(where: list[str], args: list[Any], entity: str | None) ->
     args.append(entity)
 
 
+def _file_id(path: str) -> tuple[int, int, float | int] | None:
+    """Which file is at `path`: (st_dev, st_ino, birth time), or None if it cannot be stat'd.
+
+    Birth time where the platform keeps one (macOS, where agent mode runs). It is what makes this
+    an identity: an inode is reused once its file is gone, and a replaced snapshot's is.
+
+    Elsewhere (Linux: `os.stat` has no birth time) `st_ctime_ns`, which a write-open moves, even
+    a no-op compose's, because migration re-stamps the schema version, once that reaches the main
+    file (a checkpoint; usually when the writer closes). So on Linux a matrix survives reads but
+    usually not a refresh pass: `serve` reads each scope's matrix again on the first query after a
+    pass, 15–70 ms, and hits until the next one. When ctime does not move (a write inside the
+    coarse clock's last tick, or one still in the WAL) nothing is lost, because a change to the
+    vectors moves the generation, and the file's identity is only what tells one file from
+    another. A new file reusing an inode within one tick would defeat it, and
+    the generation is then what stands between the two.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, getattr(st, "st_birthtime", None) or st.st_ctime_ns)
+
+
 def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
     return Hit(
         chunk_id=r["chunk_id"],
@@ -276,6 +302,10 @@ def _row_to_hit(r: sqlite3.Row, score: float) -> Hit:
         vault=_col(r, "d_vault"),
     )
 
+
+# One vector space: this model's vectors at the query's width. Never compared across spaces. Both
+# vector paths read through it, so they cannot disagree about which vectors exist.
+_IN_SPACE = "v.embed_model = ? AND length(v.vector) = ?"
 
 # c.* carries the chunk spine (incl. its own denormalized `status`); the document-level fields a
 # hit surfaces — the supersession link, the domain tags, the composition provenance — are aliased
@@ -338,6 +368,11 @@ class IndexStore:
             )
         if immutable and migrate:
             raise ValueError("an immutable open cannot migrate: migration writes.")
+        self.immutable = immutable
+        # WHICH FILE this connection reads, for the vector-matrix cache: stat before and after the
+        # connect, known only when the two agree. A file this open creates, or one swapped during
+        # it, stays None, and its vector arm scans.
+        before = _file_id(self.path)
         try:
             # IMMUTABLE is the agent-snapshot open. `mode=ro` alone is not read-only against a WAL
             # database — the reader still creates `-shm`/`-wal` beside it — and the agent's user
@@ -355,6 +390,7 @@ class IndexStore:
                 f"{self.path} is not a readable SQLite database: {e}",
                 found=-2, expected=schema.SCHEMA_VERSION,
             ) from e
+        self.file_id = before if before is not None and _file_id(self.path) == before else None
         if migrate:
             self.rebuilt = schema.migrate(self.db)
             return
@@ -1125,11 +1161,14 @@ class IndexStore:
         `statuses` mirrors `search`: the same default-retrieval filter must apply to the vector
         arm, or an archived/superseded passage the lexical arm excluded would re-enter via cosine.
         None means no filter, unchanged for callers that do not pass it.
-        """
-        import numpy as np
 
-        where = ["v.embed_model = ?"]
-        args: list[Any] = [model]
+        The vectors come from `vector_matrix`'s in-memory copy when its file and generation are
+        this snapshot's, and from a full scan otherwise. Both run the filters below as SQL,
+        score with `vector_matrix.cosines` and rank with `vector_matrix.top_k`, so they return
+        the same hits with the same scores.
+        """
+        where: list[str] = []
+        args: list[Any] = []
         for col, val in (("c.kind", kind), ("c.doc_id", doc_id),
                          ("c.document_class", document_class)):
             if val is not None:
@@ -1145,27 +1184,122 @@ class IndexStore:
         _add_vault_exclusion(where, args, withheld_vaults)
         _add_entity_filter(where, args, entity)
 
+        hits = self._vector_search_cached(query_vec, model, k, where, args)
+        if hits is not None:
+            return hits
+        return self._vector_scan(query_vec, model, k, where, args)
+
+    def _vector_search_cached(self, query_vec: list[float], model: str, k: int,
+                              where: list[str], args: list[Any]) -> list[Hit] | None:
+        """The ranking from `vector_matrix`'s in-memory matrix, or None to make the caller scan.
+
+        ONE read transaction carries the whole call: the generation, the vectors (when they have to
+        be read), the filter query and the hit rows all come from one snapshot, so the matrix is
+        the state the filters ran against. It scans when the file's identity is unknown, when the
+        index predates `vector_generation`, and when this connection already holds a transaction:
+        its uncommitted vectors must never be kept under a generation a rollback hands to others.
+        """
+        if self.file_id is None or self.db.in_transaction or len(query_vec) == 0:
+            return None
+        from substrate.store import vector_matrix
+
+        dim = len(query_vec)
+        self.db.execute("BEGIN")
+        try:
+            generation = self._vector_generation()
+            if generation is None:
+                return None
+            matrix = vector_matrix.lookup(
+                (os.path.realpath(self.path), model, dim, self.immutable), self.file_id,
+                generation, lambda: self._vectors(model, dim))
+            # The same filters as the scan, without its join to `chunk_vectors`: the matrix holds
+            # exactly that table's rows in this space, so an id with no row there is one the join
+            # would have dropped.
+            ids = [r[0] for r in self.db.execute(
+                "SELECT c.chunk_id FROM chunks c JOIN documents d ON d.doc_id = c.doc_id "
+                f"WHERE {' AND '.join(where) or '1'}",
+                args,
+            )]
+            ranked = matrix.rank(ids, query_vec, k)
+            if not ranked:
+                return []
+            got = {r["chunk_id"]: r for r in self.db.execute(
+                f"{_SELECT} WHERE c.chunk_id IN ({','.join('?' * len(ranked))})",
+                [cid for cid, _ in ranked],
+            )}
+        finally:
+            # Guarded: an error SQLite answers by rolling back on its own would otherwise surface
+            # as "no transaction is active" in place of itself.
+            if self.db.in_transaction:
+                self.db.execute("COMMIT")
+        return [_row_to_hit(got[cid], score) for cid, score in ranked]
+
+    def _vector_generation(self) -> tuple[str, int, int] | None:
+        """(epoch, n, schema cookie) for the snapshot this connection's transaction reads, or None
+        when `n` cannot be trusted to have moved with every vector write.
+
+        The triggers must all be there: an engine that predates them can rebuild `chunk_vectors`
+        without them, leave the old row, and write vectors that move nothing (reproduced: a v10
+        migration followed by a pre-trigger v11 one). The cookie, `PRAGMA schema_version`, moves on
+        every CREATE and DROP, so "triggers present now, cookie unchanged since the matrix was
+        read" means they were present for every write in between.
+        """
+        try:
+            row = self.db.execute("SELECT epoch, n FROM vector_generation WHERE id = 1").fetchone()
+        except sqlite3.OperationalError as e:
+            # A v11 file composed before the table existed. The next compose adds it.
+            if "no such table" not in str(e):
+                raise
+            return None
+        names = schema.VECTOR_GENERATION_TRIGGERS
+        have = self.db.execute(
+            f"SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' "
+            f"AND tbl_name = 'chunk_vectors' AND name IN ({','.join('?' * len(names))})",
+            names,
+        ).fetchone()[0]
+        if row is None or have != len(names):
+            return None
+        return (row[0], row[1], self.db.execute("PRAGMA schema_version").fetchone()[0])
+
+    def _vectors(self, model: str, dim: int) -> tuple[list[str], np.ndarray]:
+        """Every vector in this space, in chunk_id order: what the matrix is read from."""
+        from substrate.store.vector_matrix import stack
+
+        got = self.db.execute(
+            f"SELECT v.chunk_id, v.vector FROM chunk_vectors v WHERE {_IN_SPACE} "
+            "ORDER BY v.chunk_id",
+            (model, dim * 4),
+        ).fetchall()
+        return [r[0] for r in got], stack([r[1] for r in got], dim)
+
+    def _vector_scan(self, query_vec: list[float], model: str, k: int,
+                     where: list[str], args: list[Any]) -> list[Hit]:
+        """Every vector and row the filters admit, read now.
+
+        Kept deliberately beside the cached path rather than folded into it. It is the reference
+        the cached path is tested against, an implementation that shares only the scoring and
+        ranking helpers, and it is the cheaper read for the calls that fall back to it: a store
+        holding a transaction, or one whose file identity is unknown, reads only the rows its
+        filters admit rather than the whole space.
+        """
+        import numpy as np
+
+        from substrate.store.vector_matrix import cosines, stack, top_k
+
         rows = self.db.execute(
             "SELECT c.*, d.title AS title, d.supersedes AS d_supersedes, "
             "d.domains AS d_domains, d.vault AS d_vault, v.vector AS vector "
             "FROM chunks c JOIN documents d ON d.doc_id = c.doc_id "
             "JOIN chunk_vectors v ON v.chunk_id = c.chunk_id "
-            f"WHERE {' AND '.join(where)}",
-            args,
+            f"WHERE {' AND '.join([_IN_SPACE, *where])}",
+            [model, len(query_vec) * 4, *args],
         ).fetchall()
         if not rows:
             return []
-
-        dim = len(query_vec)
-        keep = [r for r in rows if len(r["vector"]) == dim * 4]  # never compare across spaces
-        if not keep:
-            return []
-
-        mat = np.frombuffer(b"".join(r["vector"] for r in keep), dtype=np.float32)
-        mat = mat.reshape(len(keep), dim)
-        sims = mat @ np.asarray(query_vec, dtype=np.float32)
-        top = np.argsort(-sims)[:k]
-        return [_row_to_hit(keep[i], float(sims[i])) for i in top]
+        mat = stack([r["vector"] for r in rows], len(query_vec))
+        sims = cosines(mat, np.asarray(query_vec, dtype=np.float32))
+        top = top_k(sims, k, lambda j: rows[j]["chunk_id"])
+        return [_row_to_hit(rows[i], float(sims[i])) for i in top]
 
     def drop_vectors(self, keeping_model: str) -> int:
         """A model change invalidates the whole space — spaces are never mixed."""
