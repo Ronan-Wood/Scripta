@@ -1,33 +1,20 @@
-"""The refresh agent runs a DEPLOYED engine, never the tree the operator is editing.
+"""A DEBUG Scripta runs a DEPLOYED engine, never the tree the operator is editing.
 
-`com.ronanwood.substrate-refresh` exec'd the working tree every 900 seconds, and on 2026-08-03 an
-uncommitted v8->v9 schema bump reached all six live scopes inside one tick. `b334da4` guarded that
-specific shape and named what it left open: "no separation between code being edited and code
-running against real data". `tools/substrate-deploy` publishes an export of one commit to
-`~/.substrate/engine`; `tools/deployment.py` proves it file-by-file; `tools/substrate-refresh`
-refuses the whole tick and records `engine_unverified` when the proof fails.
+The retired `com.ronanwood.substrate-refresh` exec'd the working tree every 900 seconds, and on
+2026-08-03 an uncommitted v8->v9 schema bump reached all six live scopes inside one tick. `b334da4`
+guarded that specific shape and named what it left open: "no separation between code being edited
+and code running against real data". `tools/substrate-deploy` publishes an export of one commit to
+`~/.substrate/engine` (`discover()` tier 2), and `tools/deployment.py` proves it file-by-file.
 
-WHAT IS ACTUALLY EXECUTED HERE. All of it — the deploy tool, the verifier and the agent are run as
-subprocesses. Two things make that safe to do in a test suite:
-
-  * a throwaway `$HOME`, so the deployment record, the manifest, the lock, the log and
-    `refresh.json` all land in the sandbox. Pointing any of them at the real ones would have a test
-    run degrade the live freshness signal for six scopes.
-  * a stub `uv` and a stub `~/.local/bin/substrate` that log their argv and exit 0. Every engine
-    invocation therefore becomes an OBSERVATION rather than a compose — which is also what lets
-    these tests assert the thing that matters most: WHICH binary the agent reached for, and which
-    paths it passed it.
-
-The agent is never allowed to reach a real vault: `data_root` is a sandbox directory, and the
-assertions below check that no call names a path outside it.
+WHAT IS ACTUALLY EXECUTED HERE. The deploy tool and the verifier, as subprocesses, against a
+throwaway `$HOME` so the deployment record, the manifest and the vaults lock all land in a sandbox,
+and a stub `uv` that logs its argv and exits 0.
 """
 
 from __future__ import annotations
 
 import hashlib
 import importlib.util
-
-import pytest
 import json
 import os
 import shlex
@@ -38,10 +25,7 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent.parent
 _TOOLS = _REPO / "tools"
-_AGENT = _TOOLS / "substrate-refresh"
 _DEPLOY = _TOOLS / "substrate-deploy"
-_SHIM = _TOOLS / "substrate-refresh.shim"
-_SCOPES = ("atlas", "scripta", "acme", "research", "school", "clovis")
 
 
 def _load_deployment():
@@ -59,8 +43,7 @@ deployment = _load_deployment()
 # ---------------------------------------------------------------- sandbox scaffolding
 
 def _stub(path: Path, log: Path, label: str) -> None:
-    """A binary that records how it was called and succeeds. The agent's whole job is choosing
-    which one of these to invoke and with what, so the log IS the assertion surface."""
+    """A binary that records how it was called and succeeds, so the log IS the assertion surface."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/bin/sh\nprintf '%s %s\\n' {} \"$*\" >> {}\nexit 0\n".format(
         shlex.quote(label), shlex.quote(str(log))), encoding="utf-8")
@@ -68,13 +51,12 @@ def _stub(path: Path, log: Path, label: str) -> None:
 
 
 def _sandbox() -> Path:
-    """A throwaway HOME with the two stub binaries and a data root, ready for a deployment."""
+    """A throwaway HOME with a stub `uv` and a data root, ready for a deployment."""
     home = Path(tempfile.mkdtemp()) / "home"
     (home / ".substrate").mkdir(parents=True)
     (home / "data").mkdir()
     (home / "stub").mkdir()
     log = home / "calls.log"
-    _stub(home / ".local" / "bin" / "substrate", log, "WRAPPER")
     _stub(home / "stub" / "uv", log, "UV")
     return home
 
@@ -120,34 +102,12 @@ def _verify(record: Path) -> subprocess.CompletedProcess:
                           capture_output=True, text=True)
 
 
-def _run(argv: list[str], home: Path, extra_path: str | None = None) -> subprocess.CompletedProcess:
-    env = {**os.environ, "HOME": str(home)}
+def _run(argv: list[str], home: Path, extra_path: str | None = None,
+         env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    full = {**os.environ, "HOME": str(home), **(env or {})}
     if extra_path:
-        env["PATH"] = extra_path + os.pathsep + env.get("PATH", "")
-    return subprocess.run(argv, env=env, capture_output=True, text=True)
-
-
-def _shim_source_arm() -> Path | None:
-    """The `SOURCE=` path the shim falls back to, read from the shim itself."""
-    for line in _SHIM.read_text().splitlines():
-        if line.startswith("SOURCE="):
-            return Path(line.split("=", 1)[1].strip().strip('"'))
-    return None
-
-
-def _log(home: Path) -> str:
-    p = home / "Library" / "Logs" / "substrate-refresh.log"
-    return p.read_text("utf-8") if p.is_file() else ""
-
-
-def _recorded(home: Path) -> list[str]:
-    """The outcomes the agent actually wrote, as seen from the other side of the boundary."""
-    out = []
-    for line in _calls(home):
-        if "refresh-record" in line and "--outcome" in line:
-            parts = line.split()
-            out.append(parts[parts.index("--outcome") + 1])
-    return out
+        full["PATH"] = extra_path + os.pathsep + full.get("PATH", "")
+    return subprocess.run(argv, env=full, capture_output=True, text=True)
 
 
 # ---------------------------------------------------------------- the separation invariant
@@ -267,96 +227,6 @@ def test_a_symlink_in_a_deployment_is_refused_at_sign_time() -> None:
         raise AssertionError("a symlink in a deployment was signed as if it were a file")
 
 
-# ---------------------------------------------------------------- the agent's refusal
-
-def test_the_agent_refuses_and_records_when_nothing_is_deployed() -> None:
-    """LOUD AND RECORDED, which is the whole contract for a failure in this job.
-
-    A refusal nobody can see is worse than the hazard it prevents: all six scopes would hold the
-    `frozen: false` from whenever the deployment last worked, ageing quietly, with the agent
-    apparently running fine. So this asserts three things at once — non-zero exit, a log line
-    naming the remedy, and `engine_unverified` written for EVERY scope.
-    """
-    home = _sandbox()
-    r = _run([str(_AGENT)], home)
-    assert r.returncode == 1, f"a tick that cannot verify its engine must exit non-zero: {r}"
-
-    log = _log(home)
-    assert "DEPLOYMENT UNVERIFIED" in log, log
-    assert "nothing is deployed" in log, log
-    assert "substrate-deploy" in log, "the log must name the action that fixes this"
-
-    assert _recorded(home) == ["engine_unverified"], _calls(home)
-    call = [c for c in _calls(home) if "refresh-record" in c][0]
-    for scope in _SCOPES:
-        assert f"--scope {scope}" in call, f"{scope} was left holding its last healthy verdict"
-
-
-def test_the_agent_refuses_and_records_when_the_deployed_engine_was_edited() -> None:
-    """The same refusal from the other direction: a deployment that exists and no longer matches.
-    This is the state a half-finished `cp -r`, a clobbered directory or a hand-patch leaves."""
-    home = _sandbox()
-    engine = _fake_engine(home)
-    _write_record(home, engine)
-    (engine / "substrate" / "cli.py").write_text("print('edited')\n", encoding="utf-8")
-
-    r = _run([str(_AGENT)], home)
-    assert r.returncode == 1
-    assert "changed since deployment" in _log(home), _log(home)
-    assert _recorded(home) == ["engine_unverified"]
-
-
-def test_a_refused_tick_composes_nothing_and_leaves_no_lock() -> None:
-    """The refusal has to be total and it has to be repeatable. A tick that refused but left the
-    lock behind would make the NEXT tick take it over an hour later, and one that refused after
-    composing would be the incident with extra logging."""
-    home = _sandbox()
-    r = _run([str(_AGENT)], home)
-    assert r.returncode == 1
-    assert not [c for c in _calls(home) if " compose " in c or " embed " in c], _calls(home)
-    assert not (home / ".substrate" / "refresh.lock").exists(), "the lock outlived the refusal"
-    # `list(...)`, because `Path.glob` returns a generator and a bare generator is always truthy —
-    # an assertion that can only pass is the same defect as a docstring nobody implemented.
-    assert not list((home / "data").glob("*.db")), "a refused tick wrote an index"
-
-
-def test_the_agent_reaches_the_deployed_engine_and_nothing_else() -> None:
-    """The headline property, observed at the only place it is visible: which binary got called.
-
-    Every engine invocation must go through the pinned `uv` in the deployed tree, and every path it
-    is handed must come from the deployment record. `~/.local/bin/substrate` — the wrapper that
-    execs the working tree — is the thing this design stopped trusting, and it is reached for
-    exactly one job: recording that the deployment could not be verified. It verifies here, so it
-    must not be reached at all.
-
-    This runs the real agent to completion, and what it does depends on whether the embedding
-    daemon happens to be up on the machine running the suite: with it down the agent records
-    `skipped`, with it up the agent composes through the stubs. BOTH are asserted the same way,
-    because the claim under test is not what it did but what it did it WITH.
-    """
-    home = _sandbox()
-    engine = _fake_engine(home)
-    _write_record(home, engine)
-
-    r = _run([str(_AGENT)], home)
-    assert r.returncode == 0, f"a verified deployment must not refuse: {r.stderr}\n{_log(home)}"
-
-    calls = _calls(home)
-    assert calls, "the agent verified a deployment and then invoked no engine at all"
-    for call in calls:
-        assert call.startswith("UV "), (
-            f"the agent went around the pinned engine: {call!r}. `~/.local/bin/substrate` execs "
-            "the working tree, which is the separation this whole mechanism exists to create.")
-        assert str(_REPO / "out-vault") not in call, (
-            f"a call named the operator's real index root from a sandboxed test: {call!r}")
-    for call in calls:
-        for flag in ("--db", "--index-root"):
-            if flag in call:
-                target = call.split(flag, 1)[1].split()[0]
-                assert target.startswith(str(home / "data")), (
-                    f"{flag} {target} is outside the recorded data_root")
-
-
 # ---------------------------------------------------------------- deploy, end to end
 
 def _git(repo: Path, *args: str) -> str:
@@ -366,6 +236,114 @@ def _git(repo: Path, *args: str) -> str:
     # fixture's commit attests nothing, so there is nothing to lose by not signing it.
     return subprocess.run(["git", "-C", str(repo), "-c", "commit.gpgsign=false", *args],
                           capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _throwaway_repo() -> tuple[Path, Path]:
+    """A one-commit repo holding the deploy tool and its verifier, and a sandbox `$HOME` with a stub
+    `uv`. `substrate-deploy` derives its repo from its own location, so the copy under test has to
+    live inside the throwaway one, with the verifier beside it, exactly as they ship."""
+    root = Path(tempfile.mkdtemp())
+    repo, home = root / "repo", root / "home"
+    (repo / "substrate").mkdir(parents=True)
+    (repo / "tools").mkdir()
+    (repo / "out-vault").mkdir()
+    (home / ".substrate").mkdir(parents=True)
+    (home / "stub").mkdir()
+    _stub(home / "stub" / "uv", home / "calls.log", "UV")
+    (repo / "substrate" / "cli.py").write_text("SCHEMA_VERSION = 8\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (repo / "uv.lock").write_text("lock\n", encoding="utf-8")
+    for tool in ("substrate-deploy", "deployment.py"):
+        dst = repo / "tools" / tool
+        dst.write_bytes((_TOOLS / tool).read_bytes())
+        dst.chmod(0o755)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "v8")
+    return repo, home
+
+
+def test_a_deploy_waits_for_the_vaults_lock_and_swaps_nothing_without_it() -> None:
+    """The lock every compose, embed and refresh pass takes (`substrate.refresh`). A deploy that
+    swapped the engine while a pass composed from it would run half of one engine and half of
+    another. It used to take `refresh.lock`, whose only other taker was the retired agent, so it
+    guarded against nothing."""
+    import fcntl
+
+    repo, home = _throwaway_repo()
+    lock = home / ".substrate" / "vaults.lock"
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        env_wait = {"SUBSTRATE_DEPLOY_LOCK_WAIT": "1"}
+        r = _run([str(repo / "tools" / "substrate-deploy")], home, extra_path=str(home / "stub"),
+                 env=env_wait)
+        assert r.returncode != 0, "a deploy ran while the vaults lock was held"
+        assert "could not take" in r.stderr and "vaults.lock" in r.stderr, r.stderr
+        assert not (home / ".substrate" / "engine").exists(), "a deploy swapped the engine anyway"
+    finally:
+        os.close(fd)
+    r = _run([str(repo / "tools" / "substrate-deploy")], home, extra_path=str(home / "stub"))
+    assert r.returncode == 0, r.stderr
+    assert (home / ".substrate" / "engine" / "substrate" / "cli.py").exists()
+
+
+def test_the_vaults_lock_is_held_while_the_engine_is_swapped() -> None:
+    """Refusing while someone else holds the lock is half of it; the other half is that the deploy
+    still holds it after the swap. The stub `uv` runs AFTER the swap (`uv sync` primes the new
+    engine) and tries the lock itself, so a deploy that let go of it would log FREE."""
+    repo, home = _throwaway_repo()
+    probe = home / "stub" / "uv"
+    probe.write_text(
+        f"#!{sys.executable}\n"
+        "import fcntl, os, sys\n"
+        "fd = os.open(os.path.expanduser('~/.substrate/vaults.lock'), os.O_RDWR)\n"
+        "try:\n"
+        "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "    state = 'FREE'\n"
+        "except BlockingIOError:\n"
+        "    state = 'HELD'\n"
+        f"open({str(home / 'calls.log')!r}, 'a').write('UV ' + state + '\\n')\n",
+        encoding="utf-8")
+    probe.chmod(0o755)
+    r = _run([str(repo / "tools" / "substrate-deploy")], home, extra_path=str(home / "stub"))
+    assert r.returncode == 0, r.stderr
+    assert _calls(home) == ["UV HELD"], _calls(home)
+    lock = home / ".substrate" / "vaults.lock"
+    assert lock.stat().st_mode & 0o777 == 0o600, oct(lock.stat().st_mode)
+
+
+def test_a_deploy_will_not_lock_through_a_symlink() -> None:
+    """The same rule as `scopes.flocked`: a link at the lock's path could point anywhere this user
+    can write, and locking it would neither serialize with the engine nor be safe to create."""
+    repo, home = _throwaway_repo()
+    elsewhere = home / "elsewhere"
+    elsewhere.write_text("", encoding="utf-8")
+    (home / ".substrate" / "vaults.lock").symlink_to(elsewhere)
+    r = _run([str(repo / "tools" / "substrate-deploy")], home, extra_path=str(home / "stub"))
+    assert r.returncode != 0, "a deploy locked through a symlink"
+    assert "symbolic link" in r.stderr, r.stderr
+    assert not (home / ".substrate" / "engine").exists()
+
+
+def test_a_deploy_names_an_engine_still_running_the_old_code() -> None:
+    """The lock covers the swap, not a `substrate serve` already running from the old tree: it keeps
+    the old code in memory and its next pass composes with the new. Named so it gets restarted."""
+    repo, home = _throwaway_repo()
+    deploy = [str(repo / "tools" / "substrate-deploy")]
+    first = _run(deploy, home, extra_path=str(home / "stub"))
+    assert first.returncode == 0, first.stderr
+    assert "RESTART" not in first.stdout, first.stdout
+    engine = home / ".substrate" / "engine"
+    fake = subprocess.Popen(
+        ["bash", "-c", f'exec -a "{engine}/.venv/bin/python -m substrate.cli serve" sleep 30'])
+    try:
+        second = _run(deploy, home, extra_path=str(home / "stub"))
+        assert second.returncode == 0, second.stderr
+        assert "RESTART" in second.stdout and str(fake.pid) in second.stdout, second.stdout
+    finally:
+        fake.kill()
+        fake.wait()
 
 
 def test_deploying_ships_the_commit_and_not_the_working_tree() -> None:
@@ -378,27 +356,7 @@ def test_deploying_ships_the_commit_and_not_the_working_tree() -> None:
     Run against a throwaway repo rather than this one, because the assertion needs a working tree
     that differs from HEAD in a known way and this suite does not get to dirty the operator's.
     """
-    root = Path(tempfile.mkdtemp())
-    repo, home = root / "repo", root / "home"
-    (repo / "substrate").mkdir(parents=True)
-    (repo / "tools").mkdir()
-    (repo / "out-vault").mkdir()
-    (home / ".substrate").mkdir(parents=True)
-    (home / "stub").mkdir()
-    _stub(home / "stub" / "uv", home / "calls.log", "UV")
-    (repo / "substrate" / "cli.py").write_text("SCHEMA_VERSION = 8\n", encoding="utf-8")
-    (repo / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-    (repo / "uv.lock").write_text("lock\n", encoding="utf-8")
-    # `substrate-deploy` derives its repo from its own location, so the copy under test has to live
-    # inside the throwaway one — with the verifier it calls beside it, exactly as they ship.
-    for tool in ("substrate-deploy", "deployment.py"):
-        dst = repo / "tools" / tool
-        dst.write_bytes((_TOOLS / tool).read_bytes())
-        dst.chmod(0o755)
-
-    _git(repo, "init", "-q")
-    _git(repo, "add", "-A")
-    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "v8")
+    repo, home = _throwaway_repo()
 
     # The 2026-08-03 shape: an uncommitted schema bump sitting in the tree.
     (repo / "substrate" / "cli.py").write_text("SCHEMA_VERSION = 9\n", encoding="utf-8")
@@ -435,13 +393,13 @@ def test_a_real_deployment_of_this_repo_verifies_immediately() -> None:
 
     assert _verify(home / ".substrate" / "engine.json").returncode == 0, "a fresh deploy must verify"
     assert "UV sync --frozen --quiet" in _calls(home), (
-        "the environment must be built at deploy time, not inside the 900-second job")
+        "the environment must be built at deploy time, not by the first engine start")
 
 
 def test_show_reports_a_broken_deployment_rather_than_a_commit() -> None:
     """`--show` is the operator's read-out and it has to answer the question they are asking, which
     after a refusal is "why". A version that printed the recorded commit and exited 0 would confirm
-    a deployment that the agent is refusing every fifteen minutes."""
+    a deployment that a DEBUG Scripta would refuse to run."""
     home = _sandbox()
     engine = _fake_engine(home)
     _write_record(home, engine)
@@ -451,63 +409,6 @@ def test_show_reports_a_broken_deployment_rather_than_a_commit() -> None:
     assert "does NOT verify" in r.stdout, r.stdout
     assert "changed since deployment" in r.stderr, r.stderr
 
-
-# ---------------------------------------------------------------- the shim
-
-def test_deploy_names_the_shim_install_when_launchd_still_starts_the_repo_agent() -> None:
-    """The second half of the change has to be discoverable, and it has to be discoverable HERE.
-
-    Installing `tools/substrate-refresh.shim` is what pins the agent shell as well as the engine,
-    and it is an operator action on a file no session may touch. The agent deliberately does not
-    log it — an install where launchd still starts the repo agent produces that condition on every
-    tick, and a standing condition in an event log is the noise this job's quiet-by-default policy
-    exists to prevent. So it surfaces once, in the read-out a human asked for.
-    """
-    home = _sandbox()
-    _write_record(home, _fake_engine(home))
-    r = _run([str(_DEPLOY), "--show"], home, extra_path=str(home / "stub"))
-    assert r.returncode == 0, r.stderr + r.stdout
-    assert "substrate-refresh.shim" in r.stdout, r.stdout
-
-    # ...and it stays quiet once the installed shim prefers the deployment.
-    shim = home / ".local" / "bin" / "substrate-refresh"
-    shim.write_text(_SHIM.read_text("utf-8"), encoding="utf-8")
-    shim.chmod(0o755)
-    r = _run([str(_DEPLOY), "--show"], home, extra_path=str(home / "stub"))
-    assert "substrate-refresh.shim" not in r.stdout, r.stdout
-
-
-def test_the_shim_prefers_the_deployed_agent() -> None:
-    """The order in the shim is the design: the DEPLOYED agent first, so the scheduled path runs
-    not just a pinned engine but the pinned shell that decides when to use it. An edit to
-    `tools/substrate-refresh` in the working tree must not reach launchd's next tick."""
-    home = _sandbox()
-    deployed = home / ".substrate" / "engine" / "tools" / "substrate-refresh"
-    _stub(deployed, home / "calls.log", "DEPLOYED-AGENT")
-    r = _run([str(_SHIM)], home)
-    assert r.returncode == 0, r.stderr
-    assert any(c.startswith("DEPLOYED-AGENT") for c in _calls(home)), _calls(home)
-
-
-def test_the_shim_falls_back_so_a_machine_with_no_deployment_still_records() -> None:
-    """Without this arm the never-deployed machine fails at `exec`: launchd logs "no such file" to
-    a file nobody tails, no scope is recorded, and all six keep serving their last healthy verdict
-    while nothing runs — the exact false-healthy silence the refresh record exists to remove.
-
-    The source agent reached this way cannot compose: its first act is to verify the deployment,
-    which is what is missing.
-    """
-    # THE SHIM'S SECOND ARM IS AN ABSOLUTE PATH on the operator's Mac, which the shim's own comment
-    # calls the one machine-specific fact in this system. Anywhere else `exec` fails and bash exits
-    # 127, so this test has nothing to measure rather than something to report.
-    source = _shim_source_arm()
-    if source is None or not source.exists():
-        pytest.skip(f"the shim's source arm ({source}) is not on this machine")
-    home = _sandbox()
-    r = _run([str(_SHIM)], home)
-    assert r.returncode == 1, "the fallback must carry the refusal's exit status"
-    assert _recorded(home) == ["engine_unverified"], _calls(home)
-    assert not [c for c in _calls(home) if " compose " in c], "the fallback composed something"
 
 
 if __name__ == "__main__":

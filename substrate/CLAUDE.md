@@ -48,26 +48,23 @@ today" straight out of this file — having verified the retirement itself hours
 `CLAUDE.md` is worse than a stale doc: it is loaded into every session before anyone looks at the
 machine.**
 
-What refreshes, as of PR C1 (2026-11-05):
+What refreshes, as of PR C2 (2026-11-06):
 
 - `substrate serve` is the shared socket server plus a refresh loop (`substrate/refresh.py`). It
-  runs a pass at bind and every `--every` seconds after, with no host app. `substrate refresh` runs
-  one pass now.
-- `compose` and `embed` take `vaults.lock` (an `flock` beside the registry), whoever runs them.
-  Interactive callers wait up to 60 s, then exit 75 having written nothing. The loop's compose
-  declines at once and records nothing.
-- **Scripta still drives its own loop** (`SubstrateRefresh`) and still spawns `substrate-mcp
-  --socket`, which refreshes nothing, until PR C2 moves it onto `substrate serve`. Its composes now
-  wait on the lock like any caller. One that loses the 60 s wait exits 75 and the app reads that as
-  declined (`ComposeOutcome.declined`), recording nothing. An embed that loses it is still recorded
-  `embed_failed`, which is true: that scope is unvectored until the next pass.
-- `~/.substrate/refresh.lock` is still taken by `tools/substrate-deploy` and the retired
-  `tools/substrate-refresh`. It guards against nothing until C2 moves the deploy onto
-  `vaults.lock`.
+  runs a pass at bind and every `--every` seconds after, with or without a host app. `substrate
+  refresh` runs one pass now; Scripta's "Refresh now" runs it.
+- **Scripta spawns `substrate serve`** (`SubstrateEngine`), and schedules nothing itself. Its engine
+  still dies with it. An engine already answering on the socket is USED when it is read-only,
+  refreshing, not agent mode, and on Scripta's registry and index schema (`EngineAttach`); Scripta never stops it,
+  and starts its own if it goes away. Anything else is reported.
+- `compose` and `embed` take `vaults.lock` (an `flock` beside the registry), whoever runs them:
+  the loop, Scripta's Library and recording paths, a terminal, `tools/substrate-deploy`. A caller
+  waits up to 60 s, then exits 75 having written nothing; Scripta reads 75 as declined.
+- `tools/substrate-refresh` and `~/.substrate/refresh.lock` are gone.
 
-**The consequence to know, until C2 lands:** with only Scripta running, vaults refresh only while
-the app is open. A week without it means a week-old index, and `refresh.frozen` reads `false`,
-because nothing failed; nothing ran. Run `substrate serve` to have them refresh without it.
+**The consequence to know:** with Scripta's own engine, vaults refresh only while Scripta runs,
+because its engine dies with it. Run `substrate serve` yourself to keep them refreshing without it;
+Scripta attaches to that engine when it opens.
 
 ### The deployment pin still matters, for a different reason
 

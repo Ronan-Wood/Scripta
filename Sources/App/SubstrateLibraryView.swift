@@ -754,11 +754,14 @@ private struct LibraryScopeLine: View {
 
 // MARK: - Refresh
 
-/// Doc 3 §2 moves index refresh in-app: on launch, and on a timer while Scripta is open. This is
-/// what says so out loud, because a maintenance job nobody can see is the state the whole refresh
-/// record exists to end.
+/// Index refresh is the engine's (`substrate serve`): this says how often it runs, or that the
+/// engine on the socket refreshes nothing, and offers a pass now. A maintenance job nobody can see
+/// is the state the whole refresh record exists to end.
 private struct LibraryRefreshRail: View {
-    @ObservedObject private var refresh = SubstrateRefresh.shared
+    @ObservedObject private var refresh = EngineRefresh.shared
+    @ObservedObject private var scopes = SubstrateScopes.shared
+    // `canRefresh` reads the engine's lifecycle, which `EngineRefresh` does not republish.
+    @ObservedObject private var engine = SubstrateEngine.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: Gap.s8) {
@@ -768,25 +771,40 @@ private struct LibraryRefreshRail: View {
                 Spacer(minLength: Gap.s4)
                 ActionButton(title: "Refresh now", glyph: .refresh, rank: .tertiary,
                              action: refresh.refreshNow)
-                    .disabled(isRunning)
+                    .disabled(isRunning || !refresh.canRefresh)
             }
-            if case .finished(_, let run) = refresh.state, !run.succeeded {
+            if !refresh.canRefresh, engine.lifecycle.isServing {
+                LibraryNote(
+                    id: "refresh-no-cli", marker: "no cli", tone: Ink.textHelper,
+                    text: "This engine has no substrate command beside it, so Scripta cannot run "
+                        + "a pass itself.")
+            }
+            if let run = failure {
                 LibraryNote(
                     id: "refresh-failed", marker: "refused", tone: Ink.warning,
                     text: "The last pass exited \(run.status.map(String.init) ?? "on a signal"). "
-                        + "The agent writes its reasons to its own log, and it records an outcome "
-                        + "against every scope on every path — the rows above are that record. A "
-                        + "refusal is not retried here: the one it refuses over is an engine it "
-                        + "could not verify, and retrying that is the failure it exists to stop.")
-                Text(SubstrateCLI.abbreviated(SubstrateRefresh.logPath.path))
-                    .typeface(Register.monoMicro, Ink.textHelper)
-                    .textSelection(.enabled)
-                    .padding(.leading, EnvelopeMarker.indent)
+                        + "Every scope it reached has its outcome in the rows above; a pass "
+                        + "exits non-zero when one of those outcomes could not be recorded, or "
+                        + "when it could not read the registry. Its own words are below.")
+                if !run.stderr.isEmpty {
+                    Text(run.stderr)
+                        .typeface(Register.monoMicro, Ink.textHelper)
+                        .textSelection(.enabled)
+                        .padding(.leading, EnvelopeMarker.indent)
+                }
             }
         }
         .padding(Metrics.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .surface(Ink.layer)
+    }
+
+    /// The last "Refresh now" that failed, until the engine records a pass after it: an engine pass
+    /// that has since moved a scope is the newer word, and the old failure would contradict it.
+    private var failure: SubstrateRun? {
+        guard case .finished(let at, let run) = refresh.state, !run.succeeded else { return nil }
+        if let moved = scopes.lastMoved, moved > at { return nil }
+        return run
     }
 
     private var isRunning: Bool {
@@ -796,23 +814,39 @@ private struct LibraryRefreshRail: View {
 
     @ViewBuilder private var content: some View {
         switch refresh.state {
-        case .idle:
-            Text("on launch, then every 15 minutes while Scripta is open")
-                .proseText(Register.proseSm, Ink.textSecondary)
-        case .unavailable(let engine):
-            Text("no refresh agent beside \(engine) — nothing is maintaining these indexes")
-                .proseText(Register.proseSm, Ink.warning)
         case .running(let since):
             HStack(spacing: Gap.s8) {
                 Spinner()
                 Text("refreshing").proseText(Register.proseSm, Ink.textSecondary)
                 VaultElapsed(started: since)
             }
-        case .finished(let at, let run):
-            Text(run.succeeded ? "last pass finished \(Self.stamp(at))"
-                               : "last pass refused at \(Self.stamp(at))")
-                .proseText(Register.proseSm, run.succeeded ? Ink.textSecondary : Ink.warning)
+        case .finished(let at, _) where failure != nil:
+            Text("last pass refused at \(Self.stamp(at))")
+                .proseText(Register.proseSm, Ink.warning)
+        default:
+            schedule
         }
+    }
+
+    /// What the engine says about its own refreshing (`list_scopes` → `server`).
+    @ViewBuilder private var schedule: some View {
+        if let server = scopes.server {
+            if let every = server.refreshEvery {
+                Text("the engine refreshes every scope every \(Self.minutes(every))")
+                    .proseText(Register.proseSm, Ink.textSecondary)
+            } else {
+                Text("this engine refreshes nothing on its own — Refresh now runs a pass")
+                    .proseText(Register.proseSm, Ink.warning)
+            }
+        } else {
+            Text("the engine has not said how it refreshes")
+                .proseText(Register.proseSm, Ink.textHelper)
+        }
+    }
+
+    private static func minutes(_ seconds: Double) -> String {
+        let m = Int((seconds / 60).rounded())
+        return m <= 1 ? "minute" : "\(m) minutes"
     }
 
     private static func stamp(_ date: Date) -> String {

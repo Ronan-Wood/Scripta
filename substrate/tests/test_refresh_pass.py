@@ -432,6 +432,50 @@ def test_serve_runs_on_its_own_and_refreshes() -> None:
             proc.wait(15)
 
 
+def test_version_reports_the_schema_and_wire_this_build_speaks() -> None:
+    """What a host compares before using an engine it did not start: its own CLI will write that
+    engine's indexes, so their schemas must agree."""
+    import io
+
+    from substrate import wire
+    from substrate.store import schema
+
+    from substrate import scopes
+    from substrate.mcp import server
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert cli.main(["version"]) == 0
+    assert json.loads(out.getvalue()) == {
+        "schema": schema.SCHEMA_VERSION, "wire": wire.VERSION,
+        "registry": str(scopes.registry_path().resolve())}
+    # The other half of the comparison: an engine reports its schema as `initialize`'s
+    # `serverInfo.version`, to the bare `"params":{}` Scripta sends, which reads it back as
+    # `0.<schema>.0`.
+    reply = server._dispatch({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                             None)
+    assert reply["result"]["serverInfo"]["version"] == f"0.{schema.SCHEMA_VERSION}.0", reply
+
+
+def test_version_says_when_it_cannot_resolve_a_registry() -> None:
+    """An empty $SUBSTRATE_REGISTRY names no file. Reported as null, so the host refuses to
+    compare rather than comparing against a guess."""
+    import io
+
+    saved = os.environ.get("SUBSTRATE_REGISTRY")
+    os.environ["SUBSTRATE_REGISTRY"] = " "
+    try:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert cli.main(["version"]) == 0
+    finally:
+        if saved is None:
+            os.environ.pop("SUBSTRATE_REGISTRY", None)
+        else:
+            os.environ["SUBSTRATE_REGISTRY"] = saved
+    assert json.loads(out.getvalue())["registry"] is None
+
+
 def test_a_plain_server_says_it_refreshes_nothing() -> None:
     from substrate import stack
     from substrate.mcp import server

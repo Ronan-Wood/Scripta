@@ -1,44 +1,16 @@
-"""The refresh agent is the PRODUCER of the freeze signal, and it parses the CLI's JSON.
+"""What crosses the boundary between the refresh pass and the readers of its record.
 
-`tools/substrate-refresh` reads `status --json`'s `drift` object and decides from it whether to
-recompose a scope; it then records an outcome that `render` and `introspect` read back as
-`refresh.frozen`. Neither half was held by anything in CI while the script lived only in
-`~/.local/bin`, and the failure mode is not a crash: the probe has a `try/except` that prints
-`unknown` on any error, so a renamed key degrades it to "recompose every scope every fifteen
-minutes" — and a key that changes MEANING degrades it to recording `unchanged`, the strongest
-healthy claim in the vocabulary, for scopes nobody checked. Both are quiet.
-
-These tests pin the vocabularies at their SOURCE — `freshness.drift`, `introspect`,
-`refresh_state.OUTCOMES` and `tools/deployment.py`'s plan keys — against the literal strings the
-shell script reads. They fail when the engine moves, which is the direction that matters: the
-script cannot be changed by an engine refactor, so the engine has to be told.
-
-WHAT LIVES HERE AND WHAT DOES NOT. This file holds the boundary: the words and keys that cross
-between shell and Python. The BEHAVIOUR on the other side of that boundary — that the agent runs a
-deployed engine rather than the working tree, and refuses loudly when it cannot prove which — is
-executed in `tests/test_refresh_deploy.py`.
-
-**What is and is not executed here.** The engine side is exercised for real: `drift` is computed
-over actual files, and the unresolvable-scope case calls `status_payload` rather than grepping
-`introspect.py` for a source line. The agent side is not run as a WHOLE — invoking
-`tools/substrate-refresh` would recompose six live scopes as a side effect — but its probe is
-EXTRACTED from the script by `_probe_source()` and executed, so the code under test is the code
-that ships.
-
-That extraction replaced a hand-typed copy of the probe, which the previous docstring called "the
-alarm". It was not one. Deleting the `"error" in d` arm from the script left every test in this
-file green: the execution test ran its own copy, and the key check matched anywhere in the file —
-including the two comments that quote `{"error": ...}` and `stale` in prose. Both are now read from
-the extracted body, and that same mutation fails the suite.
+The engine refreshes its own scopes (`substrate.refresh`) and records each outcome
+(`refresh_state.record`), which `render` and `introspect` read back as `refresh.frozen`. These pin
+the vocabularies at their SOURCE: the freeze must mean what it says, and `status`'s `drift` object must keep the shape its readers
+depend on. The retired shell agent (`tools/substrate-refresh`) was the first producer and parsed
+`drift` itself; these tests outlived it because the record and the drift shape did.
 
 Runnable with plain `python tests/test_refresh_contract.py`; discovered by pytest if added.
 """
 
 from __future__ import annotations
 
-import json
-import re
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -49,37 +21,6 @@ from substrate import freshness, introspect, scopes, stack  # noqa: E402
 from substrate.models import Chunk, Document  # noqa: E402
 from substrate.refresh_state import OUTCOMES  # noqa: E402
 from substrate.store.index_store import IndexStore  # noqa: E402
-
-_REPO = Path(__file__).resolve().parent.parent
-_AGENT = _REPO / "tools" / "substrate-refresh"
-
-# Every key the agent's python3 probe reads, verbatim from its source.
-#
-# `drift`, `vault` and `vectors` joined the original three on 2026-08-10, when the probe stopped
-# answering one question and started answering three. Each is a real new dependency on the payload
-# and is pinned deliberately:
-#   vault    — the compose source. It used to be derived from the scope NAME
-#              (`$HOME/vaults/$s-vault`), which Doc 4 §7 broke: a workspace IS a vault, so
-#              `acme` composes from `…/Scripta/acme` while `…/acme-vault` still exists beside it.
-#   vectors  — coverage. Drift compares the vault against the index and says nothing about vectors,
-#              so an index that lost coverage stayed `unchanged` forever once the vault went quiet.
-#   complete — read off `vectors`, and pinned separately from it: the block being PRESENT and the
-#              coverage inside it being complete are different facts, and the agent acts on the
-#              second one.
-_PROBE_KEYS = ("error", "checkable", "stale", "drift", "vault", "vectors", "complete")
-
-# The five outcomes the agent passes to `refresh-record`. `record` REFUSES an outcome outside
-# OUTCOMES, so an outcome the agent emits that the engine dropped is a hard failure at 15-minute
-# intervals, logged to a file nobody reads.
-_AGENT_OUTCOMES = ("unchanged", "refreshed", "compose_failed", "embed_failed", "skipped",
-                   # Added when the agent stopped recomposing across a schema bump. It is the
-                   # one outcome that reports a refusal to ACT rather than a failure to.
-                   "schema_mismatch",
-                   # Added when the agent stopped running the working tree at all. A tick that
-                   # cannot prove which engine it would run refuses every scope and says so —
-                   # `tests/test_refresh_deploy.py` executes that path; this pins the WORD, which
-                   # is the half that crosses the shell/Python boundary.
-                   "engine_unverified")
 
 
 def _seeded_store(db: str) -> IndexStore:
@@ -94,24 +35,25 @@ def _seeded_store(db: str) -> IndexStore:
 
 # ---------------------------------------------------------------- the drift shape
 
-def test_drift_emits_the_keys_the_agent_reads() -> None:
-    """`stale` and `checkable` must exist and be booleans. The agent distinguishes three states
-    from them, and a missing key collapses two of those into one: `.get("stale")` returning None
-    for a renamed field is indistinguishable, at the call site, from a drift check that ran."""
+def test_drift_emits_the_keys_its_readers_read() -> None:
+    """`stale` and `checkable` must exist and be booleans. A reader distinguishes three states from
+    them (the app's drift report, `substrate status`), and a missing key collapses two of those into
+    one: `.get("stale")` returning None for a renamed field is indistinguishable, at the call site,
+    from a drift check that ran."""
     with _seeded_store(str(Path(tempfile.mkdtemp()) / "i.db")) as s:
         d = freshness.drift(s, [])
     for key in ("stale", "checkable"):
-        assert key in d, f"the refresh agent reads drift[{key!r}]; it is gone"
+        assert key in d, f"drift[{key!r}] is read by every drift reader; it is gone"
         assert isinstance(d[key], bool), f"drift[{key!r}] must be a bool, got {type(d[key])}"
 
 
 def test_unreadable_notes_clear_checkable_rather_than_setting_stale() -> None:
-    """The distinction the agent's `unknown` arm exists for, and the one it used to miss.
+    """The distinction a reader's `unknown` arm exists for.
 
     `stale: false, checkable: false` means "no change FOUND, and some notes were not examined".
-    If unreadable notes were folded into `stale`, the agent would recompose (harmless); if they
-    were folded into "clean", it would record `unchanged` for a scope nobody could check — the
-    false-healthy direction. This asserts which way it falls.
+    If unreadable notes were folded into `stale`, a reader would recompose (harmless); if they were
+    folded into "clean", it would report a scope nobody could check as current — the false-healthy
+    direction. This asserts which way it falls.
     """
     tmp = Path(tempfile.mkdtemp())
     missing = tmp / "gone.md"
@@ -124,7 +66,7 @@ def test_unreadable_notes_clear_checkable_rather_than_setting_stale() -> None:
 
 
 def test_unresolvable_scope_reports_error_in_the_drift_slot() -> None:
-    """`introspect` puts the failure IN `drift` rather than omitting the key, and the agent tests
+    """`introspect` puts the failure IN `drift` rather than omitting the key, and a reader tests
     `"error" in d` FIRST. A moved vault, an unsynced OneDrive or a malformed manifest all land
     here, and `status` still exits 0 with valid JSON — so an omitted key would reach `.get("stale")
     is None` and, before that arm existed, `current`.
@@ -142,82 +84,12 @@ def test_unresolvable_scope_reports_error_in_the_drift_slot() -> None:
     assert "drift" in payload, "the drift key must be present even when the vault is unresolvable"
     assert "error" in payload["drift"], (
         f"an unresolvable vault must report drift.error; got {payload['drift']!r}")
-    # The agent's own precedence: `"error" in d` is tested BEFORE `stale`, so an error object that
-    # also happened to carry a `stale` key would still probe as `unknown`. Pin the absence anyway —
-    # a drift error that grew a `stale: false` would be a false all-clear for any other reader.
+    # A drift error that grew a `stale: false` would be a false all-clear for any reader that
+    # checks `stale` before `error`.
     assert "stale" not in payload["drift"], "a drift error must not also claim a staleness verdict"
 
 
-# ---------------------------------------------------------------- the agent's own source
-
-def _probe_source() -> str:
-    """The probe body, lifted OUT of `tools/substrate-refresh` at test time.
-
-    Reading it from the script is the whole point. Both an earlier version of this file and its
-    docstring claimed the inline copy was "the alarm" — it was not: the copy could be executed and
-    pass while the shipped probe said something else, and the key check below matched anywhere in
-    the file, including the two comment lines that quote `{"error": ...}` and `stale` in prose.
-    Verified: deleting the `"error" in d` arm from the script left the whole file green.
-    """
-    src = _AGENT.read_text("utf-8")
-    start = src.index("python3 -c '") + len("python3 -c '")
-    end = src.index("'", start)
-    body = src[start:end]
-    assert "json.load" in body, f"probe extraction found no probe: {body[:80]!r}"
-    return body
-
-
-def test_agent_probe_reads_exactly_these_keys_and_no_others() -> None:
-    """Pins the script against the engine in the OTHER direction, in BOTH directions of drift.
-
-    Matched against the extracted PROBE, not the whole file — `"error"` and `"stale"` both appear
-    in the script's comment prose, so a file-wide match was satisfied with no probe code at all.
-
-    And it is set EQUALITY, not presence. A presence-only check cannot see a key being ADDED, so a
-    probe that grew a dependency on some `drift["verified"]` the engine does not emit would pass
-    while degrading every tick to `unknown` — six scopes recomposed every fifteen minutes forever,
-    reported as healthy. Verified: that mutation passed the presence-only form.
-    """
-    body = _probe_source()
-    # ANY identifier, not just `d`. The probe now binds the drift block to its own name and reads
-    # `checkable`/`stale` off THAT, so a `d`-only pattern stopped seeing two of the arms it exists
-    # to pin — the mutation this test documents (deleting the `error` arm) would have gone green
-    # again the moment the probe used a local variable.
-    read = set(re.findall(r'\b\w+\.get\("([^"]+)"', body))
-    read |= set(re.findall(r'"([^"]+)" in \w+\b', body))
-    read |= set(re.findall(r'\b\w+\["([^"]+)"\]', body))
-    assert read == set(_PROBE_KEYS), (
-        f"the probe reads {sorted(read)}; this contract pins {sorted(_PROBE_KEYS)}. "
-        "A key added here is a new dependency on the engine's payload; a key removed is an arm "
-        "of the drift verdict that stopped being checked.")
-
-
-def test_every_outcome_the_agent_records_is_in_the_vocabulary() -> None:
-    """`refresh_state.record` refuses an unknown outcome, so a vocabulary change the agent does not
-    follow makes every tick fail — and the agent only logs a WARNING on a failed record, so the
-    scopes would keep serving their last healthy verdict while nothing new was ever written."""
-    # Comment lines stripped, and only real `record <outcome>` invocations counted. The `or
-    # '"<outcome>"' in src` arm this replaces matched the word `"unchanged"` inside the header
-    # comment `(reconcile reports "unchanged")`, so deleting the ONLY line that records it left
-    # this green — vacuous for precisely the outcome the vocabulary calls the strongest healthy
-    # claim it has.
-    # Comments stripped AND string literals blanked, then real invocations matched. Two false
-    # positives to exclude and they need different treatment: `(reconcile reports "unchanged")` in
-    # a comment, and `say "WARNING: record called with no outcome"` in a live line of code. Line
-    # anchoring does not work either — the `unchanged` call sits after an `&&`.
-    code = "\n".join(ln for ln in _AGENT.read_text("utf-8").splitlines()
-                     if not ln.lstrip().startswith("#"))
-    code = re.sub(r'"[^"]*"', '""', code)
-    recorded = set(re.findall(r'\brecord\s+([a-z_]+)', code))
-    for outcome in _AGENT_OUTCOMES:
-        assert outcome in OUTCOMES, (
-            f"the agent records {outcome!r}, which is no longer in refresh_state.OUTCOMES")
-        assert outcome in recorded, (
-            f"the agent no longer records {outcome!r}; this contract is stale")
-    assert recorded <= set(OUTCOMES), (
-        f"the agent records {sorted(recorded - set(OUTCOMES))}, which `refresh_state.record` "
-        "refuses — every tick would fail, and it only logs a WARNING when it does")
-
+# ---------------------------------------------------------------- the record
 
 def test_freeze_is_only_claimed_by_a_failed_compose() -> None:
     """The signal's meaning, pinned. `frozen: True` says "results come from a superseded index",
@@ -228,233 +100,6 @@ def test_freeze_is_only_claimed_by_a_failed_compose() -> None:
     assert OUTCOMES["skipped"]["frozen"] is None, "no attempt is absent evidence, not a clean run"
     assert OUTCOMES["unchanged"]["frozen"] is False
     assert OUTCOMES["refreshed"]["frozen"] is False
-
-
-# ---------------------------------------------------------------- end to end
-
-def _probe(label: str, payload: str) -> str:
-    """Run the SHIPPED probe over one payload and return its DRIFT verdict.
-
-    The probe emits `drift|vault|vectors` since 2026-08-10. Only the first field is the drift
-    verdict every assertion below is about; the other two have their own test, so splitting here
-    keeps a coverage change from reading as a drift regression.
-    """
-    r = subprocess.run([sys.executable, "-c", _probe_source()], input=payload,
-                       capture_output=True, text=True)
-    return r.stdout.strip().split("|")[0]
-
-
-def _probe_fields(payload: str) -> tuple[str, str, str]:
-    """All three fields, for the assertions that are about the other two."""
-    r = subprocess.run([sys.executable, "-c", _probe_source()], input=payload,
-                       capture_output=True, text=True)
-    parts = r.stdout.strip().split("|")
-    assert len(parts) == 3, f"probe emitted {r.stdout.strip()!r}, expected three fields"
-    return parts[0], parts[1], parts[2]
-
-
-def test_probe_parses_a_real_status_payload() -> None:
-    """The string assertions above compare two files; this runs the agent's ACTUAL probe over a
-    payload the engine actually emitted. Both are needed — a key can be present and mean something
-    new, which only executing the parse can catch.
-
-    The clean case needs a note that is genuinely on disk with a matching checksum. An earlier
-    version of this fixture passed `[]` for the note set, which makes the indexed document
-    *removed* — so it probed `stale`, and the test would have been "corrected" by loosening the
-    assertion to accept the value the broken fixture produced.
-    """
-    tmp = Path(tempfile.mkdtemp())
-    note = tmp / "d0.md"
-    note.write_text("replication lag\n", encoding="utf-8")
-    sha, _ = freshness.effective_sha_of(note.read_bytes())
-    with _seeded_store(str(tmp / "i.db")) as s:
-        s.db.execute("UPDATE documents SET source_path=?, source_sha256=? WHERE doc_id='d0'",
-                     (str(note), sha))
-        d = freshness.drift(s, [note])
-    assert d == {**d, "stale": False, "checkable": True}, f"fixture is not clean: {d}"
-    payload = json.dumps({"drift": d})
-
-    # The SHIPPED probe, read out of the script — not a copy retyped here. A copy can only prove
-    # that some probe parses this payload; it cannot notice the deployed one drifting away from it.
-    assert _probe("current", payload) == "current", "a clean, checkable index must probe `current`"
-
-    # EVERY ARM, because two of the four were unpinned and their mutations stayed green:
-    #
-    #   `stale`      — nothing ever fed the probe a changed vault, so a probe that could never
-    #                  return `stale` passed the whole suite. That agent records `unchanged` — the
-    #                  strongest healthy claim the vocabulary has — for every scope that moved.
-    #   `checkable`  — the arm this whole mechanism was built for. `stale: false, checkable: false`
-    #                  is "no change found, and some notes were not examined"; folding it into
-    #                  `current` is the original bug. `test_unreadable_notes_...` proves only that
-    #                  the ENGINE emits that shape; nothing handed it to the probe.
-    #
-    # The `stale is None` arm covers a renamed field: absent key, no verdict, not an all-clear.
-    changed = {**d, "stale": True}
-    assert _probe("stale", json.dumps({"drift": changed})) == "stale", (
-        "a vault that demonstrably changed must probe `stale` — a probe that cannot say so "
-        "records `unchanged` for every scope that moved")
-
-    uncheckable = {**d, "stale": False, "checkable": False}
-    assert _probe("uncheckable", json.dumps({"drift": uncheckable})) == "unknown", (
-        "notes that could not be read must probe `unknown`, never `current`")
-
-    renamed = {k: v for k, v in d.items() if k != "stale"}
-    assert _probe("renamed", json.dumps({"drift": renamed})) == "unknown", (
-        "a missing `stale` key is absent evidence, not a clean result")
-
-    assert _probe("error", json.dumps({"drift": {"error": "x"}})) == "unknown", (
-        "an unresolvable scope must probe `unknown`")
-
-    assert _probe("garbage", "not json at all") == "unknown", (
-        "an unparseable payload must probe `unknown`")
-
-
-def test_probe_reports_the_registered_vault_and_vector_coverage() -> None:
-    """The two fields the probe gained, and the failures each one exists to prevent.
-
-    `vault` is the compose SOURCE. Derived from the scope name it aimed `acme` at
-    `…/vaults/acme-vault` — 31 curated notes — while the scope is registered against
-    `…/Scripta/acme`, the workspace vault holding its calls. The next stale tick would have
-    `--clean`ed the index and rebuilt it from the wrong one.
-
-    `vectors` is coverage, which drift does not measure. Two unembedded chunks out of 1,256 put a
-    live scope below `complete`, which switches the vector arm off and HyDE and the reranker with
-    it — and the agent reported `unchanged` every fifteen minutes because the vault had not moved.
-    """
-    clean = {"stale": False, "checkable": True, "added": [], "removed": [], "changed": [],
-             "checked": 1, "unverifiable": 0}
-
-    drift, vault, vectors = _probe_fields(json.dumps(
-        {"drift": clean, "vault": "/v/Scripta/acme",
-         "vectors": {"stored": 1256, "chunks": 1256, "complete": True}}))
-    assert (drift, vault, vectors) == ("current", "/v/Scripta/acme", "complete")
-
-    # INCOMPLETE IS NOT `none`. They take different actions — one embeds, one does nothing — so
-    # collapsing them would restore the exact silence this field was added to break.
-    _, _, vectors = _probe_fields(json.dumps(
-        {"drift": clean, "vault": "/v", "vectors": {"stored": 1254, "chunks": 1256,
-                                                    "complete": False}}))
-    assert vectors == "incomplete"
-
-    # No vector arm wired at all — nothing to repair, and not a degraded index.
-    _, _, vectors = _probe_fields(json.dumps({"drift": clean, "vault": "/v", "vectors": None}))
-    assert vectors == "none"
-
-    # A payload with no vault names none, rather than inventing one. The agent refuses to compose
-    # on this rather than guessing a path.
-    _, vault, _ = _probe_fields(json.dumps({"drift": clean, "vectors": None}))
-    assert vault == ""
-
-
-def test_agent_refuses_a_repo_it_cannot_resolve() -> None:
-    """A derived REPO must be VALIDATED, and the check is exercised, not grepped.
-
-    `dirname "$0"` follows the invocation path, not the real one, so deploying the agent as a
-    symlink (the obvious simplification of the exec shim) silently made REPO the symlink's parent —
-    a writable directory. The agent used to compose six scopes there, re-register all of them
-    against the new location, and record `refreshed`/`frozen: false`, while every query kept reading
-    the untouched old indexes. The signal's own writer emitting a false-healthy verdict.
-
-    HALF OF THAT IS NOW STRUCTURAL rather than guarded: the compose paths come from the deployment
-    record, so a mis-derived REPO can no longer aim six indexes at a guessed directory. What is
-    left is worse if unguarded — without `tools/deployment.py` the agent has no way to establish
-    WHICH engine it would run, which is the whole separation. So it refuses, and it refuses with
-    `engine_unverified` rather than `skipped`: this is not a precondition that will clear itself.
-
-    Run under a throwaway HOME so the log, the lock and `refresh.json` all land in the sandbox.
-    Pointing them at the real state file would have this test degrade the live freshness signal for
-    six scopes every time it ran.
-    """
-    import os
-    import subprocess as sp
-
-    tmp = Path(tempfile.mkdtemp())
-    link = tmp / "bin" / "substrate-refresh"
-    link.parent.mkdir()
-    link.symlink_to(_AGENT)          # REPO resolves to tmp/, which is not a checkout
-
-    # The agent checks its recorder BEFORE its repo, deliberately: a missing `substrate` means the
-    # REPO guard's own record would fail silently too. So the sandbox gets a stub — one that LOGS
-    # its argv, because "it refused" and "it refused where a reader can see it" are different
-    # claims and only the second one matters.
-    calls = tmp / "calls.log"
-    stub = tmp / ".local" / "bin" / "substrate"
-    stub.parent.mkdir(parents=True)
-    stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {calls}\nexit 0\n', encoding="utf-8")
-    stub.chmod(0o755)
-
-    env = {**os.environ, "HOME": str(tmp)}
-    r = sp.run([str(link)], env=env, capture_output=True, text=True)
-    assert r.returncode == 1, f"an unresolvable REPO must exit non-zero, got {r.returncode}"
-    log = (tmp / "Library" / "Logs" / "substrate-refresh.log").read_text("utf-8")
-    assert "does not resolve to a substrate checkout" in log, log[-400:]
-    recorded = calls.read_text("utf-8") if calls.is_file() else ""
-    assert "--outcome engine_unverified" in recorded, (
-        f"the refusal was not recorded, so all six scopes keep their last healthy verdict: "
-        f"{recorded!r}")
-    # And it must not have composed anything into the guessed path.
-    assert not (tmp / "out-vault").exists(), "the agent composed into a path it could not verify"
-
-
-def test_agent_reads_exactly_the_plan_keys_the_verifier_emits() -> None:
-    """The OTHER shell/Python boundary in this system, pinned the same way as the drift probe.
-
-    `tools/deployment.py --verify` prints `KEY=value` lines and the agent parses them into the
-    variables it composes with. Nothing type-checks that: a renamed key leaves the agent's variable
-    empty, and while the emptiness guard turns that into a refusal rather than a compose into "" —
-    fail-closed, deliberately — the result is a refresh that is off for good with a message about
-    an "unusable plan" that names nothing.
-
-    Two directions, because they fail differently:
-      * every key the agent READS must be one the verifier EMITS (else it is never populated);
-      * every key the agent reads must also be one it REQUIRES to be non-empty (else a key that
-        stopped arriving is silently used as the empty string, and `--db ""` is a compose into the
-        current directory).
-    """
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("_dep", _REPO / "tools" / "deployment.py")
-    dep = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(dep)
-
-    src = _AGENT.read_text("utf-8")
-    block = src[src.index('case "$key" in'):]
-    block = block[:block.index("esac")]
-    read = set(re.findall(r"^\s*([A-Z_]+)\)", block, re.M))
-    required = set(re.findall(r'\[ -z "\$([A-Z_]+)" \]', src))
-    emitted = set(dep._EMIT_ORDER)
-
-    assert read, "the agent parses no plan keys at all; it cannot know which engine to run"
-    assert read <= emitted, (
-        f"the agent reads {sorted(read - emitted)}, which tools/deployment.py does not emit — "
-        "those variables are empty on every tick")
-    assert read == required, (
-        f"the agent reads {sorted(read)} but only refuses on {sorted(required)}. A plan key that "
-        "is read without being required is one that can silently arrive empty.")
-
-
-def test_agent_is_executable_and_derives_its_own_repo() -> None:
-    """The move is only safe if the script still finds the repo. It used to carry an absolute path;
-    now it derives one from its own location, and the shim in ~/.local/bin holds the machine fact.
-
-    REPO's job shrank when the agent stopped composing into it — the index paths come from the
-    deployment record now — but it did not go away: it is how the agent finds the verifier that
-    everything else depends on, which is why the validation below is still fatal."""
-    import os
-
-    assert os.access(_AGENT, os.X_OK), f"{_AGENT} is not executable"
-    src = _AGENT.read_text("utf-8")
-    assert 'REPO=$(cd "$(dirname "$0")/.." && pwd)' in src, "the agent must derive REPO"
-    # WHOLE file. This was `src.split("REPO=")[0]`, which is only the comment header above the
-    # derivation — it could not see a hardcoded path anywhere below it, which is exactly where the
-    # machine-specific paths in this script actually live.
-    assert "/Users/" not in src, (
-        "the agent carries an absolute home path; it is meant to derive REPO and take everything "
-        "else from $HOME, so that the repo copy is the portable one and the shim holds the "
-        "machine-specific line")
-    # The derivation is worthless unguarded — a symlink deployment resolves it to somewhere
-    # writable and the agent composes six scopes into it, reporting success.
-    assert "does not resolve to a substrate checkout" in src, "REPO is derived but not validated"
 
 
 if __name__ == "__main__":

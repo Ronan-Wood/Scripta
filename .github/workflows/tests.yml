@@ -106,11 +106,9 @@ jobs:
           uv python install --no-bin --install-dir "${prefix%/*}" "${prefix##*/}"
           got=$(cat "$prefix/BUILD") || { echo "uv wrote no BUILD into $prefix" >&2; exit 1; }
           test "$got" = "$build" || { echo "uv installed build $got, $pin is $build" >&2; exit 1; }
-      # ZERO SKIPS is the point of this job. The one deselected test needs a path that exists only on
-      # the operator's Mac, so it skips on every runner.
+      # ZERO SKIPS is the point of this job.
       - run: >-
           uv run --no-sync python -m pytest tests -q -rsx --junitxml "$RUNNER_TEMP/junit.xml"
-          --deselect tests/test_refresh_deploy.py::test_the_shim_falls_back_so_a_machine_with_no_deployment_still_records
       - run: test -s "$RUNNER_TEMP/junit.xml" && ! grep -q '<skipped' "$RUNNER_TEMP/junit.xml"
 
   core:

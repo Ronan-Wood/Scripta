@@ -33,7 +33,11 @@ Scripta (Swift/SwiftUI, macOS 26)          Substrate (Python 3.14)
                                         MCP ─────┴───→ Claude Code, other clients
 ```
 
-The app spawns the engine as a child process. The same engine serves Claude Code over MCP.
+The app spawns the engine (`substrate serve`) as a child process; the same engine serves Claude
+Code over MCP and refreshes every scope itself, on its own timer, under the one lock every compose
+and embed take (`vaults.lock`). An engine already running on the socket is used instead when it is
+read-only, refreshing, not agent mode, and on Scripta's registry and index schema (`EngineAttach`); Scripta
+never stops one it did not start, and starts its own if that one goes away.
 *Measured 2026-08-12:* app running → 3 engine processes, quit → 0 orphans, relaunch → back on
 `:8765`. The engine has since moved off TCP to a Unix socket in a 0700 directory
 (`~/.substrate/run/substrate.sock`, in the engine's own home), and both ends refuse a peer of
@@ -317,9 +321,9 @@ that does nothing.
 - **No open-ended on-device reasoning.** Local models get bounded jobs — topics, query expansion,
   grounded answers with citations. Deep reasoning is handed to a frontier model through MCP.
 - **No section routing.** Built, measured, switched off (§5).
-- **No periodic refresh outside the app.** Indexes refresh while Scripta is open. A machine that has
-  not opened it for a week reads a week-old index — and reports `frozen: false`, because nothing
-  failed; nothing ran.
+- **No refresh while no engine runs.** The engine refreshes itself, and Scripta's engine dies with
+  Scripta. A machine where neither Scripta nor a `substrate serve` has run for a week reads a
+  week-old index — and reports `frozen: false`, because nothing failed; nothing ran.
 
 ---
 

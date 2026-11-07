@@ -191,18 +191,15 @@ extension SubstrateEngine.Lifecycle {
 
 extension SubstrateEngine.Occupant {
 
-    /// Both arms name the socket AND the remedy. A stale orphan from a crash and an engine the
-    /// operator started by hand are what `anEngine` can be, and Scripta will not adopt either: an
-    /// engine it did not spawn is one it cannot promise to stop.
+    /// Every arm names the socket AND the remedy.
     var sentence: String {
         let socket = SubstrateEngine.socketPath
         switch self {
-        case .anEngine(let scopes):
-            let roster = scopes.map { " It answered with \($0) scope\($0 == 1 ? "" : "s")." } ?? ""
+        case .anEngine:
             return "A substrate engine is already answering on \(socket), and Scripta did not "
-                + "start it.\(roster) It is either one you ran by hand or an orphan a previous "
-                + "crash left behind — `lsof -U | grep substrate.sock` names it. Scripta will not "
-                + "adopt a process it cannot promise to stop; quit it and press below."
+                + "start it, but it would not list its scopes, so Scripta cannot tell whether it "
+                + "is one it can use. `lsof -U | grep substrate.sock` names it; quit it and press "
+                + "below."
         case .aStranger(let detail):
             return "Something is listening on \(socket) and it is not a substrate engine, so "
                 + "Scripta cannot bind the socket its own engine needs: \(detail). "
@@ -211,6 +208,10 @@ extension SubstrateEngine.Occupant {
             return "Scripta will not use \(socket), because it is not provably this user's: "
                 + "\(why). Nothing was sent to it. Remove whatever is holding that path, or "
                 + "tighten its folder to 700, and press below."
+        case .unattachable(let why):
+            return "A substrate engine is already answering on \(socket), and it is not one "
+                + "Scripta can use: \(why). Quit it (`lsof -U | grep substrate.sock` names it) so "
+                + "Scripta can start its own, and press below."
         case .otherRelease(let why):
             return "A substrate engine from another release is answering on \(socket), and its "
                 + "replies are in a format this version of Scripta does not read: \(why). Update "
@@ -998,8 +999,9 @@ extension VaultRefusal {
                 // own `failed` card, which carries the stderr. Colouring it would put a second,
                 // louder and less informative report of one event on screen.
                 text: "Nothing is listening on "
-                    + "\(SubstrateClient.defaultSocketPath). Scripta runs the engine "
-                    + "itself, so it stopped underneath this query; the pane is about to say why. "
+                    + "\(SubstrateClient.defaultSocketPath), so the engine stopped underneath "
+                    + "this query. If Scripta started it, the pane is about to say why; if it was "
+                    + "one already running, Scripta starts its own within a minute. "
                     + "Your recordings are safe and Calls can still search them, but Ask needs the "
                     + "engine — there is no second corpus to fall back to.")]
         case .transport(let failure):

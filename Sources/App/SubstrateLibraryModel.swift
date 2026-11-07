@@ -325,7 +325,7 @@ final class SubstrateLibraryModel: ObservableObject {
 
     /// One job at a time, and it is a real constraint rather than caution: two composes racing on
     /// one `--clean` index root leave the loser asserting over content it did not ingest, which is
-    /// the hazard the refresh agent takes a lock for.
+    /// the hazard the vaults lock exists for.
     private var task: Task<Void, Never>?
 
     var isWorking: Bool {
@@ -1099,8 +1099,8 @@ final class SubstrateLibraryModel: ObservableObject {
     /// running, which is right for a button and wrong here: a recording finishing must not depend on
     /// whether the operator happens to be uploading a document, and it must not replace a report
     /// they are reading. This runs its own task, writes no `job`, and is skipped rather than queued
-    /// when the rail is busy — the refresh agent still comes round, so the cost of skipping is
-    /// freshness, not content.
+    /// when the rail is busy — the engine's refresh pass still comes round, so the cost of skipping
+    /// is freshness, not content.
     func composeAfterRecording() {
         let name = AppSettings.activeGroup.trimmingCharacters(in: .whitespacesAndNewlines)
         let scope = name.isEmpty ? ScriptaVault.defaultScope : name
@@ -1121,10 +1121,10 @@ final class SubstrateLibraryModel: ObservableObject {
             //
             // ALL THREE OUTCOMES, WORST FIRST. Logging only the embed covered the LEAST damaging
             // one: a failed compose leaves the call out of the index entirely, and a DECLINED
-            // compose never attempted it — and declined is not the rare case here, because
-            // `composeInFlight` is exactly what a refresh tick or an operator's add holds while a
-            // recording is ending. A refresh pass reaches the scope within the quarter hour either
-            // way, so this is a record of what happened rather than the remedy.
+            // compose never attempted it — and declined is not the rare case here, because the
+            // vaults lock is exactly what the engine's refresh pass or an operator's add holds while
+            // a recording is ending. The engine's pass reaches the scope on its next tick, so this
+            // is a record of what happened rather than the remedy.
             // THE STDERR IS `.private`, AND ONLY THE STDERR. `compose` prints one line per failing
             // note as `<absolute path>: <reason>`, and the note that most often fails right after a
             // recording is THAT RECORDING — so a `.public` stderr writes the call's full path, and
@@ -1133,11 +1133,34 @@ final class SubstrateLibraryModel: ObservableObject {
             if composed.declined {
                 // DECLINED IS NOT AN ERROR, and logging it as one said something false. Another
                 // compose held the lock; this one never ran, so nothing is known to be wrong and
-                // the index still holds whatever it held. `SubstrateRefresh` treats the identical
-                // condition as `.info` "skipped", and the refresh pass reaches this scope anyway.
-                Self.log.info("""
-                    compose declined after recording into \(slugged, privacy: .public) — another \
-                    compose was in flight; the refresh pass will reach this scope
+                // the index still holds whatever it held. Whether a pass will reach the scope is
+                // the engine's to say (`server.refresh_every`), and an engine that refreshes
+                // nothing leaves the call unindexed until the next compose.
+                let server = SubstrateScopes.shared.server
+                if let server, server.refreshEvery == nil {
+                    Self.log.error("""
+                        compose declined after recording into \(slugged, privacy: .public) — \
+                        another compose held the vaults lock, and this engine refreshes nothing, \
+                        so the call is unindexed until the next compose
+                        """)
+                } else if server != nil {
+                    Self.log.info("""
+                        compose declined after recording into \(slugged, privacy: .public) — \
+                        another compose held the vaults lock; the engine's next pass will reach it
+                        """)
+                } else {
+                    Self.log.notice("""
+                        compose declined after recording into \(slugged, privacy: .public) — \
+                        another compose held the vaults lock; the engine has not said whether it \
+                        refreshes, so the call may be unindexed until the next compose
+                        """)
+                }
+            } else if composed.run.cancelled {
+                // Cancelled (the app quitting), not refused: a `--clean` rebuild stopped part-way,
+                // so the scope may be half-indexed until the engine's next pass recomposes it.
+                Self.log.notice("""
+                    compose after recording into \(slugged, privacy: .public) was cancelled \
+                    part-way; the scope may be partly unindexed until the next compose
                     """)
             } else if !composed.run.succeeded {
                 // THE WHOLE SCOPE, not just this call. This compose is `--clean`: it wipes the
@@ -1180,10 +1203,10 @@ final class SubstrateLibraryModel: ObservableObject {
     ///
     /// A COMPOSE MUST NOT MOVE AN INDEX. `scopes.record` refuses to repoint a name at a different
     /// VAULT and permits a different db, so composing with this app's own default silently
-    /// relocated an existing scope's database — and the refresh agent does not read the registry.
-    /// It recomposes `$DATA/<scope>.db` on its own schedule, so after a move the agent maintains a
-    /// file nothing resolves to and every query answers from an index that has quietly stopped
-    /// being refreshed. Nothing reports that: the scope still answers, with content ageing out.
+    /// relocated an existing scope's database — and the refresh agent of the time did not read the
+    /// registry. It recomposed `$DATA/<scope>.db` on its own schedule, so after a move the agent
+    /// maintained a file nothing resolved to and every query answered from an index that had
+    /// quietly stopped being refreshed. Nothing reports that: the scope still answers, with content ageing out.
     ///
     /// Reproduced on the operator's `acme` 2026-08-07 and restored the same way — recompose at the
     /// path the roster names.
@@ -1202,15 +1225,6 @@ final class SubstrateLibraryModel: ObservableObject {
     /// app whose cwd is the engine's export would write the operator's index tree into the pinned
     /// deployment. Both land under `~/.substrate/scripta/index`, which is the disposable layer the
     /// flag's own help says to keep off cloud-sync.
-    /// True while any caller is inside `composeVault`.
-    ///
-    /// THE LOCK THE AGENT USED TO HOLD. `task`'s comment above names the hazard — two composes over
-    /// one `--clean` index root leave the loser asserting over content it did not ingest — and says
-    /// it is "the hazard the refresh agent takes a lock for". That agent is no longer run (Doc 5
-    /// §6: it cannot work from a bundle), so the lock has to exist here or not at all. `isWorking`
-    /// could not serve: it is the VISIBLE rail, and both the recording path and the refresh loop are
-    /// deliberately quiet, so neither sets it.
-    private(set) static var composeInFlight = false
 
     /// What one compose did, and what the embed after it did.
     ///
@@ -1236,34 +1250,21 @@ final class SubstrateLibraryModel: ObservableObject {
         /// that reported as success everywhere it was not explicitly checked for.
         var embedFailed: Bool { run.succeeded && embed?.succeeded != true }
 
-        /// `composeVault` stood down because another compose held the lock — it did not run and did
-        /// not fail. DECODED HERE, ONCE. This is a private contract between `composeVault` and its
-        /// callers with no compiler link between the places that spell it, so hand-copying
-        /// `cancelled && status == nil` is how a decline silently becomes a failure in a log or a
-        /// recorded outcome.
-        ///
-        /// The engine declines too: `compose` exits 75 (`refresh.EX_DECLINED`) when another
-        /// compose, embed or refresh held the vaults lock past its wait, having written nothing.
-        /// Reading that as a failure would record `compose_failed` for a scope that never ran.
-        var declined: Bool { (run.cancelled && run.status == nil) || run.status == 75 }
+        /// The compose stood down: another compose, embed or refresh held the vaults lock past its
+        /// wait, so it exited 75 (`refresh.EX_DECLINED`) having written nothing. It did not run and
+        /// did not fail. DECODED HERE, ONCE, so no caller spells the status itself and reads a
+        /// decline as a failure.
+        var declined: Bool { run.status == 75 }
     }
 
     static func composeVault(cli: SubstrateEngine.Command, vault: URL, name: String,
                              clean: Bool) async -> ComposeOutcome {
-        // DECLINED, NOT QUEUED, and the caller is told which it was. Queuing would let a refresh
-        // tick stack behind a recording's compose and run against a vault that has moved under it;
-        // declining lets each caller decide, and both already know how — a recording's compose is
-        // skipped because the refresh pass will reach that scope anyway, and a refresh pass records
-        // nothing for a scope it did not attempt rather than overwriting a live verdict.
-        guard !composeInFlight else {
-            return ComposeOutcome(
-                run: SubstrateRun(line: "compose \(name)", status: nil, stdout: "",
-                                  stderr: "another compose is already running", launchFailure: nil,
-                                  cancelled: true),
-                embed: nil)
-        }
-        composeInFlight = true
-        defer { composeInFlight = false }
+        // SERIALIZED BY THE ENGINE'S LOCK, not by a flag here. `compose` and `embed` take
+        // `vaults.lock` whoever runs them (`substrate.refresh`): the engine's own refresh loop, a
+        // terminal, or this app. A compose that cannot get it within its wait exits 75 having
+        // written nothing, and `ComposeOutcome.declined` reads that, so each caller still decides
+        // what a decline means. The in-process flag this replaced serialized only this app's own
+        // calls, and the loop it was written for now runs in the engine.
         // AN ALREADY-REGISTERED SCOPE KEEPS ITS OWN LOCATION, and the lookup is HERE rather than at
         // each call site so no caller can forget it. All three compose the workspace's own scope
         // now — the transcript rail and both document paths — so all three could move it.

@@ -43,6 +43,10 @@ final class SubstrateScopes: ObservableObject {
     /// A listing that fails leaves it alone: one failed call is not news about the arms.
     @Published private(set) var arms: WireRetrievalArms?
 
+    /// What kind of server the engine is (`WireScopeList.server`): read-only, agent mode, and how
+    /// often it refreshes its own scopes. Kept, and forgotten, exactly as `arms` is.
+    @Published private(set) var server: WireServerInfo?
+
     /// Which engine the current `arms` may come from. Bumped by `forgetArms`, and checked before
     /// every write, so an answer still in flight from an engine that has since been replaced can
     /// never write its report back over the new one's.
@@ -59,6 +63,77 @@ final class SubstrateScopes: ObservableObject {
     func forgetArms() {
         armsEpoch += 1
         arms = nil
+        server = nil
+        // A new engine's first listing is its baseline, not a change.
+        lastAttempted = [:]
+        baselined = false
+    }
+
+    /// Each scope's `refresh.attempted` at the last listing, so a pass the ENGINE ran is noticed
+    /// once (`notice`). Empty until the first listing after an engine starts: that one is the baseline.
+    private var lastAttempted: [String: String] = [:]
+    private var baselined = false
+
+    /// What a poll found (`poll`).
+    enum Poll {
+        /// The engine answered with what it said.
+        case answered(WireScopeList)
+        /// Nothing is listening.
+        case down
+        /// Something answered that this app will not use: another release's wire, or a socket
+        /// that is not provably this user's.
+        case foreign
+        /// No roster this time: a fault, a timeout, an undecodable reply. Says nothing about which
+        /// engine is there, since a busy healthy one does this too.
+        case unreadable
+    }
+
+    /// A listing that never leaves a refusal behind: the roster is replaced only by a roster. For the
+    /// minute-by-minute watch (`EngineRefresh`), where one failed call must not turn a healthy
+    /// engine's roster into a red card nobody asked for.
+    func poll() async -> Poll {
+        let epoch = armsEpoch
+        switch await client.listScopes() {
+        case .ok(let list):
+            // Only for the engine it was asked of: a reply that outlived a restart is not news.
+            guard epoch == armsEpoch else { return .unreadable }
+            roster = .listed(list.scopes)
+            if accepts(epoch) {
+                arms = list.retrievalArms
+                server = list.server
+                notice(list.scopes)
+            }
+            return .answered(list)
+        case .transportFailure(let failure):
+            if failure.isCancellation { return .unreadable }
+            switch failure {
+            case .wireMismatch, .untrusted: return .foreign
+            default: break
+            }
+            if case .engineDown = VaultRefusal.of(failure) { return .down }
+            return .unreadable
+        case .toolFault, .rpcError:
+            return .unreadable
+        }
+    }
+
+    /// Whether a scope's last refresh attempt moved since the last listing. Browse is told when one
+    /// did: these are changes this app did not make (an Obsidian edit, a Claude session's note).
+    /// Published so the Library's refresh rail can clear a stale failure once the engine has passed.
+    @Published private(set) var lastMoved: Date?
+
+    private func notice(_ rows: [WireScopeRow]) {
+        var moved = false
+        for row in rows {
+            guard let now = row.refresh.attempted else { continue }
+            if baselined && lastAttempted[row.scope] != now { moved = true }
+            lastAttempted[row.scope] = now
+        }
+        baselined = true
+        if moved {
+            lastMoved = Date()
+            VaultBrowseModel.shared.corpusChanged()
+        }
     }
 
     /// Ask the engine for its wiring WITHOUT touching the roster: when an engine starts serving, and
@@ -69,6 +144,7 @@ final class SubstrateScopes: ObservableObject {
         let epoch = armsEpoch
         if case .ok(let list) = await client.listScopes(), accepts(epoch) {
             arms = list.retrievalArms
+            server = list.server
         }
     }
 
@@ -97,7 +173,11 @@ final class SubstrateScopes: ObservableObject {
         switch await client.listScopes() {
         case .ok(let list):
             roster = .listed(list.scopes)
-            if accepts(epoch) { arms = list.retrievalArms }
+            if accepts(epoch) {
+                arms = list.retrievalArms
+                server = list.server
+                notice(list.scopes)
+            }
         case .toolFault(let text):
             roster = .refused(VaultRefusal.classify(fault: text))
         case .rpcError(let code, let message):

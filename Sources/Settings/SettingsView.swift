@@ -94,6 +94,7 @@ struct SettingsView: View {
     @ObservedObject private var updater = AppUpdater.shared
     /// The engine's own report of its Search pick (`retrieval_arms`), which the Auto row shows.
     @ObservedObject private var engineScopes = SubstrateScopes.shared
+    @ObservedObject private var engine = SubstrateEngine.shared
 
     private static var versionString: String {
         let info = Bundle.main.infoDictionary
@@ -716,6 +717,11 @@ struct SettingsView: View {
                 .onChange(of: searchModel) { _, v in
                     AppSettings.searchModel = v
                     SubstrateEngine.shared.searchModelChanged()
+                }
+                if engine.serving?.attached == true {
+                    Text("The engine on the socket was not started by Scripta, so this choice does not reach it. The Auto row shows what it runs.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if !searchServesEngine {
                     Text("Search runs on the local Ollama at 127.0.0.1:\(AppSettings.engineOllamaPort). Point this server at it to choose a specific model.")

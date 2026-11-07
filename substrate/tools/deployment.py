@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""The deployment record — written by `substrate-deploy`, checked by `substrate-refresh`.
+"""The deployment record — written by `substrate-deploy`, checked by it and by `--show`.
 
     deployment.py --manifest <engine-root>     emit the manifest for a tree (deploy writes it)
     deployment.py --sign <manifest-file>       the signature that goes in the record
     deployment.py --verify <record-file>       prove a deployment, or refuse and say why
 
-WHY THIS EXISTS. `com.ronanwood.substrate-refresh` execs the repo WORKING TREE every 900 seconds,
-and on 2026-08-03 an UNCOMMITTED v8->v9 schema bump reached all six live scopes inside one tick.
+WHY THIS EXISTS. The retired `com.ronanwood.substrate-refresh` exec'd the repo WORKING TREE every
+900 seconds, and on 2026-08-03 an UNCOMMITTED v8->v9 schema bump reached all six live scopes inside
+one tick.
 `b334da4` caught that specific shape — a schema mismatch now REFUSES to recompose — and its own
 message named what it did not fix: no separation between the code being edited and the code running
 against real data. A chunker change, an `ingest` change, a `classes.py` change: none of them bump
@@ -40,18 +41,17 @@ WHAT A DEPLOYMENT IS. A directory of files, plus a manifest naming every one of 
 sha256, plus a record naming the manifest and its signature. Verification re-hashes every listed
 file, so a deployment that was clobbered, half-written, or hand-edited after the fact is refused
 rather than run. It is deliberately NOT a git checkout: `git archive` output has no `.git`, so
-nothing in it can be moved by a `git checkout` in a nearby shell, and `git` is not on the PATH
-launchd hands the agent anyway.
+nothing in it can be moved by a `git checkout` in a nearby shell.
 
 Verification covers the MANIFEST, not the whole directory, and that is the reason the manifest
 exists at all rather than one hash over the tree: `uv run` creates `.venv/` and Python creates
 `__pycache__/` INSIDE the deployed tree after the deploy, so a whole-tree hash would refuse every
-tick after the first. Files added under the engine root after deployment are therefore not seen.
+verification after the first. Files added under the engine root after deployment are therefore not seen.
 They are also not reachable — every deployed file is verified, and a verified file cannot import a
 module that did not exist when it was hashed.
 
-RUNS ON THE PYTHON LAUNCHD HAS. `/usr/bin/python3` is 3.9 on this machine and that is what the
-agent gets; no third-party imports, no 3.10+ syntax at runtime.
+RUNS ON THE SYSTEM PYTHON. `/usr/bin/python3` is 3.9 on this machine and is what `substrate-deploy`
+finds first on a minimal PATH; no third-party imports, no 3.10+ syntax at runtime.
 """
 
 from __future__ import annotations
@@ -91,9 +91,9 @@ _SEP = "  "  # sha256sum's framing, so the file is readable by `shasum -c` as we
 class Refused(RuntimeError):
     """The deployment cannot be verified. One line, naming the reason — never a guessed value.
 
-    The caller is a shell script whose only alternative to a verified answer is to refuse the whole
-    tick, so a partial or best-guess result here is strictly worse than no result: it would put the
-    working tree back on the live indexes with a verification step in front of it saying otherwise.
+    The caller is a shell script whose only alternative to a verified answer is to refuse, so a
+    partial or best-guess result here is strictly worse than no result: it would vouch for code
+    nobody deployed with a verification step in front of it saying otherwise.
     """
 
 
@@ -101,9 +101,8 @@ def _read_regular(path: Path, cap: int, what: str) -> bytes:
     """Read a file that must be a regular file, bounded. Raises Refused, never OSError.
 
     Opened `O_NONBLOCK` and `S_ISREG`-checked ON THE DESCRIPTOR rather than stat-then-open: a FIFO
-    left where the record belongs would otherwise block the open forever, and a refresh agent that
-    hangs is the one failure mode worse than one that refuses — launchd will not start the next
-    tick while the previous one is alive, so every scope silently keeps its last outcome.
+    left where the record belongs would otherwise block the open forever, and a check that hangs
+    is the one failure mode worse than one that refuses.
     """
     try:
         fd = os.open(str(path), os.O_RDONLY | os.O_NONBLOCK)
@@ -141,7 +140,7 @@ def manifest_lines(root: Path) -> list[str]:
     Sorted by the ENCODED path so the ordering is a property of the bytes rather than of the
     locale, and so a re-run over an unchanged tree produces a byte-identical file — the signature
     is over this stream, and an ordering that could vary would make a stable deployment look
-    tampered with on the next tick.
+    tampered with on the next verification.
 
     Symlinks are refused rather than followed. A followed symlink hashes its target, so a deployed
     tree could pass verification while the bytes that actually get imported live somewhere nobody
@@ -196,7 +195,7 @@ def _parse_manifest(body: bytes) -> list[tuple[str, str]]:
 
 
 def verify(record_path: Path) -> dict:
-    """Everything the agent needs to run the deployed engine, or Refused with the reason.
+    """What the deployed engine is, verified, or Refused with the reason.
 
     ORDER IS DELIBERATE: the shape of the record, then the SEPARATION invariant, then the files.
     The separation check comes before the expensive hashing because it is the one that can fail
@@ -219,7 +218,7 @@ def verify(record_path: Path) -> dict:
         raise Refused(f"the deployment record at {record_path} is not an object")
     if rec.get("version") != RECORD_VERSION:
         raise Refused(f"deployment record version {rec.get('version')!r}, expected "
-                      f"{RECORD_VERSION} — written by a substrate-deploy this agent does not know")
+                      f"{RECORD_VERSION} — written by a substrate-deploy this check does not know")
 
     vals = {}
     for field in _STR_FIELDS:
@@ -245,7 +244,7 @@ def verify(record_path: Path) -> dict:
                       "inside the tree being edited is not a deployment")
     if (engine / ".git").exists():
         raise Refused(f"{engine} is a git checkout; a deployment must be an export, so that "
-                      "nothing can move it to another commit behind the agent's back")
+                      "nothing can move it to another commit behind the deploy's back")
     if not engine.is_dir():
         raise Refused(f"engine_root {engine} is not a directory — nothing is deployed")
     if not data.is_dir():
@@ -284,7 +283,7 @@ def verify(record_path: Path) -> dict:
             break
     if bad:
         raise Refused("the deployed engine does not match its manifest [" + "; ".join(bad) +
-                      "] — re-run substrate-deploy; the tick is refused rather than run against "
+                      "] — re-run substrate-deploy; it is refused rather than run as "
                       "code nobody deployed")
 
     return {"ENGINE": str(engine), "DATA": str(data), "UV": str(uv),
@@ -320,8 +319,8 @@ def main(argv: list[str]) -> int:
             return 0
         plan = verify(arg)
     except Refused as e:
-        # stderr, because the agent captures stdout as the verified plan and pipes stderr into its
-        # own log. A reason on stdout would be parsed as a deployment.
+        # stderr, because stdout is the verified plan (`--show` reads only the exit code, and a
+        # reader of the plan must never parse a reason as a deployment).
         print(str(e), file=sys.stderr)
         return 1
     except OSError as e:

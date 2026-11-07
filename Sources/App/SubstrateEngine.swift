@@ -12,9 +12,14 @@ import SubstrateKit
 /// discovered here: Claude Code and Zed gain a dependency they did not have, and lose substrate
 /// when Scripta closes. That is accepted.
 ///
-/// THERE IS NO ADOPT PATH, and its absence is the design rather than an omission. A socket that is
-/// already answering is reported (`socketBusy`) and never used: adopting it would mean the app's
-/// lifetime and the engine's had come apart, which is the one property this type exists to keep.
+/// THE ENGINE IT SPAWNS IS `substrate serve`, which refreshes every scope itself (`substrate.refresh`);
+/// this app schedules no compose of its own. An engine this app spawns still dies with it.
+///
+/// AN ENGINE ALREADY ANSWERING IS USED, but only when it is the kind this app would have started
+/// (`EngineAttach`: read-only, refreshing, not agent mode, on this app's registry and schema). Through 0.3.5 the answer was
+/// "reported and never used", because adopting meant the app's lifetime and the engine's had come
+/// apart. `substrate serve` running on its own made that the point rather than the hazard. One this
+/// app attached to is never stopped or restarted from here; any other occupant is still reported.
 ///
 /// NOT LEAKING A PROCESS IS THE FIRST REQUIREMENT. An orphan on the socket means the next launch
 /// cannot start its own engine, and the operator has no way to know why. Three exits have to be
@@ -59,10 +64,9 @@ final class SubstrateEngine: ObservableObject {
         /// operator's is in today — and it carries what was looked for so the answer is actionable.
         case notInstalled(searched: [String])
 
-        /// Something else holds the socket. An ANOMALY, surfaced rather than adopted or swallowed:
-        /// it is either an orphan from a previous crash, an engine started by hand, or something
-        /// on the path that is not this user's, and each has a remedy the operator can only apply
-        /// if they are told.
+        /// Something else holds the socket and this app will not use it: an engine `EngineAttach`
+        /// refuses, one this app cannot read, or something on the path that is not this user's. Each
+        /// has a remedy the operator can only apply if they are told.
         case socketBusy(path: String, occupant: Occupant)
 
         /// Spawned and died, or spawned and never answered. Carries the process's own stderr — a
@@ -79,8 +83,8 @@ final class SubstrateEngine: ObservableObject {
     /// Who is on the socket when it is not us. Split because the remedies differ: another substrate
     /// engine is quit or left alone, and anything else is in the way of ours.
     enum Occupant {
-        /// It answered JSON-RPC. `scopes` is the roster size when the answer decoded.
-        case anEngine(scopes: Int?)
+        /// It spoke JSON-RPC but its roster did not decode or was refused.
+        case anEngine
         /// Something of this user's answered, and not in this protocol. The probe WAS sent to it.
         case aStranger(String)
         /// The client refused the socket before writing a byte: its directory is reachable by
@@ -91,6 +95,9 @@ final class SubstrateEngine: ObservableObject {
         /// `anEngine` because the remedy is not quitting it: it may be one the operator runs on
         /// purpose, and the fix is updating whichever of the two is older.
         case otherRelease(String)
+        /// An engine of this release that is not the kind this app uses (`EngineAttach`): one that
+        /// accepts writes, an agent-mode one, or one too old to say. Carries why.
+        case unattachable(String)
     }
 
     /// One process to run, resolved: what to exec, with what leading arguments, from where.
@@ -102,6 +109,9 @@ final class SubstrateEngine: ObservableObject {
     }
 
     /// One resolved engine: what to run and where. `label` is what the reader is told ran.
+    ///
+    /// `executable` and `arguments` are the server alone (`substrate-mcp`): what clients register
+    /// (Help), and what is spawned only when `cli` cannot serve (`engineCommand`).
     struct Source {
         let label: String
         let executable: URL
@@ -125,23 +135,16 @@ final class SubstrateEngine: ObservableObject {
         /// report, not to paper over with the other tier's CLI.
         let cli: Command?
 
-        /// `tools/substrate-refresh` — the unattended refresh agent, from the same tier again.
-        ///
-        /// RUN, NOT REIMPLEMENTED. Doc 3 §2 moves index refresh in-app and deletes the launchd job,
-        /// and the obvious reading of that is "write a refresh loop in Swift". It is the wrong one.
-        /// That script is ~260 lines of refusal: it verifies the pinned deployment before composing
-        /// anything and records `engine_unverified` for every scope when it cannot (the outcome that
-        /// exists because an uncommitted schema bump reached six live scopes inside one tick), it
-        /// checks the embedding daemon FIRST so a `--clean` compose can never leave a scope
-        /// 0-vector, it classifies three drift shapes where two of them must not read as clean, and
-        /// it records an outcome on every path because a path that returns without recording puts
-        /// assumed freshness back. A Swift copy would be a second implementation of all of that,
-        /// diverging silently, and the operator's own instruction is to match the existing
-        /// discipline rather than invent a parallel one. What moves in-app is the SCHEDULE.
-        let refreshAgent: Command?
+        /// An engine already answering on the socket that this app did not start, and is using
+        /// (`EngineAttach`). The rest of the source is this app's own resolved build, whose CLI the
+        /// Library still runs. Such an engine is never restarted or stopped from here.
+        var attached = false
     }
 
     @Published private(set) var lifecycle: Lifecycle = .idle
+
+    /// Bumped by every `start()`, so a caller that awaited across one can tell its engine is gone.
+    private(set) var generation = 0
 
     // MARK: - The socket
 
@@ -195,6 +198,28 @@ final class SubstrateEngine: ObservableObject {
         ["--socket", socketPath, "--read-only"] + (searchModel.map { ["--hyde-model=\($0)"] } ?? [])
     }
 
+    /// What to exec for an engine that SERVES AND REFRESHES: `substrate serve` from the same build's
+    /// CLI (`substrate.refresh`), which keeps every scope current on its own timer. The refresh
+    /// loop is the engine's, not this app's. A tier with no CLI, or a package tree from before
+    /// `serve` (no `substrate/refresh.py`), falls back to `substrate-mcp --socket`, which refreshes
+    /// nothing, and the Library says so (`SubstrateScopes.server`).
+    private static func engineCommand(_ source: Source,
+                                      searchModel: String?) -> (URL, [String], URL?) {
+        if let cli = source.cli, servesAndRefreshes(cli) {
+            return (cli.executable, cli.arguments + ["serve"]
+                        + serveArguments(searchModel: searchModel), cli.workingDirectory)
+        }
+        return (source.executable, source.arguments + serveArguments(searchModel: searchModel),
+                source.workingDirectory)
+    }
+
+    /// The developer shim runs whatever the repo has checked out, which this app cannot see, so it
+    /// is assumed current; a package tree is checked for the module that implements the loop.
+    private static func servesAndRefreshes(_ cli: Command) -> Bool {
+        guard let root = cli.workingDirectory else { return true }
+        return exists(root.appendingPathComponent("substrate/refresh.py"))
+    }
+
     /// The `--hyde-model` the current start passes (nil: none). The engine reads it once, at
     /// startup, so this is what `searchModelChanged` compares against.
     private var launchedSearchModel: String?
@@ -238,6 +263,20 @@ final class SubstrateEngine: ObservableObject {
     }
 
     func start() {
+        attachRetries = 0
+        begin()
+    }
+
+    /// How many times a qualifying-looking engine that did not answer the schema probe has been
+    /// tried again since the last `start()`. A busy engine (its own pass, at login) misses it;
+    /// one that never answers is reported after these.
+    private var attachRetries = 0
+    private static let attachRetryLimit = 4
+    private static let attachRetryDelay: UInt64 = 30_000_000_000
+    private var attachRetry: Task<Void, Never>?
+
+    private func begin() {
+        generation += 1
         teardown()
         // A new engine is about to answer; what the last one said about its arms no longer holds.
         SubstrateScopes.shared.forgetArms()
@@ -269,7 +308,11 @@ final class SubstrateEngine: ObservableObject {
     /// its next start.
     func searchModelChanged() {
         switch lifecycle {
-        case .starting, .serving: break
+        case .starting: break
+        case .serving(let source, _):
+            // NOT OURS TO RESTART. An engine this app attached to runs on its own launch arguments,
+            // and Settings says the Search pick does not reach it.
+            guard !source.attached else { return }
         default: return
         }
         guard AppSettings.engineSearchModel != launchedSearchModel else { return }
@@ -305,16 +348,71 @@ final class SubstrateEngine: ObservableObject {
             }
         }
         guard !Task.isCancelled else { return }
-        // THE SOCKET CHECK COMES NEXT, and what it finds is never used. A live socket before we
-        // have spawned anything means a previous engine outlived its Scripta or the operator started
-        // one by hand; either way a second bind would fail and the first is not ours to own. A
-        // crashed engine's socket file refuses connections, reads as free here, and the engine
-        // replaces it.
+        // THE SOCKET CHECK COMES NEXT. A live socket before we have spawned anything means an
+        // engine already runs: one started on its own, by hand, or an orphan. A second bind would
+        // fail, so it is attached to when `EngineAttach` allows and reported when not. A crashed
+        // engine's socket file refuses connections, reads as free here, and the engine replaces it.
         let state = await Self.socketState(probe)
         guard !Task.isCancelled else { return }
-        if case .held(let occupant) = state {
+        switch state {
+        case .free:
+            break
+        case .held(let occupant):
             Self.log.error("the engine socket is already held; refusing to start a second engine")
             lifecycle = .socketBusy(path: Self.socketPath, occupant: occupant)
+            // An engine that spoke the protocol and faulted on its roster may only be busy (its own
+            // pass, at login): looked at again. Another release, a stranger or a socket that is not
+            // this user's is a verdict, and stays.
+            if case .anEngine = occupant { scheduleAttachRetry() }
+            return
+        case .engine where retiring?.isRunning == true:
+            // This app's own previous engine, still answering past `retireCeiling`. Attaching would
+            // keep it, and whatever the restart was for (a new search model) would never apply.
+            Self.log.error("the engine this app is retiring is still answering; not attaching to it")
+            lifecycle = .socketBusy(path: Self.socketPath, occupant: .unattachable(
+                "it is the engine Scripta is replacing, and it has not exited yet"))
+            scheduleAttachRetry()
+            return
+        case .engine(let list):
+            // AN ENGINE ALREADY ANSWERING IS USED when it is the kind this app would have started
+            // (`EngineAttach`): `substrate serve` run on its own, read-only, on this app's registry
+            // and schema. It is not spawned, so this app never stops it.
+            let expected = await Self.expectation(source)
+            // Tried a few times: an engine in the middle of its own pass can be slow to answer,
+            // and one miss here is a refusal the operator has to clear by hand.
+            var theirs: Int?
+            for attempt in 0..<3 where theirs == nil && !Task.isCancelled {
+                if attempt > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
+                theirs = await probe.engineSchema()
+            }
+            guard !Task.isCancelled else { return }
+            switch EngineAttach.verdict(list, engineSchema: theirs, expecting: expected) {
+            case .attach:
+                var attachedSource = source
+                attachedSource.attached = true
+                attachRetries = 0
+                Self.log.info("attached to an engine already serving on the socket")
+                lifecycle = .serving(attachedSource, since: Date())
+                keepLinkingLegacySocket()
+                Task { await SubstrateScopes.shared.refreshArms() }
+                EngineRefresh.shared.engineBecameServing()
+            case .refuse(let why):
+                Self.log.error("an engine is on the socket and cannot be used: \(why, privacy: .public)")
+                lifecycle = .socketBusy(path: Self.socketPath, occupant: .unattachable(why))
+                // Unanswered is not a verdict: an engine that is the right kind of server, refused
+                // only because an answer was missing (its schema probe, or this app's own CLI), is
+                // looked at again, a few times, before the card stays.
+                // "Would it attach with the missing answers filled in by what is known": a registry
+                // or schema that IS known and differs is a verdict, and is not retried.
+                let missing = theirs == nil || expected.schema == nil || expected.registry == nil
+                let schema = theirs ?? expected.schema ?? 0
+                let filled = EngineAttach.Expectation(registry: expected.registry ?? list.registry,
+                                                      schema: expected.schema ?? schema)
+                if missing, source.cli != nil, EngineAttach.verdict(list, engineSchema: schema,
+                                                 expecting: filled) == .attach {
+                    scheduleAttachRetry()
+                }
+            }
             return
         }
         do {
@@ -327,12 +425,55 @@ final class SubstrateEngine: ObservableObject {
         await waitUntilAnswering(source)
     }
 
+    private func scheduleAttachRetry() {
+        guard attachRetries < Self.attachRetryLimit else { return }
+        attachRetries += 1
+        attachRetry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.attachRetryDelay)
+            guard !Task.isCancelled else { return }
+            self?.begin()
+        }
+    }
+
+    /// Whether the engine this app attached to still qualifies, asked again on every poll: the one on
+    /// the socket can be replaced by another without this app seeing it go. Both halves are asked
+    /// again, this app's CLI included, since a redeploy or a checkout can change what it writes.
+    /// Nil when that cannot be told: a probe went unanswered (a busy engine), or this app is no
+    /// longer attached.
+    func stillAttachable(_ list: WireScopeList) async -> Bool? {
+        guard let source = serving, source.attached else { return nil }
+        // What the roster says is decided first: a replacement that is the wrong kind of server is
+        // let go whether or not it answers the schema probe.
+        guard EngineAttach.qualifiesByRoster(list) else { return false }
+        // A missing answer, from this app's CLI or the probe, is not a verdict on its own; one that
+        // stays missing is (`EngineRefresh.watch`).
+        let expected = await Self.expectation(source)
+        guard expected.schema != nil, expected.registry != nil else { return nil }
+        guard let theirs = await probe.engineSchema() else { return nil }
+        return EngineAttach.verdict(list, engineSchema: theirs, expecting: expected) == .attach
+    }
+
+    /// This app's own build, as its CLI reports it (`substrate version`): the registry it resolves
+    /// and the index schema it writes. Asked of the CLI rather than worked out here, because the CLI
+    /// is what writes. No CLI, or one that predates the command, and there is nothing to attach by.
+    private static func expectation(_ source: Source) async -> EngineAttach.Expectation {
+        guard let cli = source.cli else { return EngineAttach.Expectation(registry: nil, schema: nil) }
+        let run = await SubstrateCLI.run(cli, ["version"])
+        guard run.succeeded,
+              let object = try? JSONSerialization.jsonObject(with: Data(run.stdout.utf8))
+                  as? [String: Any] else {
+            return EngineAttach.Expectation(registry: nil, schema: nil)
+        }
+        return EngineAttach.Expectation(registry: object["registry"] as? String,
+                                        schema: object["schema"] as? Int)
+    }
+
     private func spawn(_ source: Source, searchModel: String?) throws {
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/bin/sh")
-        child.arguments = ["-c", Self.shim, "substrate-engine", source.executable.path]
-            + source.arguments + Self.serveArguments(searchModel: searchModel)
-        if let directory = source.workingDirectory { child.currentDirectoryURL = directory }
+        let (executable, arguments, directory) = Self.engineCommand(source, searchModel: searchModel)
+        child.arguments = ["-c", Self.shim, "substrate-engine", executable.path] + arguments
+        if let directory { child.currentDirectoryURL = directory }
 
         // The parent-death pipe. Never written to and never closed while the engine should live —
         // its only job is to become EOF when this process goes away.
@@ -365,7 +506,8 @@ final class SubstrateEngine: ObservableObject {
         stdin = input
         stderr = errors
         tail = sink
-        Self.log.info("spawned \(source.executable.path, privacy: .public) as \(source.label)")
+        let argv = ([executable.path] + arguments).joined(separator: " ")
+        Self.log.info("spawned \(argv, privacy: .public) as \(source.label)")
     }
 
     /// READINESS IS "IT ANSWERED", not "the process is alive". The engine builds its retrieval
@@ -375,7 +517,7 @@ final class SubstrateEngine: ObservableObject {
         let endpoint = Self.socketPath
         let deadline = Date().addingTimeInterval(Self.startupCeiling)
         while !Task.isCancelled {
-            if case .held(.anEngine) = await Self.socketState(probe) {
+            if Self.answers(await Self.socketState(probe)) {
                 guard !Task.isCancelled else { return }
                 lifecycle = .serving(source, since: Date())
                 Self.log.info("engine answering on \(endpoint, privacy: .public)")
@@ -383,6 +525,7 @@ final class SubstrateEngine: ObservableObject {
                 keepLinkingLegacySocket()
                 // What this engine runs, which Settings' Search row draws (`SubstrateScopes.arms`).
                 Task { await SubstrateScopes.shared.refreshArms() }
+                EngineRefresh.shared.engineBecameServing()
                 return
             }
             guard !Task.isCancelled else { return }
@@ -473,13 +616,9 @@ final class SubstrateEngine: ObservableObject {
         return nil
     }
 
-    /// What the ladder resolves to, whatever the process is doing.
-    ///
-    /// For the one caller that genuinely does not need the socket: the refresh agent composes indexes
-    /// directly and never speaks to the server, so an engine that failed to bind — or a Scripta
-    /// whose engine is still loading its reranker — is no reason to leave every scope unrefreshed.
-    /// Everything that reads a RESULT goes through `serving` instead, because a result implies
-    /// something answered.
+    /// What the ladder resolves to, whatever the process is doing. For Help, which shows the command
+    /// a client registers and needs no answer from the socket. Everything that reads a RESULT goes
+    /// through `serving` instead, because a result implies something answered.
     static var resolved: Source? { discover().0 }
 
     private static func exitReason(_ status: Int32) -> String {
@@ -491,6 +630,8 @@ final class SubstrateEngine: ObservableObject {
     private func teardown() {
         task?.cancel()
         task = nil
+        attachRetry?.cancel()
+        attachRetry = nil
         legacyLink?.cancel()
         legacyLink = nil
         process?.terminationHandler = nil
@@ -514,6 +655,17 @@ final class SubstrateEngine: ObservableObject {
     private enum SocketState {
         case free
         case held(Occupant)
+        /// An engine answered `list_scopes` in this app's wire; whether to use it is `EngineAttach`'s.
+        case engine(WireScopeList)
+    }
+
+    /// Whether the engine this app spawned is up. Its roster may fail to decode or be refused, which
+    /// still means it bound and answers; `start` already found the socket free before the spawn.
+    private static func answers(_ state: SocketState) -> Bool {
+        switch state {
+        case .engine, .held(.anEngine): return true
+        default: return false
+        }
     }
 
     /// Asked with a real `list_scopes`, not a bare TCP connect, because the answer decides the
@@ -522,15 +674,15 @@ final class SubstrateEngine: ObservableObject {
     private static func socketState(_ client: SubstrateClient) async -> SocketState {
         switch await client.listScopes() {
         case .ok(let list):
-            return .held(.anEngine(scopes: list.scopes.count))
+            return .engine(list)
         case .toolFault, .rpcError:
             // It spoke the protocol and refused this particular call. Still an engine.
-            return .held(.anEngine(scopes: nil))
+            return .held(.anEngine)
         case .transportFailure(let failure):
             // A cancelled probe is not evidence of anything; the caller's `Task.isCancelled` guard
             // is what acts on it, so this must not read as "the socket is free and yours to take".
             if failure.isCancellation { return .free }
-            if case .undecodablePayload = failure { return .held(.anEngine(scopes: nil)) }
+            if case .undecodablePayload = failure { return .held(.anEngine) }
             if case .wireMismatch(let why) = failure { return .held(.otherRelease(why)) }
             if case .untrusted(let why) = failure { return .held(.untrusted(why)) }
             // The one mapping of URLError codes to "nothing is listening" lives in `VaultRefusal`;
@@ -565,19 +717,10 @@ final class SubstrateEngine: ObservableObject {
             let bundled = bin.appendingPathComponent("substrate-mcp")
             searched.append(bundled.path)
             if isRunnable(bundled) {
-                // NO REFRESH AGENT, BY CONSTRUCTION. `build-bundled-engine` ships no `tools/` and
-                // argues at length why: that script hard-exits on a missing `~/.local/bin/substrate`,
-                // and where it does run it composes through paths read out of a user-writable
-                // deployment record. Resolving it here anyway meant the only way this could ever be
-                // non-nil was if someone PUT a file at that path — and `SubstrateRefresh` execs
-                // whatever it resolves to, every 900s, inside a notarized unsandboxed process. The
-                // tiers below are `#if DEBUG` to close exactly that door; leaving it open on a path
-                // with no legitimate occupant would have undone that. `runPass()` already models a
-                // nil agent as `.unavailable(engine:)`, so the honest state is the reachable one.
                 return (Source(label: "bundled with Scripta", executable: bundled, arguments: [],
                                workingDirectory: root,
-                               cli: command(bin.appendingPathComponent("substrate"), from: root),
-                               refreshAgent: nil), searched)
+                               cli: command(bin.appendingPathComponent("substrate"), from: root)),
+                        searched)
             }
         }
 
@@ -611,10 +754,7 @@ final class SubstrateEngine: ObservableObject {
                 : nil
             return (Source(label: "the pinned deployment in ~/.substrate/engine",
                            executable: python, arguments: ["-m", "substrate.mcp.server"],
-                           workingDirectory: deployed, cli: cli,
-                           refreshAgent: command(
-                               deployed.appendingPathComponent("tools/substrate-refresh"),
-                               from: deployed)), searched)
+                           workingDirectory: deployed, cli: cli), searched)
         }
 
         // 3. THE DEVELOPER SHIM — the fallback, and on a machine with nothing deployed the only one
@@ -629,9 +769,7 @@ final class SubstrateEngine: ObservableObject {
             let bin = home.appendingPathComponent(".local/bin", isDirectory: true)
             return (Source(label: "the developer shim in ~/.local/bin", executable: shim,
                            arguments: [], workingDirectory: nil,
-                           cli: command(bin.appendingPathComponent("substrate")),
-                           refreshAgent: command(
-                               bin.appendingPathComponent("substrate-refresh"))), searched)
+                           cli: command(bin.appendingPathComponent("substrate"))), searched)
         }
         #endif
 

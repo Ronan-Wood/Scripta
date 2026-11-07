@@ -70,7 +70,7 @@ final class VaultBrowseModel: ObservableObject {
     ///
     /// EVENT-DRIVEN, BECAUSE THE APP ALREADY KNOWS. Three paths change a vault from inside this
     /// app and each one ends in a compose it can see finish: a recording
-    /// (`composeAfterRecording`), an Add in the Library, and the background refresh agent's pass.
+    /// (`composeAfterRecording`), an Add in the Library, and "Refresh now" (`EngineRefresh`).
     /// Polling for a change the app itself caused is asking a question it already has the answer
     /// to — and `composeAfterRecording` was ALREADY re-listing the roster on exactly this reasoning
     /// ("so a call recorded seconds ago is askable without a relaunch"); the browse list simply
@@ -78,9 +78,9 @@ final class VaultBrowseModel: ObservableObject {
     ///
     /// WHAT THIS DOES NOT COVER, and why the re-read on appearance stays: a vault is a folder, and
     /// the operator edits it in Obsidian and a Claude session writes notes into it. Those changes
-    /// reach the index through the refresh agent's next tick and reach this list through the pass
-    /// that follows it — but nothing in this app observed them happen. On-appearance is what makes
-    /// an outside edit visible without waiting.
+    /// reach the index through the engine's next refresh pass, and this list when the app's poll
+    /// sees that pass move a scope (`SubstrateScopes.poll`), up to a minute later. On-appearance is
+    /// what makes an outside edit visible without waiting.
     func corpusChanged() { reloadToken &+= 1 }
 
     /// The scope this pane is showing: the chosen one, else the workspace's own.

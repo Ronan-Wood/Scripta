@@ -65,11 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // have the engine, close Scripta and it stops. `applicationWillTerminate` is only the
         // ordinary half of that; see `SubstrateEngine` for the half that survives a force-quit.
         SubstrateEngine.shared.start()
-        // Doc 3 §2: "Index refresh | in-app, on launch and on a timer while open". The first pass
-        // waits for the engine to stop coming up before it runs — a compose competing with the
-        // cross-encoder's model load is contention on the one event the operator is watching — and
-        // the work itself is the deployed refresh agent, not a Swift reimplementation of it.
-        SubstrateRefresh.shared.start()
+        // Index refresh is the ENGINE's (`substrate serve`). This only notices the engine's passes,
+        // so Browse shows changes this app did not make, and backs "Refresh now".
+        EngineRefresh.shared.start()
     }
 
     /// One-time first-launch notice: the recording-consent reminder (kept after the App Store was
@@ -192,9 +190,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// runs any of our code — force-quit and crash are covered inside `SubstrateEngine` by the
     /// child's own parent-death watch, because nothing here executes on either.
     func applicationWillTerminate(_ notification: Notification) {
-        // Refresh first: its pass is a subprocess of ours, and stopping the loop before the engine
-        // means the timer cannot start one into a teardown that is already under way.
-        SubstrateRefresh.shared.stop()
+        // Refresh first: a "Refresh now" pass is a subprocess of ours, and the poll would otherwise
+        // read the engine going down as one to restart.
+        EngineRefresh.shared.stop()
         SubstrateEngine.shared.stop()
     }
 }

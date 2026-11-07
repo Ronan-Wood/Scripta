@@ -10,19 +10,19 @@
 # expectation rather than a fresh choice:
 #
 #   substrate-engine/
-#     bin/substrate-mcp      the server Scripta spawns
-#     bin/substrate          the CLI the Library runs for ingest
+#     bin/substrate-mcp      the server alone; Scripta's fallback, and what clients register
+#     bin/substrate          the CLI: `substrate serve` is what Scripta spawns, and the Library
+#                            runs it for ingest
 #     runtime/               a relocated python-build-standalone interpreter
 #     .venv/                 its dependencies
 #     substrate/             the engine package
 #
-# NO `tools/`, so candidate 1 resolves `refreshAgent` to nil and the app reports refresh as
-# unavailable for a bundled engine. That is a real capability gap and it is deliberate — the reason
-# is at the `rsync` below.
+# NO `tools/`: the bundled engine refreshes itself (`substrate serve`, `substrate/refresh.py`), and
+# the tools are developer scripts. The reason is at the `rsync` below.
 #
 # NOT A DEPLOYMENT, and the distinction is load-bearing. `substrate-deploy` pins ONE COMMIT because
-# an unattended agent execs it every 900 seconds and an uncommitted schema bump once reached six
-# live scopes inside a tick. Nothing here is unattended: a build is a deliberate act by someone
+# the retired refresh agent exec'd the working tree every 900 seconds and an uncommitted schema bump
+# once reached six live scopes inside a tick. Nothing here is unattended: a build is a deliberate act by someone
 # looking at the tree, so this ships the WORKING TREE and says so. The two tools answer different
 # questions and neither replaces the other.
 set -euo pipefail
@@ -303,10 +303,9 @@ rsync -a --exclude '__pycache__' --exclude '*.pyc' "$REPO/substrate/" "$STAGE/su
 #     the same writer controls. Handing it to a notarized, unsandboxed app under this app's TCC
 #     attribution turns three files in $HOME into arbitrary execution inside Scripta's process tree.
 #
-# `SubstrateRefresh.runPass()` already models a missing agent as `.unavailable(engine:)`, so the
-# honest state is reachable today. Teaching the agent to refresh a bundle is real work with a real
-# decision behind it (what replaces "verify the deployment" when the engine IS the signed bundle),
-# and it is not smuggled in here.
+# That agent is now deleted. The bundle refreshes itself: Scripta spawns `bin/substrate serve`,
+# whose loop composes from the bundle's own code, so "verify the deployment" became the code
+# signature it always should have been.
 
 # THIRD-PARTY TEST SUITES DO NOT SHIP. 133 MB of them arrive inside the wheels — pandas alone
 # carries 36 MB, plus scipy's per-submodule suites, shapely, setuptools, mpmath — and 69 MB of that

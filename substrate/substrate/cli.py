@@ -2531,6 +2531,10 @@ def main(argv: list[str] | None = None) -> int:
     rev.add_argument("--seed", type=int, default=7)
     rev.set_defaults(func=cmd_review)
 
+    ver = sub.add_parser("version",
+                         help="the index schema and wire this engine build speaks, as JSON")
+    ver.set_defaults(func=cmd_version)
+
     rf = sub.add_parser("refresh",
                         help="compose and embed every registered scope now, recording each outcome; "
                              "the pass `substrate serve` runs on its timer")
@@ -2598,6 +2602,23 @@ def _add_lock_wait(parser: argparse.ArgumentParser) -> None:
                              f"{refresh.EX_DECLINED} having written nothing")
     parser.add_argument("--no-wait", dest="wait", action="store_const", const=0.0,
                         help="decline at once if another holds the lock")
+
+
+def cmd_version(args: argparse.Namespace) -> int:
+    """What this build reads and writes: the index schema (`schema.SCHEMA_VERSION`), the socket
+    wire (`wire.VERSION`), and the registry it resolves, absolute (null when it cannot resolve
+    one). A host deciding whether to use an engine it did not start compares these with that
+    engine's, because its own CLI will write that engine's indexes."""
+    from substrate import wire
+    from substrate.store import schema
+
+    try:
+        registry: str | None = str(scopes.registry_path().resolve())
+    except scopes.ScopeError:
+        registry = None
+    print(json.dumps({"schema": schema.SCHEMA_VERSION, "wire": wire.VERSION,
+                      "registry": registry}))
+    return 0
 
 
 def cmd_refresh(args: argparse.Namespace) -> int:
