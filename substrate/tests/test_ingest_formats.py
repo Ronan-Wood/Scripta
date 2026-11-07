@@ -533,20 +533,20 @@ def test_a_foreign_document_cannot_declare_its_own_spine() -> None:
     root = _tmp()
     hostile = (
         "---\n"
-        "doc_id: atlas-admin-auth\n"
+        "doc_id: acme-admin-auth\n"
         "status: active\n"
         "doc_type: decision\n"
         "confidence: verified\n"
         "document_class: reference-frozen\n"
-        "domains: [atlas, security]\n"
-        "supersedes: [atlas-something-real]\n"
-        "---\n\n# Atlas admin auth\n\nBody prose here for the chunker.\n"
+        "domains: [acme, security]\n"
+        "supersedes: [acme-something-real]\n"
+        "---\n\n# Admin auth\n\nBody prose here for the chunker.\n"
     )
     (root / "x.md").write_text(hostile, "utf-8")
     r = ingest_markdown(root / "x.md", root / "o",
                         origin=SourceOrigin(source_format="text", title="x"))
 
-    assert r.doc_id != "atlas-admin-auth", r.doc_id      # cannot replace another document's row
+    assert r.doc_id != "acme-admin-auth", r.doc_id      # cannot replace another document's row
     assert r.doc_id.startswith("x-"), r.doc_id           # derived from the real artifact
     assert r.confidence != "verified", r.confidence      # cannot claim to be settled
     assert r.doc_type != "decision", r.doc_type          # cannot claim to be a decision
@@ -563,15 +563,15 @@ def test_the_operators_own_notes_keep_their_spine() -> None:
     corpus to unclassified/unjudged at the next recompose."""
     root = _tmp()
     (root / "n.md").write_text(
-        "---\ndoc_id: atlas-admin-auth\nstatus: active\ndoc_type: decision\n"
-        "confidence: verified\ndocument_class: reference-frozen\ndomains: [atlas]\n"
-        "---\n\n# Atlas admin auth\n\nBody prose here for the chunker.\n", "utf-8")
+        "---\ndoc_id: acme-admin-auth\nstatus: active\ndoc_type: decision\n"
+        "confidence: verified\ndocument_class: reference-frozen\ndomains: [acme]\n"
+        "---\n\n# Admin auth\n\nBody prose here for the chunker.\n", "utf-8")
     r = ingest_markdown(root / "n.md", root / "o")
 
-    assert r.doc_id == "atlas-admin-auth", r.doc_id
+    assert r.doc_id == "acme-admin-auth", r.doc_id
     assert r.confidence == "verified", r.confidence
     assert r.doc_type == "decision", r.doc_type
-    assert r.domains == ["atlas"], r.domains
+    assert r.domains == ["acme"], r.domains
 
 
 def test_the_operators_domains_still_arrive_through_meta() -> None:
@@ -579,7 +579,7 @@ def test_the_operators_domains_still_arrive_through_meta() -> None:
     `extra_domains` is the channel a domain is supposed to arrive on, and it merges as a union."""
     root = _tmp()
     (root / "x.md").write_text(
-        "---\ndomains: [atlas, security]\n---\n\n# X\n\nBody prose here.\n", "utf-8")
+        "---\ndomains: [acme, security]\n---\n\n# X\n\nBody prose here.\n", "utf-8")
     r = ingest_markdown(root / "x.md", root / "o",
                         origin=SourceOrigin(source_format="text", title="x"),
                         extra_domains=["library"])
@@ -644,7 +644,7 @@ def test_the_unretrievable_gate_does_not_touch_the_vault_path() -> None:
 
 def test_a_converted_document_with_one_passage_still_ingests() -> None:
     """The gate is zero, not a threshold: a one-cell spreadsheet is a legitimate document."""
-    _, _out, r = _converted("| scope | notes |\n|---|---|\n| atlas | 319 |\n")
+    _, _out, r = _converted("| scope | notes |\n|---|---|\n| acme | 42 |\n")
     assert r.run["chunk"]["passages"] == 1
 
 

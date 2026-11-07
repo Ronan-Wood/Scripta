@@ -16,3 +16,7 @@ operator knowledge and grounded reference from core — that composition is the 
 
 ## _archive (moved out of the active surface)
 - [[phase0-spike-notes]] — archived; excluded from default retrieval unless explicitly queried.
+
+## _sources (captured conversations — raw material, not notes)
+- [[engine-boundary-call]] — a synthetic call transcript (`class: conversation`, `confidence: unstated`);
+  withheld from default retrieval unless sources are asked for. Its decision is [[engine-boundary-current]].

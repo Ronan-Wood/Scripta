@@ -24,17 +24,20 @@ final class WireDecodingTests: XCTestCase {
     }
 
     /// `exposed` has three wire states and each must survive a round trip: absent (an engine older
-    /// than the field, which is what the golden capture is), `null` (an agent-mode server), and a
-    /// list. Collapsing absent and `null` into one optional would re-encode one as the other.
+    /// than the field), `null` (an agent-mode server), and a list. Collapsing absent and `null`
+    /// into one optional would re-encode one as the other. The golden capture SENDS a list — the
+    /// engine found the demo workspace readable by other users — so absence is made by removing
+    /// the key from it.
     func testStatusExposureDecodesAndRoundTripsEachWireState() throws {
         let golden = try GoldenFixture.payload(GoldenFixture.status)
         XCTAssertEqual(try JSONDecoder().decode(WireStatusResult.self, from: golden).exposed,
-                       .notSent)
+                       .paths(["/demo-substrate"]))
 
-        let cases: [(Any, WireExposure)] = [
+        let cases: [(Any?, WireExposure)] = [
+            (nil, .notSent),
             (NSNull(), .notChecked),
             ([String](), .paths([])),
-            (["/x/scripta.db", "/x/scripta-index"], .paths(["/x/scripta.db", "/x/scripta-index"])),
+            (["/x/demo.db", "/x/demo-index"], .paths(["/x/demo.db", "/x/demo-index"])),
         ]
         for (value, expected) in cases {
             var object = try XCTUnwrap(JSONSerialization.jsonObject(with: golden) as? [String: Any])
@@ -47,15 +50,16 @@ final class WireDecodingTests: XCTestCase {
     }
 
     /// `hyde_requested` has three wire states, like `exposed`: absent (an engine older than the
-    /// field, which is what the golden capture is), `null` (HyDE off), and what HyDE was asked for.
-    /// It is the engine's own account of its Search pick, which this app reads instead of keeping
-    /// a copy of the engine's rule.
+    /// field), `null` (HyDE off), and what HyDE was asked for. It is the engine's own account of
+    /// its Search pick, which this app reads instead of keeping a copy of the engine's rule. The
+    /// golden capture asked for the default, `auto`; absence is made by removing the key.
     func testTheHydeRequestDecodesAndRoundTripsEachWireState() throws {
         let golden = try GoldenFixture.payload(GoldenFixture.status)
         XCTAssertEqual(try JSONDecoder().decode(WireStatusResult.self, from: golden)
-            .retrievalArms.hydeRequested, .notSent)
-        let cases: [(Any, WireHydeRequest)] = [
-            (NSNull(), .off), ("auto", .asked("auto")), ("mistral:7b", .asked("mistral:7b")),
+            .retrievalArms.hydeRequested, .asked("auto"))
+        let cases: [(Any?, WireHydeRequest)] = [
+            (nil, .notSent), (NSNull(), .off), ("auto", .asked("auto")),
+            ("mistral:7b", .asked("mistral:7b")),
         ]
         for (value, expected) in cases {
             var object = try XCTUnwrap(JSONSerialization.jsonObject(with: golden) as? [String: Any])
@@ -70,11 +74,22 @@ final class WireDecodingTests: XCTestCase {
     }
 
     /// `list_scopes` carries the serving process's arms (`_tool_list_scopes`). The golden capture
-    /// predates the field, so it is absent there, and both states round-trip.
+    /// sends them — three unreachable arms, HyDE asked for as `auto` — and an engine older than the
+    /// field omits them; both states round-trip.
     func testTheScopeListsArmsDecodeAndRoundTrip() throws {
         let golden = try GoldenFixture.payload(GoldenFixture.listScopes)
-        XCTAssertNil(try JSONDecoder().decode(WireScopeList.self, from: golden).retrievalArms)
+        let captured = try XCTUnwrap(
+            JSONDecoder().decode(WireScopeList.self, from: golden).retrievalArms)
+        XCTAssertNil(captured.embedder)
+        XCTAssertEqual(captured.hydeRequested, .asked("auto"))
+        XCTAssertEqual(captured.unavailable.count, 3)
+
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: golden) as? [String: Any])
+        object.removeValue(forKey: "retrieval_arms")
+        let older = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertNil(try JSONDecoder().decode(WireScopeList.self, from: older).retrievalArms)
+        try JSONDiff.assertLossless(WireScopeList.self, payload: older)
+
         object["retrieval_arms"] = ["embedder": "qwen3-embedding:0.6b#raw", "hyde": "qwen3.5:4b-mlx",
                                     "hyde_requested": "auto", "reranker": NSNull(),
                                     "unavailable": [String]()] as [String: Any]
@@ -85,11 +100,19 @@ final class WireDecodingTests: XCTestCase {
         try JSONDiff.assertLossless(WireScopeList.self, payload: payload)
     }
 
-    /// `list_scopes` says what kind of server answered. The golden capture predates the field;
-    /// a `substrate serve` engine says it refreshes, and a plain one says it does not.
+    /// `list_scopes` says what kind of server answered. The golden capture is a read-only server
+    /// that refreshes nothing; a `substrate serve` engine says it refreshes, and an engine older
+    /// than the field sends no block at all.
     func testTheScopeListsServerBlockDecodesAndRoundTrips() throws {
         let golden = try GoldenFixture.payload(GoldenFixture.listScopes)
-        XCTAssertNil(try JSONDecoder().decode(WireScopeList.self, from: golden).server)
+        XCTAssertEqual(try JSONDecoder().decode(WireScopeList.self, from: golden).server,
+                       WireServerInfo(readOnly: true, agentMode: false, refreshEvery: nil))
+        var withoutBlock = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: golden) as? [String: Any])
+        withoutBlock.removeValue(forKey: "server")
+        let older = try JSONSerialization.data(withJSONObject: withoutBlock)
+        XCTAssertNil(try JSONDecoder().decode(WireScopeList.self, from: older).server)
+        try JSONDiff.assertLossless(WireScopeList.self, payload: older)
         for every in [900.0, nil] as [Double?] {
             var object = try XCTUnwrap(JSONSerialization.jsonObject(with: golden) as? [String: Any])
             object["server"] = ["read_only": true, "agent_mode": false,
@@ -160,23 +183,28 @@ final class WireDecodingTests: XCTestCase {
         let result = try JSONDecoder()
             .decode(WireSearchResult.self, from: try GoldenFixture.payload(GoldenFixture.search))
 
-        XCTAssertEqual(result.scope, "scripta")
-        XCTAssertEqual(result.indexVersion, "v9:6bdb6f801987")
+        XCTAssertEqual(result.scope, "demo")
+        // One capture, one index: every frame of it names the same `index_version`, and the
+        // version leads with the schema the status frame reports.
+        let status = try JSONDecoder()
+            .decode(WireStatusResult.self, from: try GoldenFixture.payload(GoldenFixture.status))
+        XCTAssertEqual(result.indexVersion, status.indexVersion)
+        XCTAssertTrue(result.indexVersion.hasPrefix("v\(status.schemaVersion):"))
         XCTAssertFalse(result.passages.isEmpty)
 
         let first = try XCTUnwrap(result.passages.first)
-        XCTAssertEqual(first.expandRef, "scripta/scripta-doc3-ui#c00005")
+        XCTAssertEqual(first.expandRef, "demo/engine-boundary-current#c00000")
         XCTAssertEqual(first.status, "active")
-        XCTAssertEqual(first.confidence, "stated")
+        XCTAssertEqual(first.confidence, "unjudged",
+                       "the demo note declares no confidence, and absence has its own word")
         XCTAssertEqual(first.documentClass, "unclassified",
                        "the class is on the wire now — a missing key would read as `null` and map "
                        + "to `.unreported` without anything else failing. `unclassified` is what "
-                       + "an undeclared note sends; it read `reference-frozen` here until the "
-                       + "engine stopped inventing that for the ~88% that declare nothing")
-        // A NON-EMPTY list, which the previous capture did not exercise: the top hit is now a
-        // note that replaced one. `[]` and `["x"]` decode through the same path, but only this
-        // shape proves the LIST half of v8 rather than the null-vs-empty half.
-        XCTAssertEqual(first.supersedes, ["scripta-workspaces-rework"],
+                       + "an undeclared note sends, rather than an invented `reference-frozen`")
+        // A NON-EMPTY list: the top hit is a note that replaced one. `[]` and `["x"]` decode
+        // through the same path, but only this shape proves the LIST half of v8 rather than the
+        // null-vs-empty half.
+        XCTAssertEqual(first.supersedes, ["engine-boundary-old"],
                        "supersedes is a LIST since v8 — one note can replace several")
         XCTAssertNil(first.text, "`text` is null on a search result, never absent")
         XCTAssertTrue(first.truncated)
@@ -215,7 +243,7 @@ final class WireDecodingTests: XCTestCase {
         XCTAssertFalse(result.filters.sourcesExcluded)
 
         let classes = Set((result.passages + result.outlineRecords).map(\.documentClass))
-        XCTAssertEqual(classes, ["conversation", "unclassified"])
+        XCTAssertEqual(classes, ["conversation", "unclassified", "reference-versioned"])
 
         let transcript = try XCTUnwrap(
             result.passages.first { $0.documentClass == "conversation" }
@@ -231,18 +259,21 @@ final class WireDecodingTests: XCTestCase {
         let result = try JSONDecoder()
             .decode(WireStatusResult.self, from: try GoldenFixture.payload(GoldenFixture.status))
 
-        XCTAssertEqual(result.scope, "scripta")
-        XCTAssertEqual(result.documents, 59)
-        XCTAssertEqual(result.schemaVersion, 10)
-        // v10's identity layer. EMPTY IS THE HONEST VALUE HERE: `scripta-vault` declares no roster,
+        XCTAssertEqual(result.scope, "demo")
+        XCTAssertEqual(result.documents, 10)
+        XCTAssertEqual(result.schemaVersion, 11)
+        XCTAssertEqual(result.byVault, ["demo-core-vault": 3, "demo-vault": 7],
+                       "the inherited vault's notes are counted in the scope that composes them")
+        // v10's identity layer. EMPTY IS THE HONEST VALUE HERE: `demo-vault` declares no roster,
         // and an empty list means nobody was RESOLVED — never that nobody was mentioned.
         XCTAssertEqual(result.entities, [])
-        XCTAssertEqual(result.byStatus["active"], 49)
-        XCTAssertEqual(result.byConfidence["unjudged"], 1)
-        XCTAssertEqual(result.byConfidence["unstated"], 3,
-                       "`unstated` and `unjudged` are different values and both were counted")
+        XCTAssertEqual(result.byStatus["active"], 7)
+        XCTAssertEqual(result.byConfidence["unjudged"], 9)
+        XCTAssertEqual(result.byConfidence["unstated"], 1,
+                       "`unstated` and `unjudged` are different values and both were counted — "
+                       + "the transcript DECLARES `unstated`; every other demo note declares nothing")
 
-        // No local model server was up when this was captured, so no vector arm is wired at all —
+        // No local model server answered during the capture, so no vector arm is wired at all —
         // and `vectors: null` is the whole block being absent, not zero coverage.
         XCTAssertNil(result.vectors)
         XCTAssertNil(result.retrievalArms.embedder)
@@ -253,15 +284,18 @@ final class WireDecodingTests: XCTestCase {
         let list = try JSONDecoder()
             .decode(WireScopeList.self, from: try GoldenFixture.payload(GoldenFixture.listScopes))
 
-        XCTAssertGreaterThanOrEqual(list.scopes.count, 7)
-        let scripta = try XCTUnwrap(list.scopes.first { $0.scope == "scripta" })
-        XCTAssertTrue(scripta.indexPresent)
-        XCTAssertEqual(scripta.sources, ["core-vault", "scripta-vault"])
-        XCTAssertNil(scripta.error, "`error` is present only on a resolution failure")
+        XCTAssertEqual(list.scopes.map(\.scope), ["demo"],
+                       "the capture's registry holds one scope")
+        XCTAssertEqual(list.registry, "/demo-substrate/scopes.toml")
+        let demo = try XCTUnwrap(list.scopes.first)
+        XCTAssertTrue(demo.indexPresent)
+        XCTAssertEqual(demo.sources, ["demo-core-vault", "demo-vault"],
+                       "a scope lists its inherited vault as a source, not only its own")
+        XCTAssertNil(demo.error, "`error` is present only on a resolution failure")
         XCTAssertTrue(list.scopes.allSatisfy { $0.refresh.wasSent })
     }
 
-    /// THE ONE ROW SHAPE THE CAPTURE COULD NOT SUPPLY. Every scope on this machine resolves, so no
+    /// THE ONE ROW SHAPE THE CAPTURE COULD NOT SUPPLY. The captured scope resolves, so no
     /// captured row carries the `error` key `scopes_payload` writes in its except branch — and that
     /// branch is the whole reason the payload lists a broken scope at all: "omitting it would read
     /// as 'that scope was never composed', which is the opposite of the truth."
@@ -310,30 +344,36 @@ final class WireDecodingTests: XCTestCase {
 
         // A PAGE, not the corpus — and the payload says both, which is the whole reason `returned`
         // and `total` are separate fields.
-        XCTAssertEqual(result.returned, 6)
+        XCTAssertEqual(result.returned, 3)
         XCTAssertEqual(result.returned, result.documents.count)
         XCTAssertGreaterThan(result.total, result.returned,
                              "this capture is a page of a larger corpus; if it ever stops being "
                              + "one, the short-page-vs-small-corpus distinction goes untested")
 
         // THE PROPERTY THE TOOL EXISTS FOR. Every row composed from a vault that is NOT the scope's
-        // own — reading `scripta`'s directory would have returned none of these six.
+        // own — reading `demo-vault`'s directory would have returned none of these three. Their
+        // tiers are the inherited ones; the project vault's own notes are tier 3.
         let vaults = Set(result.documents.compactMap(\.vault))
-        XCTAssertEqual(vaults, ["core-vault"])
-        XCTAssertTrue(result.documents.allSatisfy { $0.tier == 1 })
+        XCTAssertEqual(vaults, ["demo-core-vault"])
+        XCTAssertEqual(Set(result.documents.compactMap(\.tier)), [1, 2])
+        XCTAssertNil(result.filters.vaults, "no tier was asked for — they are simply first")
 
         // The spine crosses whole, and it maps — a token this build has no case for refuses by
         // name here rather than arriving as a plausible neighbour.
         let mapped = try result.mappedDocuments()
-        XCTAssertEqual(mapped.count, 6)
+        XCTAssertEqual(mapped.count, 3)
         XCTAssertTrue(mapped.allSatisfy { $0.expandRef != nil },
                       "every row in this capture has passages, so every one is readable")
         XCTAssertTrue(mapped.allSatisfy { $0.passageCount > 0 })
-        // `unclassified` is a WORD on this axis, not the absence of one — the distinction that was
-        // missing when the reader defaulted an undeclared class to `reference-frozen`.
-        XCTAssertTrue(mapped.allSatisfy { $0.documentClass == .unclassified })
-        XCTAssertTrue(mapped.contains { $0.docType == .howTo }, "the capture spans doc_types")
-        XCTAssertTrue(mapped.contains { $0.confidence == .verified })
+        // Three rows, three classes. `unclassified` is a WORD on this axis, not the absence of one
+        // — the distinction that was missing when the reader defaulted an undeclared class to
+        // `reference-frozen` — and it sits here beside the two classes a note really declares.
+        XCTAssertEqual(Set(mapped.map(\.documentClass)),
+                       [.unclassified, .referenceFrozen, .referenceVersioned])
+        XCTAssertEqual(Set(mapped.map(\.docType)), [.explanation, .reference],
+                       "the capture spans doc_types")
+        XCTAssertTrue(mapped.allSatisfy { $0.confidence == .unjudged },
+                      "none of the three declares a confidence, and absence maps to its own case")
 
         // Browse withholds exactly what search withholds, and says so.
         XCTAssertTrue(result.filters.sourcesExcluded)
@@ -341,10 +381,10 @@ final class WireDecodingTests: XCTestCase {
 
     /// A note with NO passages is a row, not an omission — and its ref is null rather than invented.
     ///
-    /// Not in the capture (the six rows all have passages), so it is constructed. That is honest
+    /// Not in the capture (the three rows all have passages), so it is constructed. That is honest
     /// about what it proves: the DECODER and the MAPPER handle the state, which is the half that
-    /// lives in this module. The engine really does produce it — the live `acme` scope holds one —
-    /// and the engine-side half is asserted there.
+    /// lives in this module. The engine really does produce it, and the engine-side half is
+    /// asserted in its own suite.
     func testAPassagelessNoteMapsToAnUnreadableRowRatherThanThrowing() throws {
         let json = """
             {"doc_id": "empty-note", "title": null, "expand_ref": null, "passage_count": 0,
@@ -415,7 +455,7 @@ final class WireDecodingTests: XCTestCase {
         XCTAssertNil(list.registry)
         let row = try XCTUnwrap(list.scopes.first)
         XCTAssertEqual(list.scopes.count, 1)
-        XCTAssertEqual(row.scope, "atlas")
+        XCTAssertEqual(row.scope, "demo")
         XCTAssertNil(row.vault)
         XCTAssertNotNil(row.composed)
         try JSONDiff.assertLossless(WireScopeList.self,
@@ -450,7 +490,7 @@ final class WireDecodingTests: XCTestCase {
     /// an `error` would stop the roster reading as agent-only, and every row would be frozen.
     func testANullVaultIsNotNamedEvenBesideAnError() throws {
         let json = """
-            {"scope": "atlas", "db": "/agent-snapshots/atlas.snapshot.db", "vault": null,
+            {"scope": "demo", "db": "/agent-snapshots/demo.snapshot.db", "vault": null,
              "composed": null, "index_present": false, "sources": null,
              "error": "no snapshot published yet"}
             """

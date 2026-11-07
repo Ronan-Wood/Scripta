@@ -3,67 +3,67 @@ import XCTest
 
 // MARK: - Real frames from the real engine
 //
-// PROVENANCE. Every file in `Fixtures/` except the `agent-*` frames is the byte-for-byte HTTP
-// response body of a live `substrate-mcp --http 127.0.0.1:8765`, RE-CAPTURED 2026-08-03 against the
-// operator's real composed scopes. Nothing was hand-written, reformatted or trimmed. The `agent-*`
-// frames come from the engine's test suite instead; their provenance is on `agentStatus` below.
+// PROVENANCE. Every file in `Fixtures/` except `http-415-refusal.body.json` is a response the engine
+// in this repo produced, written by a test in the engine's own suite rather than by hand, and
+// nothing in them was reformatted or trimmed. The non-agent frames come from
+// `substrate/tests/test_swift_golden_frames.py`, run over the repo's SYNTHETIC demo vaults
+// (`substrate/vaults/demo-vault`, inheriting `demo-core-vault`) in a registry holding one scope,
+// `demo`. Its docstring is the authority on how: what it runs, and the three things it stands in
+// (the workspace path as `/demo-substrate`, the workspace folder's mode, and a model daemon that
+// refuses every connection). The `agent-*` frames come from `substrate/tests/test_agent_mode.py`;
+// see `agentStatus` below. Re-capture with:
 //
-// THE THREE FRAMES CARRYING `filters` WERE RE-CAPTURED 2026-08-07 (index_version v9:6bdb6f801987)
-// when `applied_filters` gained the `vaults` axis — `search`, `search-sources` and `documents`.
-// Re-captured rather than edited, because a hand-patched key would break the one property these
-// files have: they are what the engine actually sent.
+//   cd substrate && SUBSTRATE_CAPTURE_SWIFT_FIXTURES=1 PYTHONPATH=$PWD \
+//     uv run --no-sync python -m pytest tests/test_swift_golden_frames.py tests/test_agent_mode.py \
+//     -q -k swift
 //
-// The `scripta` corpus MOVED between the two captures (this repo's own decision notes are in it and
-// were edited all session), so the top hit changed with it. That is why the content assertions moved
-// too — and the new top hit is the better fixture: it carries a NON-EMPTY `supersedes`, which the
-// old one did not exercise at all.
+// Without the variable those tests fail when the engine's shape moves away from these files, or
+// when a committed file carries a path of the machine that wrote it.
 //
-// WHAT MOVED IN THIS CAPTURE, and it is the whole reason for it: the passages that used to say
-// `document_class: "reference-frozen"` now say `"unclassified"`. They never declared a class — the
-// markdown reader was defaulting one, so 51 of `scripta`'s 57 documents claimed to be published
-// editions that will not change. Schema v9 and the index_version moved with the vocabulary; the
-// chunk text and attribution did not (`tools/fixture-signature.py` reports the same 8b3cf4f7bc3c1d60
-// before and after), so this is a relabel and not a re-chunk.
+// `http-415-refusal.body.json` is the one older capture, from a live `substrate-mcp --http` sent a
+// `Content-Type: text/plain` POST (→ HTTP 415). It names no scope, vault or path. The 415 is
+// written by the HTTP transport itself, which `server.handle` never reaches, so the engine test
+// cannot produce it.
 //
-// `refresh.outcome` reads `embed_failed` rather than the previous `unchanged` — the machine's
-// Ollama is down, which is also why every arm reports unavailable. That is the state of the host,
-// not of this change. The calls, in order:
+// The calls, in order:
 //
-//   search.frame.json       tools/call search      {"scope":"scripta","query":"what did we decide
-//                                                   about the retrieval envelope"}
+//   search.frame.json       tools/call search      {"scope":"demo","query":"which engine powers
+//                                                   the app"}
 //   search-sources.frame.json
-//                           tools/call search      {"scope":"scripta","query":"diff-only
-//                                                   adversarial review reviewer sees only the
-//                                                   diff","include_sources":true}
-//   status.frame.json       tools/call status      {"scope":"scripta"}
+//                           tools/call search      {"scope":"demo","query":"what was said on the
+//                                                   call about the engine boundary",
+//                                                   "include_sources":true}
+//   status.frame.json       tools/call status      {"scope":"demo"}
 //   list_scopes.frame.json  tools/call list_scopes {}
-//   expand.frame.json       tools/call expand      {"expand_ref":"scripta/scripta-doc3a-mcp-server
-//                                                   #c00002","mode":"note"}
-//   documents.frame.json    tools/call documents   {"scope":"scripta","limit":6}
-//                                                   — captured 2026-08-06, later than the rest and
-//                                                     against a moved index (v9:0a5187927a8d). Said
-//                                                     rather than smoothed over: a fixture set
-//                                                     captured at two instants can disagree about
-//                                                     content, and only the SHAPE is asserted
-//                                                     across them.
+//   expand.frame.json       tools/call expand      {"expand_ref":"demo/engine-boundary-current
+//                                                   #c00000","mode":"note"}
+//   documents.frame.json    tools/call documents   {"scope":"demo","limit":3}
 //   tool-fault.frame.json   tools/call status      {"scope":"no-such-scope"}  → isError: true
-//   rpc-error.frame.json    method "nope/nope"                                → error -32601
+//   rpc-error.frame.json    method "nope/nope"     (id 8)                     → error -32601
+//
+// WHAT THAT MEANS ON THIS SIDE:
+//
+//   * No model daemon answered, so every arm is unavailable, `health.state` is `unreachable`,
+//     `vectors` is null and the refresh pass recorded `embed_failed`. Those are the states the
+//     content assertions pin — whatever the capturing machine's daemon was doing.
+//   * `status.exposed` names `/demo-substrate`, because the capture sets that folder to 0755.
+//   * The timestamps and `index_version` move on every capture, and nothing else does. The version
+//     is a hash over each indexed note's chunks, spine, class AND absolute `source_path`
+//     (`reconcile.py`), and that path is the capture's own temp workspace, which is new on every
+//     run. The stand-in replaces the path in the text, not inside the hash. Every frame of one
+//     capture names the same version, which is what `testSearchDecodesTheSpineAndTheEnvelope`
+//     asserts in place of a literal.
 //
 // THE SECOND SEARCH EARNS ITS PLACE. Default retrieval withholds the conversation class, so every
-// passage in the first one carries the same `document_class` and a decoder that ignored the field
-// entirely would round-trip it. `search-sources` asks for the class back and really does return
-// transcript passages, which is the only fixture here where the axis takes more than one value —
-// and now the only one where it takes a value that puts colour on the spine, since `unclassified`
-// draws with its chrome removed.
+// passage in the first one is `unclassified` and a decoder that ignored the field entirely would
+// round-trip it. `search-sources` asks for the class back and returns the demo vault's one
+// transcript (`_sources/engine-boundary-call.md`, synthetic, added for exactly this). It is the
+// only SEARCH capture where the class axis takes more than one value, and the only fixture
+// carrying `conversation`; `documents` spans the three non-source classes.
 //
 // A HAND-BUILT FIXTURE WOULD PROVE NOTHING. The whole failure this decoder exists to avoid is
 // believing a shape the engine does not actually send, and a fixture written from the same reading
 // of `render.py` that produced the decoder would agree with it by construction.
-//
-// To re-capture, run the engine and repeat the calls above:
-//   /Users/demo/.local/bin/substrate-mcp --http 127.0.0.1:8765
-//   curl -s -X POST http://127.0.0.1:8765 -H 'Content-Type: application/json' \
-//     -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search",...}}'
 
 enum GoldenFixture {
     static let search = "search.frame.json"
@@ -72,16 +72,15 @@ enum GoldenFixture {
     static let status = "status.frame.json"
     static let listScopes = "list_scopes.frame.json"
     static let expand = "expand.frame.json"
-    /// `documents` — the BROWSE call, captured 2026-08-06 against the same `scripta` scope after the
-    /// tool was added (`{"scope":"scripta","limit":6}`, index_version v9:0a5187927a8d). It is the
-    /// only capture where every row comes from an INHERITED vault: all six are `core-vault` at tier
-    /// 1, which the scope's own directory does not contain. That is the property the browse tool
+    /// `documents` — the BROWSE call (`{"scope":"demo","limit":3}`). It is the only capture where
+    /// every row comes from an INHERITED vault: all three are `demo-core-vault`, at tiers 1 and 2,
+    /// which the scope's own directory does not contain. That is the property the browse tool
     /// exists for, so a fixture where it did not hold would prove the wrong thing.
     static let documents = "documents.frame.json"
     static let toolFault = "tool-fault.frame.json"
     /// AGENT MODE (`substrate-mcp --agent-mode`), and a different provenance from every frame above:
-    /// captured from the engine's own `world` fixture in `substrate/tests/test_agent_mode.py`, not
-    /// from the operator's scopes, because agent mode answers only from a published snapshot. They
+    /// captured from the engine's own `world` fixture in `substrate/tests/test_agent_mode.py`, whose
+    /// allowed scope is `demo`, because agent mode answers only from a published snapshot. They
     /// are the bytes `server.handle` returns, written by
     /// `test_the_swift_decoders_fixtures_are_what_agent_mode_sends` with
     /// `SUBSTRATE_CAPTURE_SWIFT_FIXTURES=1`; without it that test fails when the engine's shape
@@ -207,7 +206,7 @@ enum JSONDiff {
             + "\(brief(actual))"
     }
 
-    private static func isBoolean(_ value: Any) -> Bool {
+    static func isBoolean(_ value: Any) -> Bool {
         guard let number = value as? NSNumber else { return false }
         return CFGetTypeID(number) == CFBooleanGetTypeID()
     }

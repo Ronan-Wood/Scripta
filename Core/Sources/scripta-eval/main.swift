@@ -36,7 +36,9 @@ struct Baseline: Codable {
 // MARK: - Args
 
 var legacy = false
-var folderPath = ("~/Documents/CallTranscriber" as NSString).expandingTildeInPath
+// The synthetic corpus beside the gold set. Any other corpus is scored with --folder, and its gold
+// set with --gold; both live outside the repo.
+var folderPath = "Eval/corpus"
 var goldPath = "Eval/gold.json"
 var topK = 5
 do {
@@ -131,6 +133,7 @@ latencies.sort()
 func pct(_ p: Double) -> Double { latencies.isEmpty ? 0 : latencies[min(latencies.count - 1, Int(p * Double(latencies.count)))] }
 
 print("Retrieval eval — \(legacy ? "LEGACY (OR-of-all-terms)" : "current (AND-first + stopwords)")")
+print("  corpus: \((folderPath as NSString).lastPathComponent) (\(indexed) transcripts) · gold: \((goldPath as NSString).lastPathComponent)")
 print("  fingerprint: \(fingerprint)\n")
 print(rows.joined(separator: "\n"))
 print(String(format: "\n  recall@1 %.2f   recall@%d %.2f   MRR %.3f", r1, topK, r5, mrr))
@@ -175,13 +178,13 @@ func fixture(_ path: String, _ group: String, _ text: String) {
     store.upsert(t, chunks: [IndexedChunk(startMs: 0, endMs: 1000, speaker: nil, text: text)])
     pathGroup[path] = group
 }
-let sharedText = "we discussed the budget and the cycling project and the acme deal pricing"
+let sharedText = "we discussed the budget and the garden project and the acme deal pricing"
 fixture("/fx-alpha-1.md", "Alpha", sharedText)
 fixture("/fx-alpha-2.md", "Alpha", "alpha only vacation plans and the family reunion")
 fixture("/fx-beta-1.md",  "Beta",  sharedText)
 fixture("/fx-beta-2.md",  "Beta",  "beta only quarterly targets and the hiring plan")
 
-let probes = gold.cases.map(\.query) + ["budget", "cycling", "project", "deal", "vacation", "hiring", "the"]
+let probes = gold.cases.map(\.query) + ["budget", "garden", "project", "deal", "vacation", "hiring", "the"]
 var checks = 0, leaks = 0
 for g in ["Alpha", "Beta", ""] {
     for q in probes {
@@ -197,7 +200,7 @@ for g in ["Alpha", "Beta", ""] {
 }
 // Ungrouped-behavior: a grouped fixture must never surface in the "" bucket, and the all-groups
 // override must reach every group.
-let ungroupedShared = Set(store.search("budget cycling project", group: "", limit: 40).map(\.path))
+let ungroupedShared = Set(store.search("budget garden project", group: "", limit: 40).map(\.path))
 let ungroupedLeak = ungroupedShared.contains { pathGroup[$0] != nil }   // any fixture in "" = leak
 if ungroupedLeak { leaks += 1; print("  LEAK: a grouped fixture surfaced in the ungrouped bucket") }
 let allGroups = Set(store.search(sharedText, group: nil, limit: 40).map(\.path))

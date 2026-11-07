@@ -15,16 +15,17 @@ final class MappingTests: XCTestCase {
         let wire = try XCTUnwrap(try liveSearch().passages.first)
         let passage = try wire.mapped()
 
-        XCTAssertEqual(passage.id, "scripta/scripta-doc3-ui#c00005")
+        XCTAssertEqual(passage.id, "demo/engine-boundary-current#c00000")
         XCTAssertEqual(passage.status, .active)
         XCTAssertEqual(passage.docType, .decision)
-        XCTAssertEqual(passage.confidence, .stated)
+        XCTAssertEqual(passage.confidence, .unjudged,
+                       "the note declares no confidence; absence is its own case, not `.stated`")
         XCTAssertEqual(passage.documentClass, .unclassified,
                        "the class comes off the wire now; nobody supplies it — and this note "
                        + "declares none, which the engine says as `unclassified` rather than "
                        + "defaulting to reference-frozen the way it used to")
-        XCTAssertEqual(passage.vault, "scripta-vault")
-        XCTAssertEqual(passage.supersedes, ["scripta-workspaces-rework"])
+        XCTAssertEqual(passage.vault, "demo-vault")
+        XCTAssertEqual(passage.supersedes, ["engine-boundary-old"])
         XCTAssertEqual(passage.withheldAs, [],
                        "an undeclared class is default-corpus content: absence of a label is not "
                        + "evidence about the note, so nothing here is withheld")
@@ -43,7 +44,7 @@ final class MappingTests: XCTestCase {
     /// the nearest neighbour, which would print a value the engine never sent.
     func testAnUnknownSpineValueRefuses() throws {
         let wire = WirePassage(
-            expandRef: "scripta/x#c1", citation: "c", path: "p", page: nil, nChars: 1,
+            expandRef: "demo/x#c1", citation: "c", path: "p", page: nil, nChars: 1,
             documentClass: "reference-frozen", status: "retired", docType: "reference",
             confidence: "stated", domains: [], vault: "v", supersedes: [], snippet: "s",
             text: nil, truncated: false
@@ -64,7 +65,7 @@ final class MappingTests: XCTestCase {
     /// identity, so this refuses rather than synthesising one.
     func testAPassageWithNoExpandRefRefuses() {
         let wire = WirePassage(
-            expandRef: nil, citation: "Doc 3a · @scripta-vault", path: "p", page: nil, nChars: 1,
+            expandRef: nil, citation: "Doc 3a · @demo-vault", path: "p", page: nil, nChars: 1,
             documentClass: "reference-frozen", status: "active", docType: "reference",
             confidence: "stated", domains: [], vault: "v", supersedes: [], snippet: "s",
             text: nil, truncated: false
@@ -110,7 +111,7 @@ final class MappingTests: XCTestCase {
     func testTheLiveEnvelopeReportsThreeUnavailableArms() throws {
         let envelope = try liveSearch().mappedEnvelope()
 
-        XCTAssertEqual(envelope.scope.name, "scripta")
+        XCTAssertEqual(envelope.scope.name, "demo")
         XCTAssertTrue(envelope.scope.isNamed)
         XCTAssertNil(envelope.expectedMRR, "this stack was never measured; there is no number")
         XCTAssertEqual(envelope.unmeasuredReason, .noVectorArm,
@@ -284,7 +285,7 @@ final class MappingTests: XCTestCase {
     /// empty `fallbacks` array once rendered a known-degraded run as clean.
     func testEngineFalseDoesNotDisarmTheDegradedDerivation() throws {
         let payload = try JSONDecoder().decode(WireSearchResult.self, from: Data("""
-            {"scope": "scripta", "db": null, "query": "q", "passages": [], "outline_records": [],
+            {"scope": "demo", "db": null, "query": "q", "passages": [], "outline_records": [],
              "retrieval_mode": {"embedder": "e", "embedder_state": "ran", "hyde": "fell_back",
                                 "reranker": "off", "expected_mrr": null,
                                 "unmeasured_reason": "unmeasured_arm_combination",
@@ -312,14 +313,14 @@ final class MappingTests: XCTestCase {
         XCTAssertEqual(WireSearchResult.mappedScope(nil), EngineScope.missing)
         XCTAssertEqual(WireSearchResult.mappedScope("   "), EngineScope.missing)
         XCTAssertFalse(WireSearchResult.mappedScope(nil).isNamed)
-        XCTAssertTrue(WireSearchResult.mappedScope("scripta").isNamed)
+        XCTAssertTrue(WireSearchResult.mappedScope("demo").isNamed)
     }
 
     /// `frozen: null` must reach `EngineEnvelope.frozen` as `nil`, not as `false`. That single
     /// conversion is where a whole freeze warning would be lost.
     func testNoBasisFreezeReachesTheEnvelopeAsNil() throws {
         let payload = try JSONDecoder().decode(WireSearchResult.self, from: Data("""
-            {"scope": "scripta", "db": null, "query": "q", "passages": [], "outline_records": [],
+            {"scope": "demo", "db": null, "query": "q", "passages": [], "outline_records": [],
              "retrieval_mode": {"embedder": null, "embedder_state": "off", "hyde": "off",
                                 "reranker": "off", "expected_mrr": null,
                                 "unmeasured_reason": "no_vector_arm",

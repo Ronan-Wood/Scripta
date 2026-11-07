@@ -38,7 +38,7 @@ final class MappingParityTests: XCTestCase {
     ///
     /// NEEDED BECAUSE THE CAPTURES DO NOT REACH THE INTERESTING STATES, and a test whose fixture
     /// cannot reach the state its assertion objects to passes with the bug and without it. Both
-    /// live captures carry `degraded: false` and `filters.vaults: null`, so the two assertions that
+    /// search captures carry `degraded: false` and `filters.vaults: null`, so the two assertions that
     /// matter most here — the safety net may only raise, and which tiers answered must survive —
     /// were `nil == nil` and a branch that never ran. Verified by mutation: inverting `degraded`'s
     /// mapping and deleting `vaults` from the filter both went GREEN before this existed.

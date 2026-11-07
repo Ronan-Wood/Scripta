@@ -15,7 +15,7 @@ final class TransportTests: XCTestCase {
         let call: SubstrateCall<WireStatusResult> =
             SubstrateClient.interpret(frame: frame, expectedID: 1)
         guard case .ok(let payload) = call else { return XCTFail("expected .ok, got \(call)") }
-        XCTAssertEqual(payload.scope, "scripta")
+        XCTAssertEqual(payload.scope, "demo")
     }
 
     // MARK: - Outcome 2: isError inside a successful result
@@ -87,7 +87,7 @@ final class TransportTests: XCTestCase {
     func testAnUnreachableEngineIsNotAnEmptyResult() async throws {
         let client = SubstrateClient(socketPath: "/nonexistent-substrate-dir/substrate.sock",
                                      timeout: 5)
-        let call = await client.status(SubstrateScopeRequest(scope: "scripta"))
+        let call = await client.status(SubstrateScopeRequest(scope: "demo"))
         guard case .transportFailure(let failure) = call else {
             return XCTFail("expected a transport failure, got \(call)")
         }
@@ -154,7 +154,7 @@ final class TransportTests: XCTestCase {
     /// round-trips losslessly — so a shape change in `render.py` is caught on the first run after
     /// it lands, not at the next re-capture.
     ///
-    ///     /Users/demo/.local/bin/substrate-mcp --socket
+    ///     substrate-mcp --socket
     func testLiveEngineAgreesWithTheGoldenShape() async throws {
         let client = SubstrateClient(timeout: 30)
         let probe = await client.listScopes()
@@ -166,24 +166,57 @@ final class TransportTests: XCTestCase {
         guard case .ok(let scopes) = probe else {
             return XCTFail("list_scopes did not answer: \(probe)")
         }
-        XCTAssertTrue(scopes.scopes.contains { $0.scope == "scripta" })
-
         // Lossless against the LIVE bytes rather than the fixture, so a field added to
         // `scopes_payload` or `status_payload` since the capture fails on the first run after it
         // lands. The raw body is fetched directly because the client — correctly — hands back a
         // decoded payload and not the bytes it came from.
-        try await JSONDiff.assertLossless(WireScopeList.self,
-                                          payload: liveToolPayload("list_scopes", arguments: "{}"))
+        let listing = try await liveToolPayload("list_scopes", arguments: "{}")
+        try JSONDiff.assertLossless(WireScopeList.self, payload: listing)
+        // The key the policy below reads, present on every row. Renamed on the wire, it would
+        // decode as `false` and turn this test into a permanent "still building" skip.
+        let rawRows = try XCTUnwrap(
+            (JSONSerialization.jsonObject(with: listing) as? [String: Any])?["scopes"]
+                as? [[String: Any]])
+        XCTAssertTrue(rawRows.allSatisfy { $0["index_present"].map(JSONDiff.isBoolean) ?? false },
+                      "every live `list_scopes` row must carry a boolean `index_present`")
+
+        // The policy, in order. Messages give counts only: a scope's name or its error text can
+        // carry a host path.
+        //   * no scopes at all — nothing to query, a skip;
+        //   * ANY scope faulted — a failure, even beside healthy ones: a real fault is never
+        //     skipped away;
+        //   * none faulted and none indexed — a fresh machine while `substrate serve` builds its
+        //     indexes, a skip.
+        let rows = scopes.scopes
+        if rows.isEmpty {
+            throw XCTSkip("the live engine lists no scopes, so there is nothing to query")
+        }
+        let faulted = rows.filter { $0.error != nil }.count
+        if faulted > 0 {
+            return XCTFail("the live engine lists \(rows.count) scope(s) and \(faulted) of them "
+                           + "failed to resolve")
+        }
+        guard let scope = rows.first(where: { $0.indexPresent })?.scope else {
+            throw XCTSkip("indexes still building: none of the \(rows.count) listed scope(s) has "
+                          + "an index yet")
+        }
+
         try await JSONDiff.assertLossless(
             WireStatusResult.self,
-            payload: liveToolPayload("status", arguments: #"{"scope": "scripta"}"#)
+            payload: liveToolPayload("status", arguments: try Self.arguments(["scope": scope]))
         )
         try await JSONDiff.assertLossless(
             WireSearchResult.self,
-            payload: liveToolPayload(
-                "search", arguments: #"{"scope": "scripta", "query": "the retrieval envelope"}"#
-            )
+            payload: liveToolPayload("search", arguments: try Self.arguments(
+                ["scope": scope, "query": "the retrieval envelope"]))
         )
+    }
+
+    /// A tool's `arguments` object, encoded rather than spliced into a string, so every call above
+    /// spells the scope one way and a name is escaped however it is written.
+    private static func arguments(_ fields: [String: String]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// One `tools/call` straight to the socket, returning `content[0].text` as bytes.

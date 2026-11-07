@@ -62,7 +62,7 @@ def test_the_apps_own_registry_shape_loads_unchanged(tmp_path: Path) -> None:
     path = _roster(tmp_path, [{
         "id": "e1", "name": "Jordan Rivera", "kind": "person",
         "aliases": ["Rivera, Jordan @ Springfield", "J. Rivera"],
-        "groups": ["ACME"], "confirmed": True, "gloss": None,
+        "groups": ["Acme"], "confirmed": True, "gloss": None,
     }])
     (entity,) = identity.load(path)
     assert entity.entity_id == "e1"
