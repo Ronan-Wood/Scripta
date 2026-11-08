@@ -5,6 +5,7 @@ notes written before that held."""
 from __future__ import annotations
 
 import io
+import pathlib
 import os
 
 import pytest
@@ -616,3 +617,16 @@ def test_every_short_value_pyyaml_and_yaml_1_2_read_apart_is_caught():
 @pytest.mark.parametrize("block", ['title: a\n"title": b', "title: a\n'title': b"])
 def test_a_key_repeated_under_quotes_is_not_yaml(block):
     assert fm.assess(f"---\n{block}\n---\n")[0] == fm.NOT_YAML
+
+
+def test_the_shipped_demo_vaults_pass_check():
+    # The repo's own vaults are what a new user composes first; every note in them must read the
+    # same under YAML and the engine, so `check` passes on a fresh clone.
+    root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vaults")
+    vaults = sorted(pathlib.Path(root).iterdir())
+    vaults = [p for p in vaults if p.is_dir()]
+    assert vaults
+    rep = fm.check(vaults)
+    assert rep.notes > 0
+    assert [(f.path.name, f.kind, f.reasons) for f in rep.findings] == []
+    assert rep.errors == [] and rep.not_utf8 == []
