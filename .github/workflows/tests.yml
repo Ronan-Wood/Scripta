@@ -42,7 +42,7 @@ jobs:
       # Measured 2026-09-16: these four packages run all 606 tests in 15 seconds from a 57 MB
       # environment. A test that needs more than this should say so by failing here.
       - run: uv venv --python 3.14
-      - run: uv pip install pytest pypdfium2 pillow numpy
+      - run: uv pip install pytest pypdfium2 pillow numpy pyyaml
       - run: uv run --no-sync python -m pytest tests -q
 
   docling:

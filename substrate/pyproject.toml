@@ -15,6 +15,9 @@ dependencies = [
     # OpenCV, for docling's TableFormer, which reads the tables in every PDF and image and imports `cv2`
     # without declaring it. Built from source below; the version bound is TableFormer's own.
     "opencv-python-headless>=5.0.0.93,<6",
+    # `blobs gc` reads a note's frontmatter as YAML, so a reference spelled in any valid YAML keeps
+    # its original. docling already pulls it in; gc must not depend on that.
+    "pyyaml>=6.0.3,<7",
 ]
 
 [tool.uv]
