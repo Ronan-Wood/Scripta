@@ -79,6 +79,47 @@ final class EngineContractCheckTests: XCTestCase {
                       result.output)
     }
 
+    /// `contract.json` is held to the engine's the same way the frames are.
+    func testAChangedContractFileFails() throws {
+        let (from, to) = try pair()
+        let file = to.appendingPathComponent("contract.json")
+        var bytes = try Data(contentsOf: file)
+        let at = bytes.count / 2
+        bytes[at] = bytes[at] == UInt8(ascii: "a") ? UInt8(ascii: "b") : UInt8(ascii: "a")
+        try bytes.write(to: file)
+
+        let result = try check(from, to)
+        XCTAssertEqual(result.status, 1, result.output)
+        XCTAssertTrue(result.output.contains("\(to.path)/contract.json differ"), result.output)
+    }
+
+    func testACopyMissingTheContractFileFails() throws {
+        let (from, to) = try pair()
+        try FileManager.default.removeItem(at: to.appendingPathComponent("contract.json"))
+        let result = try check(from, to)
+        XCTAssertEqual(result.status, 1, result.output)
+        XCTAssertTrue(result.output.contains("Only in \(from.path): contract.json"), result.output)
+    }
+
+    /// A source missing either half is refused before anything is compared or replaced: two trees
+    /// that had each lost it would otherwise "match", and a sync would swap the copy in first.
+    func testASourceMissingTheContractFileOrEveryFrameIsRefused() throws {
+        let (noContract, to) = try pair()
+        try FileManager.default.removeItem(at: noContract.appendingPathComponent("contract.json"))
+        XCTAssertEqual(try check(noContract, to).status, 2)
+
+        let noFrames = scratch.appendingPathComponent("no-frames")
+        try FileManager.default.createDirectory(
+            at: noFrames.appendingPathComponent("frames"), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: to.appendingPathComponent("contract.json"),
+                                         to: noFrames.appendingPathComponent("contract.json"))
+        XCTAssertEqual(try check(noFrames, to).status, 2)
+        let before = try Data(contentsOf: to.appendingPathComponent("frames/search.frame.json"))
+        XCTAssertEqual(try run(["sync", "--from", noFrames.path, "--to", to.path]).status, 2)
+        XCTAssertEqual(try Data(contentsOf: to.appendingPathComponent("frames/search.frame.json")),
+                       before, "a refused sync replaced the copy")
+    }
+
     func testAFrameMissingFromTheCopyFails() throws {
         let (from, to) = try pair()
         try FileManager.default.removeItem(at: to.appendingPathComponent("frames/status.frame.json"))

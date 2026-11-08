@@ -4,16 +4,17 @@
 #   Distribution/engine-contract sync  [--from DIR] [--to DIR]
 #   Distribution/engine-contract check [--from DIR] [--to DIR]
 #
-# The engine owns its contract (`substrate/contract/`: the golden frames its own suite captures and
-# leak-scans). The decoder tests read a COPY, `Core/Tests/EngineContract/`, so they take no frame
-# from the engine's tree. A copy can go stale, so `check` runs in CI and fails on any difference: a
+# The engine owns its contract (`substrate/contract/`: `contract.json`, the vocabularies and wire
+# constants it states, and the golden frames in `frames/`; its own suite writes, checks and
+# leak-scans both). The app's tests read a COPY, `Core/Tests/EngineContract/`, so they take nothing
+# of it from the engine's tree. A copy can go stale, so `check` runs in CI and fails on any difference: a
 # changed byte, a missing file, an extra file. `--from` names another source, which is how a pinned
 # engine release will be held to the same copy.
 #
-# A CONTRACT HOLDS JSON FRAMES AND NOTHING ELSE: `frames/<name>.json`, names of letters, digits and
-# `_.-`. Both trees are refused (exit 2) on anything else — another folder, another file, a dotfile,
+# A CONTRACT HOLDS JSON AND NOTHING ELSE: `contract.json` and `frames/<name>.json`, names of letters,
+# digits and `_.-`. Both trees are refused (exit 2) on anything else — another folder, another file, a dotfile,
 # a symlink, an odd name. That allowlist is what makes the copy safe to write: the copy holds only
-# what the engine's scan (`assert_clean_folder`) covers, a source cannot plant anything else in this
+# what the engine's scans (`assert_clean_folder`, `test_contract`) cover, a source cannot plant anything else in this
 # repo, and `sync` only ever deletes a folder that already passed it — never `Core/Tests` or a home
 # folder from a mistyped `--to`. Finder's `.DS_Store` and AppleDouble `._*` FILES are ignored.
 #
@@ -52,25 +53,26 @@ under() {
   ( cd -- "$dir" && find . -mindepth 1 "${METADATA[@]}" "$@" -print ) || die "cannot read $(shown "$dir")"
 }
 
-# Dies unless $1 is a contract: a real directory holding nothing but `frames/` and the JSON frames
-# in it. An empty folder passes; there is nothing in it to lose.
+# Dies unless $1 is a contract: a real directory holding nothing but `contract.json`, `frames/` and
+# the JSON frames in it. An empty folder passes; there is nothing in it to lose.
 contract() {
   local dir=$1 what="$2 $(shown "$1")" found
   [ -d "$dir" ] && [ ! -L "$dir" ] || die "$what is not a directory"
   # The top level first, one listing deep: a mistyped `--to ~` or `--to /` is refused here, before
   # the full walks below crawl the whole tree.
-  found=$( (cd -- "$dir" && find . -mindepth 1 -maxdepth 1 ! -name frames \
+  found=$( (cd -- "$dir" && find . -mindepth 1 -maxdepth 1 ! -name frames ! -name contract.json \
              ! \( -type f \( -name .DS_Store -o -name '._*' \) \) -print) ) \
     || die "cannot read $what"
-  [ -z "$found" ] || die "$what holds entries other than frames/: ${found//$'\n'/, }"
+  [ -z "$found" ] || die "$what holds entries other than contract.json and frames/: ${found//$'\n'/, }"
   found=$(under "$dir" ! -type f ! -type d)
   [ -z "$found" ] || die "$what holds entries that are not plain files: ${found//$'\n'/, }"
   found=$(under "$dir" -name '*[!A-Za-z0-9_.-]*')
   [ -z "$found" ] || die "$what holds names outside [A-Za-z0-9_.-]: ${found//$'\n'/, }"
   found=$(under "$dir" -type d ! -path ./frames)
   [ -z "$found" ] || die "$what holds folders other than frames/: ${found//$'\n'/, }"
-  found=$(under "$dir" -type f \( ! -path './frames/*.json' -o -path './frames/.*' \))
-  [ -z "$found" ] || die "$what holds files other than frames/*.json: ${found//$'\n'/, }"
+  found=$(under "$dir" -type f \( \( ! -path ./contract.json ! -path './frames/*.json' \) \
+                                    -o -path './frames/.*' \))
+  [ -z "$found" ] || die "$what holds files other than contract.json and frames/*.json: ${found//$'\n'/, }"
 }
 
 # The same folder twice, or one inside the other, would "match" itself, or be deleted by its own
@@ -100,7 +102,7 @@ compare() {
   count=$(under "$FROM" -type f | wc -l | tr -d ' ')
   out=$(diff -rq -x .DS_Store -x '._*' -- "$FROM" "$TO" 2>&1) || status=$?
   case $status in
-    0) echo "$me: $(shown "$TO") matches $(shown "$FROM") ($count frames)" ;;
+    0) echo "$me: $(shown "$TO") matches $(shown "$FROM") ($count files)" ;;
     1) echo "$me: $(shown "$TO") is not a copy of $(shown "$FROM"):" >&2
        printf '%s\n' "$out" | sed 's/^/  /' >&2
        echo "$me: run Distribution/engine-contract sync, and commit the copy with the change" >&2
@@ -110,7 +112,11 @@ compare() {
 }
 
 contract "$FROM" source
-frames=$(under "$FROM" -type f)
+# Both halves, or a check of two trees that had each lost one would pass, and a sync would replace
+# the copy before finding out.
+[ -f "$FROM/contract.json" ] && [ ! -L "$FROM/contract.json" ] \
+  || die "source $(shown "$FROM") holds no contract.json"
+frames=$(under "$FROM" -type f -path './frames/*.json')
 [ -n "$frames" ] || die "source $(shown "$FROM") holds no frames; a check against it would pass vacuously"
 
 if [ "$cmd" = check ]; then
@@ -151,7 +157,7 @@ trap restore EXIT
 trap 'exit 130' INT TERM HUP
 mkdir -- "$stage/frames"
 under "$FROM" -type f | while IFS= read -r f; do cp -- "$FROM/$f" "$stage/$f" || exit 1; done \
-  || die "cannot copy the frames of $(shown "$FROM")"
+  || die "cannot copy the contract in $(shown "$FROM")"
 chmod 755 "$stage"
 if [ -e "$TO" ]; then
   mv -- "$TO" "$stage.old" || die "cannot move the old copy $(shown "$TO") aside"

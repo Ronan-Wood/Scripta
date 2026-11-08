@@ -1,0 +1,287 @@
+{
+  "wire": {
+    "version": 1,
+    "header": "Substrate-Wire",
+    "mismatch": -32010,
+    "unstated": 1
+  },
+  "socket": {
+    "default": "~/.substrate/run/substrate.sock",
+    "lock_suffix": ".lock"
+  },
+  "cli": {
+    "declined_exit": 75
+  },
+  "spine": {
+    "statuses": [
+      "active",
+      "archived",
+      "complete",
+      "superseded"
+    ],
+    "included_statuses": [
+      "active",
+      "complete"
+    ],
+    "doc_types": [
+      "decision",
+      "digest",
+      "explanation",
+      "how-to",
+      "reference"
+    ],
+    "confidences": [
+      "inferred",
+      "proposed",
+      "stated",
+      "verified"
+    ],
+    "declarable_confidences": [
+      "inferred",
+      "proposed",
+      "stated",
+      "unstated",
+      "verified"
+    ],
+    "stored_confidences": [
+      "inferred",
+      "proposed",
+      "stated",
+      "unjudged",
+      "unstated",
+      "verified"
+    ],
+    "unstated_confidence": "unstated",
+    "unjudged_confidence": "unjudged"
+  },
+  "classes": {
+    "policies": [
+      "conversation",
+      "reference-frozen",
+      "reference-versioned",
+      "unclassified"
+    ],
+    "excluded": [
+      "conversation"
+    ]
+  },
+  "retrieval": {
+    "arms": [
+      "embedder",
+      "hyde",
+      "reranker"
+    ],
+    "arm_wired": "wired",
+    "arm_unavailable": "unavailable",
+    "arm_off": "off",
+    "arm_states": [
+      "fell_back",
+      "off",
+      "ran",
+      "skipped"
+    ],
+    "engine_health_states": [
+      "lexical_only",
+      "ready",
+      "unreachable"
+    ],
+    "unmeasured_reasons": [
+      "no_vector_arm",
+      "unmeasured_arm_combination",
+      "unmeasured_embedder",
+      "unmeasured_hyde_model",
+      "unmeasured_rerank_model"
+    ]
+  },
+  "refresh": {
+    "outcomes": [
+      "compose_failed",
+      "embed_failed",
+      "engine_unverified",
+      "refreshed",
+      "schema_mismatch",
+      "skipped",
+      "unchanged"
+    ]
+  },
+  "payloads": {
+    "applied_filters": [
+      "doc_type",
+      "document_class",
+      "notes",
+      "sources_excluded",
+      "statuses_excluded",
+      "statuses_included",
+      "vaults"
+    ],
+    "arms": [
+      "embedder",
+      "hyde",
+      "hyde_requested",
+      "reranker",
+      "unavailable"
+    ],
+    "document": [
+      "confidence",
+      "doc_id",
+      "doc_type",
+      "document_class",
+      "domains",
+      "expand_ref",
+      "passage_count",
+      "status",
+      "superseded_by",
+      "supersedes",
+      "tier",
+      "title",
+      "vault"
+    ],
+    "documents": [
+      "db",
+      "documents",
+      "filters",
+      "index_version",
+      "refresh",
+      "returned",
+      "scope",
+      "total"
+    ],
+    "drift": [
+      "added",
+      "changed",
+      "checkable",
+      "checked",
+      "removed",
+      "stale",
+      "unreadable",
+      "unverifiable"
+    ],
+    "drift_unchecked": [
+      "error"
+    ],
+    "engine_health": [
+      "arms",
+      "known",
+      "note",
+      "state"
+    ],
+    "expand": [
+      "index_version",
+      "mode",
+      "note",
+      "passage",
+      "scope"
+    ],
+    "expand_note": [
+      "n_chars",
+      "path",
+      "stale",
+      "text",
+      "truncated"
+    ],
+    "outline_record": [
+      "kind"
+    ],
+    "passage": [
+      "citation",
+      "confidence",
+      "doc_type",
+      "document_class",
+      "domains",
+      "expand_ref",
+      "n_chars",
+      "page",
+      "path",
+      "snippet",
+      "status",
+      "supersedes",
+      "text",
+      "truncated",
+      "vault"
+    ],
+    "refresh": [
+      "attempted",
+      "frozen",
+      "frozen_since",
+      "known",
+      "note",
+      "outcome",
+      "succeeded"
+    ],
+    "retrieval_mode": [
+      "cohort",
+      "degraded",
+      "embedder",
+      "embedder_state",
+      "expected_mrr",
+      "fallbacks",
+      "health",
+      "hyde",
+      "reranker",
+      "unavailable",
+      "unmeasured_reason"
+    ],
+    "scope_list": [
+      "registry",
+      "scopes"
+    ],
+    "scope_row": [
+      "composed",
+      "db",
+      "error",
+      "index_present",
+      "refresh",
+      "scope",
+      "sources",
+      "vault"
+    ],
+    "search": [
+      "db",
+      "filters",
+      "index_version",
+      "outline_records",
+      "passages",
+      "query",
+      "refresh",
+      "retrieval_mode",
+      "scope"
+    ],
+    "status": [
+      "by_confidence",
+      "by_doc_type",
+      "by_status",
+      "by_tier",
+      "by_vault",
+      "composed",
+      "db",
+      "documents",
+      "drift",
+      "entities",
+      "exposed",
+      "index_version",
+      "outlines",
+      "passages",
+      "refresh",
+      "retrieval_arms",
+      "schema_version",
+      "scope",
+      "vault",
+      "vectors"
+    ],
+    "vector": [
+      "chunks",
+      "complete",
+      "model",
+      "note",
+      "stored"
+    ]
+  },
+  "extends": {
+    "outline_record": "passage"
+  },
+  "tiers": {
+    "case_count": 44,
+    "ceiling": 0.698,
+    "floor": 0.593
+  }
+}
