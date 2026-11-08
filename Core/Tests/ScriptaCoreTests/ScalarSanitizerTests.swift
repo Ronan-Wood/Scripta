@@ -99,9 +99,8 @@ final class ScalarSanitizerTests: XCTestCase {
                   let line = split.frontmatter.components(separatedBy: "\n")
                       .first(where: { $0.hasPrefix("title:") })
             else { return XCTFail("no title line for \(probe.debugDescription)") }
-            let readBack = line.dropFirst("title:".count)
-                .trimmingCharacters(in: .whitespaces)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            XCTAssertTrue(line.hasPrefix("title: '") && line.hasSuffix("'"), line)
+            let readBack = Frontmatter.field(split.frontmatter, "title")
             XCTAssertEqual(readBack, TranscriptWriter.sanitizeScalar("x\(probe)x"),
                            "the two sanitizers disagree on \(probe.debugDescription)")
         }

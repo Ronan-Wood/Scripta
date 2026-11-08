@@ -85,7 +85,7 @@ final class TranscriptGroupRepairTests: XCTestCase {
         try TranscriptGroupRepair.assign("ACME", to: url)
 
         let text = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(text.contains("\ngroup: \"ACME\"\n"), text)
+        XCTAssertTrue(text.contains("\ngroup: 'ACME'\n"), text)
         // STILL UNFILED — `assign` labels, `file` moves, and only the move ends the state. The old
         // assertion here (`untagged` is now empty) was true only while unfiled meant "no label",
         // and it is the half that would have hidden the missing move.
@@ -166,7 +166,7 @@ final class TranscriptGroupRepairTests: XCTestCase {
 
         let text = try String(contentsOf: url, encoding: .utf8)
         XCTAssertEqual(text.components(separatedBy: "\ngroup:").count - 1, 1, text)
-        XCTAssertTrue(text.contains("group: \"ACME\""), text)
+        XCTAssertTrue(text.contains("group: 'ACME'"), text)
     }
 
     /// `scope_name("")` raises in the engine — a workspace that slugifies to nothing names no scope
@@ -189,7 +189,7 @@ final class TranscriptGroupRepairTests: XCTestCase {
         XCTAssertTrue(ScriptaVault.isAppVault(dir.appendingPathComponent("acme")))
         // The content survived the move intact.
         let text = try String(contentsOf: moved, encoding: .utf8)
-        XCTAssertTrue(text.contains("group: \"ACME\""))
+        XCTAssertTrue(text.contains("group: 'ACME'"))
     }
 
     func testFilingACallAlreadyInAVaultIsANoOp() throws {

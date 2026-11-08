@@ -5,7 +5,7 @@ status: active
 doc_type: reference
 domains: [software-dev, distributed-systems, databases]
 raw: ddia-2e.pdf
-raw_sha256: 0000000000000000000000000000000000000000000000000000000000000000
+raw_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
 raw_location: user-defined
 ---
 

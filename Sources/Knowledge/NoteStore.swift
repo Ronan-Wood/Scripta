@@ -67,7 +67,7 @@ enum NoteStore {
               let close = lines.dropFirst().firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "---" })
         else { return }
         for i in 1..<close where lines[i].hasPrefix("title:") {
-            lines[i] = "title: \"\(sanitize(newTitle))\""
+            lines[i] = "title: \(Frontmatter.quoted(sanitize(newTitle)))"
         }
         for i in (close + 1)..<lines.count where lines[i].hasPrefix("# ") {
             lines[i] = "# \(newTitle)"
@@ -85,8 +85,8 @@ enum NoteStore {
         let content = """
         ---
         app: \(marker)
-        title: "\(sanitize(trimmed))"
-        group: "\(sanitize(group))"
+        title: \(Frontmatter.quoted(sanitize(trimmed)))
+        group: \(Frontmatter.quoted(sanitize(group)))
         created: \(stamp)
         updated: \(stamp)
         ---
@@ -153,8 +153,9 @@ enum NoteStore {
             for line in fm {
                 let t = line.trimmingCharacters(in: .whitespaces)
                 if t.hasPrefix("\(key):") {
-                    return String(t.dropFirst(key.count + 1))
-                        .trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+                    let raw = String(t.dropFirst(key.count + 1))
+                    return Frontmatter.singleQuoted(raw)
+                        ?? raw.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
                 }
             }
             return ""
