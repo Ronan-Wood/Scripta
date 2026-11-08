@@ -2,27 +2,38 @@ import Foundation
 import XCTest
 @testable import SubstrateKit
 
-/// The wire version this client speaks is the engine's, read from `substrate/substrate/wire.py`.
+/// The wire version this client speaks is the engine's, as the engine states it in its contract.
 /// A bump on one side only would refuse every call between this app and its own bundled engine.
 final class WireParityTests: XCTestCase {
-    /// A FAILURE, not a skip, when the declaration moves: a parity gate that quietly finds nothing
-    /// to compare is worse than one that cannot run.
-    private struct Undeclared: Error, CustomStringConvertible {
-        let description: String
-    }
-
-    private func value(_ name: String, in text: String) throws -> String {
-        guard let match = text.range(of: "(?m)^\(name) = (.+)$", options: .regularExpression)
-        else { throw Undeclared(description: "wire.py no longer declares \(name) on one line") }
-        return String(text[match].dropFirst(name.count + 3))
+    /// Where this client and a contract disagree about the wire, one line per constant. A function
+    /// rather than four assertions, so the test below can show it catches a contract that differs.
+    static func disagreements(with contract: EngineContract) -> [String] {
+        let wire = contract.wire
+        return [("version", "\(wire.version)", "\(SubstrateWire.version)"),
+                ("header", wire.header, SubstrateWire.header),
+                ("mismatch", "\(wire.mismatch)", "\(SubstrateWire.mismatchCode)"),
+                ("unstated", "\(wire.unstated)", "\(SubstrateWire.unstated)")]
+            .filter { $0.1 != $0.2 }
+            .map { "\($0.0): engine \($0.1), client \($0.2)" }
     }
 
     func testTheClientSpeaksTheEnginesWire() throws {
-        let text = try PythonSource.load("substrate/substrate/wire.py").text
-        XCTAssertEqual(try value("VERSION", in: text), "\(SubstrateWire.version)")
-        XCTAssertEqual(try value("HEADER", in: text), "\"\(SubstrateWire.header)\"")
-        XCTAssertEqual(try value("MISMATCH", in: text), "\(SubstrateWire.mismatchCode)")
-        XCTAssertEqual(try value("UNSTATED", in: text), "\(SubstrateWire.unstated)")
+        XCTAssertEqual(Self.disagreements(with: try EngineContract.load()), [])
+    }
+
+    /// The regression this gate exists for: an engine one wire version ahead must not pass. Built
+    /// from the real contract with only `wire.version` moved, so nothing else can be what fails it.
+    func testAContractOneWireVersionAheadFails() throws {
+        let data = try Data(contentsOf: EngineContract.url)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var wire = try XCTUnwrap(object["wire"] as? [String: Any])
+        let version = try XCTUnwrap(wire["version"] as? Int)
+        wire["version"] = version + 1
+        object["wire"] = wire
+        let ahead = try EngineContract(data: JSONSerialization.data(withJSONObject: object))
+
+        XCTAssertEqual(Self.disagreements(with: ahead),
+                       ["version: engine \(version + 1), client \(SubstrateWire.version)"])
     }
 
     /// The engine refusing this client's version arrives as a JSON-RPC error. It is the same fact

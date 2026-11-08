@@ -105,6 +105,24 @@
     ]
   },
   "payloads": {
+    "agent_refresh": [
+      "note",
+      "snapshot"
+    ],
+    "agent_scope_list": [
+      "registry",
+      "scopes",
+      "snapshot_dir"
+    ],
+    "agent_scope_row": [
+      "composed",
+      "db",
+      "index_present",
+      "refresh",
+      "scope",
+      "sources",
+      "vault"
+    ],
     "applied_filters": [
       "doc_type",
       "document_class",
@@ -225,6 +243,10 @@
       "registry",
       "scopes"
     ],
+    "scope_list_reply": [
+      "retrieval_arms",
+      "server"
+    ],
     "scope_row": [
       "composed",
       "db",
@@ -245,6 +267,18 @@
       "refresh",
       "retrieval_mode",
       "scope"
+    ],
+    "server": [
+      "agent_mode",
+      "read_only",
+      "refresh_every"
+    ],
+    "snapshot": [
+      "age_seconds",
+      "max_age_seconds",
+      "published",
+      "stale",
+      "verified"
     ],
     "status": [
       "by_confidence",
@@ -277,7 +311,16 @@
     ]
   },
   "extends": {
-    "outline_record": "passage"
+    "agent_refresh": [
+      "refresh"
+    ],
+    "outline_record": [
+      "passage"
+    ],
+    "scope_list_reply": [
+      "agent_scope_list",
+      "scope_list"
+    ]
   },
   "tiers": {
     "case_count": 44,

@@ -97,12 +97,8 @@ final class LegacyEngineSocketTests: XCTestCase {
     /// The lock's name is the engine's, or the lock check silently never runs and only the probe
     /// is left: the full-backlog case it exists for.
     func testTheLockSpellingIsTheEngines() throws {
-        let source = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("substrate/substrate/local_socket.py")
-        let text = try String(contentsOf: source, encoding: .utf8)
-        XCTAssertTrue(text.contains("path.with_name(path.name + \"\(LegacyEngineSocket.lockSuffix)\")"),
-                      "local_socket.claim no longer names its lock <socket>\(LegacyEngineSocket.lockSuffix)")
+        XCTAssertEqual(try EngineVocabulary.load().socket.lockSuffix, LegacyEngineSocket.lockSuffix,
+                       "the engine no longer names its lock <socket>\(LegacyEngineSocket.lockSuffix)")
     }
 
     /// With no lock file there was nothing held across the unlink and the link, so an engine could

@@ -16,7 +16,7 @@ import Foundation
 ///
 /// The guard it provided is replaced rather than dropped. `TranscriptSpineParityTests` no longer
 /// compares two declarations — there is one — and instead checks each value against the engine's own
-/// vocabulary in `spine.py` and `classes.py`. That is the stronger check: the exporter agreeing with
+/// vocabulary, as the engine's contract states it. That is the stronger check: the exporter agreeing with
 /// the app never said anything about either agreeing with the engine, and it is the engine that
 /// refuses the scope.
 ///

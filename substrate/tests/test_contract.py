@@ -267,6 +267,17 @@ def test_a_changed_wire_version_changes_the_export(tmp_path):
     ("retrieve/retriever.py", "\ndef _capability(",
      '\ndef _other(cap):\n    return replace(cap, reranker="timeout")\n\n\ndef _capability(',
      "copies a value with a new reranker"),
+    # A reply that starts from the roster on one branch only.
+    ("mcp/server.py", "else introspect.scopes_payload(cfg.registry))",
+     "else _roster(cfg.registry))", "its declared base"),
+    # A reply whose branch calls an undeclared receiver's roster, or whose branches both call one.
+    ("mcp/server.py", "cfg.agent.scopes_payload()", "cfg.remote.scopes_payload()",
+     "exactly its declared bases"),
+    ("mcp/server.py", "cfg.agent.scopes_payload()", "introspect.scopes_payload(cfg.registry)",
+     "exactly its declared bases"),
+    # An empty dict that is a value of its own rather than an `or` fallback is a nested object.
+    ("render.py", '"known": True, "state": state,', '"known": True, "state": state, "extra": {},',
+     "holds another"),
     # A dict literal in a nested function inside a builder.
     ("render.py", "    c = result.capability\n",
      '    c = result.capability\n\n    def _h():\n        return {"x": 1}\n', "nested function"),
@@ -348,6 +359,7 @@ def test_a_word_written_straight_onto_the_wire_is_in_the_vocabulary(tmp_path):
 # engine sends that the contract lacks fails here, whatever code added it.
 FRAME_OBJECTS = {
     "search.frame.json": [((), "search"), (("passages", "*"), "passage"),
+                          (("outline_records", "*"), "outline_record"),
                           (("filters",), "applied_filters"), (("retrieval_mode",), "retrieval_mode"),
                           (("refresh",), "refresh")],
     "status.frame.json": [((), "status"), (("drift",), "drift"), (("refresh",), "refresh"),
@@ -355,12 +367,27 @@ FRAME_OBJECTS = {
     "documents.frame.json": [((), "documents"), (("documents", "*"), "document"),
                              (("refresh",), "refresh")],
     "expand.frame.json": [((), "expand"), (("note",), "expand_note")],
-    "list_scopes.frame.json": [((), "scope_list"), (("scopes", "*"), "scope_row"),
-                               (("retrieval_arms",), "arms")],
+    # A reply with several bases is held to the ONE base its frame was built from, and must carry
+    # every key of its own: the registry's roster, or the agent's.
+    "list_scopes.frame.json": [((), "scope_list_reply", "scope_list"), (("scopes", "*"), "scope_row"),
+                               (("scopes", "*", "refresh"), "refresh"),
+                               (("retrieval_arms",), "arms"), (("server",), "server")],
+    "agent-list_scopes.frame.json": [((), "scope_list_reply", "agent_scope_list"),
+                                     (("scopes", "*"), "agent_scope_row"),
+                                     (("scopes", "*", "refresh"), "agent_refresh"),
+                                     (("scopes", "*", "refresh", "snapshot"), "snapshot"),
+                                     (("retrieval_arms",), "arms"), (("server",), "server")],
 }
-# Keys a caller adds around a builder's result, which the export does not see yet: the
-# `list_scopes` tool (`mcp/server.py:_tool_list_scopes`) adds these two around `scopes_payload`.
-ADDED_AROUND = {"list_scopes.frame.json": {"retrieval_arms", "server"}}
+
+
+def _keys(contract: dict, obj: str, seen: tuple[str, ...] = ()) -> set[str]:
+    """A wire object's keys, with those of every object it extends. A cycle fails by name."""
+    if obj in seen:
+        pytest.fail(f"the contract's extends loops: {' -> '.join((*seen, obj))}")
+    keys = set(contract["payloads"][obj])
+    for base in contract.get("extends", {}).get(obj, []):
+        keys |= _keys(contract, base, (*seen, obj))
+    return keys
 
 
 def _at(value, path):
@@ -383,25 +410,28 @@ def _at(value, path):
 
 
 def test_every_key_in_the_captured_frames_is_in_the_contract():
-    objects = json.loads(COMMITTED.read_text(encoding="utf-8"))["payloads"]
+    contract = json.loads(COMMITTED.read_text(encoding="utf-8"))
     checked = 0
     for name, paths in FRAME_OBJECTS.items():
         frame = json.loads((ROOT / "contract" / "frames" / name).read_text(encoding="utf-8"))
         payload = json.loads(frame["result"]["content"][0]["text"])
-        for path, obj in paths:
+        for path, obj, *branch in paths:
             for value in _at(payload, path):
                 # `status.drift` has two shapes: the drift itself, or the refusal to check it.
                 shape = "drift_unchecked" if obj == "drift" and "error" in value else obj
-                allowed = set(objects[shape]) | (ADDED_AROUND.get(name, set()) if not path else set())
+                if branch:
+                    own = set(contract["payloads"][shape])
+                    assert branch[0] in contract["extends"][shape], (shape, branch)
+                    allowed = own | _keys(contract, branch[0])
+                    assert not (missing := own - set(value)), (
+                        f"{name} lacks {sorted(missing)}, which its {shape} always carries")
+                else:
+                    allowed = _keys(contract, shape)
                 assert not (extra := set(value) - allowed), (
                     f"{name} {'.'.join(path) or '(top)'} sends {sorted(extra)}, which the contract's "
                     f"{shape} lacks")
                 checked += 1
     assert checked >= len(FRAME_OBJECTS) + 5, "the frames held too little to check"
-    # The gap is named, not open-ended: the reply carries exactly those two beyond the builder.
-    frame = json.loads((ROOT / "contract" / "frames" / "list_scopes.frame.json").read_text(encoding="utf-8"))
-    top = set(json.loads(frame["result"]["content"][0]["text"]))
-    assert top - set(objects["scope_list"]) == ADDED_AROUND["list_scopes.frame.json"]
 
 
 def test_an_unwritable_output_is_exit_2():
@@ -424,6 +454,14 @@ def test_a_word_written_into_the_returned_capability_is_read(tmp_path):
           'hyde=hyde, reranker="timeout",')
 
     assert "timeout" in tool.export(root)["retrieval"]["arm_states"]
+
+
+def test_an_empty_dict_used_as_a_fallback_is_not_a_nested_object(tmp_path):
+    (tmp_path / "substrate").mkdir()
+    (tmp_path / "substrate" / "sample.py").write_text(
+        'def payload(m):\n    return {"a": (m or {}).get("x")}\n', encoding="utf-8")
+    body = tool._body(tool._Module(tmp_path, "sample.py").function("payload"))
+    assert [tool._literal_keys(d, "sample") for d in tool._dict_literals(body, "sample")] == [{"a"}]
 
 
 def test_a_repeated_key_is_one_key(tmp_path):

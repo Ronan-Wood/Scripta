@@ -3,8 +3,8 @@ import XCTest
 @testable import ScriptaShared
 
 /// The note path's gate, in the same shape `TranscriptSpineParityTests` established: check what the
-/// app declares against the ENGINE's own vocabulary, parsed from `spine.py`, rather than against a
-/// second copy of the decision.
+/// app declares against the ENGINE's own vocabulary, as the engine states it in its contract
+/// (`EngineVocabulary`), rather than against a second copy of the decision.
 ///
 /// It exists because the failure it covers was measured rather than imagined. On 2026-08-17 a blank
 /// vault refused a hand-written note twice — `no status`, then `no doc_type` — and the app named
@@ -14,49 +14,9 @@ final class NoteWriterTests: XCTestCase {
 
     // MARK: - Against the engine's vocabulary
 
-    /// `#filePath`, not the working directory: `swift test` and Xcode disagree about cwd, and a gate
-    /// that silently finds no file is worse than one that cannot run.
-    private func engineSource(_ relative: String) throws -> String {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()   // ScriptaCoreTests
-            .deletingLastPathComponent()   // Tests
-            .deletingLastPathComponent()   // Core
-            .deletingLastPathComponent()   // repository root
-        let url = root.appendingPathComponent(relative)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw XCTSkip("engine source not present at \(url.path)")
-        }
-        return try String(contentsOf: url, encoding: .utf8)
-    }
-
-    /// The quoted strings of a top-level `NAME: type = frozenset({...})`. Same parser as
-    /// `TranscriptSpineParityTests`, and the same stated cost: it couples to the SHAPE of the Python
-    /// declaration, and a reformat fails the gate rather than passing it empty.
-    private func frozenset(_ name: String, in source: String) -> Set<String>? {
-        let lines = source.components(separatedBy: "\n")
-        guard let start = lines.firstIndex(where: {
-            $0.hasPrefix("\(name):") || $0.hasPrefix("\(name) =")
-        }) else { return nil }
-        var text = "", depth = 0, seen = false
-        for line in lines[start...] {
-            text += line
-            depth += line.filter { $0 == "{" || $0 == "(" }.count
-            depth -= line.filter { $0 == "}" || $0 == ")" }.count
-            if line.contains("{") || line.contains("(") { seen = true }
-            if seen, depth <= 0 { break }
-        }
-        let quoted = text.split(separator: "\"").enumerated()
-            .filter { $0.offset % 2 == 1 }.map { String($0.element) }
-        return quoted.isEmpty ? nil : Set(quoted)
-    }
-
     func testTheStatusIsLegalAndIsSEARCHED() throws {
-        let spine = try engineSource("substrate/substrate/spine.py")
-        guard let statuses = frozenset("STATUSES", in: spine),
-              let included = frozenset("INCLUDED_STATUSES", in: spine) else {
-            return XCTFail("could not parse the status vocabularies out of spine.py — that is a "
-                           + "gate failure, not a pass")
-        }
+        let spine = try EngineVocabulary.load().spine
+        let statuses = spine.statuses, included = spine.includedStatuses
         XCTAssertTrue(statuses.contains(NoteSpine.status),
                       "notes declare status '\(NoteSpine.status)', not in \(statuses.sorted()) — "
                       + "every hand-written note would be refused at compose")
@@ -70,10 +30,7 @@ final class NoteWriterTests: XCTestCase {
     /// accepts but the picker omits is a vocabulary the operator cannot reach from the app; a type
     /// the picker offers but the engine rejects is a note refused at the next compose.
     func testThePickerOffersEXACTLYTheEnginesDocTypes() throws {
-        let spine = try engineSource("substrate/substrate/spine.py")
-        guard let docTypes = frozenset("DOC_TYPES", in: spine) else {
-            return XCTFail("could not parse DOC_TYPES out of spine.py — a gate failure, not a pass")
-        }
+        let docTypes = try EngineVocabulary.load().spine.docTypes
         XCTAssertEqual(Set(NoteSpine.docTypes.map(\.value)), docTypes,
                        "the picker and the engine disagree about doc_type")
         XCTAssertTrue(docTypes.contains(NoteSpine.defaultDocType),
@@ -90,18 +47,16 @@ final class NoteWriterTests: XCTestCase {
 
     /// `unstated` is DECLARABLE but is not a member of `CONFIDENCES` — the engine names it
     /// separately as the no-claim token. Offering it is correct; asserting it belongs to the judged
-    /// set would not be, so it is checked against the token `spine.py` declares for it.
+    /// set would not be, so each offered value is checked against what the engine lets a note
+    /// DECLARE, and the judged set is checked for completeness below.
     func testTheConfidencesAreEngineVocabulary() throws {
-        let spine = try engineSource("substrate/substrate/spine.py")
-        guard let judged = frozenset("CONFIDENCES", in: spine) else {
-            return XCTFail("could not parse CONFIDENCES out of spine.py — a gate failure, not a pass")
-        }
+        let spine = try EngineVocabulary.load().spine
+        let judged = spine.confidences
         for level in NoteSpine.confidences {
-            XCTAssertTrue(judged.contains(level.value)
-                          || spine.contains("UNSTATED_CONFIDENCE = \"\(level.value)\""),
-                          "confidence '\(level.value)' is neither in \(judged.sorted()) nor the "
-                          + "engine's declared no-claim token — a shared note declaring it would "
-                          + "be refused at compose")
+            XCTAssertTrue(spine.declarableConfidences.contains(level.value),
+                          "confidence '\(level.value)' is not one the engine lets a note declare "
+                          + "\(spine.declarableConfidences.sorted()) — a shared note declaring it "
+                          + "would be refused at compose")
         }
         // And every judged value is offered: one missing is a claim the operator cannot make.
         XCTAssertTrue(judged.isSubset(of: Set(NoteSpine.confidences.map(\.value))),

@@ -9,13 +9,7 @@ import XCTest
 /// so the two could also drift and present as "the engine is down".
 final class SocketPathParityTests: XCTestCase {
     func testTheClientDefaultIsTheEngineDefault() throws {
-        let source = try PythonSource.load("substrate/substrate/local_socket.py")
-        guard let match = source.text.range(of: #"DEFAULT_SOCKET = "([^"]+)""#,
-                                            options: .regularExpression) else {
-            return XCTFail("local_socket.py no longer declares DEFAULT_SOCKET as one string literal")
-        }
-        let literal = source.text[match].split(separator: "\"")[1]
-        XCTAssertEqual((String(literal) as NSString).expandingTildeInPath,
-                       SubstrateClient.defaultSocketPath)
+        let engines = try EngineContract.load().socket.defaultPath
+        XCTAssertEqual((engines as NSString).expandingTildeInPath, SubstrateClient.defaultSocketPath)
     }
 }
