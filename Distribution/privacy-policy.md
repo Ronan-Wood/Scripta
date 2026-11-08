@@ -1,7 +1,7 @@
 # Privacy Policy — Scripta
 
 **Effective date:** September 14, 2026
-**Contact:** ronan.wood@outlook.com
+**Contact:** scripta.app@outlook.com
 
 <!-- Host this page publicly (GitHub Pages or any static host) and put its URL in the App
      Store Connect "Privacy Policy URL" field. On rename: find/replace the app name. -->
