@@ -301,8 +301,8 @@ final class WireDecodingTests: XCTestCase {
     /// as 'that scope was never composed', which is the opposite of the truth."
     ///
     /// Synthetic, and said so. Its field names come from the captured row beside it plus the
-    /// two-key except branch that `RenderContractTests` reads out of `introspect.py`, so it cannot
-    /// invent a shape the source does not write.
+    /// `error` key the engine's contract declares for `scope_row` (pinned in `RenderContractTests`),
+    /// so it cannot invent a shape the engine does not send.
     func testAScopeThatFailedToResolveKeepsBothItsFaultAndItsRow() throws {
         let json = """
             {"scope": "gone", "db": "/tmp/gone.db", "vault": "/vaults/gone-vault",

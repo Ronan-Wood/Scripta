@@ -1,29 +1,28 @@
 import XCTest
 @testable import SubstrateKit
 
-/// The drift check: does the Swift decoder still describe the payload `render.py` builds?
+/// The drift check: does the Swift decoder still describe the payloads the engine builds?
 ///
 /// THREE SOURCES ARE MADE TO AGREE, and needing all three is the point:
-///   1. the engine's SOURCE — every key its payload builders literally write
+///   1. the engine's CONTRACT — the keys of every wire object, as the engine states them in
+///      `contract.json` (`EngineContract`), which its own suite holds to its source
 ///   2. the engine's OUTPUT — the key set in the captured golden frames
 ///   3. the Swift DECODER — proven by `WireDecodingTests`' lossless round trip against (2)
-/// A key added to `render.py` fails (1) here on the next run, before anyone re-captures. A key
-/// present in the source but never emitted at runtime fails (2). A key both send and Swift drops
-/// fails the round trip. No single one of the three catches all of that.
-///
-/// The parser's limits are written out at the top of `PythonPayloadSource.swift`. Read them before
-/// concluding a green run means the shape is pinned.
+/// A key added to a builder changes (1) and fails here once the copy is synced. A key present in the
+/// source but never emitted at runtime fails (2). A key both send and Swift drops fails the round
+/// trip. No single one of the three catches all of that.
 final class RenderContractTests: XCTestCase {
 
-    private func render() throws -> PythonSource {
-        try PythonSource.load("substrate/substrate/render.py")
+    private var contract: EngineContract!
+
+    override func setUpWithError() throws {
+        contract = try EngineContract.load()
     }
 
-    // MARK: - render.py
+    // MARK: - Payloads
 
-    func testPassageKeysMatchTheDecoder() throws {
-        let payload = try render().payload(of: "passage")
-        XCTAssertEqual(payload.keys(plus: "out"), [
+    func testPassageKeysMatchTheDecoder() {
+        XCTAssertEqual(contract.keys(of: "passage"), [
             "expand_ref", "citation", "path", "page", "n_chars", "document_class",
             "status", "doc_type", "confidence", "domains", "vault", "supersedes",
             "snippet", "text", "truncated",
@@ -32,48 +31,40 @@ final class RenderContractTests: XCTestCase {
 
     /// `outline_record` is a `passage` plus one discriminator. Checked separately so a second key
     /// bolted onto an orientation record cannot hide behind the passage's own set.
-    func testOutlineRecordAddsOnlyKind() throws {
-        XCTAssertEqual(try render().payload(of: "outline_record").assigned["rec"] ?? [], ["kind"])
+    func testOutlineRecordAddsOnlyKind() {
+        XCTAssertEqual(contract.ownKeys(of: "outline_record"), ["kind"])
+        XCTAssertEqual(contract.extends["outline_record"], ["passage"])
     }
 
     /// THE ONE PRESENCE THIS CLIENT DEPENDS ON, and the inverse of the test that stood here.
     ///
-    /// `render.passage` did not emit `document_class`, so `WirePassage.mapped(documentClass:)` made
-    /// the CALLER state the axis — and every caller stated `reference-frozen`, which is the value
-    /// that reads as settled. The old test fired when the key arrived. This one fires if it ever
-    /// leaves again, because its departure would silently restore that default: `decodeIfPresent`
-    /// reads an absent key and a null one alike, so every passage would map to `.unreported` and
-    /// nothing else would break.
+    /// The engine did not emit `document_class`, so `WirePassage.mapped(documentClass:)` made the
+    /// CALLER state the axis — and every caller stated `reference-frozen`, which is the value that
+    /// reads as settled. The old test fired when the key arrived. This one fires if it ever leaves
+    /// again, because its departure would silently restore that default: `decodeIfPresent` reads an
+    /// absent key and a null one alike, so every passage would map to `.unreported` and nothing else
+    /// would break.
     ///
     /// It pins the VALUES as well as the key. A class this build has no case for refuses by name in
-    /// `mappedDocumentClass`, so the vocabularies must agree — and they are checked against
-    /// `classes.POLICIES` rather than against a list written here, one file over in
-    /// `testDocumentClassVocabularyMatchesTheClassPolicies`.
-    func testPassageCarriesDocumentClassAndItsValuesAreTheClassPolicies() throws {
-        let keys = try render().payload(of: "passage").keys(plus: "out")
-        XCTAssertTrue(keys.contains("document_class"),
-                      "`render.passage` has stopped emitting document_class. Every passage now maps "
-                      + "to `.unreported` and no other test fails — the axis would be silently gone "
-                      + "from the spine, which is the state this client was written to end.")
+    /// `mappedDocumentClass`, so the vocabularies must agree. That the engine sends `null` rather than
+    /// a class name for an absent one is the engine's to keep, and its suite does
+    /// (`substrate/tests/test_render.py`, the `document_class is None` case).
+    func testPassageCarriesDocumentClassAndItsValuesAreTheClassPolicies() {
+        XCTAssertTrue(contract.keys(of: "passage").contains("document_class"),
+                      "the engine's passage has stopped carrying document_class. Every passage now "
+                      + "maps to `.unreported` and no other test fails — the axis would be silently "
+                      + "gone from the spine, which is the state this client was written to end.")
 
         // The three tokens the key can carry. `null` is the fourth thing it can be, and it is a
         // VALUE — `PassageDocumentClass.unreported` — not one of these.
-        let classes = try PythonSource.load("substrate/substrate/classes.py")
-        XCTAssertEqual(try classes.binding("POLICIES").keys(),
-                       Set(PassageDocumentClass.wireTokens))
+        XCTAssertEqual(contract.classes.policies, Set(PassageDocumentClass.wireTokens))
         XCTAssertNil(PassageDocumentClass.named("unreported"),
                      "`unreported` must not be reachable from a wire token — it is the ABSENCE of a "
                      + "class, and a token that produced it would let the engine assert one")
-
-        // And the engine really does send `null` rather than a class name for an absent one.
-        XCTAssertTrue(try render().text.contains("\"document_class\": h.document_class or None"),
-                      "`render.passage` no longer emits `or None` for an absent class. If it now "
-                      + "defaults one, the client's `.unreported` case is unreachable and a "
-                      + "class-less row is being relabelled at the boundary instead.")
     }
 
-    func testRetrievalModeKeysMatchTheDecoder() throws {
-        XCTAssertEqual(try render().payload(of: "retrieval_mode").keys(), [
+    func testRetrievalModeKeysMatchTheDecoder() {
+        XCTAssertEqual(contract.keys(of: "retrieval_mode"), [
             "embedder", "embedder_state", "hyde", "reranker", "expected_mrr", "unmeasured_reason",
             "cohort", "degraded", "fallbacks", "unavailable", "health",
         ])
@@ -82,64 +73,45 @@ final class RenderContractTests: XCTestCase {
     /// `unmeasured_reason` is a CLOSED vocabulary the mapping switches on, so a token added to the
     /// engine and not to `UnmeasuredReason` must fail here rather than at a user's screen — where it
     /// would arrive as a refusal on an otherwise healthy query.
-    func testUnmeasuredReasonVocabularyMatchesTheRetriever() throws {
-        let retriever = try PythonSource.load("substrate/substrate/retrieve/retriever.py")
-        XCTAssertEqual(try retriever.binding("UNMEASURED_REASONS").keys(),
+    func testUnmeasuredReasonVocabularyMatchesTheRetriever() {
+        XCTAssertEqual(contract.retrieval.unmeasuredReasons,
                        Set(UnmeasuredReason.allCases.map(\.rawValue)))
     }
 
     /// `retrieval_mode.health` — the block that retired the client's parse of `unavailable`'s prose.
     /// Its four keys and the arm vocabulary its `arms` map speaks are both pinned: the mapping
     /// compares one value out of that map by name, and a rename there would silently stop promoting
-    /// a dead arm to `.unavailable`.
-    func testEngineHealthKeysAndArmVocabularyMatchTheDecoder() throws {
-        let source = try render()
-        XCTAssertEqual(try source.payload(of: "engine_health").keys(),
-                       ["known", "state", "arms", "note"])
-        XCTAssertEqual(try source.payload(of: "engine_health").keys(dict: 1),
-                       ["known", "state", "arms", "note"],
-                       "both branches of `engine_health` must emit the same key set; a branch that "
-                       + "drops one makes its absence mean either `false` or `this build predates "
-                       + "the field`")
+    /// a dead arm to `.unavailable`. (The engine refuses to export an `engine_health` whose branches
+    /// emit different keys, so one set stands for both.)
+    func testEngineHealthKeysAndArmVocabularyMatchTheDecoder() {
+        XCTAssertEqual(contract.keys(of: "engine_health"), ["known", "state", "arms", "note"])
+        XCTAssertEqual(contract.retrieval.armUnavailable, WireEngineHealth.armUnavailable)
+        XCTAssertEqual(contract.retrieval.armWired, "wired")
+        XCTAssertEqual(contract.retrieval.armOff, "off")
 
-        let stack = try PythonSource.load("substrate/substrate/stack.py")
-        XCTAssertEqual(try stack.stringConstant("ARM_UNAVAILABLE"),
-                       WireEngineHealth.armUnavailable)
-        XCTAssertEqual(try stack.stringConstant("ARM_WIRED"), "wired")
-        XCTAssertEqual(try stack.stringConstant("ARM_OFF"), "off")
-
-        // The three states `WireEngineHealth.mapped()` switches on, read out of the branch that
-        // assigns them. A fourth would refuse at the mapping, by name, on a live query.
-        var states = Set<String>()
-        for line in source.text.components(separatedBy: .newlines) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("state ") || trimmed.hasPrefix("state,") else { continue }
-            for piece in trimmed.components(separatedBy: "\"") where
-                ["ready", "lexical_only", "unreachable"].contains(piece) {
-                states.insert(piece)
-            }
-        }
-        XCTAssertEqual(states, ["ready", "lexical_only", "unreachable"],
-                       "found \(states.sorted()); `engine_health` no longer assigns the three "
-                       + "states `WireEngineHealth.mapped()` knows")
+        // The three states `WireEngineHealth.mapped()` switches on. A fourth would refuse at the
+        // mapping, by name, on a live query.
+        XCTAssertEqual(contract.retrieval.engineHealthStates, ["ready", "lexical_only", "unreachable"],
+                       "`engine_health` no longer assigns the three states "
+                       + "`WireEngineHealth.mapped()` knows")
     }
 
-    func testAppliedFiltersKeysMatchTheDecoder() throws {
-        XCTAssertEqual(try render().payload(of: "applied_filters").keys(), [
+    func testAppliedFiltersKeysMatchTheDecoder() {
+        XCTAssertEqual(contract.keys(of: "applied_filters"), [
             "statuses_included", "statuses_excluded", "sources_excluded",
             "doc_type", "document_class", "vaults", "notes",
         ])
     }
 
-    func testSearchPayloadKeysMatchTheDecoder() throws {
-        XCTAssertEqual(try render().payload(of: "search_payload").keys(), [
+    func testSearchPayloadKeysMatchTheDecoder() {
+        XCTAssertEqual(contract.keys(of: "search"), [
             "scope", "db", "query", "passages", "outline_records",
             "retrieval_mode", "filters", "index_version", "refresh",
         ])
     }
 
-    func testDocumentRecordKeysMatchTheDecoder() throws {
-        XCTAssertEqual(try render().payload(of: "document_record").keys(), [
+    func testDocumentRecordKeysMatchTheDecoder() {
+        XCTAssertEqual(contract.keys(of: "document"), [
             "doc_id", "title", "expand_ref", "passage_count", "vault", "tier",
             "document_class", "status", "doc_type", "confidence", "domains", "supersedes",
             "superseded_by",
@@ -147,7 +119,7 @@ final class RenderContractTests: XCTestCase {
         // `source_path` was here and is deliberately gone: one call returned every note's absolute
         // path, which is the operator's whole directory layout in bulk over a port any local
         // process can reach. Asserted as an ABSENCE so re-adding it has to be a decision.
-        XCTAssertFalse(try render().payload(of: "document_record").keys().contains("source_path"),
+        XCTAssertFalse(contract.keys(of: "document").contains("source_path"),
                        "`document_record` is emitting source_path again — a browse call now "
                        + "discloses every note's filesystem path in bulk, which `expand` already "
                        + "provides one note at a time for a note the caller actually named.")
@@ -157,8 +129,8 @@ final class RenderContractTests: XCTestCase {
     /// rather than left to the key list to imply. Nothing retrieved; an arms block here would report
     /// a stack that did not run, and a null `expected_mrr` beside a list invites the reading that
     /// the LIST is unmeasured rather than inapplicable.
-    func testDocumentsPayloadIsSearchsEnvelopeWithoutTheArms() throws {
-        let keys = try render().payload(of: "documents_payload").keys()
+    func testDocumentsPayloadIsSearchsEnvelopeWithoutTheArms() {
+        let keys = contract.keys(of: "documents")
         XCTAssertEqual(keys, [
             "scope", "db", "documents", "returned", "total", "filters", "index_version", "refresh",
         ])
@@ -169,11 +141,8 @@ final class RenderContractTests: XCTestCase {
         XCTAssertTrue(keys.contains("returned") && keys.contains("total"))
     }
 
-    // MARK: - refresh_state.py, introspect.py, freshness.py, mcp/server.py
-
-    func testRefreshBlockKeysMatchTheDecoder() throws {
-        let source = try PythonSource.load("substrate/substrate/refresh_state.py")
-        XCTAssertEqual(try source.payload(of: "_block").keys(), [
+    func testRefreshBlockKeysMatchTheDecoder() {
+        XCTAssertEqual(contract.keys(of: "refresh"), [
             "known", "outcome", "attempted", "succeeded", "frozen", "frozen_since", "note",
         ])
     }
@@ -182,9 +151,8 @@ final class RenderContractTests: XCTestCase {
     /// null verdict rather than `False` is the whole tri-state. A new outcome this build has no
     /// interpretation for is handled by the engine (it reports the word and withholds a verdict),
     /// so this asserts the vocabulary is still the one the tests reason about.
-    func testRefreshOutcomeVocabulary() throws {
-        let source = try PythonSource.load("substrate/substrate/refresh_state.py")
-        XCTAssertEqual(try source.binding("OUTCOMES").keys(), [
+    func testRefreshOutcomeVocabulary() {
+        XCTAssertEqual(contract.refresh.outcomes, [
             "unchanged", "refreshed", "compose_failed", "embed_failed", "skipped",
             // Both added 2026-08-03, both reporting a refusal to ACT rather than a failure to, and
             // both `frozen` verdicts that are NOT `false` — which is why they belong in a test that
@@ -203,43 +171,48 @@ final class RenderContractTests: XCTestCase {
         ])
     }
 
-    func testStatusPayloadKeysMatchTheDecoder() throws {
-        let source = try PythonSource.load("substrate/substrate/introspect.py")
-        XCTAssertEqual(try source.payload(of: "status_payload").keys(plus: "out"), [
+    func testStatusPayloadKeysMatchTheDecoder() {
+        XCTAssertEqual(contract.keys(of: "status"), [
             "scope", "db", "vault", "composed", "index_version",
             "documents", "passages", "outlines", "schema_version",
             "by_vault", "by_tier", "by_status", "by_doc_type", "by_confidence",
             "entities", "retrieval_arms", "vectors", "refresh", "exposed", "drift",
         ])
-        XCTAssertEqual(try source.payload(of: "arms").keys(),
+        XCTAssertEqual(contract.keys(of: "arms"),
                        ["embedder", "hyde", "hyde_requested", "reranker", "unavailable"])
-        XCTAssertEqual(try source.payload(of: "vector_status").keys(),
+        XCTAssertEqual(contract.keys(of: "vector"),
                        ["model", "stored", "chunks", "complete", "note"])
     }
 
-    func testScopeListKeysMatchTheDecoder() throws {
-        let source = try PythonSource.load("substrate/substrate/introspect.py")
-        let payload = try source.payload(of: "scopes_payload")
-        // Two literals: the per-scope row, then the envelope around the list.
-        XCTAssertEqual(payload.keys(dict: 0, plus: "row"), [
+    func testScopeListKeysMatchTheDecoder() {
+        XCTAssertEqual(contract.keys(of: "scope_row"), [
             "scope", "db", "vault", "composed", "index_present", "refresh", "sources", "error",
         ])
-        XCTAssertEqual(payload.keys(dict: 1), ["scopes", "registry"])
+        XCTAssertEqual(contract.keys(of: "scope_list"), ["scopes", "registry"])
     }
 
-    func testDriftKeysMatchTheDecoder() throws {
-        let source = try PythonSource.load("substrate/substrate/freshness.py")
-        XCTAssertEqual(try source.payload(of: "drift").keys(), [
+    /// The `list_scopes` TOOL adds the serving process's arms and what kind of server it is around
+    /// the roster, and `WireScopeList` decodes both. They are the facts a client uses to decide
+    /// whether to attach to an engine it did not start, so a rename here is an attach that silently
+    /// stops seeing them.
+    func testTheListScopesReplyCarriesTheServerFactsTheDecoderReads() {
+        XCTAssertEqual(contract.ownKeys(of: "scope_list_reply"), ["retrieval_arms", "server"])
+        XCTAssertEqual(Set(contract.extends["scope_list_reply"] ?? []),
+                       ["scope_list", "agent_scope_list"])
+        XCTAssertEqual(contract.keys(of: "server"), ["read_only", "agent_mode", "refresh_every"])
+    }
+
+    func testDriftKeysMatchTheDecoder() {
+        XCTAssertEqual(contract.keys(of: "drift"), [
             "stale", "checkable", "added", "removed", "changed",
             "checked", "unverifiable", "unreadable",
         ])
     }
 
-    func testExpandKeysMatchTheDecoder() throws {
-        let source = try PythonSource.load("substrate/substrate/mcp/server.py")
-        XCTAssertEqual(try source.payload(of: "_tool_expand").keys(plus: "out"),
+    func testExpandKeysMatchTheDecoder() {
+        XCTAssertEqual(contract.keys(of: "expand"),
                        ["scope", "mode", "index_version", "passage", "note"])
-        XCTAssertEqual(try source.payload(of: "_note_text").keys(),
+        XCTAssertEqual(contract.keys(of: "expand_note"),
                        ["path", "text", "n_chars", "truncated", "stale"])
     }
 
@@ -249,44 +222,35 @@ final class RenderContractTests: XCTestCase {
     /// against `spine.INCLUDED_STATUSES`. `RetrievalClass.isDefault` is what `ExclusionFilter`
     /// computes the whole disclosure from, so a status moving across that partition in the engine
     /// silently inverts the sentence the reader is shown.
-    func testStatusVocabularyMatchesSpine() throws {
-        let spine = try PythonSource.load("substrate/substrate/spine.py")
-        let statuses = try spine.binding("STATUSES").members
+    func testStatusVocabularyMatchesSpine() {
+        let statuses = contract.spine.statuses
         XCTAssertEqual(statuses, Set(PassageStatus.allCases.map(\.rawValue)))
-
-        let included = try spine.binding("INCLUDED_STATUSES").members
-        XCTAssertEqual(included, Set(RetrievalClass.allCases.filter(\.isDefault).map(\.rawValue)))
+        XCTAssertEqual(contract.spine.includedStatuses,
+                       Set(RetrievalClass.allCases.filter(\.isDefault).map(\.rawValue)))
 
         // `sources` is the fifth class and is NOT a status — it comes from the class partition.
-        let excludedClasses = try PythonSource
-            .load("substrate/substrate/classes.py").binding("EXCLUDED_CLASSES").members
-        XCTAssertEqual(excludedClasses, ["conversation"])
+        XCTAssertEqual(contract.classes.excluded, ["conversation"])
         XCTAssertEqual(Set(RetrievalClass.allCases.map(\.rawValue)), statuses.union(["sources"]))
     }
 
-    func testDocTypeVocabularyMatchesSpine() throws {
-        let spine = try PythonSource.load("substrate/substrate/spine.py")
-        XCTAssertEqual(try spine.binding("DOC_TYPES").members,
-                       Set(PassageDocType.allCases.map(\.rawValue)))
+    func testDocTypeVocabularyMatchesSpine() {
+        XCTAssertEqual(contract.spine.docTypes, Set(PassageDocType.allCases.map(\.rawValue)))
     }
 
-    /// `STORED_CONFIDENCES` is composed rather than written out, so the composition is pinned as
-    /// well as the terms. Without the two `contains` checks a third term added to the union would
-    /// widen the engine's vocabulary and this test would not notice.
-    func testConfidenceVocabularyMatchesSpine() throws {
-        let spine = try PythonSource.load("substrate/substrate/spine.py")
-        let judged = try spine.binding("CONFIDENCES").members
-        let unstated = try spine.stringConstant("UNSTATED_CONFIDENCE")
-        let unjudged = try spine.stringConstant("UNJUDGED_CONFIDENCE")
+    /// `STORED_CONFIDENCES` is composed rather than written out, and the engine exports the
+    /// composition as evaluated, so the composed sets are pinned as well as the terms. Without them
+    /// a third term added to the union would widen the engine's vocabulary and this test would not
+    /// notice.
+    func testConfidenceVocabularyMatchesSpine() {
+        let judged = contract.spine.confidences
+        let unstated = contract.spine.unstatedConfidence
+        let unjudged = contract.spine.unjudgedConfidence
 
         XCTAssertEqual(judged, Set(PassageConfidence.allCases.filter(\.isJudged).map(\.rawValue)))
         XCTAssertEqual(judged.union([unstated, unjudged]),
                        Set(PassageConfidence.allCases.map(\.rawValue)))
-
-        XCTAssertTrue(spine.text.contains(
-            "DECLARABLE_CONFIDENCES: frozenset[str] = CONFIDENCES | {UNSTATED_CONFIDENCE}"))
-        XCTAssertTrue(spine.text.contains(
-            "STORED_CONFIDENCES: frozenset[str] = DECLARABLE_CONFIDENCES | {UNJUDGED_CONFIDENCE}"))
+        XCTAssertEqual(contract.spine.declarableConfidences, judged.union([unstated]))
+        XCTAssertEqual(contract.spine.storedConfidences, judged.union([unstated, unjudged]))
     }
 
     /// The three tokens, plus the assertion that keeps the fourth case honest.
@@ -295,10 +259,8 @@ final class RenderContractTests: XCTestCase {
     /// the engine sends when the index row carries no class. It is compared through `wireToken` and
     /// not `allCases` for that reason — and the count check is what stops a second token-less case
     /// being added, which would widen the enum past the vocabulary without failing anything.
-    func testDocumentClassVocabularyMatchesTheClassPolicies() throws {
-        let classes = try PythonSource.load("substrate/substrate/classes.py")
-        XCTAssertEqual(try classes.binding("POLICIES").keys(),
-                       Set(PassageDocumentClass.wireTokens))
+    func testDocumentClassVocabularyMatchesTheClassPolicies() {
+        XCTAssertEqual(contract.classes.policies, Set(PassageDocumentClass.wireTokens))
         XCTAssertEqual(PassageDocumentClass.allCases.filter { $0.wireToken == nil },
                        [.unreported],
                        "exactly one case may be token-less: the one that means the engine sent none")
@@ -307,46 +269,23 @@ final class RenderContractTests: XCTestCase {
                        + "indistinguishable from an axis nobody rendered")
     }
 
-    // MARK: - The two prose fields the mapping has to read
+    // MARK: - The arm vocabulary
 
     /// `retrieval_mode.unavailable` is free prose, and the arm names in `health.arms` are recovered
-    /// from each entry's LEADING TOKEN — by the ENGINE now, in `Stack.unavailable_arms`, which is
-    /// where the parse belongs. THE SWIFT SIDE NO LONGER READS THOSE SENTENCES; it reads the map.
-    /// The rule still has to hold for the map to be right, and it is now enforceable in one place:
-    /// every entry goes through `_unreachable`, whose f-string puts the arm first.
-    func testEveryUnavailableEntryIsBuiltByTheOneSpellingThatLeadsWithItsArm() throws {
-        let stack = try PythonSource.load("substrate/substrate/stack.py")
-        XCTAssertTrue(stack.text.contains("return f\"{arm} {model!r} {why}\""),
-                      "`_unreachable` no longer leads with the arm name, so `Stack.unavailable_arms`"
-                      + " cannot recover it and `health.arms` will read healthy over a dead arm")
-
-        var arms: [String] = []
-        for line in stack.text.components(separatedBy: .newlines) {
-            guard let range = line.range(of: "unavailable.append(_unreachable(\"") else { continue }
-            arms.append(String(line[range.upperBound...].prefix { $0.isLetter }))
-        }
-        XCTAssertEqual(arms.count, 3, "expected one append per arm, all through `_unreachable`; a "
-                       + "hand-built entry would not be covered by the spelling asserted above")
-        XCTAssertEqual(Set(arms), ["embedder", "hyde", "reranker"])
+    /// from each entry's LEADING TOKEN by the engine (`Stack.unavailable_arms`). This client reads
+    /// the map, never the sentences; that every entry leads with its arm is the engine's to keep,
+    /// and its suite does (`substrate/tests/test_unavailable_arms.py`). Pinned here: the arm names
+    /// that map is keyed by.
+    func testTheArmNamesAreTheEngines() {
+        XCTAssertEqual(contract.retrieval.arms, ["embedder", "hyde", "reranker"])
     }
 
     /// The arm state words `mappedArms` translates — now for all THREE arms, since `embedder_state`
     /// gave the embedder the vocabulary it lacked. `fell_back` here becomes `EngineArmState.fellBack`
     /// whose `label` is `"fell back"`: different strings, deliberately, since one is wire and one is
     /// display, and they are separate properties so neither can stand in for the other.
-    func testArmStateVocabularyMatchesTheCapabilityDerivation() throws {
-        let retriever = try PythonSource.load("substrate/substrate/retrieve/retriever.py")
-        var words = Set<String>()
-        for line in retriever.text.components(separatedBy: .newlines) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            for arm in ["hyde", "reranker", "embedder_state"]
-            where trimmed.hasPrefix("\(arm) = \"") {
-                let body = trimmed.dropFirst("\(arm) = \"".count)
-                if let close = body.firstIndex(of: "\"") { words.insert(String(body[..<close])) }
-            }
-        }
-        XCTAssertGreaterThanOrEqual(words.count, 3, "found \(words.count) arm state words in "
-                                    + "_capability; the parse is not finding the assignments")
+    func testArmStateVocabularyMatchesTheCapabilityDerivation() {
+        let words = contract.retrieval.armStates
         XCTAssertEqual(words, ["ran", "off", "skipped", "fell_back"])
         XCTAssertEqual(Set(EngineArmState.wireTokens), words,
                        "`EngineArmState.byWireToken` is the only door from the wire; a word the "
@@ -364,79 +303,28 @@ final class RenderContractTests: XCTestCase {
 
     // MARK: - The tier numbers
 
-    /// `EngineTier`'s ceiling, floor and case count are MEASUREMENTS whose only link to
-    /// `EXPERIMENTS.md` was a comment. This is that link, made checkable: the numbers must still
-    /// appear in the sections the comment names.
-    func testEngineTierNumbersAreStillInExperiments() throws {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-        let url = root.appendingPathComponent("substrate/EXPERIMENTS.md")
-        let text = try String(contentsOf: url, encoding: .utf8)
-
-        XCTAssertTrue(text.contains("44-case cohort"),
-                      "the cohort heading EngineTier.caseCount cites is gone from EXPERIMENTS.md")
-        XCTAssertTrue(text.contains("\(EngineTier.ceiling)"),
-                      "EngineTier.ceiling (\(EngineTier.ceiling)) no longer appears in "
-                      + "EXPERIMENTS.md — the client is claiming a tier nothing measured")
-        XCTAssertTrue(text.contains("nothing installed. \(EngineTier.floor)"),
-                      "EngineTier.floor (\(EngineTier.floor)) is no longer the number in the "
-                      + "THE FLOOR heading")
-        XCTAssertTrue(text.contains("Measured at \(EngineTier.caseCount) cases"))
+    /// `EngineTier`'s ceiling, floor and case count are MEASUREMENTS, and the engine states them
+    /// (from the sections of its `EXPERIMENTS.md` that hold them). The client may not claim a tier
+    /// nothing measured.
+    func testEngineTierNumbersAreTheEnginesMeasurements() {
+        XCTAssertEqual(contract.tiers.ceiling, EngineTier.ceiling,
+                       "EngineTier.ceiling is not the engine's measured ceiling")
+        XCTAssertEqual(contract.tiers.floor, EngineTier.floor,
+                       "EngineTier.floor is not the engine's measured floor")
+        XCTAssertEqual(contract.tiers.caseCount, EngineTier.caseCount)
     }
 
-    // MARK: - The parser itself
+    // MARK: - The contract itself
 
-    /// FLOORS, for the same reason `ThemeTokenSource` asserts them: this couples to the shape of
-    /// the Python, and a reformat that stops the parser recognising a dict would otherwise turn
-    /// every assertion above into a confusing individual diff instead of one loud failure.
-    func testTheContractParserFoundEverythingItShould() throws {
-        let sources: [(String, [String])] = [
-            ("substrate/substrate/render.py",
-             ["passage", "outline_record", "retrieval_mode", "engine_health", "applied_filters",
-              "search_payload", "document_record", "documents_payload"]),
-            ("substrate/substrate/introspect.py", ["arms", "vector_status", "status_payload",
-                                                   "scopes_payload"]),
-            ("substrate/substrate/refresh_state.py", ["_block"]),
-            ("substrate/substrate/freshness.py", ["drift"]),
-            ("substrate/substrate/mcp/server.py", ["_tool_expand", "_note_text"]),
-        ]
-        var builders = 0
-        var keys = 0
-        for (path, functions) in sources {
-            let source = try PythonSource.load(path)
-            for function in functions {
-                let payload = try source.payload(of: function)
-                let found = payload.dicts.reduce(0) { $0 + $1.count }
-                    + payload.assigned.values.reduce(0) { $0 + $1.count }
-                XCTAssertGreaterThan(found, 0, "\(path):\(function) parsed to no keys at all")
-                builders += 1
-                keys += found
-            }
+    /// The objects this client decodes, in one place: a contract that lost several would otherwise
+    /// read as many unrelated failures above instead of one list here.
+    func testTheContractHoldsEveryObjectThisClientDecodes() {
+        let decoded = ["passage", "outline_record", "retrieval_mode", "engine_health",
+                       "applied_filters", "search", "document", "documents", "refresh", "status",
+                       "arms", "vector", "scope_row", "scope_list", "scope_list_reply", "server",
+                       "drift", "expand", "expand_note"]
+        for object in decoded {
+            XCTAssertFalse(contract.ownKeys(of: object).isEmpty, "\(object) has no keys")
         }
-        XCTAssertEqual(builders, 16)
-        XCTAssertGreaterThanOrEqual(keys, 90, "only \(keys) payload keys parsed out of the engine; "
-                                    + "the parser has stopped recognising a declaration shape")
-    }
-
-    /// The parser has to be able to SEE a change, or the gate above is decoration.
-    func testTheContractParserDetectsAnAddedKey() {
-        let mutated = """
-            def payload(a, b) -> dict:
-                \"\"\"A docstring with a { brace and a "quoted key": that is not one.\"\"\"
-                # A comment with "another": decoy
-                out = {
-                    "scope": scope,       # trailing comment
-                    "nested": {"inner": 1},
-                    "note": f"an f-string with {a} braces",
-                }
-                out["added_later"] = b
-                return out
-            """
-        let source = PythonSource(path: "<memory>", text: mutated)
-        let payload = try? source.payload(of: "payload")
-        XCTAssertEqual(payload?.keys(plus: "out"), ["scope", "nested", "note", "added_later"],
-                       "the parser must see a bolted-on key, ignore nested keys, and not be fooled "
-                       + "by comments, docstrings or f-string braces")
     }
 }

@@ -29,15 +29,15 @@ and every bolted-on name in a builder must belong to exactly one object. KNOWN L
 matched to objects by their order in the builder, so two literals of one builder that swap places
 swap objects. Each client's own decode tests (which pin every object's exact keys) catch that.
 Also beyond it: a value changed through an alias or through its type (`p = POLICIES; p[k] = …`,
-`dict.update(POLICIES, …)`), a word passed positionally to a constructor or through an alias of
-it, a `Capability` built in another module, and keys a caller adds
-around a builder's result (the `list_scopes` tool adds `retrieval_arms` and `server` around
-`scopes_payload`'s), and a wire object handed on through an alias or a container
-(`r = out; fill(r)`). `tests/test_contract.py` holds the captured frames to the export, which is
-the check on what this cannot see. A key set is every
-key the engine MAY send: one bolted on under a condition, or present in a
-reply the engine sometimes filters, is in it all the same. A nested dict's keys
-belong to the dict that holds it; docstrings and f-strings contribute nothing.
+`dict.update(POLICIES, …)`); a word passed positionally to a constructor, or through an alias of
+it; a `Capability` built in another module; keys a caller adds around a builder's result, unless
+they are declared the way `scope_list_reply`'s are; and a wire object handed on through an alias or
+a container (`r = out; fill(r)`). `tests/test_contract.py` holds the captured frames to the export,
+which is the check on what this cannot see.
+
+A key set is every key the engine MAY send: one bolted on under a condition, or present in a reply
+the engine sometimes filters, is in it all the same. A nested dict with keys is refused; docstrings
+and f-strings contribute nothing.
 
 Exit 0: printed. 2: the export could not be made (or the arguments were wrong), and stderr says
 why.
@@ -77,15 +77,31 @@ WIRE_OBJECTS: dict[str, tuple[str, str, tuple[int, ...], str | None]] = {
     "drift_unchecked": ("introspect.py", "status_payload", (1, 2), None),
     "scope_row": ("introspect.py", "scopes_payload", (0,), "row"),
     "scope_list": ("introspect.py", "scopes_payload", (1,), None),
+    # The roster an agent-mode server answers with, from its published snapshots.
+    "agent_scope_row": ("agent.py", "scopes_payload", (0,), None),
+    "agent_scope_list": ("agent.py", "scopes_payload", (1,), None),
+    # An agent-mode scope's `refresh` block: the registry's (`EXTENDS`) plus how old the snapshot is.
+    "agent_refresh": ("agent.py", "refresh", (), "block"),
+    "snapshot": ("agent.py", "refresh", (0,), None),
     "drift": ("freshness.py", "drift", (0,), None),
     "expand": ("mcp/server.py", "_tool_expand", (0,), "out"),
     "expand_note": ("mcp/server.py", "_note_text", (0,), None),
+    # What the `list_scopes` TOOL adds around the roster (`EXTENDS`), and the `server` block in it.
+    "scope_list_reply": ("mcp/server.py", "_tool_list_scopes", (), "payload"),
+    "server": ("mcp/server.py", "_tool_list_scopes", (0,), None),
 }
-# A wire object whose local starts as another one's, by calling that builder: it carries the other's
-# keys plus its own. Exported, so a change of base changes the contract.
-EXTENDS: dict[str, str] = {"outline_record": "passage"}
+# A wire object whose local starts as another one's: it carries the other's keys plus its own. Each
+# base is named with the exact call that produces it, receiver included, and the local must be
+# assigned from those calls and nothing else. Several bases are branches (`a() if x else b()`), each
+# reached exactly once. Exported, so a change of base changes the contract.
+EXTENDS: dict[str, tuple[tuple[str, str], ...]] = {
+    "outline_record": (("passage", "passage"),),
+    "scope_list_reply": (("agent_scope_list", "cfg.agent.scopes_payload"),   # agent mode
+                         ("scope_list", "introspect.scopes_payload")),        # the registry's
+    "agent_refresh": (("refresh", "refresh_state.block_for"),),
+}
 
-MODULES = ("wire.py", "local_socket.py", "refresh.py", "spine.py", "classes.py", "stack.py",
+MODULES = ("agent.py", "wire.py", "local_socket.py", "refresh.py", "spine.py", "classes.py", "stack.py",
            "retrieve/retriever.py", "refresh_state.py", "render.py", "introspect.py",
            "freshness.py", "mcp/server.py")
 
@@ -269,7 +285,11 @@ def _dict_literals(body: list[ast.stmt], where: str) -> list[ast.Dict]:
 def _literal_keys(node: ast.Dict, where: str) -> set[str]:
     """A wire object's keys. A dict literal nested inside it is refused: its keys are a wire object
     of their own, which `WIRE_OBJECTS` has no way to name yet."""
-    nested = next((n for n in ast.walk(node) if n is not node and isinstance(n, ast.Dict)), None)
+    # An empty `{}` that is only an `or` fallback (`(m or {}).get(…)`) is not an object.
+    fallbacks = {id(v) for n in ast.walk(node) if isinstance(n, ast.BoolOp) and isinstance(n.op, ast.Or)
+                 for v in n.values if isinstance(v, ast.Dict) and not v.keys}
+    nested = next((n for n in ast.walk(node)
+                   if n is not node and isinstance(n, ast.Dict) and id(n) not in fallbacks), None)
     if nested is not None:
         raise ExportError(f"{where}: the dict literal at line {node.lineno} holds another at line "
                           f"{nested.lineno}, whose keys this does not export")
@@ -349,6 +369,28 @@ _READ_ONLY_METHODS = ("append", "extend", "insert", "add")
 _READ_ONLY_FUNCTIONS = ("len", "list", "tuple", "str", "repr", "sorted", "dumps", "isinstance")
 
 
+def _dotted(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        head = _dotted(node.value)
+        return f"{head}.{node.attr}" if head else None
+    return None
+
+
+def _bases_reached(value: ast.expr, bases: tuple[tuple[str, str], ...]) -> list[str] | None:
+    """Which declared bases `value` starts from: one per branch of a conditional, each matched by
+    its exact call path (`introspect.scopes_payload`, receiver and all). None if any branch is
+    something else."""
+    if isinstance(value, ast.IfExp):
+        body, orelse = _bases_reached(value.body, bases), _bases_reached(value.orelse, bases)
+        return None if body is None or orelse is None else body + orelse
+    if not isinstance(value, ast.Call):
+        return None
+    called = _dotted(value.func)
+    return next(([base] for base, call in bases if call == called), None)
+
+
 def _reads_only(call: ast.Call) -> bool:
     func = call.func
     if isinstance(func, ast.Attribute):
@@ -398,8 +440,7 @@ def wire_objects(modules: dict[str, _Module]) -> dict[str, list[str]]:
         for name, _, target in objects:
             if target is None:
                 continue
-            base = EXTENDS.get(name)
-            base_builder = WIRE_OBJECTS[base][1] if base else None
+            bases = EXTENDS.get(name, ())
             if any(a.arg == target for a in params):
                 raise ExportError(f"{where}: {target} is a parameter, whose keys this does not read")
             read: set[int] = set()
@@ -412,13 +453,12 @@ def wire_objects(modules: dict[str, _Module]) -> dict[str, list[str]]:
                 if not hits:
                     continue
                 read.update(id(t) for t in hits)
-                from_base = (base_builder is not None and isinstance(node.value, ast.Call)
-                             and isinstance(node.value.func, ast.Name)
-                             and node.value.func.id == base_builder)
+                reached = _bases_reached(node.value, bases)
+                from_base = reached is not None and sorted(reached) == sorted(b for b, _ in bases)
                 if not (isinstance(node.value, ast.Dict) or from_base):
                     raise ExportError(f"{where}: line {node.lineno} gives {target} keys that are "
-                                      "neither a dict literal nor its declared base's "
-                                      f"({base_builder or 'none declared'})")
+                                      "neither a dict literal nor exactly its declared bases' "
+                                      f"({', '.join(c for _, c in bases) or 'none declared'})")
             if not read:
                 raise ExportError(f"{where}: {target} is never assigned in the builder, so its "
                                   "base keys are not readable")
@@ -677,7 +717,7 @@ def _export(root: Path) -> dict:
         },
         "refresh": {"outcomes": m["refresh_state.py"].keys("OUTCOMES")},
         "payloads": wire_objects(m),
-        "extends": dict(sorted(EXTENDS.items())),
+        "extends": {name: sorted(b for b, _ in bases) for name, bases in sorted(EXTENDS.items())},
         "tiers": _tiers(root),
     }
 

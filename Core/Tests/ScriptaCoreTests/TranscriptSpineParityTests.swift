@@ -10,64 +10,17 @@ import XCTest
 /// (Doc 4 §7: capture writes into the vault, so nothing exports into one), and with it the second
 /// author. But the risk it covered did not go anywhere: a transcript declaring a word the engine
 /// has no case for is refused at compose, after the call has been recorded and written. Comparing
-/// against `spine.py` and `classes.py` catches that at build time and would have caught it before
-/// too — the exporter agreeing with the app said nothing about either agreeing with the engine.
-///
-/// Same trade as `PythonPayloadSource`, with the same stated cost: this couples to the SHAPE of the
-/// Python declaration. Rewrite these as anything other than a top-level `NAME: type = frozenset(…)`
-/// or a `POLICIES` dict of quoted keys and the parser stops finding them — which fails loudly,
-/// where a stale hand-copied duplicate would not have.
+/// against the engine's own vocabularies — as its contract states them (`EngineVocabulary`) —
+/// catches that at build time and would have caught it before too: the exporter agreeing with the
+/// app said nothing about either agreeing with the engine.
 final class TranscriptSpineParityTests: XCTestCase {
-
-    /// `#filePath`, not the working directory: `swift test` and Xcode disagree about cwd, and a gate
-    /// that silently finds no file is worse than one that cannot run.
-    private func engineSource(_ relative: String) throws -> String {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()   // ScriptaCoreTests
-            .deletingLastPathComponent()   // Tests
-            .deletingLastPathComponent()   // Core
-            .deletingLastPathComponent()   // repository root
-        let url = root.appendingPathComponent(relative)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw XCTSkip("engine source not present at \(url.path)")
-        }
-        return try String(contentsOf: url, encoding: .utf8)
-    }
-
-    /// The quoted strings of a top-level `NAME: type = frozenset({...})`, which is how `spine.py`
-    /// declares each vocabulary. Returns nil when the declaration cannot be found or parsed, so a
-    /// reformat fails the gate rather than passing it empty.
-    private func frozenset(_ name: String, in source: String) -> Set<String>? {
-        let lines = source.components(separatedBy: "\n")
-        guard let start = lines.firstIndex(where: {
-            $0.hasPrefix("\(name):") || $0.hasPrefix("\(name) =")
-        }) else { return nil }
-        // The declaration may wrap; take lines until the braces balance.
-        var text = "", depth = 0, seen = false
-        for line in lines[start...] {
-            text += line
-            depth += line.filter { $0 == "{" || $0 == "(" }.count
-            depth -= line.filter { $0 == "}" || $0 == ")" }.count
-            if line.contains("{") || line.contains("(") { seen = true }
-            if seen, depth <= 0 { break }
-        }
-        let quoted = text.split(separator: "\"").enumerated()
-            .filter { $0.offset % 2 == 1 }.map { String($0.element) }
-        return quoted.isEmpty ? nil : Set(quoted)
-    }
 
     /// THE CHECK THAT REPLACED THE PARITY CHECK. Each value capture stamps must be a word the engine
     /// will accept — otherwise the refusal arrives at compose, after the call has been recorded.
     func testTheDeclaredSpineIsEngineVocabulary() throws {
-        let spine = try engineSource("substrate/substrate/spine.py")
-
-        guard let statuses = frozenset("STATUSES", in: spine),
-              let included = frozenset("INCLUDED_STATUSES", in: spine),
-              let docTypes = frozenset("DOC_TYPES", in: spine),
-              let confidences = frozenset("CONFIDENCES", in: spine) else {
-            return XCTFail("could not parse the vocabularies out of spine.py — that is a gate "
-                           + "failure, not a pass")
-        }
+        let spine = try EngineVocabulary.load().spine
+        let statuses = spine.statuses, included = spine.includedStatuses
+        let docTypes = spine.docTypes
 
         XCTAssertTrue(statuses.contains(TranscriptSpine.status),
                       "capture stamps status '\(TranscriptSpine.status)', which is not in the "
@@ -81,22 +34,20 @@ final class TranscriptSpineParityTests: XCTestCase {
         XCTAssertTrue(docTypes.contains(TranscriptSpine.docType),
                       "doc_type '\(TranscriptSpine.docType)' is not in \(docTypes.sorted())")
         // `unstated` is declarable but is not in CONFIDENCES (the judged set), so it is checked
-        // against the token spine.py names for it rather than against that set.
-        XCTAssertTrue(confidences.contains(TranscriptSpine.confidence)
-                      || spine.contains("UNSTATED_CONFIDENCE = \"\(TranscriptSpine.confidence)\""),
-                      "confidence '\(TranscriptSpine.confidence)' is neither a judged confidence "
-                      + "\(confidences.sorted()) nor the engine's declared no-claim token")
+        // against what the engine lets a note DECLARE rather than against that set.
+        XCTAssertTrue(spine.declarableConfidences.contains(TranscriptSpine.confidence),
+                      "confidence '\(TranscriptSpine.confidence)' is not one the engine lets a "
+                      + "note declare \(spine.declarableConfidences.sorted())")
     }
 
     /// The class is a different axis and lives in a different file. `conversation` is the one the
     /// engine WITHHOLDS from default retrieval, which is the whole reason capture declares it.
     func testTheDeclaredClassIsAnEngineClassAndIsWithheld() throws {
-        let classes = try engineSource("substrate/substrate/classes.py")
-        XCTAssertTrue(classes.contains("\"\(TranscriptSpine.documentClass)\": ClassPolicy("),
-                      "class '\(TranscriptSpine.documentClass)' is not a key of classes.POLICIES")
-        XCTAssertTrue(classes.contains("EXCLUDED_CLASSES")
-                      && classes.range(of: "EXCLUDED_CLASSES")
-                          .map { classes[$0.lowerBound...].contains(TranscriptSpine.documentClass) } == true,
+        let classes = try EngineVocabulary.load().classes
+        XCTAssertTrue(classes.policies.contains(TranscriptSpine.documentClass),
+                      "class '\(TranscriptSpine.documentClass)' is not one of the engine's classes "
+                      + "\(classes.policies.sorted())")
+        XCTAssertTrue(classes.excluded.contains(TranscriptSpine.documentClass),
                       "class '\(TranscriptSpine.documentClass)' is no longer withheld by default — "
                       + "call passages would arrive uninvited in every query")
     }
