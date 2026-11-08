@@ -179,7 +179,7 @@ public enum NoteWriter {
         // stayed intact throughout, which is why it read as harmless and why the tests passed.
         let clean = sanitized(title)
         var front = [
-            "title: \"\(clean)\"",
+            "title: \(Frontmatter.quoted(clean))",
             "status: \(NoteSpine.status)",
             "doc_type: \(docType)",
         ]
@@ -195,7 +195,7 @@ public enum NoteWriter {
         // unescaped frontmatter line (no quotes here at all) that a newline could break out of.
         let cleaned = domains.map { ScriptaVault.slug($0) }.filter { !$0.isEmpty }
         if !cleaned.isEmpty {
-            front.append("domains: [\(cleaned.joined(separator: ", "))]")
+            front.append("domains: [\(cleaned.map(Frontmatter.quoted).joined(separator: ", "))]")
         }
         var text = "---\n" + front.joined(separator: "\n") + "\n---\n\n# \(clean)\n"
         if !trimmed.isEmpty { text += "\n\(trimmed)\n" }

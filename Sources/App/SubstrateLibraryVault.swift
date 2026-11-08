@@ -284,7 +284,7 @@ enum SubstrateLibrary {
         status: active
         doc_type: reference
         confidence: unstated
-        domains: [\(unique.joined(separator: ", "))]
+        domains: [\(unique.map(Frontmatter.quoted).joined(separator: ", "))]
         ---
 
         \(PromotedSource.authorshipLine)
@@ -333,7 +333,9 @@ enum SubstrateLibrary {
             let key = String(line[line.startIndex..<separator]).trimmingCharacters(in: .whitespaces)
             var value = String(line[line.index(after: separator)...])
                 .trimmingCharacters(in: .whitespaces)
-            if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
+            if let decoded = Frontmatter.singleQuoted(value) {
+                value = decoded
+            } else if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
                 value = String(value.dropFirst().dropLast())
             }
             out[key] = value
@@ -343,18 +345,14 @@ enum SubstrateLibrary {
 
     // MARK: - Shapes the engine's parsers accept
 
-    /// A frontmatter scalar the engine's own parser reads back unchanged — the rules
-    /// the engine's own frontmatter reader requires: quote a value containing a colon (nothing else marks
-    /// where the value begins), leave one that already contains a quote alone (the parser does no
-    /// unescaping), and never emit a control byte, because a frontmatter line with no colon stops
-    /// the block being treated as frontmatter AT ALL and turns the whole spine into body text.
+    /// A frontmatter scalar every reader reads back unchanged, YAML and the engine's line reader
+    /// alike: `Frontmatter.quoted`. Quoting only a colon, and leaving a value holding a quote bare,
+    /// wrote titles such as `He said "hi": ok` or `*bold*` into a block that is not YAML. A control
+    /// byte still never reaches the line, because a frontmatter line with no colon stops the block
+    /// being treated as frontmatter AT ALL and turns the whole spine into body text.
     private static func scalar(_ value: String) -> String {
-        // The control-byte half is shared; the conditional quoting below is this writer's own.
-        let cleaned = TranscriptWriter.flattenedControlCharacters(value)
-            .trimmingCharacters(in: .whitespaces)
-        if cleaned.contains("\"") { return cleaned }
-        if cleaned.contains(":") || cleaned.isEmpty { return "\"\(cleaned)\"" }
-        return cleaned
+        Frontmatter.quoted(TranscriptWriter.flattenedControlCharacters(value)
+            .trimmingCharacters(in: .whitespaces))
     }
 
     enum LibraryError: LocalizedError {

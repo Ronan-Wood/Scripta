@@ -140,14 +140,10 @@ final class TranscriptSpineParityTests: XCTestCase {
         guard let front = Frontmatter.split(text)?.frontmatter else {
             return XCTFail("no frontmatter\n\n\(text)")
         }
-        XCTAssertTrue(front.contains("title: \""), "an untitled call must still declare a title:\n\(front)")
+        XCTAssertTrue(front.contains("title: '"), "an untitled call must still declare a title:\n\(front)")
         // And it must be the value the H1 uses, or the two readers disagree again.
         let heading = text.components(separatedBy: "\n").first { $0.hasPrefix("# ") }
         XCTAssertNotNil(heading)
-        let titleLine = front.components(separatedBy: "\n").first { $0.hasPrefix("title:") }
-        let title = titleLine?
-            .replacingOccurrences(of: "title: \"", with: "")
-            .replacingOccurrences(of: "\"", with: "")
-        XCTAssertEqual(heading, "# \(title ?? "")")
+        XCTAssertEqual(heading, "# \(Frontmatter.field(front, "title"))")
     }
 }

@@ -35,8 +35,8 @@ enum TranscriptMetadataEditor {
             let t = $0.trimmingCharacters(in: .whitespaces)
             return t.hasPrefix("title:") || t.hasPrefix("participants:") || t.hasPrefix("tags:")
         }
-        let participantsLine = "participants: [\(participants.map { "\"\($0)\"" }.joined(separator: ", "))]"
-        let tagsLine = "tags: [\(tags.map { "\"\($0)\"" }.joined(separator: ", "))]"
+        let participantsLine = "participants: [\(participants.map(Frontmatter.quoted).joined(separator: ", "))]"
+        let tagsLine = "tags: [\(tags.map(Frontmatter.quoted).joined(separator: ", "))]"
 
         // Re-insert title (if any), participants, and tags immediately after the `duration:` line
         // so the block keeps a stable, readable order.
@@ -45,7 +45,7 @@ enum TranscriptMetadataEditor {
         for line in lines {
             rebuilt.append(line)
             if !inserted, line.trimmingCharacters(in: .whitespaces).hasPrefix("duration:") {
-                if !title.isEmpty { rebuilt.append("title: \"\(title)\"") }
+                if !title.isEmpty { rebuilt.append("title: \(Frontmatter.quoted(title))") }
                 rebuilt.append(participantsLine)
                 rebuilt.append(tagsLine)
                 inserted = true
@@ -53,7 +53,7 @@ enum TranscriptMetadataEditor {
         }
         if !inserted {   // no duration line (unexpected) — fall back to the top of the block
             var at = 0
-            if !title.isEmpty { rebuilt.insert("title: \"\(title)\"", at: at); at += 1 }
+            if !title.isEmpty { rebuilt.insert("title: \(Frontmatter.quoted(title))", at: at); at += 1 }
             rebuilt.insert(participantsLine, at: at); at += 1
             rebuilt.insert(tagsLine, at: at)
         }
@@ -109,7 +109,7 @@ enum TranscriptMetadataEditor {
               Frontmatter.rawValue(split.frontmatter, "commitments").isEmpty else { return }
 
         let list = commitments.map(TranscriptWriter.sanitizeScalar).filter { !$0.isEmpty }
-            .map { "\"\($0)\"" }.joined(separator: ", ")
+            .map(Frontmatter.quoted).joined(separator: ", ")
         let commitmentsLine = "commitments: [\(list)]"
 
         let lines = split.frontmatter.components(separatedBy: "\n")
@@ -159,7 +159,7 @@ enum TranscriptMetadataEditor {
         }
         guard changed else { return }
 
-        let list = updated.map(TranscriptWriter.sanitizeScalar).map { "\"\($0)\"" }.joined(separator: ", ")
+        let list = updated.map(TranscriptWriter.sanitizeScalar).map(Frontmatter.quoted).joined(separator: ", ")
         let commitmentsLine = "commitments: [\(list)]"
         var lines = split.frontmatter.components(separatedBy: "\n")
         lines.removeAll { $0.trimmingCharacters(in: .whitespaces).hasPrefix("commitments:") }

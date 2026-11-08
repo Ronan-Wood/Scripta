@@ -16,7 +16,8 @@ dependencies = [
     # without declaring it. Built from source below; the version bound is TableFormer's own.
     "opencv-python-headless>=5.0.0.93,<6",
     # `blobs gc` reads a note's frontmatter as YAML, so a reference spelled in any valid YAML keeps
-    # its original. docling already pulls it in; gc must not depend on that.
+    # its original; `substrate frontmatter check|fix` and compose's count read it that way too.
+    # docling already pulls it in; the engine must not depend on that.
     "pyyaml>=6.0.3,<7",
 ]
 
@@ -65,7 +66,8 @@ opencv-python-headless = { ENABLE_HEADLESS = "1", ENABLE_CONTRIB = "0", CMAKE_AR
 [dependency-groups]
 dev = ["ipykernel", "ruff>=0.16.7"]
 # The `engine docling` CI job's runner, locked with hashes like the engine it tests.
-test = ["pytest==9.2.0"]
+# hypothesis drives the frontmatter property tests; ruamel.yaml is their YAML 1.2 reader.
+test = ["pytest==9.2.0", "hypothesis==6.170.10", "ruamel.yaml==0.19.1"]
 
 [tool.ruff]
 target-version = "py314"

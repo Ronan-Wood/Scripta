@@ -54,6 +54,7 @@ import json
 import os
 import re
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -473,15 +474,40 @@ def _walk_claims(path: Path, root: yaml.Node, block: list[str], scan: Scan,
                         Ref(path, key, h) for h in hints[key, id(node)])
 
 
-def _text_refs(path: Path, text: str, scan: Scan) -> None:
-    """References in one decoding of a note: the frontmatter as YAML, every other line by the key
-    scan, and every checksum anywhere in the text by the backstop."""
+def _leading_block(text: str) -> tuple[list[str], int | None]:
+    """The note's lines, and where its frontmatter block ends (None when it has none)."""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     end = None
     if lines and lines[0].rstrip() == "---":
         # Fences in the first column only, as the note reader and Obsidian take them: an indented
         # one is text inside a block, not its end.
         end = next((i for i in range(1, len(lines)) if lines[i].rstrip() in ("---", "...")), None)
+    return lines, end
+
+
+def _unread_claim(block: list[str], as_12: bool) -> bool:
+    """A frontmatter block that is not YAML and could name a blob: gc refuses it unless it is the
+    engine's own dialect (`_engine_dialect`)."""
+    return not as_12 and _may_claim("\n".join(block))
+
+
+def admitted_only_by_dialect(data: bytes) -> bool:
+    """Whether gc reads the note `data` only through `_engine_dialect`, in any decoding gc reads it
+    in. `substrate frontmatter check` counts these, so the heuristic can go when none is left."""
+    for text in _decodings(data):
+        lines, end = _leading_block(text)
+        if end is None or not _may_claim("\n".join(lines[1:end])):
+            continue  # the cheap test first: composing is most of the cost
+        block = lines[1:end]
+        if _unread_claim(block, _compose(block)[0] is not False) and _engine_dialect(block):
+            return True
+    return False
+
+
+def _text_refs(path: Path, text: str, scan: Scan) -> None:
+    """References in one decoding of a note: the frontmatter as YAML, every other line by the key
+    scan, and every checksum anywhere in the text by the backstop."""
+    lines, end = _leading_block(text)
     block = lines[1:end] if end else []
     front, key_lines, as_12 = _yaml_refs(path, block, scan) if end is not None else (None, set(), False)
     unparsed = end is not None and not as_12
@@ -491,7 +517,7 @@ def _text_refs(path: Path, text: str, scan: Scan) -> None:
         scan.malformed.append(f"{path}: a control character on a frontmatter line that names a "
                               "checksum key or holds an escape leaves what it names uncertain. "
                               "Remove it and run gc again.")
-    if unparsed and _may_claim("\n".join(block)) and not _engine_dialect(block):
+    if end is not None and _unread_claim(block, as_12) and not _engine_dialect(block):
         # A reader more lenient than PyYAML may still accept it and read a claim the line scan
         # cannot (under a comment, nested, escaped, aliased), so nothing it names is certain.
         scan.malformed.append(
@@ -546,13 +572,19 @@ def _text_refs(path: Path, text: str, scan: Scan) -> None:
 
 
 def _walk(vault: Path, scan: Scan) -> None:
+    for p in iter_notes(vault, scan.errors):
+        _note_refs(p, scan)
+
+
+def iter_notes(vault: Path, errors: list[str]) -> Iterator[Path]:
     """Every `.md` under `vault`, archived, superseded, template and hidden folders included: a
     reference anywhere keeps a blob alive. Directory links are followed once each, so a vault built
-    from links is read whole and a link cycle ends."""
+    from links is read whole and a link cycle ends. What cannot be read is added to `errors`.
+    `substrate frontmatter` walks the same notes, so it checks what gc reads."""
     seen: set[tuple[int, int]] = set()
 
     def record(e: OSError) -> None:
-        scan.errors.append(f"{e.filename or vault}: {e.strerror or e}")
+        errors.append(f"{e.filename or vault}: {e.strerror or e}")
 
     for dirpath, dirnames, filenames in os.walk(vault, followlinks=True, onerror=record):
         try:
@@ -570,7 +602,7 @@ def _walk(vault: Path, scan: Scan) -> None:
             lower = name.lower()
             if lower.endswith(".md.icloud"):
                 # Evicted by iCloud: the note exists, its text is not on this Mac.
-                scan.errors.append(f"{p}: an evicted iCloud note; download it to read its references")
+                errors.append(f"{p}: an evicted iCloud note; download it to read its references")
             elif os.path.islink(p) and not os.path.exists(p):
                 # `os.walk` lists a link it cannot resolve as a file, whether it pointed at a note or
                 # at a whole folder of them. Either way something is unread.
@@ -581,9 +613,9 @@ def _walk(vault: Path, scan: Scan) -> None:
                     why = ("a link whose target is not there (unmounted or moved?)"
                            if e.errno == errno.ENOENT else
                            f"a link that cannot be followed ({e.strerror or e})")
-                scan.errors.append(f"{p}: {why}")
+                errors.append(f"{p}: {why}")
             elif lower.endswith(".md"):
-                _note_refs(p, scan)
+                yield p
 
 
 def scan(registry: str | Path | None = None) -> Scan:

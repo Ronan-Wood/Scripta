@@ -1017,6 +1017,38 @@ def _resolve_identity(store, vault_dir: Path) -> dict | None:
     return {"entities": len(entities), "documents": mentioned, "source": declared}
 
 
+def _report_frontmatter(notes) -> None:
+    """A count over the notes compose reads, never a refusal: a note in the engine's old dialect
+    still composes. Printed because YAML readers (Obsidian, `blobs gc`) cannot read such a note, and
+    `substrate frontmatter fix` rewrites it. `check` reads every note gc reads, so it can name more."""
+    found: dict[str, int] = {}
+    try:
+        from substrate import frontmatter as fm
+        from substrate.freshness import read_bounded
+        from substrate.markdown.reader import normalized_text
+        from substrate.notes import MAX_NOTE_BYTES
+
+        for note in notes:
+            try:
+                data = read_bounded(note.path, MAX_NOTE_BYTES)
+            except OSError:
+                continue
+            try:
+                text = normalized_text(data)
+            except UnicodeDecodeError:
+                text = None
+            got = fm.assess(text, data)
+            if got is not None:
+                found[got[0]] = found.get(got[0], 0) + 1
+    except Exception as e:  # noqa: BLE001 — a count must never fail the compose it reports on
+        print(f"  frontmatter  not counted ({type(e).__name__}: {e})")
+        return
+    if found:
+        print(f"  frontmatter  {found.get(fm.NOT_YAML, 0)} note(s) not YAML · "
+              f"{found.get(fm.READS_DIFFERENTLY, 0)} read differently by YAML and the engine — "
+              f"`substrate frontmatter check` names them, `fix` rewrites them")
+
+
 def cmd_compose(args: argparse.Namespace) -> int:
     """Resolve a project vault's manifest, ingest the composed note set, index it, and PROVE the
     composition — the inheritance mechanism end to end (Doc 2 §1–2, §6).
@@ -1248,6 +1280,7 @@ def cmd_compose(args: argparse.Namespace) -> int:
             print(f"      {path}: {name} — {detail}")
     else:
         print(f"  A22 per-note PASS  {len(ingest_dirs)} note(s) · 0 quality warnings")
+    _report_frontmatter(scope.notes)
     print(f"  db: {db} (schema v{s['schema_version']}) · index {index_version}")
 
     # Register the scope only now — after every gate passed. The registry's contract is that a
@@ -1753,6 +1786,51 @@ def _refresh_outcomes() -> list[str]:
 
 def _mb(n: int) -> str:
     return f"{n / 1e6:,.1f} MB"
+
+
+def cmd_frontmatter(args: argparse.Namespace) -> int:
+    """`check`: every note in the registered vaults (or one scope's) whose frontmatter is not YAML,
+    or that YAML reads differently from the engine. `fix`: the same, with the rewrite of each note
+    that is not YAML; it writes only with `--write`, and only into project vaults unless
+    `--include-inherited`. Exit 1 while a note that is not YAML is left, 2 when a vault could not be
+    read whole, else 0: a note that is YAML but read differently is reported, not counted."""
+    from substrate import frontmatter as fm
+    from substrate import vault as _vault
+
+    try:
+        vaults, projects = fm.vaults_of(args.scope, args.registry)
+    except (scopes.ScopeError, _vault.VaultError, OSError, RuntimeError, ValueError) as e:
+        print(f"FATAL: {e}", file=sys.stderr)
+        return 2
+    fixing = args.frontmatter_cmd == "fix"
+    writing = fixing and args.write
+    rep = fm.check(vaults, fix=fixing, write=writing,
+                   writable=None if getattr(args, "include_inherited", False) else projects)
+    for f in rep.findings:
+        print(f"{f.path}: {f.kind}")
+        for r in f.reasons:
+            print(f"    {r}")
+        if not fixing:
+            continue
+        if f.path in rep.written:
+            print("    fixed")
+        elif f.fixed is not None:
+            print("    can be fixed (dry run; --write --include-inherited applies)" if f.inherited
+                  else "    can be fixed (dry run; --write applies)")
+        else:
+            print(f"    not fixed: {f.refused}")
+    for e in rep.errors:
+        print(f"ERROR: {e}", file=sys.stderr)
+    for p in rep.not_utf8:
+        print(f"{p}: not UTF-8, so not read (compose refuses it too)")
+    not_yaml = [f for f in rep.findings if f.kind == fm.NOT_YAML]
+    left = [f for f in not_yaml if f.path not in rep.written]
+    print(f"\n{rep.notes} note(s) in {len(rep.vaults)} vault(s): {len(not_yaml)} not YAML, "
+          f"{len(rep.findings) - len(not_yaml)} read differently by YAML and the engine"
+          + (f"; {len(rep.written)} written, {len(left)} not YAML left" if writing else ""))
+    if rep.errors:
+        return 2
+    return 1 if left else 0
 
 
 def cmd_blobs(args: argparse.Namespace) -> int:
@@ -2446,6 +2524,22 @@ def main(argv: list[str] | None = None) -> int:
     bad.add_argument("--confirm", default=None, metavar="TOKEN")
     bad.add_argument("--registry", default=None)
     bl.set_defaults(func=cmd_blobs)
+
+    fmp = sub.add_parser("frontmatter", help="notes whose frontmatter is not YAML, or that YAML "
+                                             "reads differently from the engine")
+    fmsub = fmp.add_subparsers(dest="frontmatter_cmd", required=True)
+    for name, text in (("check", "report them"),
+                       ("fix", "rewrite them into YAML that reads as the engine reads them "
+                               "(a dry run unless --write)")):
+        p = fmsub.add_parser(name, help=text)
+        p.add_argument("--scope", default=None, help="one registered scope (default: every one)")
+        p.add_argument("--registry", default=None)
+        if name == "fix":
+            p.add_argument("--write", action="store_true", help="apply the rewrites")
+            p.add_argument("--include-inherited", action="store_true",
+                           help="also rewrite inherited vaults such as the core vault, which are "
+                                "otherwise only checked")
+    fmp.set_defaults(func=cmd_frontmatter)
 
     rr = sub.add_parser("refresh-record",
                         help="record what an unattended refresh pass did to a scope, so a search "

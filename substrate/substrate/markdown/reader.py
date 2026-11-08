@@ -35,6 +35,7 @@ from collections import Counter
 from pathlib import Path
 
 from substrate.extract.base import doc_id_for  # stdlib-only; no Docling/torch pulled in
+from substrate.markdown import yaml_scalar
 from substrate.models import Block, Document, Kind
 
 _FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
@@ -180,23 +181,35 @@ def frontmatter_pairs(text: str) -> list[tuple[str, str]] | None:
     return _frontmatter_scan(text)[0]
 
 
-def _frontmatter_scan(text: str) -> tuple[list[tuple[str, str]] | None, int]:
-    """(pairs or None, offset where the body starts). One regex match serves both callers."""
+def raw_frontmatter(text: str) -> tuple[str, list[tuple[str, str]]] | None:
+    """(the block between the fences, its (key, value) pairs with each value exactly as written
+    after the colon, stripped), or None when `text` has no frontmatter. The one splitter: the
+    readers above decode these values, and `substrate frontmatter` compares them with YAML."""
+    pairs, _, block = _raw_scan(text)
+    return None if pairs is None else (block, pairs)
+
+
+def _raw_scan(text: str) -> tuple[list[tuple[str, str]] | None, int, str]:
     m = _FRONTMATTER.match(text)
     if not m:
-        return None, 0
+        return None, 0, ""
     pairs: list[tuple[str, str]] = []
     for line in m.group(1).splitlines():
         if not line.strip():
             continue
         if ":" not in line:
-            return None, 0  # a prose line → this is a thematic break, not frontmatter
+            return None, 0, ""  # a prose line → this is a thematic break, not frontmatter
         k, _, v = line.partition(":")
-        v = v.strip()
-        if len(v) >= 2 and v[0] == v[-1] == '"':
-            v = v[1:-1]
-        pairs.append((k.strip(), v))
-    return pairs, m.end()
+        pairs.append((k.strip(), v.strip()))
+    return pairs, m.end(), m.group(1)
+
+
+def _frontmatter_scan(text: str) -> tuple[list[tuple[str, str]] | None, int]:
+    """(pairs or None, offset where the body starts). One regex match serves both callers."""
+    pairs, end, _ = _raw_scan(text)
+    if pairs is None:
+        return None, 0
+    return [(k, yaml_scalar.decode(v)) for k, v in pairs], end
 
 
 def _is_close_fence(line: str, ch: str, n: int) -> bool:

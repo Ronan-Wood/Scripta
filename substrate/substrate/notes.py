@@ -1069,35 +1069,19 @@ def commit_amend(
     return target, previous, written
 
 
-def _commit_at(dfd: int, name: str, *, target: Path, rel: str, content: bytes,
-               confirm_token: str, book: PlanBook) -> tuple[str, str]:
-    """The write itself, relative to the note's folder descriptor. Returns (replaced sha256,
-    written sha256) — the written bytes may carry a pinned doc_id the caller did not send."""
+def _replace_at(dfd: int, name: str, target: Path, *, content: bytes, stage: str,
+                unchanged: Callable[[bytes], bool], changed: Callable[[], Exception]) -> None:
+    """Replace the note `name` in the folder `dfd` with `content`: staged beside it, its mode kept,
+    renamed over it only if `unchanged` still holds for what it now reads and it is writable, and
+    the folder fsynced. `amend`'s commit and `substrate frontmatter fix` both write through this."""
     import stat as _stat
-
-    planned = book.note_of(confirm_token)
-    # A token no amend plan for THIS note issued is refused before anything is read or checked:
-    # the parse and the gates cost seconds under the server's lock, and an invented token must not
-    # buy them.
-    if planned is None or planned[0] != str(target):
-        raise _not_issued()
-    base = _read_at(dfd, name, target)
-    base_sha = _sha(base)
-    if not secrets.compare_digest(planned[1], base_sha):
-        raise _changed_since_plan(target)
-
-    _fields, content = _check_amend(
-        target=target, rel=rel, base=base, content=content,
-        issued=lambda final: book.matches(confirm_token, _amend_binding(target, base_sha, final)))
-    if not book.redeem(confirm_token, _amend_binding(target, base_sha, content)):
-        raise _not_issued()
 
     try:
         mode = _stat.S_IMODE(os.stat(name, dir_fd=dfd, follow_symlinks=False).st_mode)
     except OSError as e:
         raise NoteError(f"cannot inspect {target}: {e}") from e
     _require_writable_folder(dfd, target)
-    tmp = f".substrate-amend.{secrets.token_hex(8)}.tmp"
+    tmp = f".substrate-{stage}.{secrets.token_hex(8)}.tmp"
     # Staged beside the note so `rename` stays on one filesystem and is atomic. Random, O_EXCL and
     # O_NOFOLLOW: a staging name that could be predicted could be pre-planted as a symlink, which is
     # how the add path once wrote outside the vault. The `.tmp` suffix keeps a crash's leftover out
@@ -1106,7 +1090,7 @@ def _commit_at(dfd: int, name: str, *, target: Path, rel: str, content: bytes,
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
     except OSError as e:
-        raise NoteError(f"cannot stage the amended note beside {target}: {e}") from e
+        raise NoteError(f"cannot stage the rewritten note beside {target}: {e}") from e
     try:
         try:
             # The descriptor is owned by the file object BEFORE anything else can fail, so no
@@ -1117,12 +1101,12 @@ def _commit_at(dfd: int, name: str, *, target: Path, rel: str, content: bytes,
                 fh.flush()
                 os.fsync(fh.fileno())
         except OSError as e:
-            raise NoteError(f"failed staging the amended note for {target}: {e}") from e
+            raise NoteError(f"failed staging the rewritten note for {target}: {e}") from e
 
         # The last look before the swap. Anything that changed the note since the read above is
         # refused here; only a write inside the gap between this read and `rename` is not seen.
-        if _sha(_read_at(dfd, name, target)) != base_sha:
-            raise _changed_since_plan(target)
+        if not unchanged(_read_at(dfd, name, target)):
+            raise changed()
         # Here, not before the gates: a `chmod` changes no byte the checksum above could see, and
         # the gates are seconds in which one could land.
         _require_writable_note(dfd, name, target)
@@ -1145,6 +1129,32 @@ def _commit_at(dfd: int, name: str, *, target: Path, rel: str, content: bytes,
         os.fsync(dfd)
     except OSError:
         # The rename has happened; a filesystem that cannot fsync a directory (some sync providers)
-        # leaves its durability to that provider. Not a failure of the amend.
+        # leaves its durability to that provider. Not a failure of the write.
         pass
+
+
+def _commit_at(dfd: int, name: str, *, target: Path, rel: str, content: bytes,
+               confirm_token: str, book: PlanBook) -> tuple[str, str]:
+    """The write itself, relative to the note's folder descriptor. Returns (replaced sha256,
+    written sha256) — the written bytes may carry a pinned doc_id the caller did not send."""
+    planned = book.note_of(confirm_token)
+    # A token no amend plan for THIS note issued is refused before anything is read or checked:
+    # the parse and the gates cost seconds under the server's lock, and an invented token must not
+    # buy them.
+    if planned is None or planned[0] != str(target):
+        raise _not_issued()
+    base = _read_at(dfd, name, target)
+    base_sha = _sha(base)
+    if not secrets.compare_digest(planned[1], base_sha):
+        raise _changed_since_plan(target)
+
+    _fields, content = _check_amend(
+        target=target, rel=rel, base=base, content=content,
+        issued=lambda final: book.matches(confirm_token, _amend_binding(target, base_sha, final)))
+    if not book.redeem(confirm_token, _amend_binding(target, base_sha, content)):
+        raise _not_issued()
+
+    _replace_at(dfd, name, target, content=content, stage="amend",
+                unchanged=lambda now: _sha(now) == base_sha,
+                changed=lambda: _changed_since_plan(target))
     return base_sha, _sha(content)
