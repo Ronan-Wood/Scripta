@@ -889,7 +889,7 @@ def test_the_swift_decoders_fixtures_are_what_agent_mode_sends(world):
         # commit, nor a half-rewritten set. The parent holds both the shared folder and the
         # operator's home, whatever --basetemp is.
         fx.check_before_write(bodies, payload_of=_frame_payload, stand_in=SNAPSHOT_DIR_STAND_IN,
-                              local=(shared.parent, fx.SWIFT_FIXTURES.parents[3]))
+                              local=(shared.parent, fx.ENGINE_ROOT.parent))
         fx.write_all(bodies)
     for name, frame in frames.items():
         fx.assert_matches(name, _payload(frame), payload_of=_frame_payload,

@@ -33,12 +33,11 @@ let package = Package(
         // nothing but Foundation on purpose, and a suite that could reach ScriptaCore would be the
         // first place that boundary quietly stopped holding.
         //
-        // `Fixtures` is excluded rather than declared as a resource: they are captured engine
-        // responses read from `#filePath` (see GoldenFixtures.swift), for the same reason
-        // ThemeTokenSource reads Ink.swift from source — `swift test` and Xcode disagree about the
-        // working directory, and a gate that silently finds no file is worse than one that cannot
-        // run.
-        .testTarget(name: "SubstrateKitTests", dependencies: ["SubstrateKit"],
-                    exclude: ["Fixtures"]),
+        // The golden frames it decodes are not a resource: they are the engine's captured
+        // responses, copied to `Tests/EngineContract/` outside every target and read from
+        // `#filePath` (see GoldenFixtures.swift), for the same reason ThemeTokenSource reads
+        // Ink.swift from source — `swift test` and Xcode disagree about the working directory, and
+        // a gate that silently finds no file is worse than one that cannot run.
+        .testTarget(name: "SubstrateKitTests", dependencies: ["SubstrateKit"]),
     ]
 )

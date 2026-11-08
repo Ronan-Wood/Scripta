@@ -125,3 +125,8 @@ jobs:
       # The package targets macOS 14 and uses no macOS 26 API, so it builds on the runner image even
       # though the app around it requires macOS 26 and cannot be built here at all.
       - run: swift test
+      # The decoders are tested against the app's COPY of the engine's golden frames. A copy that
+      # fell behind the engine's would pass while testing last month's frames, so it must match.
+      # After the tests rather than before, and run even when they fail, so one run reports both.
+      - if: ${{ !cancelled() }}
+        run: ../Distribution/engine-contract check

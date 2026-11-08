@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# The app's copy of the engine's contract: `sync` writes it, `check` proves it is byte-identical.
+#
+#   Distribution/engine-contract sync  [--from DIR] [--to DIR]
+#   Distribution/engine-contract check [--from DIR] [--to DIR]
+#
+# The engine owns its contract (`substrate/contract/`: the golden frames its own suite captures and
+# leak-scans). The decoder tests read a COPY, `Core/Tests/EngineContract/`, so they take no frame
+# from the engine's tree. A copy can go stale, so `check` runs in CI and fails on any difference: a
+# changed byte, a missing file, an extra file. `--from` names another source, which is how a pinned
+# engine release will be held to the same copy.
+#
+# A CONTRACT HOLDS JSON FRAMES AND NOTHING ELSE: `frames/<name>.json`, names of letters, digits and
+# `_.-`. Both trees are refused (exit 2) on anything else — another folder, another file, a dotfile,
+# a symlink, an odd name. That allowlist is what makes the copy safe to write: the copy holds only
+# what the engine's scan (`assert_clean_folder`) covers, a source cannot plant anything else in this
+# repo, and `sync` only ever deletes a folder that already passed it — never `Core/Tests` or a home
+# folder from a mistyped `--to`. Finder's `.DS_Store` and AppleDouble `._*` FILES are ignored.
+#
+# Exit status: 0 the copy matches (or was written and matches); 1 it differs; 2 usage, or a tree
+# this refuses.
+set -euo pipefail
+unset CDPATH
+export LC_ALL=C
+ROOT=$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)
+me=engine-contract
+die() { echo "$me: $*" >&2; exit 2; }
+# A path as the messages show it: relative to the repo when it is inside it.
+shown() { printf '%s' "${1#"$ROOT"/}"; }
+# Trailing slashes off, so `[ -L ]` tests the link itself: `[ -L link/ ]` tests what it points to.
+bare() { local p=$1; while [ "$p" != / ] && [ "${p%/}" != "$p" ]; do p=${p%/}; done; printf '%s' "$p"; }
+
+[ $# -ge 1 ] || die "usage: $me sync|check [--from DIR] [--to DIR]"
+cmd=$1; shift
+case "$cmd" in sync|check) ;; *) die "unknown command '$cmd' (want sync or check)" ;; esac
+FROM="$ROOT/substrate/contract"
+TO="$ROOT/Core/Tests/EngineContract"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --from) [ $# -ge 2 ] || die "--from needs a directory"; FROM=$(bare "$2"); shift 2 ;;
+    --to)   [ $# -ge 2 ] || die "--to needs a directory"; TO=$(bare "$2"); shift 2 ;;
+    *) die "unknown argument '$1'" ;;
+  esac
+done
+
+METADATA=( \( -type f \( -name .DS_Store -o -name '._*' \) \) -prune -o )
+
+# `find` over $1, relative, without Finder metadata files. Dies on a tree it cannot read, rather
+# than letting a partial listing reach the comparison.
+under() {
+  local dir=$1; shift
+  ( cd -- "$dir" && find . -mindepth 1 "${METADATA[@]}" "$@" -print ) || die "cannot read $(shown "$dir")"
+}
+
+# Dies unless $1 is a contract: a real directory holding nothing but `frames/` and the JSON frames
+# in it. An empty folder passes; there is nothing in it to lose.
+contract() {
+  local dir=$1 what="$2 $(shown "$1")" found
+  [ -d "$dir" ] && [ ! -L "$dir" ] || die "$what is not a directory"
+  # The top level first, one listing deep: a mistyped `--to ~` or `--to /` is refused here, before
+  # the full walks below crawl the whole tree.
+  found=$( (cd -- "$dir" && find . -mindepth 1 -maxdepth 1 ! -name frames \
+             ! \( -type f \( -name .DS_Store -o -name '._*' \) \) -print) ) \
+    || die "cannot read $what"
+  [ -z "$found" ] || die "$what holds entries other than frames/: ${found//$'\n'/, }"
+  found=$(under "$dir" ! -type f ! -type d)
+  [ -z "$found" ] || die "$what holds entries that are not plain files: ${found//$'\n'/, }"
+  found=$(under "$dir" -name '*[!A-Za-z0-9_.-]*')
+  [ -z "$found" ] || die "$what holds names outside [A-Za-z0-9_.-]: ${found//$'\n'/, }"
+  found=$(under "$dir" -type d ! -path ./frames)
+  [ -z "$found" ] || die "$what holds folders other than frames/: ${found//$'\n'/, }"
+  found=$(under "$dir" -type f \( ! -path './frames/*.json' -o -path './frames/.*' \))
+  [ -z "$found" ] || die "$what holds files other than frames/*.json: ${found//$'\n'/, }"
+}
+
+# The same folder twice, or one inside the other, would "match" itself, or be deleted by its own
+# sync. Compared resolved, so a symlink or `..` cannot disguise it.
+resolved() { (cd -P -- "$1" && pwd -P) || die "cannot resolve $(shown "$1")"; }
+# Whether $1 is $2 or inside it, by FILE IDENTITY (`-ef`) at each step up: APFS is
+# case-insensitive, so `src` and `SRC` are one folder that no string comparison would equate.
+inside() {
+  local d=$1
+  while :; do
+    [ "$d" -ef "$2" ] && return 0
+    [ "$d" != / ] || return 1
+    d=$(dirname -- "$d")
+  done
+}
+apart() {
+  local a b
+  a=$(resolved "$1")
+  b=$(resolved "$2")
+  if inside "$a" "$b" || inside "$b" "$a"; then
+    die "$(shown "$1") and $(shown "$2") are the same folder, or one is inside the other"
+  fi
+}
+
+compare() {
+  local out status=0 count
+  count=$(under "$FROM" -type f | wc -l | tr -d ' ')
+  out=$(diff -rq -x .DS_Store -x '._*' -- "$FROM" "$TO" 2>&1) || status=$?
+  case $status in
+    0) echo "$me: $(shown "$TO") matches $(shown "$FROM") ($count frames)" ;;
+    1) echo "$me: $(shown "$TO") is not a copy of $(shown "$FROM"):" >&2
+       printf '%s\n' "$out" | sed 's/^/  /' >&2
+       echo "$me: run Distribution/engine-contract sync, and commit the copy with the change" >&2
+       return 1 ;;
+    *) die "diff failed: $out" ;;
+  esac
+}
+
+contract "$FROM" source
+frames=$(under "$FROM" -type f)
+[ -n "$frames" ] || die "source $(shown "$FROM") holds no frames; a check against it would pass vacuously"
+
+if [ "$cmd" = check ]; then
+  contract "$TO" copy
+  apart "$FROM" "$TO"
+  compare
+  exit $?
+fi
+
+# sync. The copy it replaces must itself be a contract: that is the guard on the delete below.
+[ ! -L "$TO" ] || die "copy $(shown "$TO") is a symlink; refusing to write through it"
+case "$(basename -- "$TO")" in .|..) die "copy $(shown "$TO") must name its folder, not . or .." ;; esac
+parent=$(dirname -- "$TO")
+# The parent must already exist: creating it first would leave folders behind even when the sync
+# is then refused, inside the source among other places.
+[ -d "$parent" ] || die "the folder holding copy $(shown "$TO") does not exist"
+if [ -e "$TO" ]; then
+  contract "$TO" "existing copy"
+  apart "$FROM" "$TO"
+else
+  p=$(resolved "$parent")
+  f=$(resolved "$FROM")
+  if inside "$p" "$f"; then die "copy $(shown "$TO") would be inside source $(shown "$FROM")"; fi
+fi
+# Written beside the destination and swapped in with two renames. The old copy is deleted only once
+# the new one is in place. On any exit before that — a failure, or an interrupt, which the INT/TERM/
+# HUP trap turns into an exit — the EXIT trap puts the old copy back.
+stage=$(mktemp -d "$parent/.engine-contract.XXXXXX") || die "cannot create a folder in $(shown "$parent")"
+restore() {
+  if [ ! -e "$TO" ] && [ -e "$stage.old" ]; then
+    mv -- "$stage.old" "$TO" || echo "$me: could not put the old copy back; it is at $(shown "$stage.old")" >&2
+  else
+    rm -rf -- "$stage.old"
+  fi
+  rm -rf -- "$stage"
+}
+trap restore EXIT
+trap 'exit 130' INT TERM HUP
+mkdir -- "$stage/frames"
+under "$FROM" -type f | while IFS= read -r f; do cp -- "$FROM/$f" "$stage/$f" || exit 1; done \
+  || die "cannot copy the frames of $(shown "$FROM")"
+chmod 755 "$stage"
+if [ -e "$TO" ]; then
+  mv -- "$TO" "$stage.old" || die "cannot move the old copy $(shown "$TO") aside"
+fi
+mv -- "$stage" "$TO" || die "cannot put the new copy in place at $(shown "$TO")"
+[ ! -e "$stage.old" ] || rm -rf -- "$stage.old" || die "the new copy is in place; could not delete the old one at $(shown "$stage.old")"
+compare
