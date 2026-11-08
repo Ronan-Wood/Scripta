@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# The engine's tree, alone: `.github/engine-alone DIR` writes exactly what git tracks under
+# `substrate/` into DIR, with nothing of this repository beside it — no `Core/`, no app — which is how
+# the engine will stand in a repository of its own. Run by the `engine` and `engine docling` jobs, so
+# a test that still reaches outside the engine's tree fails there instead of passing because the
+# monorepo happened to be checked out around it.
+#
+# DIR becomes a one-commit git repository, as the engine will be at that repository's root, because
+# `tests/test_deploy.py` deploys `HEAD`. The commit is local to DIR and never leaves the runner.
+set -euo pipefail
+dir=${1:?usage: .github/engine-alone DIR}
+[ ! -e "$dir" ] || { echo "engine-alone: $dir already exists" >&2; exit 2; }
+mkdir -p "$dir"
+git archive HEAD:substrate | tar -x -C "$dir"
+tracked=$(git ls-tree -r --name-only HEAD:substrate)
+# From here on git must act on DIR alone. An inherited GIT_DIR or GIT_INDEX_FILE (git exports them to
+# hooks, and wrappers can) would otherwise make `init`, `add` and `commit` act on THIS repository,
+# and global hooks would run against the export.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+  GIT_COMMON_DIR
+git -C "$dir" init -q
+# `-f`: a file this repository tracks although an ignore pattern matches it is still the engine's.
+git -C "$dir" add -A -f
+git -C "$dir" -c user.name=ci -c user.email=ci@localhost -c commit.gpgsign=false \
+  -c core.hooksPath=/dev/null commit -q -m "the engine tree"
+[ "$(git -C "$dir" ls-files)" = "$tracked" ] ||
+  { echo "engine-alone: the commit in $dir is not the tree git tracks under substrate/" >&2; exit 1; }
+# Nothing of the app inside it or in the folders above it, where a relative reach out of the tree
+# (`parents[2] / "Core"`) would land. The checkout itself is elsewhere, so such a reach fails.
+for app in "$dir/Core" "$dir/../Core" "$dir/../../Core"; do
+  [ ! -e "$app" ] || { echo "engine-alone: $app exists beside the engine's tree" >&2; exit 1; }
+done
+echo "engine-alone: $(git -C "$dir" ls-files | wc -l | tr -d ' ') files in $dir"

@@ -38,9 +38,18 @@ struct EngineVocabulary: Decodable {
         enum CodingKeys: String, CodingKey { case lockSuffix = "lock_suffix" }
     }
 
+    struct YAML: Decodable {
+        /// The code points a one-line quoted frontmatter scalar may hold, as `[first, last]`
+        /// ranges; the engine reads every other character as a space.
+        let printable: [[UInt32]]
+
+        func holds(_ v: UInt32) -> Bool { printable.contains { $0.count == 2 && $0[0] <= v && v <= $0[1] } }
+    }
+
     let spine: Spine
     let classes: Classes
     let socket: Socket
+    let yaml: YAML
 
     /// `#filePath`, not the working directory: `swift test` and Xcode disagree about cwd.
     static let url = URL(fileURLWithPath: #filePath)

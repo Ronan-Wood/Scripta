@@ -4,8 +4,9 @@ import XCTest
 
 /// Every free-text value the app writes into frontmatter is a single-quoted YAML scalar, which
 /// YAML 1.2, YAML 1.1, the engine's line reader and `Frontmatter.field` all read back as written.
-/// The engine side of the same property is `substrate/tests/test_frontmatter_yaml.py`, which also
-/// checks `yamlSafe`'s ranges against the engine's code point by code point.
+/// The engine side of the same property is `substrate/tests/test_frontmatter_yaml.py`, which reads
+/// back the always-single-quoted form this app writes. The character rule is checked here, against
+/// the engine's contract (`yaml.printable`), which the engine's suite holds to its own `sanitize`.
 ///
 /// WHY. The writers put every title inside double quotes and escaped nothing, so YAML read the
 /// `\a` of `$\alpha$` as a bell and refused `\d` outright, while the line readers kept them as
@@ -52,6 +53,16 @@ final class FrontmatterYAMLTests: XCTestCase {
             let value = randomValue(&rng)
             let want = Frontmatter.yamlSafe(value)
             let quoted = Frontmatter.quoted(value)
+            // EXACTLY the form the engine's suite proves every reader reads alike
+            // (`test_frontmatter_yaml.py`, `_quoted_form`): the safe text, `'` doubled, in `'…'`.
+            // Per scalar, like `quoted` itself: a `'` followed by a combining mark is one Character,
+            // which a Character-wise replace would leave undoubled.
+            var form = String.UnicodeScalarView(["'"])
+            for scalar in want.unicodeScalars {
+                if scalar == "'" { form.append(contentsOf: "''".unicodeScalars) } else { form.append(scalar) }
+            }
+            form.append("'")
+            XCTAssertEqual(Array(quoted.unicodeScalars), Array(form), value.debugDescription)
             XCTAssertFalse(quoted.unicodeScalars.contains {
                 ($0.value < 0x20 && $0 != "\t") || [0x7F, 0x85, 0x2028, 0x2029, 0xFEFF].contains($0.value)
             }, "a line break or control reached the line: \(quoted.debugDescription)")
@@ -62,6 +73,30 @@ final class FrontmatterYAMLTests: XCTestCase {
             let split = Frontmatter.split("---\nk: \(quoted)\n---\nbody")
             XCTAssertEqual(split?.body, "body", value.debugDescription)
         }
+    }
+
+    /// ONE RULE IN TWO LANGUAGES, checked rather than trusted: every scalar `yamlSafe` keeps is one
+    /// the engine keeps (`yaml.printable` in its contract), and every other one becomes a space. A
+    /// difference is a note this app writes and the engine reads otherwise. The engine's own suite
+    /// holds that set to `yaml_scalar.sanitize`, code point by code point.
+    func testYamlSafeKeepsExactlyTheCharactersTheEngineKeeps() throws {
+        let yaml = try EngineVocabulary.load().yaml
+        XCTAssertGreaterThanOrEqual(yaml.printable.count, 5)
+        var checked = 0
+        for v: UInt32 in 0...0x10FFFF {
+            guard let scalar = Unicode.Scalar(v) else { continue }   // a surrogate is no scalar
+            let s = String(scalar)
+            // Scalar by scalar, not `==`: String equality is canonical equivalence, and a writer that
+            // normalised a character would compare as having kept it.
+            let kept = Array(Frontmatter.yamlSafe(s).unicodeScalars) == [scalar]
+            if kept != yaml.holds(v) {
+                return XCTFail("U+\(String(v, radix: 16, uppercase: true)): the app "
+                               + (kept ? "keeps" : "replaces") + " it and the engine does not")
+            }
+            if !kept { XCTAssertEqual(Array(Frontmatter.yamlSafe(s).unicodeScalars), [" "]) }
+            checked += 1
+        }
+        XCTAssertEqual(checked, 0x110000 - 0x800)
     }
 
     func testYamlSafeKeepsOnlyWhatAOneLineScalarHolds() {

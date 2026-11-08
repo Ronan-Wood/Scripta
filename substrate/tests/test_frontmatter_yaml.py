@@ -259,51 +259,33 @@ def test_compose_counts_the_notes_check_would_name(tmp_path, capsys):
     assert capsys.readouterr().out == ""
 
 
-# --- the app's writers ---------------------------------------------------------------------------
-
-_SWIFT = (os.path.dirname(os.path.abspath(__file__)) + "/../../Core/Sources/ScriptaShared/"
-          "Frontmatter.swift")
+# --- a client's always-quoted form ------------------------------------------------------------------
 
 
-def _swift_quoted(value: str) -> str:
-    """`Frontmatter.quoted`: every free-text value the app writes, always single-quoted."""
+def _quoted_form(value: str) -> str:
+    """The form a client may write for any free-text value: the sanitized text, every `'` doubled,
+    always single-quoted. The app's `Frontmatter.quoted` writes exactly this, and its own tests pin
+    it to it."""
     return "'" + yaml_scalar.sanitize(value).replace("'", "''") + "'"
 
 
-def test_the_app_keeps_the_engine_s_character_rule():
-    """`Frontmatter.yamlSafe`'s ranges, read out of the Swift source, keep exactly the characters
-    `yaml_scalar.sanitize` keeps: one rule in two languages, checked rather than trusted."""
-    import re
-
-    src = open(_SWIFT, encoding="utf-8").read()
-    body = src[src.index("func isYAMLPrintable"):]
-    case = body[body.index("case ") + 5:body.index(":\n")]
-    ranges = [(int(r.split("...")[0], 16), int(r.split("...")[-1], 16))
-              for r in (part.strip() for part in case.split(","))]
-    assert len(ranges) >= 5
-    for cp in range(0x110000):
-        swift = any(lo <= cp <= hi for lo, hi in ranges)
-        assert swift == (yaml_scalar.sanitize(chr(cp)) == chr(cp)), hex(cp)
-    assert re.search(r'if scalar == "\'" \{ out \+= "\'\'" \}', src)
-
-
 @pytest.mark.parametrize("value", HOSTILE)
-def test_the_app_s_quoted_form_reads_back_alike_everywhere(value):
+def test_the_quoted_form_reads_back_alike_everywhere(value):
     want = yaml_scalar.sanitize(value)
-    line = f"k: {_swift_quoted(value)}"
+    line = f"k: {_quoted_form(value)}"
     assert _yaml_reads(line) == [{"k": want}] * 2
     assert frontmatter_pairs(f"---\n{line}\n---\n") == [("k", want)]
     if want.strip():
-        items = f"k: [{_swift_quoted(value)}, 'b']"
+        items = f"k: [{_quoted_form(value)}, 'b']"
         assert _yaml_reads(items) == [{"k": [want, "b"]}] * 2
         assert fm.list_items(items[3:]) == [(want, True), ("b", True)]
 
 
 @settings(max_examples=2000, deadline=None)
 @given(st.text(st.characters(codec=None, exclude_categories=()), max_size=40))
-def test_the_app_s_quoted_form_reads_back_alike_for_any_unicode(value):
+def test_the_quoted_form_reads_back_alike_for_any_unicode(value):
     want = yaml_scalar.sanitize(value)
-    assert _yaml_reads(f"k: {_swift_quoted(value)}") == [{"k": want}] * 2
+    assert _yaml_reads(f"k: {_quoted_form(value)}") == [{"k": want}] * 2
 
 
 # --- what review found ---------------------------------------------------------------------------

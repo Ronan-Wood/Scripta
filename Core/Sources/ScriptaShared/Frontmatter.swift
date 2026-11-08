@@ -75,9 +75,10 @@ public enum Frontmatter {
     /// YAML 1.2, YAML 1.1, the engine's line reader and `field` all read it back as `value`, with
     /// each character a one-line scalar cannot hold replaced by a space. Single quotes have no
     /// escapes, so a backslash means itself; inside double quotes YAML reads the `\a` of
-    /// `$\alpha$` as a bell, and `\d` is not YAML at all. The engine
-    /// (`substrate/markdown/yaml_scalar.py`) keeps the same character rule and the same quoted
-    /// form, and also writes a value plain where that cannot mean anything else.
+    /// `$\alpha$` as a bell, and `\d` is not YAML at all. The engine keeps the same character rule
+    /// (its contract's `yaml.printable`, which `FrontmatterYAMLTests` holds this to) and reads this
+    /// quoted form alike in every reader, and it also writes a value plain where that cannot mean
+    /// anything else.
     public static func quoted(_ value: String) -> String {
         var out = "'"
         for scalar in yamlSafe(value).unicodeScalars {

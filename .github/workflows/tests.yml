@@ -27,28 +27,32 @@ jobs:
     name: engine
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: substrate
-    env:
-      PYTHONPATH: ${{ github.workspace }}/substrate
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # THE ENGINE ALONE: its tracked tree, with nothing of this repository beside it, run from there
+      # (`.github/engine-alone` says why). A test still reaching outside it fails here.
+      - run: |
+          bash .github/engine-alone "$RUNNER_TEMP/engine"
+          echo "PYTHONPATH=$RUNNER_TEMP/engine" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       # NOT `uv sync`. The engine's full dependency set is torch, docling and an OpenCV built from
       # source — gigabytes, and twenty minutes of compiling, for a suite that touches none of it.
       # Measured 2026-09-16: a few packages run the whole suite in seconds from a small environment.
       # A test that needs more than this should say so by failing here.
       - run: uv venv --python 3.14
+        working-directory: ${{ runner.temp }}/engine
       # The `test` group (pytest, and the frontmatter tests' hypothesis and ruamel.yaml) exactly as
       # the lock holds it, hashes checked, so this job and the one below run the same versions.
       - run: |
           uv export --frozen --only-group test --no-emit-project -o "$RUNNER_TEMP/test-group.txt"
           uv pip install --require-hashes -r "$RUNNER_TEMP/test-group.txt"
+        working-directory: ${{ runner.temp }}/engine
       - run: uv pip install pypdfium2 pillow numpy pyyaml
+        working-directory: ${{ runner.temp }}/engine
       - run: uv run --no-sync python -m pytest tests -q
+        working-directory: ${{ runner.temp }}/engine
 
   docling:
     # The job above has no docling, so the paths #64 and #67 broke skip there. This one runs the whole
@@ -59,11 +63,7 @@ jobs:
     name: engine docling
     runs-on: macos-15
     timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: substrate
     env:
-      PYTHONPATH: ${{ github.workspace }}/substrate
       # Opts in the docling round-trips in `tests/test_ingest_formats.py`.
       SUBSTRATE_DOCLING_TESTS: "1"
       # NO MODEL DOWNLOADS. No test needs docling's layout or table weights (measured 2026-11-04: the
@@ -78,6 +78,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The engine alone, as in the job above.
+      - run: |
+          bash .github/engine-alone "$RUNNER_TEMP/engine"
+          echo "PYTHONPATH=$RUNNER_TEMP/engine" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           # The uv that enforces the lock's hashes, pinned like the lock it reads.
@@ -87,12 +91,14 @@ jobs:
       - run: >-
           uv sync --frozen --no-dev --group test --managed-python --python 3.14
           --no-install-package opencv-python-headless
+        working-directory: ${{ runner.temp }}/engine
       # Fails the job if docling cannot import, rather than letting its tests skip green.
       - run: >-
           uv run --no-sync python -c "import docling.document_converter, torch;
           from importlib.metadata import version;
           print('docling', version('docling'), 'torch', torch.__version__,
           'mps', torch.backends.mps.is_available())"
+        working-directory: ${{ runner.temp }}/engine
       # The interpreter pin's tests on uv's real output need it AT THE PIN'S PATH: uv writes its
       # install path into libpython and `_sysconfigdata`, so an install anywhere else is other bytes
       # (measured 2026-11-05 on the operator's Mac: those two files are the only difference, and uv
@@ -111,27 +117,32 @@ jobs:
           uv python install --no-bin --install-dir "${prefix%/*}" "${prefix##*/}"
           got=$(cat "$prefix/BUILD") || { echo "uv wrote no BUILD into $prefix" >&2; exit 1; }
           test "$got" = "$build" || { echo "uv installed build $got, $pin is $build" >&2; exit 1; }
+        working-directory: ${{ runner.temp }}/engine
       # ZERO SKIPS is the point of this job.
       - run: >-
           uv run --no-sync python -m pytest tests -q -rsx --junitxml "$RUNNER_TEMP/junit.xml"
+        working-directory: ${{ runner.temp }}/engine
       - run: test -s "$RUNNER_TEMP/junit.xml" && ! grep -q '<skipped' "$RUNNER_TEMP/junit.xml"
 
   core:
     name: app core
     runs-on: macos-15
     timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: Core
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The app's tests read a COPY of the engine's contract (its golden frames and contract.json).
+      # A copy that fell behind the engine's would pass while testing last month's contract, so it
+      # must match. First, because it is the last step that needs the engine's tree.
+      - run: Distribution/engine-contract check
+      # THE APP ALONE. The engine's tree goes before the tests, so a test that still reads it fails
+      # here instead of passing because the monorepo happened to be checked out. Both run even when
+      # the check above fails, so one run reports both.
+      - if: ${{ !cancelled() }}
+        run: rm -rf substrate
       # The package targets macOS 14 and uses no macOS 26 API, so it builds on the runner image even
       # though the app around it requires macOS 26 and cannot be built here at all.
-      - run: swift test
-      # The decoders are tested against the app's COPY of the engine's golden frames. A copy that
-      # fell behind the engine's would pass while testing last month's frames, so it must match.
-      # After the tests rather than before, and run even when they fail, so one run reports both.
       - if: ${{ !cancelled() }}
-        run: ../Distribution/engine-contract check
+        run: swift test
+        working-directory: Core

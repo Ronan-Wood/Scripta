@@ -149,19 +149,6 @@ def test_build_slims_before_the_import_check_and_checks_after_signing() -> None:
     assert slim < imports < signing < check < swap
 
 
-def test_the_release_checks_the_shipped_app_for_signature_xattrs_before_the_dmg() -> None:
-    """The engine phase checks only its own stage. Xcode, Sparkle's helper phase, stapling and the
-    copy into the dmg stage all run later, so the release must check the app it actually packs."""
-    text = (ROOT.parent / "Distribution" / "build-and-notarize").read_text("utf-8")
-    copy = text.index('cp -R "$APP" dist/stage/')
-    check = text.index("find dist/stage/Scripta.app -xattrname com.apple.cs.CodeDirectory")
-    create = text.index("hdiutil create")
-    assert copy < check < create
-    scan = text[check : text.index("\n", text.index("com.apple.cs.CodeSignature", check))]
-    for attribute in ("CodeDirectory", "CodeRequirements", "CodeSignature"):
-        assert f"com.apple.cs.{attribute}" in scan
-
-
 def test_the_fingerprint_covers_the_slimming_recipe() -> None:
     """A recipe change must rebuild, or a stamped tree from the old recipe keeps shipping."""
     fingerprint = BUILD.read_text("utf-8").split("fingerprint() {", 1)[1].split("\n}\n", 1)[0]

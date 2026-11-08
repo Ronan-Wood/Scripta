@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import functools
 import json
 import os
 import re
@@ -101,7 +102,8 @@ EXTENDS: dict[str, tuple[tuple[str, str], ...]] = {
     "agent_refresh": (("refresh", "refresh_state.block_for"),),
 }
 
-MODULES = ("agent.py", "wire.py", "local_socket.py", "refresh.py", "spine.py", "classes.py", "stack.py",
+MODULES = ("agent.py", "markdown/yaml_scalar.py", "wire.py", "local_socket.py", "refresh.py",
+           "spine.py", "classes.py", "stack.py",
            "retrieve/retriever.py", "refresh_state.py", "render.py", "introspect.py",
            "freshness.py", "mcp/server.py")
 
@@ -637,6 +639,41 @@ def _assigned_words(module: _Module, names: tuple[str, ...], within: str | None 
     return sorted(words)
 
 
+def _printable(module: _Module) -> list[list[int]]:
+    """The code points a one-line quoted YAML scalar may hold, as `[first, last]` ranges: every code
+    point the pattern `_UNSAFE` compiles does NOT match. The pattern is read as a literal and
+    compiled here, so whatever class syntax it uses is read the way the engine's `re` reads it, and
+    no engine code runs."""
+    value = module.binding("_UNSAFE")
+    if not (isinstance(value, ast.Call) and _dotted(value.func) == "re.compile"
+            and len(value.args) == 1 and not value.keywords
+            and isinstance(value.args[0], ast.Constant) and isinstance(value.args[0].value, str)):
+        raise ExportError(f"{module.name}: _UNSAFE is not re.compile of one string literal")
+    try:
+        ranges = _kept_ranges(value.args[0].value)
+    except re.error as e:
+        raise ExportError(f"{module.name}: _UNSAFE does not compile: {e}") from None
+    if not ranges:
+        raise ExportError(f"{module.name}: _UNSAFE refuses every character")
+    return [list(r) for r in ranges]
+
+
+@functools.lru_cache(maxsize=8)
+def _kept_ranges(pattern: str) -> tuple[tuple[int, int], ...]:
+    """The code points `pattern` does not match, as ranges. Scanning all of Unicode takes most of a
+    second, so it is done once per pattern per process: an export reads the same rule every time."""
+    unsafe = re.compile(pattern)
+    ranges: list[list[int]] = []
+    for cp in range(0x110000):
+        if unsafe.fullmatch(chr(cp)):
+            continue
+        if ranges and ranges[-1][1] == cp - 1:
+            ranges[-1][1] = cp
+        else:
+            ranges.append([cp, cp])
+    return tuple((lo, hi) for lo, hi in ranges)
+
+
 def _one(text: str, pattern: str, what: str) -> str:
     values = set(re.findall(pattern, text))
     if len(values) != 1:
@@ -716,6 +753,9 @@ def _export(root: Path) -> dict:
             "unmeasured_reasons": retriever.keys("UNMEASURED_REASONS"),
         },
         "refresh": {"outcomes": m["refresh_state.py"].keys("OUTCOMES")},
+        # What a one-line quoted frontmatter scalar may hold; every other character becomes a space.
+        # A writer that keeps a different set writes notes this engine reads differently.
+        "yaml": {"printable": _printable(m["markdown/yaml_scalar.py"])},
         "payloads": wire_objects(m),
         "extends": {name: sorted(b for b, _ in bases) for name, bases in sorted(EXTENDS.items())},
         "tiers": _tiers(root),
