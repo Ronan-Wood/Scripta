@@ -2,7 +2,7 @@
 name = "substrate"
 version = "0.1.0"
 description = "Language-neutral knowledge substrate engine — structure-aware ingestion + retrieval"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = "GPL-3.0-or-later"
 dependencies = [
     "docling",
@@ -68,7 +68,7 @@ dev = ["ipykernel", "ruff>=0.16.7"]
 test = ["pytest==9.2.0"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
 # Bug-catchers only. Pyflakes (F), the real-error slices of pycodestyle (E4 import
