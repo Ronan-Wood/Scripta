@@ -333,7 +333,7 @@ say "removing debug symbols, headers and the interpreter's GUI and installer"
 "$REPO/tools/slim-bundled-engine" "$STAGE" || die "could not slim the engine"
 
 "$STAGE/.venv/bin/python" -B -E -s -c "
-import numpy, scipy, pandas, torch, docling, ocrmac, cv2
+import numpy, scipy, pandas, torch, docling, ocrmac, cv2, yaml
 from docling.document_converter import DocumentConverter
 import scipy.sparse.linalg, scipy.optimize, scipy.ndimage
 print('  imports OK after prune')

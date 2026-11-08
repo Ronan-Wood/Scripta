@@ -27,6 +27,9 @@ concurrency:
 jobs:
   python:
     name: codeql python
+    # Code scanning on a personal account's private repo is a paid feature: the analysis runs, then
+    # the upload is refused. Skipped while private, so the job runs again once the repo is public.
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -44,6 +47,7 @@ jobs:
 
   swift:
     name: codeql swift
+    if: ${{ !github.event.repository.private }}
     runs-on: macos-15
     timeout-minutes: 30
     permissions:
