@@ -102,6 +102,10 @@ Known limits, stated rather than left to be discovered:
 - Apple Silicon only; there is no Intel build.
 - The app bundles its engine, which makes the download large (~600 MB). That is a deliberate trade against fetching anything at runtime.
 
+## How it is built
+
+Built with help from Claude (Anthropic) via Claude Code; every change is reviewed and signed by the author.
+
 ## License
 
 Scripta is free software, licensed under the [GNU General Public License, version 3](LICENSE) or, at your option, any later version. You may use, study, share and modify it. If you distribute it, or a modified version of it, you must do so under the same license and make the corresponding source available.
