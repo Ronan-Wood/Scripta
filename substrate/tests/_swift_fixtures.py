@@ -1,8 +1,11 @@
 """What every test that captures a SubstrateKit golden frame shares: the folder, the shape check, the
 leak scans and the all-or-nothing write.
 
-Two tests capture frames into `Core/Tests/SubstrateKitTests/Fixtures/` — `test_swift_golden_frames`
-(the demo vaults over a real registry) and `test_agent_mode` (agent mode's published snapshot).
+Two tests capture frames into `contract/frames/` — `test_swift_golden_frames` (the demo vaults over
+a real registry) and `test_agent_mode` (agent mode's published snapshot). The folder is the
+engine's: it is the contract a client is tested against, so it lives beside the code that emits it
+and the suite needs nothing outside this tree. A client vendors a byte-identical copy of the folder
+and holds its copy to this one.
 They held copies of these helpers, and the copies drifted: one shape check compared only the first
 element of each list, and one leak scan lost its non-vacuity check. One copy cannot drift from
 itself.
@@ -19,8 +22,8 @@ import re
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-SWIFT_FIXTURES = (Path(__file__).resolve().parents[2]
-                  / "Core" / "Tests" / "SubstrateKitTests" / "Fixtures")
+ENGINE_ROOT = Path(__file__).resolve().parents[1]
+SWIFT_FIXTURES = ENGINE_ROOT / "contract" / "frames"
 CAPTURE_ENV = "SUBSTRATE_CAPTURE_SWIFT_FIXTURES"
 
 # Substrings no fixture may hold, scanned over the RAW text: a path-token scan reads a decoded

@@ -1,9 +1,10 @@
 """The SubstrateKit golden frames, captured from the demo vaults rather than from anyone's real ones.
 
-`Core/Tests/SubstrateKitTests/Fixtures/` holds the bytes the app's decoders are tested against. They
-must be what the engine really sends — a fixture written from the same reading of `render.py` that
-produced the decoder would agree with it by construction — and, because the repo is public, they
-must hold nothing but the synthetic demo vaults. This test produces them the only way that
+`contract/frames/` holds the bytes the app's decoders are tested against (through a byte-identical
+copy the app vendors). They must be what the engine really sends — a fixture
+written from the same reading of `render.py` that produced the decoder would agree with it by
+construction — and, because the repo is public, they must hold nothing but the synthetic demo
+vaults. This test produces them the only way that
 satisfies both: it copies `vaults/demo-vault` (which inherits `vaults/demo-core-vault`) into a
 temporary workspace, composes it into a registry of its own holding the one scope `demo`, runs one
 refresh pass over it (`refresh.run_pass`, its compose and embed run in this process), and sends
