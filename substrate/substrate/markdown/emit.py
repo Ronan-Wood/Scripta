@@ -16,7 +16,7 @@ Two properties make this more than a dump:
 from __future__ import annotations
 
 from substrate import classes
-from substrate.markdown import reader
+from substrate.markdown import reader, yaml_scalar
 from substrate.models import Block, Document, Kind
 from substrate.text.hyphens import Calibration, calibrate, dehyphenate
 from substrate.text.normalize import clean_block, repair_ligatures
@@ -193,12 +193,17 @@ def frontmatter(doc: Document, extra: dict | None = None) -> str:
         f["confidence"] = doc.confidence
     f.update(extra or {})
 
+    # Every string through `yaml_scalar.encode`, so the block is YAML that reads back, under 1.1 and
+    # 1.2 and the line readers alike, as what was written. Quoting only a colon, with nothing
+    # escaped, left a title such as `He said "hi": ok` or `*bold*` a block no YAML reader accepts.
     lines = ["---"]
     for k, v in f.items():
         if isinstance(v, list):
-            lines.append(f"{k}: [{', '.join(str(x) for x in v)}]")
-        elif isinstance(v, str) and (":" in v or v.startswith(("[", "{", "#"))):
-            lines.append(f'{k}: "{v}"')
+            # A blank item is dropped, as every list reader drops it; YAML would keep it.
+            items = [s for s in (yaml_scalar.sanitize(str(x)) for x in v) if s.strip()]
+            lines.append(f"{k}: [{', '.join(yaml_scalar.encode(s, flow=True) for s in items)}]")
+        elif isinstance(v, str):
+            lines.append(f"{k}: {yaml_scalar.encode(v)}")
         else:
             lines.append(f"{k}: {v}")
     lines.append("---")

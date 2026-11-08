@@ -154,7 +154,7 @@ final class NoteWriterTests: XCTestCase {
             return XCTFail("no frontmatter\n\n\(text)")
         }
         // Quoted, because this title contains ": " and would otherwise parse as a mapping.
-        XCTAssertTrue(front.contains("title: \"Sharding: by hash\""), front)
+        XCTAssertTrue(front.contains("title: 'Sharding: by hash'"), front)
         XCTAssertEqual(text.components(separatedBy: "\n").first { $0.hasPrefix("# ") },
                        "# Sharding: by hash")
     }
@@ -246,11 +246,9 @@ final class NoteWriterTests: XCTestCase {
         guard let front = Frontmatter.split(text)?.frontmatter,
               let line = front.components(separatedBy: "\n").first(where: { $0.hasPrefix("title:") })
         else { return XCTFail("no title line\n\n\(text)") }
-        // What a reader actually gets back, doing what both readers do: strip the outer quotes.
-        let readBack = line.replacingOccurrences(of: "title:", with: "")
-            .trimmingCharacters(in: .whitespaces)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-        XCTAssertEqual(readBack, "He said 'no' twice")
+        // What a reader actually gets back: the single-quoted scalar, decoded.
+        XCTAssertEqual(line, "title: 'He said ''no'' twice'")
+        XCTAssertEqual(Frontmatter.field(front, "title"), "He said 'no' twice")
         // THE SAME VALUE, which this assertion used to deny. It asserted the H1 kept the raw double
         // quotes while the frontmatter carried singles — encoding the divergence as intended, so the
         // one invariant `document(title:…)` is built around was contradicted by its own test.
@@ -311,7 +309,7 @@ final class NoteWriterTests: XCTestCase {
                                        docType: "reference", confidence: "stated",
                                        domains: ["R&D", "hiring (2026)", "  ", "ops"], body: "x")
         let text = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(text.contains("domains: [r-d, hiring-2026, ops]"), text)
+        XCTAssertTrue(text.contains("domains: ['r-d', 'hiring-2026', 'ops']"), text)
     }
 
     /// THE FILE THAT CAUSED THE COLLISION MUST SURVIVE IT. The first version cleaned up
@@ -377,7 +375,7 @@ final class NoteWriterTests: XCTestCase {
 
         XCTAssertEqual(url.deletingLastPathComponent().lastPathComponent, "00-operator")
         XCTAssertTrue(text.contains("\nconfidence: verified\n"), text)
-        XCTAssertTrue(text.contains("\ndomains: [operator, process]\n"), text)
+        XCTAssertTrue(text.contains("\ndomains: ['operator', 'process']\n"), text)
     }
 
     /// A workspace note declares NEITHER, and that is a deliberate difference rather than an

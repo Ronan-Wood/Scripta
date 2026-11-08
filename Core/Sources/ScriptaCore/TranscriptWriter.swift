@@ -64,9 +64,9 @@ public enum TranscriptWriter {
         // Every scalar goes through the sanitizer — enricher topics and calendar attendees are
         // uncontrolled input, and one embedded quote/newline invalidates the whole block.
         let allTags = (tags + [ownerMarker]).map(sanitizeScalar).filter { !$0.isEmpty }
-        let tagList = allTags.map { "\"\($0)\"" }.joined(separator: ", ")
+        let tagList = allTags.map(Frontmatter.quoted).joined(separator: ", ")
         let participantList = participants.map(sanitizeScalar).filter { !$0.isEmpty }
-            .map { "\"\($0)\"" }.joined(separator: ", ")
+            .map(Frontmatter.quoted).joined(separator: ", ")
 
         let cleanTitle = title.map(sanitizeScalar) ?? ""
         let heading = cleanTitle.isEmpty ? "Call — \(dateStr) \(timeStr)" : cleanTitle
@@ -81,7 +81,7 @@ public enum TranscriptWriter {
         // then read it back out of the H1 with a regex (`_title_for`), and every other reader had to
         // do the same or fall back to the filename. One computed value, stated once, in the field
         // that means it.
-        yaml += "title: \"\(heading)\"\n"
+        yaml += "title: \(Frontmatter.quoted(heading))\n"
         yaml += "participants: [\(participantList)]\n"
         yaml += "tags: [\(tagList)]\n"
         // Recorded from a single source, unlabeled. Absent = a normal two-party call.
@@ -102,9 +102,10 @@ public enum TranscriptWriter {
         return yaml
     }
 
-    /// The one YAML scalar sanitizer (writer + metadata editor). Values are emitted inside
-    /// double quotes on a single key line, so stripping quotes and line breaks is what keeps a
-    /// value — including one containing `---` — from escaping its line. Parsers must split
+    /// The one YAML scalar sanitizer (writer + metadata editor). Values are emitted through
+    /// `Frontmatter.quoted` on a single key line, so stripping line breaks is what keeps a value —
+    /// including one containing `---` — from escaping its line. Double quotes become single ones,
+    /// as they did when values were written inside double quotes. Parsers must split
     /// frontmatter on delimiter LINES (see `Frontmatter`), never on the `---` substring.
     ///
     /// "LINE BREAK" IS THE READER'S DEFINITION, NOT `\n`. This replaced `\r\n`, `\n` and `\r` by
@@ -147,9 +148,14 @@ public enum TranscriptWriter {
     /// `U+2029`, which Python's `str.splitlines()` — what the engine's frontmatter reader uses —
     /// treats as breaks and a `\n`-only rule does not. The C0 test then catches `U+001C`–`U+001E`,
     /// which `splitlines()` also breaks on and which `isNewline` alone misses.
+    ///
+    /// AND EVERY CHARACTER YAML CANNOT HOLD IN A SCALAR (`Frontmatter.yamlSafe`): DEL, the C1
+    /// controls, the byte-order mark, U+FFFE and U+FFFF. `Frontmatter.quoted` would blank them in
+    /// the frontmatter anyway; doing it here keeps the title and the H1 written from one value.
     public static func flattenedControlCharacters(_ text: String) -> String {
         String(text.map { character in
             character.isNewline || (character.asciiValue.map { $0 < 0x20 } ?? false)
+                || Frontmatter.yamlSafe(String(character)) != String(character)
                 ? " " : character
         })
     }

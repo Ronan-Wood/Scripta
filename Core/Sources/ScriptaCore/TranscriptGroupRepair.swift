@@ -107,13 +107,16 @@ public enum TranscriptGroupRepair {
         // `untagged` into `tags:` when it cannot determine one, and that tag feeds the exporter's
         // `domains` derivation — so leaving it makes a repaired call simultaneously declare a
         // workspace and assert it has none.
+        // Read as a list and written back through `Frontmatter.quoted`, so the tag goes however it
+        // was quoted, and the line comes out in the form every writer uses now.
         if let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("tags:") }) {
-            lines[index] = lines[index]
-                .replacingOccurrences(of: "\"untagged\", ", with: "")
-                .replacingOccurrences(of: ", \"untagged\"", with: "")
-                .replacingOccurrences(of: "\"untagged\"", with: "")
+            let tags = Frontmatter.parseList(String(lines[index].trimmingCharacters(in: .whitespaces)
+                .dropFirst("tags:".count)))
+            if tags.contains("untagged") {
+                lines[index] = "tags: [\(tags.filter { $0 != "untagged" }.map(Frontmatter.quoted).joined(separator: ", "))]"
+            }
         }
-        let line = "group: \"\(raw)\""
+        let line = "group: \(Frontmatter.quoted(raw))"
         // BEFORE `status:`, which is where `TranscriptWriter` puts it — the spine keys come after
         // `group` in a freshly written transcript. Anchoring on `app:` put it after all four, so a
         // repaired file and a written one differed in key order while the comment here claimed they
