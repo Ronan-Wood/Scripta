@@ -613,3 +613,563 @@ def test_a_malformed_reference_in_a_bomless_utf16_note_is_still_caught(tmp_path)
         "---\ntitle: t\nsource_sha256: see-the-pdf\n---\n".encode("utf-16-le"))
     with pytest.raises(life.Refused, match="n.md"):
         life.gc_plan(reg)
+
+
+# ---------------------------------------------------------------- spellings only YAML reads
+#
+# Found by the Lean model's differential survey (2026-11-06): valid YAML that names a blob, which the
+# line scan stopped reading at the first line that was not a `- item`, so gc planned the blob's
+# removal. Each holds the only reference to `c`.
+
+_HIDDEN = {
+    "blank line after the key": "source_sha256:\n\n  - {c}",
+    "comment after the key": "source_sha256:\n  # the originals\n  - {c}",
+    "comment before a next-line value": "source_sha256:\n  # the original\n  {c}",
+    "comment between two items": "audio_sha256:\n  - {d}\n  # and the other side\n  - {c}",
+    "blank line between two items": "audio_sha256:\n  - {d}\n\n  - {c}",
+    "trailing comment": "source_sha256: {c}  # the pdf",
+    "folded scalar": "source_sha256: >-\n  {c}",
+    "line continuation in a quoted scalar": 'source_sha256: "{c1}\\\n  {c2}"',
+}
+
+
+def _two_blobs(tmp_path: Path) -> tuple[Path, Path, str, str]:
+    vault, reg = _world(tmp_path)
+    p, c = _original(tmp_path, "a.pdf", b"the only copy of a recording")
+    q, d = _original(tmp_path, "b.pdf", b"the other side")
+    blobs.put(p)
+    blobs.put(q)
+    return vault, reg, c, d
+
+
+@pytest.mark.parametrize("shape", sorted(_HIDDEN))
+def test_a_reference_spelled_in_valid_yaml_keeps_its_blob(tmp_path, shape):
+    vault, reg, c, d = _two_blobs(tmp_path)
+    value = _HIDDEN[shape].format(c=c, d=d, c1=c[:32], c2=c[32:])
+    (vault / "03-references" / "n.md").write_text(f"---\ntitle: t\n{value}\n---\n\n# t\n", "utf-8")
+    _note(vault, "03-references/other.md", source_sha256=d)
+    _age_all()
+    assert life.gc_plan(reg).remove == {}
+    # Read as a claim under its key, not only kept by the hex backstop: `adopt` and `status` go by
+    # the key. (For literal spellings the line scan names the key too; the refusals above are what
+    # show YAML read them.)
+    assert value.split(":")[0] in {r.key for r in life.scan(reg).refs[c]}
+
+
+def test_a_frontmatter_written_as_one_flow_mapping_keeps_every_item(tmp_path):
+    vault, reg, c, d = _two_blobs(tmp_path)
+    (vault / "calls").mkdir()
+    (vault / "calls" / "c.md").write_text(
+        f"---\n{{title: t, audio_sha256: [{d}, {c}]}}\n---\n\n# t\n", "utf-8")
+    _age_all()
+    assert life.gc_plan(reg).remove == {}
+    assert "audio_sha256" in {r.key for r in life.scan(reg).refs[c]}
+
+
+@pytest.mark.parametrize("value", ["source_sha256:\n  TODO",
+                                   "source_sha256:\n  # the originals\n  - TODO",
+                                   "audio_sha256:\n  - {c}\n\n  - pending",
+                                   "meta:\n  source_sha256: TODO",
+                                   "source_sha256: {{nested: {c}}}"])
+def test_a_claim_that_is_not_a_checksum_refuses_however_it_is_spelled(tmp_path, value):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f"---\ntitle: t\n{value.format(c=c)}\n---\n\n# t\n", "utf-8")
+    _age_all()
+    with pytest.raises(life.Refused, match="n.md"):
+        life.gc_plan(reg)
+
+
+@pytest.mark.parametrize("title", ['Re: "the call"', "Re: $\\alpha$ and C:\\Users", '"\\UFFFFFFFF"'])
+def test_frontmatter_in_the_engines_dialect_that_is_not_yaml_does_not_block_gc(tmp_path, title):
+    """A title the engine's own writer can leave invalid (a colon, a backslash, an escape `chr`
+    rejects) neither blocks gc nor crashes it."""
+    vault, reg, c, d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(f"---\ntitle: {title}\n---\n\n# t\n", "utf-8")
+    _note(vault, "03-references/other.md", source_sha256=d)
+    _age_all()
+    assert set(life.gc_plan(reg).remove) == {c}
+
+
+def test_frontmatter_that_is_not_yaml_and_may_name_a_blob_refuses_and_says_where(tmp_path):
+    """Not the engine's dialect (an indented list), so no reading is certain. The refusal names the
+    note and the line PyYAML stopped at, which is what the operator has to fix."""
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f"---\ntitle: Lecture 3: Integrals\ntags:\n  - calc\nsource_sha256: {c}\n---\n", "utf-8")
+    _age_all()
+    with pytest.raises(life.Refused, match=r"n\.md: the frontmatter is not YAML \(line 2: mapping "
+                                           r"values are not allowed here\).*Quote or fix"):
+        life.gc_plan(reg)
+
+
+# Titles that leave the engine's unescaped writers producing frontmatter PyYAML rejects, or reads
+# as something other than a title: a colon with a quote or a backslash, and every YAML indicator.
+_HOSTILE_TITLES = ['He said "hi": ok', "Regex: \\d+ and C:\\Users", '"quoted": then more', "*bold* intro",
+                   "&anchor text", "!important", "> quoted", "| piped", "- dash", "@handle",
+                   "`code`", "%percent", "? question", "[bracket", "{brace", "#hash", "'single",
+                   "trailing \\", "tab\there", "ünïcödé: x", "a\u2028b: c",
+                   "[WIP] notes", "{draft} notes", "[Draft] *bold*", "[Draft] $\\alpha$",
+                   "{x} *y*", "'90s \\m/", '"C:\\Temp" setup']
+
+
+def _app_scalar(value: str) -> str:
+    """`SubstrateLibraryVault.scalar` in the app, which writes a `_meta.md`'s values."""
+    cleaned = "".join(" " if ch in "\x0b\x0c\x85\u2028\u2029" or ord(ch) < 0x20 else ch
+                      for ch in value).strip()
+    if '"' in cleaned:
+        return cleaned
+    return f'"{cleaned}"' if ":" in cleaned or not cleaned else cleaned
+
+
+@pytest.mark.parametrize("title", _HOSTILE_TITLES)
+def test_frontmatter_the_engine_and_the_app_write_never_blocks_gc(tmp_path, title):
+    """`emit.frontmatter` (every ingest), `amend`'s doc_id pin and the app's `_meta.md`: what each
+    writes is read with certainty, whatever the title, and names its blob under its key."""
+    from substrate import notes
+    from substrate.markdown.emit import frontmatter
+    from substrate.models import Document
+
+    vault, reg, c, d = _two_blobs(tmp_path)
+    doc = Document(doc_id="n", source_path=str(tmp_path / "originals" / "a.pdf"), source_sha256=c,
+                   source_pages=1, document_class="reference-frozen", status="active",
+                   doc_type="reference", title=title, domains=["calc"])
+    emitted = frontmatter(doc) + "# t\n\nbody\n"
+    pinned = notes._pin(emitted.replace("doc_id: n\n", "").encode(), "n").decode()
+    meta = (f"---\ntitle: {_app_scalar(title)}\nstatus: active\ndoc_type: reference\n"
+            f"confidence: unstated\ndomains: [calc]\nraw: b.pdf\nraw_sha256: {d}\n---\n\nbody\n")
+    (vault / "10-reference" / "src").mkdir(parents=True)
+    (vault / "03-references" / "emitted.md").write_text(emitted, "utf-8")
+    (vault / "03-references" / "pinned.md").write_text(pinned, "utf-8")
+    (vault / "10-reference" / "src" / "_meta.md").write_text(meta, "utf-8")
+    _age_all()
+    assert life.gc_plan(reg).remove == {}
+    refs = life.scan(reg).refs
+    assert {"source_sha256"} <= {r.key for r in refs[c]} and "raw_sha256" in {r.key for r in refs[d]}
+
+
+@pytest.mark.parametrize("claim", [
+    "source_sha256:\n  \"\\x{h}{rest}\"",
+    "source_sha256:\n  \"{c1}\\\n  {c2}\"",
+    "audio_sha256:\n  - {d}\n  # x\n  - \"\\x{h}{rest}\"",
+    "\"source_sha\\x3256\": \"\\x{h}{rest}\"",
+    "x: &k \"source_s\\x68a256\"\n*k : \"\\x{h}{rest}\"",
+    "notes: |\n a\n\tsource_sha256: \"\\x{h}{rest}\"",
+    "x: [\na: b, {{source_sha256: \"\\x{h}{rest}\"}}]",
+    "x: [ \"abc\n#\", {{source_sha256: \"\\x{h}{rest}\"}}]",
+    "x: &k \"source_s\\x68a256\"\ny: [\n*k : {d}]",
+    "title: [bracket\nsource_sha256: \"{c1}",
+    "x: [a,\ny: b, {{\"\\x73ource_sha256\": \"\\x{h}{rest}\"}}]",
+    "x: &a{{\"\\x73ource_sha256\": \"\\x{h}{rest}\"}}",
+    "k1: &k source_sha256\nk2: &v \"\\x{h}{rest}\"\nx: {{*k : *v}}",
+    "x: &k source_sha256\ny: {{*k : TODO}}",
+    "title: \"source_sha\\x3256\": \"\\x{h}{rest}\"",
+    "title: \"a\\\"\nnote: x \"y\\x{h}{rest}\"",
+    "x: &k source_sha256\ny: {{*k: TODO}}",
+])
+def test_a_claim_hidden_from_the_line_scan_in_a_block_pyyaml_rejects_refuses(tmp_path, claim):
+    """`[b, :c]` is YAML 1.2 that PyYAML rejects. A 1.2 reader then reads each of these claims, and
+    the line scan reads none: a value on the next line, a list past a comment, an escaped key."""
+    vault, reg, c, d = _two_blobs(tmp_path)
+    value = claim.format(h=format(ord(c[0]), "02x"), rest=c[1:], c1=c[:32], c2=c[32:], d=d)
+    (vault / "03-references" / "n.md").write_text(f"---\nodd: [b, :c]\n{value}\n---\n", "utf-8")
+    _age_all()
+    with pytest.raises(life.Refused, match="n.md"):
+        life.gc_plan(reg)
+
+
+def test_an_escaped_claim_in_frontmatter_yaml_cannot_parse_refuses(tmp_path):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f'---\ntitle: Re: "x"\nsource_sha256: "\\x{ord(c[0]):02x}{c[1:]}"\n---\n', "utf-8")
+    with pytest.raises(life.Refused, match="n.md"):
+        life.gc_plan(reg)
+
+
+def test_a_block_pyyaml_rejects_and_yaml_1_2_reads_is_read_as_1_2(tmp_path):
+    """A tab after a colon is YAML 1.2, which Obsidian reads, and PyYAML rejects. The line scan does
+    not decode the escape, and stops at the comment besides, so only a 1.2 reading keeps `c`."""
+    vault, reg, c, d = _two_blobs(tmp_path)
+    (vault / "calls").mkdir()
+    (vault / "calls" / "c.md").write_text(
+        f'---\ntitle:\tt\naudio_sha256:\n  - {d}\n  # the other side\n'
+        f'  - "\\x{ord(c[0]):02x}{c[1:]}"\n---\n', "utf-8")
+    _age_all()
+    assert life.gc_plan(reg).remove == {}
+    assert "audio_sha256" in {r.key for r in life.scan(reg).refs[c]}
+
+
+@pytest.mark.parametrize("brk", ["\u2028", "\u2029", "\x85"])
+def test_a_line_break_only_yaml_1_1_has_does_not_hide_a_claim(tmp_path, brk):
+    """YAML 1.1 ends the comment at `brk` and opens a quoted value that swallows the claim; YAML 1.2
+    runs the comment on and reads the claim on the next line."""
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f"---\ntitle: t #{brk}y: '\nsource_sha256: \"\\x{ord(c[0]):02x}{c[1:]}\"\n#'\n---\n",
+        "utf-8")
+    _age_all()
+    assert c not in life.gc_plan(reg).remove
+
+
+def test_an_indented_fence_is_text_in_the_block_not_its_end(tmp_path):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f'---\nnotes: |\n  ---\n  more\nsource_sha256: "\\x{ord(c[0]):02x}{c[1:]}"\n---\n',
+        "utf-8")
+    _age_all()
+    assert c not in life.gc_plan(reg).remove
+    assert "source_sha256" in {r.key for r in life.scan(reg).refs[c]}
+
+
+def test_a_dot_fence_still_ends_the_block_before_a_rule_in_the_body(tmp_path):
+    vault, reg, c, d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f"---\ntitle: t\nsource_sha256: {c}\n...\n\nsource_sha256: see the pdf\n\n---\n\nmore\n",
+        "utf-8")
+    _note(vault, "03-references/other.md", source_sha256=d)
+    _age_all()
+    assert life.gc_plan(reg).remove == {}
+
+
+def test_a_key_line_yaml_reads_as_text_still_names_its_key_for_adopt(tmp_path):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f"---\nnotes: |\n  source_sha256: {c}\n---\n", "utf-8")
+    assert "source_sha256" in {r.key for r in life.scan(reg).refs[c]}
+
+
+@pytest.mark.parametrize("value", ['"null"', "'~'", '""', "''"])
+def test_a_quoted_empty_value_is_no_reference_not_an_error(tmp_path, value):
+    vault, reg, c, d = _two_blobs(tmp_path)
+    _note(vault, "03-references/n.md", source_sha256=value)
+    _note(vault, "03-references/other.md", source_sha256=d)
+    _age_all()
+    assert set(life.gc_plan(reg).remove) == {c}
+
+
+def test_aliases_do_not_multiply_what_a_claim_costs(tmp_path):
+    """300 keys aliasing one 300-item list: each item is one reference, not one per key."""
+    items = [hashlib.sha256(str(i).encode()).hexdigest() for i in range(300)]
+    front = "x: &a\n" + "".join(f"  - {h}\n" for h in items) + "".join(
+        f"y{i}: {{audio_sha256: *a}}\n" for i in range(300))
+    scan = life.Scan()
+    life._text_refs(Path("n.md"), f"---\n{front}---\n", scan)
+    assert not scan.malformed
+    assert all(sum(r.key == "audio_sha256" for r in scan.refs[h]) == 1 for h in items)
+
+
+def test_frontmatter_nested_too_deep_to_parse_refuses_cleanly(tmp_path):
+    vault, reg, _c, _d = _two_blobs(tmp_path)
+    deep = "[" * 20_000 + "]" * 20_000
+    (vault / "03-references" / "n.md").write_text(
+        f"---\ntitle: t\nsource_sha256: {deep}\n---\n", "utf-8")
+    with pytest.raises(life.Refused, match="n.md"):
+        life.gc_plan(reg)
+
+
+@pytest.mark.parametrize("body", ["See {c} for the original.",
+                                  "source_sha256:\n\n- {c}",
+                                  "source_sha256:\n# Originals\n- {c}"])
+def test_a_checksum_anywhere_in_the_body_keeps_its_blob(tmp_path, body):
+    vault, reg, c, d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(f"# t\n\n{body.format(c=c)}\n", "utf-8")
+    _note(vault, "03-references/other.md", source_sha256=d)
+    _age_all()
+    assert life.gc_plan(reg).remove == {}
+
+
+@pytest.mark.parametrize("front, hint", [
+    ("{{title: t, source_path: {p}, source_sha256: {c}}}", "p"),
+    ("title: t\nsource_path: {p}  # where it was\nsource_sha256: {c}", "p"),
+    ("{{source_path: {p}, source_path: /elsewhere.pdf, source_sha256: {c}}}", "p"),
+    ("{{source_path: ~, source_sha256: {c}}}", None),
+    ('{{source_path: "/x/\\0a.pdf", source_sha256: {c}}}', None),
+    ('{{source_path: "/x/\\ud800.pdf", source_sha256: {c}}}', None),
+    ("{{source_path: /x/\x01a.pdf, source_sha256: {c}}}", None),
+])
+def test_the_adopt_hint_is_read_from_the_same_yaml_as_the_claim(tmp_path, front, hint):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    where = tmp_path / "originals" / "a.pdf"
+    (vault / "03-references" / "n.md").write_text(
+        f"---\n{front.format(p=where, c=c)}\n---\n", "utf-8")
+    hints = {r.hint for r in life.scan(reg).refs[c] if r.key == "source_sha256"} - {None}
+    if hint:
+        assert str(where) in hints
+    assert not any("\x00" in h or "\x01" in h or "\ufffd" in h or "\ud800" in h for h in hints)
+
+
+def test_a_body_reference_takes_its_hint_from_the_yaml_frontmatter(tmp_path):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    where = tmp_path / "originals" / "Screenshot at 10.00.00\u202fAM.png"
+    (vault / "03-references" / "n.md").write_text(
+        f"---\ntitle: t\nsource_path: {where}  # where it was\n---\n\nsource_sha256: {c}\n", "utf-8")
+    assert str(where) in {r.hint for r in life.scan(reg).refs[c] if r.key == "source_sha256"}
+
+
+@pytest.mark.parametrize("loc", ['"~x\\0y"', '"~\\ud800"', "~x\0y"])
+def test_a_raw_location_no_path_can_hold_is_no_hint_not_a_crash(tmp_path, loc):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "_meta.md").write_text(
+        f"---\nraw: a.pdf\nraw_location: {loc}\nraw_sha256: {c}\n---\n", "utf-8")
+    assert {r.hint for r in life.scan(reg).refs[c]} == {None}
+
+
+@pytest.mark.parametrize("value", ["  - source_sha256: \"\\x{h}{rest}\"",
+                                   "meta: {{source_sha256: \"\\x{h}{rest}\"}}"])
+def test_an_escaped_nested_claim_in_a_block_pyyaml_rejects_refuses(tmp_path, value):
+    """`[b, :c]` is YAML 1.2 that PyYAML rejects, so the block falls to the line scan, which reads
+    neither a nested key nor an escape."""
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f"---\nodd: [b, :c]\nsources:\n{value.format(h=format(ord(c[0]), '02x'), rest=c[1:])}\n---\n",
+        "utf-8")
+    _age_all()
+    with pytest.raises(life.Refused, match="n.md"):
+        life.gc_plan(reg)
+
+
+@pytest.mark.parametrize("value", ["' {c} '", ">\n  {c}\ntitle2: t"])
+def test_a_checksum_with_surrounding_whitespace_is_still_one_checksum(tmp_path, value):
+    vault, reg, c, d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f"---\ntitle: t\nsource_sha256: {value.format(c=c)}\n---\n", "utf-8")
+    _note(vault, "03-references/other.md", source_sha256=d)
+    _age_all()
+    assert life.gc_plan(reg).remove == {}
+
+
+def test_a_null_tag_on_a_value_does_not_make_it_empty(tmp_path):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f'---\ntitle: t\nsource_sha256: !!null "\\x{ord(c[0]):02x}{c[1:]}"\n---\n', "utf-8")
+    _age_all()
+    assert c not in life.gc_plan(reg).remove
+    assert "source_sha256" in {r.key for r in life.scan(reg).refs[c]}
+
+
+@pytest.mark.parametrize("block", ['title: Lecture 3: Integrals\ntags:\n  - "$\\int$"',
+                                   '?\n  "source_sha\\x3256" # c\n: "x"\nodd: [b, :c]'])
+def test_frontmatter_that_is_not_yaml_refuses_even_when_no_key_shows(tmp_path, block):
+    """Outside the engine's dialect no text test can rule a claim out (an explicit key, an alias, a
+    comment between key and escape), so the block refuses, and says where."""
+    vault, reg, _c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(f"---\n{block}\n---\n", "utf-8")
+    with pytest.raises(life.Refused, match=r"n\.md: the frontmatter is not YAML \(line \d+: "):
+        life.gc_plan(reg)
+
+
+def test_a_tab_indenting_a_line_is_not_read_as_a_space(tmp_path):
+    """Read as a space, the tab would fold the claim into the block scalar above as its text."""
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f'---\nnotes: |\n a\n\tsource_sha256: "\\x{ord(c[0]):02x}{c[1:]}"\n---\n', "utf-8")
+    _age_all()
+    with pytest.raises(life.Refused, match="n.md"):
+        life.gc_plan(reg)
+
+
+def test_a_control_character_on_a_claim_line_refuses(tmp_path):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f'---\ntitle: t\n\x0csource_sha256: "\\x{ord(c[0]):02x}{c[1:]}"\n---\n', "utf-8")
+    _age_all()
+    with pytest.raises(life.Refused, match="n.md: a control character"):
+        life.gc_plan(reg)
+
+
+@pytest.mark.parametrize("brk", ["\x85", "\u2028", "\u2029"])
+@pytest.mark.parametrize("claim", ['"source_sha\\x3256": "\\x{h}{rest}"',
+                                   "*k : *v"])
+def test_a_claim_only_yaml_1_1_reads_is_read(tmp_path, brk, claim):
+    """YAML 1.1 breaks the line at NEL, LS and PS and reads what follows as a claim, which 1.2
+    reads as the rest of a comment: both readings are taken."""
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    after = claim.format(h=format(ord(c[0]), "02x"), rest=c[1:])
+    (vault / "03-references" / "n.md").write_text(
+        f'---\nk1: &k source_sha256\nk2: &v "\\x{ord(c[0]):02x}{c[1:]}"\ntitle: t #{brk}{after}\n'
+        "---\n", "utf-8")
+    _age_all()
+    assert c not in life.gc_plan(reg).remove
+    assert "source_sha256" in {r.key for r in life.scan(reg).refs[c]}
+
+
+def test_a_control_character_before_an_escaped_key_refuses(tmp_path):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f'---\ntitle: t #\x0c"source_sha\\x3256": "\\x{ord(c[0]):02x}{c[1:]}"\n---\n', "utf-8")
+    _age_all()
+    with pytest.raises(life.Refused, match="n.md: a control character"):
+        life.gc_plan(reg)
+
+
+def test_a_key_line_pyyaml_reads_into_a_quoted_value_refuses(tmp_path):
+    vault, reg, _c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        '---\nx: "a\nsource_sha256: TODO"\n---\n', "utf-8")
+    with pytest.raises(life.Refused, match="n.md: frontmatter line 3 names a checksum key"):
+        life.gc_plan(reg)
+
+
+def test_a_dialect_value_that_splits_a_key_out_refuses(tmp_path):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f'---\nodd: [b, :c]\ntitle: see source_sha256: "\\x{ord(c[0]):02x}{c[1:]}"\n---\n',
+        "utf-8")
+    _age_all()
+    with pytest.raises(life.Refused, match="n.md"):
+        life.gc_plan(reg)
+
+
+def test_items_under_a_key_in_an_open_tail_refuse(tmp_path):
+    vault, reg, _c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        "---\ntitle: [WIP notes\nsource_sha256:\n  # the originals\n  - TODO\n---\n", "utf-8")
+    with pytest.raises(life.Refused, match="n.md"):
+        life.gc_plan(reg)
+
+
+def test_a_run_of_tabs_after_a_colon_is_still_yaml_1_2(tmp_path):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f"---\ntitle:\t\tt\ntags:\n  - a\nsource_sha256:\t\t{c}\n---\n", "utf-8")
+    _age_all()
+    assert c not in life.gc_plan(reg).remove
+    assert "source_sha256" in {r.key for r in life.scan(reg).refs[c]}
+
+
+def test_a_bare_scalar_frontmatter_naming_a_key_refuses(tmp_path):
+    vault, reg, _c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text("---\nsource_sha256:TODO\n---\n", "utf-8")
+    with pytest.raises(life.Refused, match="n.md: frontmatter line 2 names a checksum key"):
+        life.gc_plan(reg)
+
+
+def test_many_escapes_in_an_unclosed_quote_do_not_stall_the_scan():
+    import time
+
+    block = ["title: \"" + "\\x" * 200_000, "odd: [b, :c]"]
+    t0 = time.monotonic()
+    life._engine_dialect(block)
+    assert time.monotonic() - t0 < 1.0
+
+
+@pytest.mark.parametrize("block", ["a: b #\u2028c: d\nx: 'foo\nsource_sha256: \"\\x{h}{rest}\"'",
+                                   "title: t\u2028y: '\nsource_sha256: \"\\x{h}{rest}\"\n#'"])
+def test_yaml_1_2_decides_and_its_lines_are_the_ones_checked(tmp_path, block):
+    """YAML 1.1 breaks at LS where 1.2 does not, so its line numbers are not the block's, and a
+    block only 1.1 parses is not YAML to Obsidian: neither may switch the checks off."""
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    text = block.format(h=format(ord(c[0]), "02x"), rest=c[1:])
+    (vault / "03-references" / "n.md").write_text(f"---\n{text}\n---\n", "utf-8")
+    _age_all()
+    with pytest.raises(life.Refused, match="n.md"):
+        life.gc_plan(reg)
+
+
+def test_frontmatter_that_is_not_yaml_and_cannot_spell_a_key_does_not_block_gc(tmp_path):
+    """No reader makes a checksum key out of text with no `sha256` in it and no escape."""
+    vault, reg, c, d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        "---\ntitle: Lecture 3: Integrals\ntags:\n  - calc\n---\n", "utf-8")
+    _note(vault, "03-references/other.md", source_sha256=d)
+    _age_all()
+    assert set(life.gc_plan(reg).remove) == {c}
+
+
+@pytest.mark.parametrize("block", ["meta:\n  x: 'a\n  source_sha256: \"\\x{h}{rest}\"'",
+                                   'meta:\n  x: "a\n  source_sha256: TODO"'])
+def test_an_indented_line_pyyaml_reads_into_a_quoted_value_refuses(tmp_path, block):
+    """YAML 1.2 wants the continuation deeper than its mapping; PyYAML takes it anyway."""
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    text = block.format(h=format(ord(c[0]), "02x"), rest=c[1:])
+    (vault / "03-references" / "n.md").write_text(f"---\n{text}\n---\n", "utf-8")
+    _age_all()
+    with pytest.raises(life.Refused, match="n.md: frontmatter line 4 names a checksum key"):
+        life.gc_plan(reg)
+
+
+def test_a_bom_inside_the_block_does_not_hide_a_key(tmp_path):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f'---\ntitle: t\n\ufeffsource_sha256: "\\x{ord(c[0]):02x}{c[1:]}"\n---\n', "utf-8")
+    _age_all()
+    assert c not in life.gc_plan(reg).remove
+    assert "source_sha256" in {r.key for r in life.scan(reg).refs[c]}
+
+
+def test_a_block_too_long_for_frontmatter_is_not_composed(tmp_path, monkeypatch):
+    vault, reg, c, d = _two_blobs(tmp_path)
+    monkeypatch.setattr(life, "_MAX_FRONTMATTER", 200)
+    composed = []
+    monkeypatch.setattr(life.yaml, "compose", lambda *a, **k: composed.append(1))
+    (vault / "03-references" / "n.md").write_text(
+        "---\n" + "prose line about the call\n" * 10 + "---\n", "utf-8")
+    _note(vault, "03-references/other.md", source_sha256=d)
+    _age_all()
+    life.scan(reg)
+    assert len(composed) == 1  # `other.md` only
+
+
+def test_a_value_an_emitter_wraps_does_not_block_gc(tmp_path):
+    """PyYAML's own dumper wraps a long quoted string onto indented lines full of escapes, which
+    every YAML reader reads the same way."""
+    import yaml
+
+    vault, reg, c, d = _two_blobs(tmp_path)
+    title = 'He said "the original is at C:\\Temp\\call.wav" ' * 6
+    front = yaml.safe_dump({"title": title, "nested": {"summary": title}, "source_sha256": c},
+                           width=60, default_style=None)
+    # wrapped, with a backslash on an indented continuation line
+    assert any(line.startswith(" ") and "\\" in line for line in front.splitlines()[1:])
+    (vault / "03-references" / "n.md").write_text(f"---\n{front}---\n", "utf-8")
+    _note(vault, "03-references/other.md", source_sha256=d)
+    _age_all()
+    assert life.gc_plan(reg).remove == {}
+
+
+def test_a_tab_does_not_cost_the_yaml_1_1_reading(tmp_path):
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        f'---\ntitle:\tt #\u2028source_sha256: "\\x{ord(c[0]):02x}{c[1:]}"\n---\n', "utf-8")
+    _age_all()
+    assert c not in life.gc_plan(reg).remove
+    assert "source_sha256" in {r.key for r in life.scan(reg).refs[c]}
+
+
+def test_a_line_separator_in_a_dialect_comment_leaves_the_dialect():
+    assert life._engine_dialect(["title: t", "#\u2028x"]) is False
+    assert life._engine_dialect(["title: t", "# x"]) is True
+
+
+def test_a_note_that_opens_with_a_rule_and_holds_latex_does_not_block_gc(tmp_path):
+    vault, reg, c, d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        "---\nThe integral $\\int_0^1 x\\,dx$ is a half.\nSo is $\\frac{1}{2}$.\n---\n\nmore\n",
+        "utf-8")
+    _note(vault, "03-references/other.md", source_sha256=d)
+    _age_all()
+    assert set(life.gc_plan(reg).remove) == {c}
+
+
+def test_a_list_item_spaced_from_its_dash_wraps_without_blocking_gc(tmp_path):
+    vault, reg, c, d = _two_blobs(tmp_path)
+    (vault / "03-references" / "n.md").write_text(
+        "---\nnotes:\n-   'the pdf is at\n  C:\\Users\\me: here'\n---\n", "utf-8")
+    _note(vault, "03-references/other.md", source_sha256=d)
+    _age_all()
+    assert set(life.gc_plan(reg).remove) == {c}
+
+
+@pytest.mark.parametrize("front, key", [
+    ("raw: Call #3.m4a\nraw_location: {d}\nraw_sha256: {c}", "raw_sha256"),
+    ("source_path: {d}/Call #3.pdf\nsource_sha256: {c}", "source_sha256"),
+])
+def test_a_hint_the_engine_writes_unquoted_survives_yaml_reading_it(tmp_path, front, key):
+    """YAML cuts `Call #3.pdf` at the comment; the writer meant the whole name."""
+    vault, reg, c, _d = _two_blobs(tmp_path)
+    folder = tmp_path / "originals"
+    (vault / "03-references" / "_meta.md").write_text(
+        f"---\n{front.format(d=folder, c=c)}\n---\n", "utf-8")
+    hints = {r.hint for r in life.scan(reg).refs[c] if r.key == key}
+    name = "Call #3.m4a" if key == "raw_sha256" else "Call #3.pdf"
+    assert str(folder / name) in hints

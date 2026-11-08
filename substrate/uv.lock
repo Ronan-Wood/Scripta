@@ -2986,6 +2986,7 @@ dependencies = [
     { name = "ocrmac", marker = "sys_platform == 'darwin'" },
     { name = "opencv-python-headless" },
     { name = "pypdfium2" },
+    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -3003,6 +3004,7 @@ requires-dist = [
     { name = "ocrmac", marker = "sys_platform == 'darwin'", specifier = ">=1.0.0,<2" },
     { name = "opencv-python-headless", specifier = ">=5.0.0.93,<6" },
     { name = "pypdfium2", specifier = ">=5.13.0,<6" },
+    { name = "pyyaml", specifier = ">=6.0.3,<7" },
 ]
 
 [package.metadata.requires-dev]
