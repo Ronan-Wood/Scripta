@@ -197,6 +197,12 @@ denied it still exits 0 with an unsigned feed, which the assertion catches. It t
 the dmg was built from, pushes the tag, and creates the release with `--verify-tag`, so GitHub cannot
 put the tag on a different commit.
 
+Every release also carries `Scripta-<version>-source.tar.gz`: `git archive` of the tagged commit
+under `Scripta-<version>/`, so the source of the app and of the engine it bundles (`substrate/`).
+The script refuses a tarball that is not that commit byte for byte. `--dry-run` runs every step up
+to the tag, the appcast's keychain prompt included, prints the assets the release would carry, and
+stops.
+
 A pre-release is invisible to the updater by construction (`releases/latest` skips them), which is
 the right default. Deltas are per version pair — the three most recent archives get one each; a
 user further back than that downloads the full dmg. When the bundled engine changes (the Python
