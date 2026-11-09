@@ -186,9 +186,13 @@ final class SubstrateEngine: ObservableObject {
     /// did when qwen2.5 left the machine. It now comes from Settings → Search
     /// (`AppSettings.engineSearchModel`): Off, whatever the server; a named local pick only when the
     /// Settings server IS the engine's Ollama and still lists it. Auto, a stale pick and a cloud
-    /// pick pass nothing, so the engine's own Auto picks — the rule the picker's label shows,
-    /// applied to what Ollama lists now. On Auto the CLI and the app run the same model by
-    /// construction.
+    /// pick pass nothing, so the engine's own choice applies: `hyde_model` in the operator's
+    /// `~/.substrate/serve.toml` when it sets one and the engine runs as `substrate serve`, else
+    /// the engine's Auto — the rule the picker's
+    /// label shows, applied to what Ollama lists now. The picker's Auto row shows what the engine
+    /// reports it runs, whichever it was. With no file, on Auto the CLI and the app run the same
+    /// model by construction. The same file is how an operator moves the reranker; this app
+    /// still states neither it nor the embedder.
     ///
     /// The tier disagreement that prompted the change is real and is NOT the app's to fix: it comes
     /// from `~/.local/bin/substrate-mcp` passing `cross` itself, which puts every client of that
