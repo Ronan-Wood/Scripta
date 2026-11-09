@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import re
 
-# Everything YAML 1.2 allows inside a one-line quoted scalar (nb-char), and PyYAML does too.
+# Everything YAML 1.2 allows inside a one-line quoted scalar (nb-char), and PyYAML does too. The
+# engine publishes the characters this keeps as `yaml.printable` in `contract/contract.json`
+# (`tools/export-contract.py` compiles this literal), and a client that writes frontmatter keeps
+# exactly that set.
 _UNSAFE = re.compile("[^\t\x20-\x7e\xa0-\u2027\u202a-\ud7ff\ue000-\ufefe\uff00-\ufffd\U00010000-\U0010ffff]")
 # Where a plain scalar may not start, and characters a plain scalar here never holds.
 _INDICATORS = frozenset("-?:,[]{}#&*!|>'\"%@`")

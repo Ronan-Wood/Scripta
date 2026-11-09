@@ -278,6 +278,9 @@ def test_a_changed_wire_version_changes_the_export(tmp_path):
     # An empty dict that is a value of its own rather than an `or` fallback is a nested object.
     ("render.py", '"known": True, "state": state,', '"known": True, "state": state, "extra": {},',
      "holds another"),
+    # A character rule written some way the reader does not read.
+    ("markdown/yaml_scalar.py", '_UNSAFE = re.compile("[^\\t', '_UNSAFE = re.compile(PATTERN + "[^\\t',
+     "not re.compile of one string literal"),
     # A dict literal in a nested function inside a builder.
     ("render.py", "    c = result.capability\n",
      '    c = result.capability\n\n    def _h():\n        return {"x": 1}\n', "nested function"),
@@ -462,6 +465,18 @@ def test_an_empty_dict_used_as_a_fallback_is_not_a_nested_object(tmp_path):
         'def payload(m):\n    return {"a": (m or {}).get("x")}\n', encoding="utf-8")
     body = tool._body(tool._Module(tmp_path, "sample.py").function("payload"))
     assert [tool._literal_keys(d, "sample") for d in tool._dict_literals(body, "sample")] == [{"a"}]
+
+
+def test_the_exported_character_rule_is_the_one_sanitize_applies():
+    """`yaml.printable` is what a writer must keep, so it must be exactly what the engine keeps:
+    every code point, one by one, against `yaml_scalar.sanitize` itself."""
+    from substrate.markdown import yaml_scalar
+
+    ranges = tool.export()["yaml"]["printable"]
+    assert len(ranges) >= 5
+    for cp in range(0x110000):
+        exported = any(lo <= cp <= hi for lo, hi in ranges)
+        assert exported == (yaml_scalar.sanitize(chr(cp)) == chr(cp)), hex(cp)
 
 
 def test_a_repeated_key_is_one_key(tmp_path):
