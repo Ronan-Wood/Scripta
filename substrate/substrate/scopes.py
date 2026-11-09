@@ -26,6 +26,7 @@ same reason: composition must not depend on where the process happens to be stan
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import re
@@ -33,6 +34,8 @@ import stat
 import tempfile
 import time
 import tomllib
+import unicodedata
+from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -153,6 +156,53 @@ def engine_home() -> Path:
     return DEFAULT_REGISTRY.parent
 
 
+# Where the engine keeps an index nobody placed: `~/.substrate/index/<scope>.db`, and the scope's
+# ingest tree beside it in `~/.substrate/index/<scope>/`. The same layout whoever composes it.
+INDEX_DIR = "index"
+
+
+def default_index(name: str, *, taken: Iterable[str] = ()) -> tuple[Path, Path]:
+    """The engine's own place for scope `name`'s index: `(db, index_root)`, under `index_home()`.
+
+    The name becomes a file name and a folder name in ONE folder (`index_folder_name`), so a dot
+    in it could make one scope's tree another's database (`x.db`) or its SQLite side file
+    (`x.db-wal`), and `..` or a `/` would leave the folder. A plain name is used as it is; any
+    other is made plain and given a short hash of itself, so it still has a place of its own. A
+    name whose folder differs from a registered one's (`taken`) only by case or Unicode form is
+    refused: the volume folds them, so both would write one index.
+
+    One folder for the machine, whatever registry composes into it: two registries composing one
+    name with no paths given would share an index (a test points `index_home` elsewhere)."""
+    folder = index_folder_name(name)
+    folded = folder.casefold()
+    twin = next((t for t in taken if index_folder_name(t).casefold() == folded), None)
+    if twin is not None:
+        raise ScopeError(f"scope name {name!r} differs from the registered {twin!r} only by case "
+                         f"or Unicode form, and this volume would give both one index; rename one "
+                         f"manifest's `name`, or pass --db and --index-root")
+    home = index_home()
+    return home / f"{folder}.db", home / folder
+
+
+def index_folder_name(name: str) -> str:
+    """`name` as one plain path segment: letters, digits, `-` and `_`, not starting with `-`,
+    judged in composed (NFC) form, since a decomposed accent is a letter plus a mark. A name that is
+    already plain is itself; any other keeps its plain parts and gains 8 hex of its own sha256, so
+    two names that make the same plain parts still get two folders."""
+    composed = unicodedata.normalize("NFC", name)
+    if composed and not composed.startswith("-") and all(c.isalnum() or c in "-_"
+                                                         for c in composed):
+        return composed
+    plain = "-".join("".join(c if c.isalnum() or c == "_" else " " for c in composed).split())
+    digest = hashlib.sha256(name.encode("utf-8", "surrogatepass")).hexdigest()[:8]
+    return f"{plain}-{digest}" if plain else f"scope-{digest}"
+
+
+def index_home() -> Path:
+    """The folder every default index is under: `~/.substrate/index`."""
+    return engine_home() / INDEX_DIR
+
+
 def registry_path(explicit: str | Path | None = None) -> Path:
     """Where the registry lives: an explicit path, else $SUBSTRATE_REGISTRY, else the default.
 
@@ -260,9 +310,9 @@ def record(
                               composed=datetime.now(UTC).isoformat(timespec="seconds"))
 
 
-def _prepare(name: str, vault: Path, db: Path, index_root: Path,
-             registry: str | Path | None) -> tuple[Path, Path, Path, Path]:
-    """The checks and spelling both writers share: the registry path and the three paths, real."""
+def check_name(name: str) -> None:
+    """Raise ScopeError for a name no scope may be registered under. Compose asks before it builds
+    anything, so a name the registry would refuse never leaves an index nothing refreshes."""
     # A scope name becomes the first segment of every `expand_ref` this scope issues, so a name
     # containing the ref separator produces handles that parse back to a DIFFERENT scope — one
     # that either does not exist or, worse, does. Refused at registration, where the manifest can
@@ -274,6 +324,12 @@ def _prepare(name: str, vault: Path, db: Path, index_root: Path,
             f"scope name {name!r} is unusable: it must be non-empty, carry no {REF_SEP!r}, and "
             f"have no leading or trailing whitespace. Fix the vault manifest's `name`."
         )
+
+
+def _prepare(name: str, vault: Path, db: Path, index_root: Path,
+             registry: str | Path | None) -> tuple[Path, Path, Path, Path]:
+    """The checks and spelling both writers share: the registry path and the three paths, real."""
+    check_name(name)
     path = registry_path(registry)
     vault, db, index_root = (real_path(p) for p in (vault, db, index_root))
     path.parent.mkdir(parents=True, exist_ok=True)

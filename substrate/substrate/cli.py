@@ -22,6 +22,7 @@ import contextlib
 import json
 import math
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -476,6 +477,33 @@ def _print_ingest_result(r, out: Path) -> None:
         )
 
 
+_DB_FAMILY = re.compile(r".+\.db(-wal|-shm|-journal)?")
+
+
+def _a_new_tree_in_the_engines_folder(root: Path) -> bool:
+    """Whether `root` is not there yet, sits directly in the engine's index folder, and that
+    folder holds only what the engine writes there: index databases (and their SQLite side files),
+    ingest trees, and hidden files. A folder that is not there yet holds nothing either."""
+    home = scopes.real_path(scopes.index_home())
+    if root.parent != home or os.path.lexists(root):
+        return False
+    try:
+        children = list(os.scandir(home))
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    for c in children:
+        if c.is_symlink():
+            return False
+        if c.is_file() and (c.name.startswith(".") or _DB_FAMILY.fullmatch(c.name)):
+            continue
+        if c.is_dir() and _not_an_ingest_tree(Path(c.path)) is None:
+            continue
+        return False
+    return True
+
+
 def _not_an_ingest_tree(root: Path) -> str | None:
     """WHY `root` is not a tree of ingest directories this engine wrote, or None when it is one:
     every child a directory with a `document.md` and a `run.json`, and at least one of them.
@@ -624,8 +652,8 @@ def _refuse_index_root(index_root: Path, scope, *, db: Path,
         if (d / _v.MANIFEST).exists():
             where = "contains" if d == root else f"is inside {d}, which holds"
             return (f"{root} {where} a {_v.MANIFEST} — that makes it part of a vault, not an index "
-                    f"root. Refusing to {what} it. Point --index-root at a disposable directory "
-                    f"(the default, out-vault/index, is repo-local and gitignored).")
+                    f"root. Refusing to {what} it. Point --index-root at a disposable directory, "
+                    f"or pass neither it nor --db for the engine's own, ~/.substrate/index.")
     for v in scope.vaults:
         if scopes.nested(root, v.path):
             return (f"{root} is the same as, inside, or a parent of the vault {v.path.resolve()}. "
@@ -672,7 +700,13 @@ def _refuse_index_root(index_root: Path, scope, *, db: Path,
     # created anywhere — a new workspace's first compose refuses until that scope is fixed. Every
     # scope that has already composed keeps indexing, because its root is an ingest tree, and the
     # refusal names the broken scope and the reason. That is the direction this engine fails in.
-    if unknown and (why_not := _not_an_ingest_tree(root)) is not None:
+    #
+    # ONE EXCEPTION, BY SHAPE AGAIN: a new tree in the engine's own folder (`scopes.index_home`),
+    # whose every entry is already an index the engine wrote. Nothing an orphaned vault could be
+    # is there to be filled, and without it every new scope, and the app's first-run rebuild,
+    # would wait on one unreadable manifest.
+    if (unknown and (why_not := _not_an_ingest_tree(root)) is not None
+            and not _a_new_tree_in_the_engines_folder(root)):
         broken = "; ".join(f"{name!r} ({why})" for name, why in unknown)
         return (f"the vaults inherited by {broken} cannot be known, so nothing says {root} is not "
                 f"one of them, and it is not an ingest tree either — {why_not}. Refusing to {what} "
@@ -1050,6 +1084,66 @@ def _report_frontmatter(notes) -> None:
               f"`substrate frontmatter check` names them, `fix` rewrites them")
 
 
+def _index_location(args: argparse.Namespace, scope, project: Path) -> tuple[Path, Path] | None:
+    """Where this compose or register puts the scope's index: `(db, index_root)`, or None after a
+    FATAL line, before anything is written.
+
+    `--db` and `--index-root` as given, both or neither. Neither: where the registry already has
+    this VAULT (by its scope's name, else by the vault alone, so a manifest renamed since keeps its
+    index), since a compose never moves an index nobody asked to move; else the engine's own place
+    (`scopes.default_index`), the same whoever composes it. Read when the compose runs, under the
+    vaults lock, so a refresh pass and the first-run rebuild below agree on the row.
+    `--default-location` asks for the engine's place even for a vault registered elsewhere: rebuilt
+    there, nothing moved, and the old index left where it was.
+
+    A name another vault holds is refused here rather than by `record` at the end: by then the
+    compose has built that other vault's notes into the place the owner's own index belongs."""
+    relocate = getattr(args, "default_location", False)
+    if (args.db is None) != (args.index_root is None):
+        print("FATAL: pass --db and --index-root together, or neither: the index then stays where "
+              "the registry has it, else goes in the engine's own folder.", file=sys.stderr)
+        return None
+    if args.db is not None:
+        if relocate:
+            print("FATAL: --default-location and --db/--index-root name two places for one index.",
+                  file=sys.stderr)
+            return None
+        db = _path_arg(args.db, "--db")
+        index_root = _path_arg(args.index_root, "--index-root")
+        return None if db is None or index_root is None else (db, index_root)
+    try:
+        scopes.check_name(scope.name)
+        entries = scopes.load(args.registry)
+        vault = scopes.real_path(project)
+        named = entries.get(scope.name)
+        if named is not None and named.vault != vault:
+            print(f"FATAL (scope registry): scope {scope.name!r} is already registered to "
+                  f"{named.vault}, not {vault}. Nothing was written. If this is a different vault, "
+                  f"rename its manifest `name`; if that vault moved, remove the stale entry from "
+                  f"{scopes.registry_path(args.registry)}.", file=sys.stderr)
+            return None
+        prior = named or next((e for _, e in sorted(entries.items()) if e.vault == vault), None)
+        if relocate and named is None and prior is not None:
+            # Rebuilt under the manifest's new name, the old row would stay where it was, and a
+            # caller rebuilding stranded rows would rebuild this one on every run.
+            print(f"FATAL (scope registry): this vault is registered as {prior.name!r}, and its "
+                  f"manifest now names {scope.name!r}. Nothing was written. Put the old name back, "
+                  f"or compose it with --db and --index-root.", file=sys.stderr)
+            return None
+        if prior is not None and not relocate:
+            if prior.index_root is None:
+                print(f"FATAL (scope registry): scope {prior.name!r} is registered with no ingest "
+                      f"tree (the row predates the field), so there is nowhere to compose it "
+                      f"without moving it. Compose it once with --default-location, or with "
+                      f"--db and --index-root.", file=sys.stderr)
+                return None
+            return prior.db, prior.index_root
+        return scopes.default_index(scope.name, taken=[n for n in entries if n != scope.name])
+    except scopes.ScopeError as e:
+        print(f"FATAL (scope registry): {e}", file=sys.stderr)
+        return None
+
+
 def cmd_register(args: argparse.Namespace) -> int:
     """Record a project vault's scope in the registry WITHOUT composing it: it is pending, and the
     engine's next refresh pass composes it (`scopes.register`). For a client that writes notes for
@@ -1061,26 +1155,36 @@ def cmd_register(args: argparse.Namespace) -> int:
     from substrate import vault as _vault
 
     project = _path_arg(args.project_vault, "the project vault")
-    index_root = _path_arg(args.index_root, "--index-root")
-    db = _path_arg(args.db, "--db")
-    if project is None or index_root is None or db is None:
+    if project is None:
         return 2
     try:
         scope = _vault.resolve_scope(project)
     except _vault.VaultError as e:
         print(f"FATAL (manifest): {e}", file=sys.stderr)
         return 2
+    try:
+        prior = scopes.load(args.registry).get(scope.name)
+    except scopes.ScopeError as e:
+        print(f"FATAL (scope registry): {e}", file=sys.stderr)
+        return 1
+    if prior is not None and prior.vault == scopes.real_path(project):
+        # Left as it is, wherever its index is, so no location is worked out for it at all.
+        print(f"  scope: {scope.name!r} registered in {scopes.registry_path(args.registry)}")
+        print("  already registered: nothing changed")
+        return 0
+    location = _index_location(args, scope, project)
+    if location is None:
+        return 2
+    db, index_root = location
     # A NEW ROW IS HELD TO WHAT COMPOSE HOLDS ITS INDEX TO, before anything is written: the
     # engine's pass composes into these paths, and a row naming a tree inside a vault, or over
     # other scopes' indexes, refuses that compose and every other scope's beside it.
     try:
-        prior = scopes.load(args.registry).get(scope.name)
-        if prior is None or prior.vault != scopes.real_path(project):
-            refuse = _refuse_index_root(index_root, scope, db=db, registry=args.registry,
-                                        removing=False)
-            if refuse:
-                print(f"FATAL (--index-root): {refuse}", file=sys.stderr)
-                return 2
+        refuse = _refuse_index_root(index_root, scope, db=db, registry=args.registry,
+                                    removing=False)
+        if refuse:
+            print(f"FATAL (--index-root): {refuse}", file=sys.stderr)
+            return 2
         reg, changed = scopes.register(scope.name, vault=project, db=db, index_root=index_root,
                                        registry=args.registry)
     except (scopes.ScopeError, OSError) as e:
@@ -1126,20 +1230,22 @@ def cmd_compose(args: argparse.Namespace) -> int:
     from substrate.store.reconcile import reconcile
 
     project = _path_arg(args.project_vault, "the project vault")
-    index_root = _path_arg(args.index_root, "--index-root")
-    db = _path_arg(args.db, "--db")
-    if project is None or index_root is None or db is None:
+    if project is None:
         return 2
-    # ONE SPELLING OF THE DATABASE for every use below. zsh passes `--db=~/x.db` through literally;
-    # the guards and the registry expanded it and SQLite did not, so the compose ended in a
-    # traceback — or, with a directory named `~` in the working directory, checked and registered
-    # one file and wrote another. `_path_arg` above expanded it once, for every use below.
 
     try:
         scope = _vault.resolve_scope(project)
     except _vault.VaultError as e:
         print(f"FATAL (manifest): {e}", file=sys.stderr)
         return 2
+    # ONE SPELLING OF THE DATABASE for every use below. zsh passes `--db=~/x.db` through literally;
+    # the guards and the registry expanded it and SQLite did not, so the compose ended in a
+    # traceback — or, with a directory named `~` in the working directory, checked and registered
+    # one file and wrote another. `_index_location` expands it once, for every use below.
+    location = _index_location(args, scope, project)
+    if location is None:
+        return 2
+    db, index_root = location
 
     print(f"scope: {scope.project.name}  <-  {[v.name for v in scope.vaults]}")
     print(f"  {len(scope.notes)} notes across {len(scope.vaults)} vault(s)")
@@ -2304,6 +2410,9 @@ def cmd_embed(args: argparse.Namespace) -> int:
     from substrate.embed.engine import EmbeddingError, OllamaEmbedder
     from substrate.store.index_store import IndexStore, SchemaMismatch
 
+    # `--scope` for a caller that leaves the index's location to the engine (`_index_location`).
+    args.db = _resolve_db(args)
+
     from substrate.embed.engine import AppleEmbedder
 
     eng = (AppleEmbedder() if args.model.startswith("apple")
@@ -2313,9 +2422,10 @@ def cmd_embed(args: argparse.Namespace) -> int:
     from substrate.stack import DEFAULT_CACHE
 
     # THE DEFAULT CACHE IS NEVER RELATIVE TO CWD. The bundled shims `cd` to the engine root inside
-    # the signed app, and Scripta runs `embed --db <scope>` with no `--cache` after every compose, so
-    # the old `out/vector-cache.db` default wrote into the bundle: it broke the code seal, failed
-    # outright where /Applications is not user-writable, and changed the tree a Sparkle delta hashes.
+    # the signed app, and Scripta runs `embed --scope <name>` with no `--cache` after every
+    # compose, so the old `out/vector-cache.db` default wrote into the bundle: it broke the code
+    # seal, failed outright where /Applications is not user-writable, and changed the tree a
+    # Sparkle delta hashes.
     # `stack.DEFAULT_CACHE` is the per-user path the engine already defines (the query stack keeps
     # its HyDE and rerank entries there; its embedder reads vectors from the index, not from here),
     # and one cache across scopes embeds core-vault's passages once rather than once per scope that
@@ -2473,9 +2583,16 @@ def main(argv: list[str] | None = None) -> int:
                           help="resolve a project vault's manifest, ingest + index the composed "
                                "scope (project + inherited), and assert the composition")
     comp.add_argument("project_vault", help="path to the project vault (holds .substrate.toml)")
-    comp.add_argument("--index-root", default="out-vault/index",
-                      help="where per-note ingest dirs are written (disposable, kept off cloud-sync)")
-    comp.add_argument("--db", default="out-vault/index.db")
+    comp.add_argument("--index-root", default=None,
+                      help="where per-note ingest dirs are written (disposable, kept off "
+                           "cloud-sync). With --db, or neither: where the registry has the scope, "
+                           f"else ~/.substrate/{scopes.INDEX_DIR}/<scope>")
+    comp.add_argument("--db", default=None,
+                      help=f"the index database (default: where the registry has the scope, else "
+                           f"~/.substrate/{scopes.INDEX_DIR}/<scope>.db)")
+    comp.add_argument("--default-location", action="store_true",
+                      help="compose into the engine's own place even for a scope registered "
+                           "elsewhere: rebuilt there, and the old index left where it was")
     # The name invites "start from scratch" and the flag does not do that — it removes the
     # INDEX-ROOT, never the database. That reading cost an hour on 2026-08-03: a moved note kept a
     # dangling `source_path`, `--clean` was run twice, it reported `unchanged 144` both times, and
@@ -2497,9 +2614,12 @@ def main(argv: list[str] | None = None) -> int:
                          help="record a project vault's scope without composing it; the engine's "
                               "next refresh pass composes it (for a client that only writes notes)")
     rgs.add_argument("project_vault", help="path to the project vault (holds .substrate.toml)")
-    rgs.add_argument("--index-root", required=True,
-                     help="where the engine's pass writes the per-note ingest dirs")
-    rgs.add_argument("--db", required=True, help="the index the engine's pass composes into")
+    rgs.add_argument("--index-root", default=None,
+                     help="where the engine's pass writes the per-note ingest dirs (with --db, or "
+                          "neither: the engine's own place)")
+    rgs.add_argument("--db", default=None,
+                     help=f"the index the engine's pass composes into (default "
+                          f"~/.substrate/{scopes.INDEX_DIR}/<scope>.db)")
     rgs.add_argument("--registry", default=None,
                      help=f"scope registry to record into (default ${scopes.ENV_VAR}, else "
                           f"{scopes.DEFAULT_REGISTRY})")
@@ -2680,8 +2800,10 @@ def main(argv: list[str] | None = None) -> int:
     _add_lock_wait(emb)
     emb.add_argument("--registry", default=None,
                      help=f"the registry whose vaults lock to take (default ${scopes.ENV_VAR}, "
-                          f"else {scopes.DEFAULT_REGISTRY}); embed reads nothing else from it")
-    emb.add_argument("--db", default="out/substrate.db")
+                          f"else {scopes.DEFAULT_REGISTRY}), and where --scope is resolved")
+    emb.add_argument("--db", default=None, help="the index to vector (default out/substrate.db)")
+    emb.add_argument("--scope", default=None,
+                     help="a registered scope's index, wherever the registry has it; not with --db")
     emb.add_argument("--model", default="qwen3-embedding:0.6b")
     emb.add_argument("--embed-style", default="auto", choices=["auto","nomic","none","qwen3"])
     emb.add_argument("--host", default="http://127.0.0.1:11434")

@@ -771,12 +771,10 @@ def _writable_scope(name: str, cfg: Config):
 
 
 def _compose_hint(entry) -> str:
-    # `--index-root` is omitted when the registry entry predates the field: emitting a
-    # defaulted "." would tell the user to write the disposable index tree into whatever
-    # directory they happen to be standing in.
+    # No paths: compose keeps a registered scope where the registry has it. A row that predates
+    # the ingest-tree field has nowhere to be kept, and is rebuilt in the engine's own folder.
     return ("run `substrate compose " + str(entry.vault)
-            + (f" --index-root {entry.index_root}" if entry.index_root else "")
-            + f" --db {entry.db}`")
+            + ("" if entry.index_root else " --default-location") + "`")
 
 
 def _tool_ingest(args: dict, cfg: Config) -> dict:
