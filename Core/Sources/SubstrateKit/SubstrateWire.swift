@@ -4,9 +4,12 @@ import Foundation
 ///
 /// The engine's `substrate/substrate/wire.py` is the authority and says when to bump; this mirrors
 /// it, and `WireParityTests` holds the two together. Each request states `Substrate-Wire`, and each
-/// reply does too. The match is exact. A reply that states another version, or states one twice or
-/// unreadably, is refused before its body is decoded. A reply that states none came from an engine
-/// older than the header, which spoke version 1.
+/// reply does too. The engine serves a range of client versions (`wire.MIN_VERSION` to
+/// `wire.VERSION`), every change inside it additive, and refuses a client outside it. So a reply
+/// in this app's version or a newer one is read: the engine answered, so this app is inside its
+/// range. A reply in an older version, or one stated twice or unreadably, is refused before its body
+/// is decoded. A reply that states none came from an engine older than the header, which spoke
+/// version 1.
 enum SubstrateWire {
     static let version = 1
     static let header = "Substrate-Wire"
@@ -30,7 +33,8 @@ enum SubstrateWire {
     }
 
     /// Why this client will not read a reply carrying these `Substrate-Wire` values, or nil.
-    static func unread(_ values: [String]) -> String? {
+    /// `reading` is this client's version, a parameter so the older-engine case can be tested.
+    static func unread(_ values: [String], reading mine: Int = version) -> String? {
         guard values.count <= 1 else {
             return "the engine stated \(header) \(values.count) times; one reply has one version"
         }
@@ -39,9 +43,9 @@ enum SubstrateWire {
             let echo = value.count <= shown ? value : String(value.prefix(shown)) + "…"
             return "the engine stated \(header): \(echo), which is not a wire version"
         }
-        guard stated == version else {
-            return "the engine speaks substrate wire \(stated) and this app speaks \(version); "
-                + "update whichever of the two is older"
+        guard stated >= mine else {
+            return "the engine speaks substrate wire \(stated), older than this app's \(mine); "
+                + "update the engine"
         }
         return nil
     }

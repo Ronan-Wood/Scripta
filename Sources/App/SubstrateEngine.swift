@@ -655,7 +655,8 @@ final class SubstrateEngine: ObservableObject {
     private enum SocketState {
         case free
         case held(Occupant)
-        /// An engine answered `list_scopes` in this app's wire; whether to use it is `EngineAttach`'s.
+        /// An engine answered `list_scopes`, so it serves this app's wire; whether to use it is
+        /// `EngineAttach`'s.
         case engine(WireScopeList)
     }
 

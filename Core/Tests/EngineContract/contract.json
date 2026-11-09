@@ -1,6 +1,7 @@
 {
   "wire": {
     "version": 1,
+    "min_version": 1,
     "header": "Substrate-Wire",
     "mismatch": -32010,
     "unstated": 1
@@ -11,6 +12,10 @@
   },
   "cli": {
     "declined_exit": 75
+  },
+  "notes": {
+    "version": 1,
+    "min_version": 1
   },
   "spine": {
     "statuses": [
@@ -310,6 +315,8 @@
     ],
     "server": [
       "agent_mode",
+      "notes_min_version",
+      "notes_version",
       "read_only",
       "refresh_every"
     ],

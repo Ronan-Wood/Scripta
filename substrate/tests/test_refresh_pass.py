@@ -25,9 +25,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from substrate import cli, local_socket, refresh, refresh_state, scopes  # noqa: E402
+from substrate import cli, local_socket, refresh, refresh_state, scopes, spine  # noqa: E402
 
 DEMO = ROOT / "vaults" / "demo-vault"
+
+# The note formats every server states beside what kind of server it is (`spine`).
+_RANGES = {"notes_version": spine.NOTES_VERSION, "notes_min_version": spine.NOTES_MIN_VERSION}
 
 
 @contextlib.contextmanager
@@ -411,7 +414,7 @@ def test_serve_runs_on_its_own_and_refreshes() -> None:
                 time.sleep(0.2)
         assert payload is not None, "serve never answered"
         assert payload["server"] == {"read_only": True, "agent_mode": False,
-                                     "refresh_every": 3600.0}, payload["server"]
+                                     "refresh_every": 3600.0, **_RANGES}, payload["server"]
         while _recorded(registry) is None and time.monotonic() < deadline:
             time.sleep(0.2)
         assert _recorded(registry) in ("refreshed", "embed_failed"), _recorded(registry)
@@ -486,7 +489,8 @@ def test_a_plain_server_says_it_refreshes_nothing() -> None:
     reply = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                            "params": {"name": "list_scopes", "arguments": {}}}, cfg)
     payload = json.loads(reply["result"]["content"][0]["text"])
-    assert payload["server"] == {"read_only": True, "agent_mode": False, "refresh_every": None}
+    assert payload["server"] == {"read_only": True, "agent_mode": False, "refresh_every": None,
+                                 **_RANGES}
 
 
 def test_a_refreshing_server_is_refused_off_the_socket_before_any_model_is_probed() -> None:

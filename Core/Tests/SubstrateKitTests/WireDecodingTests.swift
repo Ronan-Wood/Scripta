@@ -106,7 +106,8 @@ final class WireDecodingTests: XCTestCase {
     func testTheScopeListsServerBlockDecodesAndRoundTrips() throws {
         let golden = try GoldenFixture.payload(GoldenFixture.listScopes)
         XCTAssertEqual(try JSONDecoder().decode(WireScopeList.self, from: golden).server,
-                       WireServerInfo(readOnly: true, agentMode: false, refreshEvery: nil))
+                       WireServerInfo(readOnly: true, agentMode: false, refreshEvery: nil,
+                                      notesVersion: 1, notesMinVersion: 1))
         var withoutBlock = try XCTUnwrap(
             JSONSerialization.jsonObject(with: golden) as? [String: Any])
         withoutBlock.removeValue(forKey: "server")

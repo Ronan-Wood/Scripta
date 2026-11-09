@@ -72,10 +72,22 @@ final class UnixSocketTransportTests: XCTestCase {
         XCTAssertEqual(call.payloadIfOK, Echo(answer: 42), "\(call)")
     }
 
+    /// THE RANGE: a newer engine answered, so this app is inside the versions it serves, and every
+    /// change since this app's version is one it can ignore.
+    func testAReplyFromANewerEngineIsRead() async throws {
+        for stated in ["\(SubstrateWire.version + 1)", "\(SubstrateWire.version + 9)"] {
+            let listener = try TestListener(
+                reply: Self.okReply(headers: "Substrate-Wire: \(stated)\r\n"))
+            let call: SubstrateCall<Echo> = await makeClient(listener).call(
+                tool: "status", arguments: SubstrateNoArguments())
+            XCTAssertEqual(call.payloadIfOK, Echo(answer: 42), "wire \(stated): \(call)")
+        }
+    }
+
     /// Decoding a reply in a shape this build does not know produces something plausible and
     /// wrong. It is refused instead, whatever the body looks like.
     func testAReplyInAnUnreadVersionIsRefusedBeforeItsBodyIsDecoded() async throws {
-        for stated in ["2", "one", "0", ""] {
+        for stated in ["one", "0", ""] {
             let listener = try TestListener(
                 reply: Self.okReply(headers: "Substrate-Wire: \(stated)\r\n"))
             let call: SubstrateCall<Echo> = await makeClient(listener).call(

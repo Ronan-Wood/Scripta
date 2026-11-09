@@ -17,6 +17,16 @@ from __future__ import annotations
 
 from substrate.models import Document
 
+# THE NOTE FORMAT, VERSIONED: what a note's writer must produce for this engine to index it (these
+# spine vocabularies, `classes`, and the YAML a frontmatter scalar may hold). A client attached to
+# an engine it did not start writes notes for that engine to index, so the two agree on this, and
+# not on the index schema: the engine indexes. The range works as `wire.MIN_VERSION` does. Bump
+# `NOTES_VERSION` when a writer may use a change (a new field, class or value); raise
+# `NOTES_MIN_VERSION` too when notes an older writer produces would be refused or read differently.
+# It versions `classes` and `markdown/yaml_scalar.py` as well, which point back here.
+NOTES_VERSION = 1
+NOTES_MIN_VERSION = 1
+
 # The four Doc-2 §6 statuses and their default-retrieval membership. INCLUDED_STATUSES is the
 # single source of truth for "the default retrieval set" — the store filter and its audit both
 # read it, so the set the engine excludes can never drift from the set it claims to exclude.

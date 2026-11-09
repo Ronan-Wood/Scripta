@@ -1127,17 +1127,26 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
     /// Seconds between the server's own refresh passes (`substrate serve`), or nil when it
     /// refreshes nothing and leaves that to whoever runs it.
     public let refreshEvery: Double?
+    /// The note formats the engine indexes, oldest and newest. Nil from an engine older than the
+    /// ranges, which indexed format 1 alone.
+    public let notesVersion: Int?
+    public let notesMinVersion: Int?
 
-    public init(readOnly: Bool, agentMode: Bool, refreshEvery: Double?) {
+    public init(readOnly: Bool, agentMode: Bool, refreshEvery: Double?,
+                notesVersion: Int? = nil, notesMinVersion: Int? = nil) {
         self.readOnly = readOnly
         self.agentMode = agentMode
         self.refreshEvery = refreshEvery
+        self.notesVersion = notesVersion
+        self.notesMinVersion = notesMinVersion
     }
 
     enum CodingKeys: String, CodingKey {
         case readOnly = "read_only"
         case agentMode = "agent_mode"
         case refreshEvery = "refresh_every"
+        case notesVersion = "notes_version"
+        case notesMinVersion = "notes_min_version"
     }
 
     public init(from decoder: Decoder) throws {
@@ -1145,6 +1154,8 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
         readOnly = try c.decode(Bool.self, forKey: .readOnly)
         agentMode = try c.decode(Bool.self, forKey: .agentMode)
         refreshEvery = try c.decodeIfPresent(Double.self, forKey: .refreshEvery)
+        notesVersion = try c.decodeIfPresent(Int.self, forKey: .notesVersion)
+        notesMinVersion = try c.decodeIfPresent(Int.self, forKey: .notesMinVersion)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1152,6 +1163,8 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
         try c.encode(readOnly, forKey: .readOnly)
         try c.encode(agentMode, forKey: .agentMode)
         try c.encodeExplicitNull(refreshEvery, forKey: .refreshEvery)
+        try c.encodeIfPresent(notesVersion, forKey: .notesVersion)
+        try c.encodeIfPresent(notesMinVersion, forKey: .notesMinVersion)
     }
 }
 

@@ -199,7 +199,8 @@ final class RenderContractTests: XCTestCase {
         XCTAssertEqual(contract.ownKeys(of: "scope_list_reply"), ["retrieval_arms", "server"])
         XCTAssertEqual(Set(contract.extends["scope_list_reply"] ?? []),
                        ["scope_list", "agent_scope_list"])
-        XCTAssertEqual(contract.keys(of: "server"), ["read_only", "agent_mode", "refresh_every"])
+        XCTAssertEqual(contract.keys(of: "server"), ["read_only", "agent_mode", "refresh_every",
+                                                     "notes_version", "notes_min_version"])
     }
 
     func testDriftKeysMatchTheDecoder() {

@@ -9,17 +9,28 @@ ONE INTEGER, NOT THE INDEX SCHEMA. `server.SERVER_VERSION` tracks `schema.SCHEMA
 moves whenever the index's stored contract does. Most of those moves change nothing a client
 decodes, so keying on it would refuse compatible pairs on every schema bump.
 
-**Bump `VERSION` when a reply changes in a way an older client would misread:** a key removed or
-renamed, a type or meaning changed, or a new value in a closed vocabulary. Adding a key that old
-clients ignore is not a bump. The match is EXACT: an engine and a client of different versions
-refuse each other, loudly. Serving two versions at once would need the reply to state the version
-it was shaped for and every tool to take that version. Nothing here does that, so nothing here
-claims a range.
+**THE ENGINE SERVES A RANGE,** on the model of Docker's daemon API (`ApiVersion` and
+`MinAPIVersion`): every client from `MIN_VERSION` to `VERSION`. That holds because every change
+between the two is additive. A reply is shaped for `VERSION`, and a client of an older version in
+the range reads it by ignoring the keys it does not know. A client below `MIN_VERSION`, or above
+`VERSION`, is refused, loudly.
+
+**Bump `VERSION` when a client may rely on a change being there,** in a request or a reply: a
+new tool, argument or key a newer client will use. An optional key whose absence every client
+already handles needs no bump. **Raise `MIN_VERSION` too when an older client would send or read
+something wrongly:** a tool, argument or key removed or renamed, an argument made required, a
+default, type or meaning changed, or a new value in a closed vocabulary. That refuses every client
+below it, so it is the breaking change, and it comes with an app release.
+
+**Clients from before the range match exactly.** A Scripta or `substrate-mcp --connect` older than
+`MIN_VERSION` reads only a reply stating its own version, so the first bump of `VERSION` refuses
+every one of them, whatever `MIN_VERSION` says. Bump it only once those are gone.
 
 Each request says `Substrate-Wire: <n>`, and an absent header means 1, which is what every client
-before this one spoke. A request in another version is not dispatched, and is answered with a
-JSON-RPC error, `MISMATCH`, naming both sides. Every reply carries the header too, so the client
-checks the engine the same way. Stdlib only: `substrate-mcp --connect` imports this.
+before this one spoke. A request outside the range is not dispatched, and is answered with a
+JSON-RPC error, `MISMATCH`, naming both sides. Every reply carries the header too. A client reads a
+reply in its own version or a newer one: the engine served it, so the client is inside the engine's
+range. Stdlib only: `substrate-mcp --connect` imports this.
 """
 
 from __future__ import annotations
@@ -27,6 +38,8 @@ from __future__ import annotations
 from typing import Any
 
 VERSION = 1
+# The oldest client this engine serves. Raised only by a change an older client would misread.
+MIN_VERSION = 1
 HEADER = "Substrate-Wire"
 MISMATCH = -32010
 
@@ -70,10 +83,12 @@ def unserved(values: list[str] | None) -> str | None:
         version = _stated(values)
     except ValueError as e:
         return str(e)
-    if version == VERSION:
+    if MIN_VERSION <= version <= VERSION:
         return None
-    return (f"this engine speaks substrate wire {VERSION} and the client speaks {version}; "
-            f"update whichever of the two is older")
+    served = f"{VERSION}" if MIN_VERSION == VERSION else f"{MIN_VERSION} to {VERSION}"
+    update = "the client" if version < MIN_VERSION else "the engine"
+    return (f"this engine serves substrate wire {served} and the client speaks {version}; "
+            f"update {update}")
 
 
 def unread(values: list[str] | None) -> str | None:
@@ -82,10 +97,10 @@ def unread(values: list[str] | None) -> str | None:
         version = _stated(values)
     except ValueError as e:
         return f"the engine sent {e}"
-    if version == VERSION:
+    if version >= VERSION:
         return None
-    return (f"the engine speaks substrate wire {version} and this client speaks {VERSION}; "
-            f"update whichever of the two is older")
+    return (f"the engine speaks substrate wire {version}, older than this client's {VERSION}; "
+            f"update the engine")
 
 
 def refusal(msg: Any, why: str) -> Any:
@@ -106,4 +121,5 @@ def refusal(msg: Any, why: str) -> Any:
 
 def _error(rid: Any, why: str) -> dict:
     return {"jsonrpc": "2.0", "id": rid,
-            "error": {"code": MISMATCH, "message": why, "data": {"engine": VERSION}}}
+            "error": {"code": MISMATCH, "message": why,
+                      "data": {"engine": VERSION, "engine_min": MIN_VERSION}}}

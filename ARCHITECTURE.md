@@ -43,8 +43,9 @@ never stops one it did not start, and starts its own if that one goes away.
 (`~/.substrate/run/substrate.sock`, in the engine's own home), and both ends refuse a peer of
 another uid: loopback TCP let every user on the Mac query every scope. The socket's 0.3.4 path,
 which clients were registered with, is kept as a symlink to it (`LegacyEngineSocket`). Both
-ends state and check a wire version (`Substrate-Wire`, `substrate/substrate/wire.py`), so an app
-and an engine from different releases refuse each other's replies rather than mis-decode them.
+ends state and check a wire version (`Substrate-Wire`, `substrate/substrate/wire.py`). The engine
+serves a declared range of client versions, every change inside it additive, and an app outside
+that range is refused rather than left to mis-decode a reply.
 
 ---
 

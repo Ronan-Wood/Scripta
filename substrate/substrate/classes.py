@@ -86,6 +86,8 @@ class ClassPolicy:
 # it, which the act of writing it contradicts.
 UNCLASSIFIED_CLASS = "unclassified"
 
+# Part of the note format a writer must produce: a class added or changed here moves
+# `spine.NOTES_VERSION`, and `NOTES_MIN_VERSION` when older notes would be read differently.
 POLICIES: dict[str, ClassPolicy] = {
     "reference-frozen": ClassPolicy(
         "reference-frozen",

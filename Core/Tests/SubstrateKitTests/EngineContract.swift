@@ -13,9 +13,27 @@ import XCTest
 struct EngineContract: Decodable {
     struct Wire: Decodable {
         let version: Int
+        /// The oldest client the engine serves: every change since it is additive.
+        let minVersion: Int
         let header: String
         let mismatch: Int
         let unstated: Int
+
+        enum CodingKeys: String, CodingKey {
+            case version, header, mismatch, unstated
+            case minVersion = "min_version"
+        }
+    }
+
+    /// The note format a writer must produce for the engine to index it, as a range.
+    struct Notes: Decodable {
+        let version: Int
+        let minVersion: Int
+
+        enum CodingKeys: String, CodingKey {
+            case version
+            case minVersion = "min_version"
+        }
     }
 
     struct Socket: Decodable {
@@ -92,6 +110,7 @@ struct EngineContract: Decodable {
     }
 
     let wire: Wire
+    let notes: Notes
     let socket: Socket
     let engineManifest: Manifest
     let spine: Spine
@@ -107,7 +126,7 @@ struct EngineContract: Decodable {
     let tiers: Tiers
 
     enum CodingKeys: String, CodingKey {
-        case wire, socket, spine, classes, retrieval, refresh, payloads, extends, tiers
+        case wire, notes, socket, spine, classes, retrieval, refresh, payloads, extends, tiers
         case engineManifest = "engine_manifest"
     }
 

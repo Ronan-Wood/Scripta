@@ -22,6 +22,34 @@ final class EngineAttachTests: XCTestCase {
                                                        refreshEvery: 900))), .attach)
     }
 
+    /// THE NOTE FORMAT. This app writes notes the engine indexes, so its format must be in the range
+    /// the engine says it indexes. An engine that states none is older than the ranges, and indexed
+    /// format 1, which is this app's.
+    func testAnEngineIsAttachedOnlyWhenItIndexesThisAppsNoteFormat() {
+        func notes(_ lowest: Int?, _ highest: Int?) -> EngineAttach.Verdict {
+            verdict(list(.init(readOnly: true, agentMode: false, refreshEvery: 900,
+                               notesVersion: highest, notesMinVersion: lowest)))
+        }
+        let mine = SubstrateNotes.version
+        XCTAssertEqual(notes(nil, nil), .attach)
+        XCTAssertEqual(notes(mine, mine), .attach)
+        XCTAssertEqual(notes(mine, mine + 3), .attach, "an engine ahead that still indexes this format")
+        let refused: [(Int?, Int?, String, String)] = [
+            (mine + 1, mine + 2, "indexes note format \(mine + 1) to \(mine + 2)", "update this app"),
+            (mine - 1, mine - 1, "indexes note format \(mine - 1) and", "update the engine"),
+            // The engine's fault, whichever way round: an empty range, or half of one.
+            (mine + 2, mine, "cannot hold", "update the engine"),
+            (mine, nil, "cannot hold", "update the engine"),
+            (nil, mine, "cannot hold", "update the engine"),
+        ]
+        for (lowest, highest, says, update) in refused {
+            guard case .refuse(let why) = notes(lowest, highest) else {
+                return XCTFail("note format \(String(describing: lowest)) to \(String(describing: highest)) was attached")
+            }
+            XCTAssertTrue(why.contains(says) && why.contains(update), why)
+        }
+    }
+
     /// The app no longer refreshes indexes itself, so an engine with no loop of its own would leave
     /// them ageing with nothing running that refreshes them.
     func testAServerThatRefreshesNothingIsRefused() {
