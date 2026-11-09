@@ -136,6 +136,14 @@
       ]
     ]
   },
+  "engine_manifest": {
+    "file": "engine-manifest.json",
+    "features": [
+      "connect-unix",
+      "refresh",
+      "serve"
+    ]
+  },
   "payloads": {
     "agent_refresh": [
       "note",

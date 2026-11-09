@@ -370,6 +370,47 @@ def test_deploying_ships_the_commit_and_not_the_working_tree() -> None:
     assert "NOT deployed" in r.stdout, "a dirty tree must be REPORTED, so the pin is never a surprise"
 
 
+def test_a_deployed_commit_states_what_it_is_and_the_manifest_covers_it() -> None:
+    """`engine-manifest.json` (`tools/engine-manifest.py`) names the commit deployed, and is
+    proved with the rest of the tree: an edit to it after the deploy is a deployment that does not
+    verify."""
+    repo, home = _throwaway_repo()
+    writer = (_TOOLS / "engine-manifest.py").read_bytes()
+    (repo / "tools" / "engine-manifest.py").write_bytes(writer)
+    (repo / "pyproject.toml").write_text('[project]\nversion = "9.8.7"\n', encoding="utf-8")
+    (repo / "substrate" / "wire.py").write_text("VERSION = 4\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "states itself")
+
+    r = _run([str(repo / "tools" / "substrate-deploy")], home, extra_path=str(home / "stub"))
+    assert r.returncode == 0, r.stderr
+
+    stated = home / ".substrate" / "engine" / "engine-manifest.json"
+    assert json.loads(stated.read_text("utf-8")) == {
+        "version": "9.8.7", "commit": _git(repo, "rev-parse", "HEAD"), "wire": 4,
+        "features": ["serve", "refresh", "connect-unix"]}
+    assert _verify(home / ".substrate" / "engine.json").returncode == 0
+
+    edited = json.loads(stated.read_text("utf-8"))
+    edited["features"].remove("refresh")
+    stated.write_text(json.dumps(edited, indent=2) + "\n", encoding="utf-8")
+    assert _verify(home / ".substrate" / "engine.json").returncode != 0, (
+        "a manifest edited after the deploy verified; a client acts on what it states")
+
+
+def test_a_commit_from_before_the_writer_states_nothing() -> None:
+    """The deploy runs the exported commit's own writer, so a rollback to a commit without one gets
+    no `engine-manifest.json`, and a client checks its files as it always did, rather than being
+    handed this tree's features for a tree that may not have them. The writer sits in the working
+    tree here, uncommitted, as it would when rolling back from a checkout that has it."""
+    repo, home = _throwaway_repo()
+    writer = (_TOOLS / "engine-manifest.py").read_bytes()
+    (repo / "tools" / "engine-manifest.py").write_bytes(writer)
+    r = _run([str(repo / "tools" / "substrate-deploy")], home, extra_path=str(home / "stub"))
+    assert r.returncode == 0, r.stderr
+    assert not (home / ".substrate" / "engine" / "engine-manifest.json").exists()
+
+
 def test_a_real_deployment_of_this_repo_verifies_immediately() -> None:
     """End to end over the actual engine: export HEAD, sign 128 files, verify them back.
 

@@ -138,7 +138,8 @@ fingerprint() {
       "$REPO/tools/embed-apple.swift" "$REPO/tools/hyde-fm.swift" \
       "$REPO/tools/rerank-fm.swift" "$REPO/tools/extract-apple.swift" \
       "$REPO/tools/engine-interpreter.entitlements" "$REPO/tools/check-page-render.py" \
-      "$REPO/tools/engine-interpreter.pin" "$REPO/tools/engine-interpreter-pin.py" | cut -d' ' -f1
+      "$REPO/tools/engine-interpreter.pin" "$REPO/tools/engine-interpreter-pin.py" \
+      "$REPO/tools/engine-manifest.py" | cut -d' ' -f1
     ( cd "$REPO" && find substrate \( -type f -o -type l \) \
         ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 \
         | LC_ALL=C sort -z | xargs -0 shasum -a 256 )
@@ -169,6 +170,20 @@ STAMP="$DEST/.build-fingerprint"
 REQUIRED="bin/substrate-mcp bin/substrate .venv/bin/python runtime/bin/python3.14 \
           substrate/cli.py substrate/mcp/server.py substrate/mcp/bridge.py substrate/local_socket.py \
           bin/embed-apple bin/hyde-fm bin/rerank-fm bin/extract-apple"
+# HEAD, when nothing under this project differs from it, else nothing. Counts the files git
+# ignores inside the package too, because the copy below ships them; only the bytecode it leaves
+# out is left out here. `--no-optional-locks`: a check that takes `index.lock` would fail a
+# developer's own `git commit` run during the build.
+clean_head() {
+  local head changes ignored
+  head=$(git --no-optional-locks -C "$REPO" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null) \
+    && changes=$(git --no-optional-locks -C "$REPO" status --porcelain --untracked-files=all \
+                   -- . 2>/dev/null) \
+    && ignored=$(git --no-optional-locks -C "$REPO" ls-files -o -i --exclude-standard -- substrate \
+                   ':(exclude,glob)**/__pycache__/**' ':(exclude,glob)**/*.pyc' 2>/dev/null) \
+    && [ -z "$changes" ] && [ -z "$ignored" ] && echo "$head"
+  return 0
+}
 assert_whole() {
   for required in $REQUIRED; do
     [ -e "$1/$required" ] || die "$2 is incomplete — no $required"
@@ -287,6 +302,8 @@ say "resolving dependencies (--no-dev, precompiled)"
 ln -sf ../../runtime/bin/python3.14 "$STAGE/.venv/bin/python"
 
 say "copying the engine"
+# Which commit these bytes are, asked as they are copied (`clean_head`; see `engine-manifest.json`).
+COPIED_FROM=$(clean_head)
 rsync -a --exclude '__pycache__' --exclude '*.pyc' "$REPO/substrate/" "$STAGE/substrate/"
 
 # NO `tools/`, AND THE ABSENCE IS THE DECISION. An earlier version shipped the directory whole so
@@ -732,6 +749,17 @@ EOF
 else
   say "NOT signed (no identity given) — this tree will not notarize"
 fi
+
+# THE ENGINE STATES WHAT IT IS: `engine-manifest.json`, which Scripta reads instead of looking for
+# the engine's files (`tools/engine-manifest.py` says what each field means). This ships the
+# working tree, so `commit` is HEAD only when the tree was HEAD's both when it was copied and now,
+# and null otherwise: a commit the bytes are not is worse than none. Not refreshed when the skip
+# above returns, and it need not be: the skip means the engine's inputs are unchanged, so the
+# commit stated at the last build still describes them.
+commit=$(clean_head)
+[ "$commit" = "$COPIED_FROM" ] || commit=
+/usr/bin/python3 -I "$REPO/tools/engine-manifest.py" "$STAGE" --commit "$commit" \
+  || die "could not write engine-manifest.json"
 
 # CHECKED AFTER SIGNING, because signing is what wrote the extended attributes the first time: any
 # file codesign cannot embed a signature in gets one in `com.apple.cs.*` xattrs instead, and a single
