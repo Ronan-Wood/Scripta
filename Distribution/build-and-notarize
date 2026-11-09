@@ -179,6 +179,9 @@ notarize() {
 # A RELEASE IS BUILT FROM A COMMIT. The tag published with it is what anyone taking the GPL source
 # will use, so the binary must be exactly that commit, with no uncommitted edits or untracked files.
 [ -z "$(git status --porcelain)" ] || fail "the working tree has uncommitted changes; commit them first"
+# Nor another checkout's engine. The build phase refuses it too; this says so before the compile.
+[ -z "${SUBSTRATE_ENGINE_SRC:-}" ] \
+  || fail "SUBSTRATE_ENGINE_SRC is set; a release bundles this checkout's substrate/ only. Unset it."
 COMMIT=$(git rev-parse HEAD)
 
 xcodegen generate

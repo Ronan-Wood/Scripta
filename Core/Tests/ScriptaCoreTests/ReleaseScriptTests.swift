@@ -35,4 +35,14 @@ final class ReleaseScriptTests: XCTestCase {
             XCTAssertTrue(scan.contains("com.apple.cs.\(attribute)"), attribute)
         }
     }
+
+    /// A release bundles this checkout's engine. The Xcode phase refuses `SUBSTRATE_ENGINE_SRC`
+    /// too; the release says so before the compile rather than after it.
+    func testTheReleaseRefusesAnotherCheckoutsEngineBeforeBuilding() throws {
+        let text = try String(contentsOf: Self.script, encoding: .utf8)
+        let refusal = try XCTUnwrap(text.range(of: #"[ -z "${SUBSTRATE_ENGINE_SRC:-}" ]"#)?.lowerBound,
+                                    "build-and-notarize does not refuse SUBSTRATE_ENGINE_SRC")
+        let build = try XCTUnwrap(text.range(of: "xcodebuild -project")?.lowerBound)
+        XCTAssertLessThan(refusal, build)
+    }
 }

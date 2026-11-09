@@ -306,8 +306,31 @@ targets:
         # its contents, which does not warn — it refuses to launch.
         outputFiles:
           - $(CODESIGNING_FOLDER_PATH)/Contents/Resources/substrate-engine/.build-fingerprint
+        # `SUBSTRATE_ENGINE_SRC` BUILDS ANOTHER CHECKOUT'S ENGINE: the absolute path of an engine
+        # root (a checkout's `substrate/`, the folder holding `tools/`), bundled into a Debug app
+        # without copying it here. Its fingerprint covers file contents and paths inside the engine
+        # root, so the same tree in another folder is the same build, and a skip proves it.
+        #
+        # DEBUG ONLY, allowed rather than denied: Release signs with the team's identity and
+        # Distribution is the release, so every configuration but Debug bundles this checkout's own
+        # `substrate/` and refuses the variable by name rather than ignoring it. A configuration
+        # added later is refused too, without having to remember this line.
         script: |
           set -euo pipefail
+          if [ -n "${SUBSTRATE_ENGINE_SRC:-}" ]; then
+            if [ "${CONFIGURATION:-}" != "Debug" ]; then
+              echo "error: SUBSTRATE_ENGINE_SRC is set ($SUBSTRATE_ENGINE_SRC); only a Debug build may bundle another checkout's engine, and this is ${CONFIGURATION:-an unnamed configuration}. Unset it." >&2
+              exit 1
+            fi
+            case "$SUBSTRATE_ENGINE_SRC" in
+              /*) ;;
+              *) echo "error: SUBSTRATE_ENGINE_SRC=$SUBSTRATE_ENGINE_SRC is not an absolute path." >&2; exit 1 ;;
+            esac
+            [ -x "$SUBSTRATE_ENGINE_SRC/tools/build-bundled-engine" ] || {
+              echo "error: SUBSTRATE_ENGINE_SRC=$SUBSTRATE_ENGINE_SRC is not an engine root: it has no tools/build-bundled-engine (a checkout's substrate/ is)." >&2
+              exit 1
+            }
+          fi
           ARGS=("$CODESIGNING_FOLDER_PATH/Contents/Resources/substrate-engine")
           if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] && [ "${EXPANDED_CODE_SIGN_IDENTITY}" != "-" ]; then
             ARGS+=(--sign "$EXPANDED_CODE_SIGN_IDENTITY")
@@ -315,7 +338,7 @@ targets:
           fi
           # The shipping configuration may not produce an unsigned engine, even quietly.
           if [ "${CONFIGURATION:-}" = "Distribution" ]; then export SUBSTRATE_REQUIRE_SIGNING=1; fi
-          "$SRCROOT/substrate/tools/build-bundled-engine" "${ARGS[@]}"
+          "${SUBSTRATE_ENGINE_SRC:-$SRCROOT/substrate}/tools/build-bundled-engine" "${ARGS[@]}"
       # WHY THIS EXISTS. Xcode embeds Sparkle.framework and signs it on copy — the framework's own
       # binary only. `Autoupdate` and `Updater.app` keep the ad-hoc signature the SwiftPM artifact
       # ships with: no team, no timestamp. Notarization refuses both, and
