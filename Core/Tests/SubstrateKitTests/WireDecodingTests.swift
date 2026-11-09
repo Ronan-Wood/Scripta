@@ -100,6 +100,17 @@ final class WireDecodingTests: XCTestCase {
         try JSONDiff.assertLossless(WireScopeList.self, payload: payload)
     }
 
+    /// What `refresh` answers, in each of its three shapes, and back.
+    func testARefreshRequestsReplyDecodesAndRoundTrips() throws {
+        for (when, wait) in [("now", 0.0), ("after_pass", 0.0), ("after_gap", 6.5)] {
+            let payload = Data(#"{"next_pass": "\#(when)", "wait_seconds": \#(wait)}"#.utf8)
+            let reply = try JSONDecoder().decode(WireRefreshRequest.self, from: payload)
+            XCTAssertEqual(reply.nextPass.rawValue, when)
+            XCTAssertEqual(reply.waitSeconds, wait)
+            try JSONDiff.assertLossless(WireRefreshRequest.self, payload: payload)
+        }
+    }
+
     /// `list_scopes` says what kind of server answered. The golden capture is a read-only server
     /// that refreshes nothing; a `substrate serve` engine says it refreshes, and an engine older
     /// than the field sends no block at all.
@@ -107,7 +118,7 @@ final class WireDecodingTests: XCTestCase {
         let golden = try GoldenFixture.payload(GoldenFixture.listScopes)
         XCTAssertEqual(try JSONDecoder().decode(WireScopeList.self, from: golden).server,
                        WireServerInfo(readOnly: true, agentMode: false, refreshEvery: nil,
-                                      notesVersion: 1, notesMinVersion: 1))
+                                      refreshRequests: false, notesVersion: 1, notesMinVersion: 1))
         var withoutBlock = try XCTUnwrap(
             JSONSerialization.jsonObject(with: golden) as? [String: Any])
         withoutBlock.removeValue(forKey: "server")

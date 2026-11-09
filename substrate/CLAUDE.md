@@ -55,8 +55,11 @@ What refreshes, as of PR C2 (2026-11-06):
   refresh` runs one pass now; Scripta's "Refresh now" runs it.
 - **Scripta spawns `substrate serve`** (`SubstrateEngine`), and schedules nothing itself. Its engine
   still dies with it. An engine already answering on the socket is USED when it is read-only,
-  refreshing, not agent mode, and on Scripta's registry and index schema (`EngineAttach`); Scripta never stops it,
-  and starts its own if it goes away. Anything else is reported.
+  refreshing, not agent mode, indexing Scripta's note format, and on Scripta's registry
+  (`EngineAttach`); Scripta never stops it, and starts its own if it goes away. Anything else is
+  reported. Attached, Scripta writes notes and runs `substrate register` for a new scope, and the
+  engine indexes: "Refresh now" sends that engine's `refresh` tool, and its pass composes a pending
+  scope and prunes a deleted note's ingest folder.
 - `compose` and `embed` take `vaults.lock` (an `flock` beside the registry), whoever runs them:
   the loop, Scripta's Library and recording paths, a terminal, `tools/substrate-deploy`. A caller
   waits up to 60 s, then exits 75 having written nothing; Scripta reads 75 as declined.

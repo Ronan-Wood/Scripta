@@ -36,8 +36,10 @@ Scripta (Swift/SwiftUI, macOS 26)          Substrate (Python 3.14)
 The app spawns the engine (`substrate serve`) as a child process; the same engine serves Claude
 Code over MCP and refreshes every scope itself, on its own timer, under the one lock every compose
 and embed take (`vaults.lock`). An engine already running on the socket is used instead when it is
-read-only, refreshing, not agent mode, and on Scripta's registry and index schema (`EngineAttach`); Scripta
-never stops one it did not start, and starts its own if that one goes away.
+read-only, refreshing, not agent mode, indexing Scripta's note format, and on Scripta's registry
+(`EngineAttach`). While attached, Scripta writes notes and registers scopes, and that engine does
+all the indexing: "Refresh now" asks it for its next pass. Scripta never stops an engine it did not
+start, and starts its own if that one goes away.
 *Measured 2026-08-12:* app running → 3 engine processes, quit → 0 orphans, relaunch → back on
 `:8765`. The engine has since moved off TCP to a Unix socket in a 0700 directory
 (`~/.substrate/run/substrate.sock`, in the engine's own home), and both ends refuse a peer of

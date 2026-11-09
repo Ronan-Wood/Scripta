@@ -16,7 +16,8 @@ import SubstrateKit
 /// this app schedules no compose of its own. An engine this app spawns still dies with it.
 ///
 /// AN ENGINE ALREADY ANSWERING IS USED, but only when it is the kind this app would have started
-/// (`EngineAttach`: read-only, refreshing, not agent mode, on this app's registry and schema). Through 0.3.5 the answer was
+/// (`EngineAttach`: read-only, refreshing, not agent mode, indexing this app's note format, on this
+/// app's registry). Through 0.3.5 the answer was
 /// "reported and never used", because adopting meant the app's lifetime and the engine's had come
 /// apart. `substrate serve` running on its own made that the point rather than the hazard. One this
 /// app attached to is never stopped or restarted from here; any other occupant is still reported.
@@ -267,9 +268,9 @@ final class SubstrateEngine: ObservableObject {
         begin()
     }
 
-    /// How many times a qualifying-looking engine that did not answer the schema probe has been
-    /// tried again since the last `start()`. A busy engine (its own pass, at login) misses it;
-    /// one that never answers is reported after these.
+    /// How many times a qualifying-looking engine has been tried again since the last `start()`: one
+    /// that faulted on its roster (busy with its own pass, at login), or one refused only because
+    /// this app's CLI did not answer. One that stays that way is reported after these.
     private var attachRetries = 0
     private static let attachRetryLimit = 4
     private static let attachRetryDelay: UInt64 = 30_000_000_000
@@ -375,18 +376,12 @@ final class SubstrateEngine: ObservableObject {
             return
         case .engine(let list):
             // AN ENGINE ALREADY ANSWERING IS USED when it is the kind this app would have started
-            // (`EngineAttach`): `substrate serve` run on its own, read-only, on this app's registry
-            // and schema. It is not spawned, so this app never stops it.
+            // (`EngineAttach`): `substrate serve` run on its own, read-only, on this app's registry,
+            // indexing this app's note format. It is not spawned, so this app never stops it, and
+            // while attached this app writes notes only: that engine does the indexing.
             let expected = await Self.expectation(source)
-            // Tried a few times: an engine in the middle of its own pass can be slow to answer,
-            // and one miss here is a refusal the operator has to clear by hand.
-            var theirs: Int?
-            for attempt in 0..<3 where theirs == nil && !Task.isCancelled {
-                if attempt > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
-                theirs = await probe.engineSchema()
-            }
             guard !Task.isCancelled else { return }
-            switch EngineAttach.verdict(list, engineSchema: theirs, expecting: expected) {
+            switch EngineAttach.verdict(list, expecting: expected) {
             case .attach:
                 var attachedSource = source
                 attachedSource.attached = true
@@ -400,16 +395,12 @@ final class SubstrateEngine: ObservableObject {
                 Self.log.error("an engine is on the socket and cannot be used: \(why, privacy: .public)")
                 lifecycle = .socketBusy(path: Self.socketPath, occupant: .unattachable(why))
                 // Unanswered is not a verdict: an engine that is the right kind of server, refused
-                // only because an answer was missing (its schema probe, or this app's own CLI), is
-                // looked at again, a few times, before the card stays.
-                // "Would it attach with the missing answers filled in by what is known": a registry
-                // or schema that IS known and differs is a verdict, and is not retried.
-                let missing = theirs == nil || expected.schema == nil || expected.registry == nil
-                let schema = theirs ?? expected.schema ?? 0
-                let filled = EngineAttach.Expectation(registry: expected.registry ?? list.registry,
-                                                      schema: expected.schema ?? schema)
-                if missing, source.cli != nil, EngineAttach.verdict(list, engineSchema: schema,
-                                                 expecting: filled) == .attach {
+                // only because this app's own CLI did not say which registry it writes, is looked
+                // at again, a few times, before the card stays. A registry that IS known and
+                // differs is a verdict, and is not retried.
+                let filled = EngineAttach.Expectation(registry: expected.registry ?? list.registry)
+                if expected.registry == nil, source.cli != nil,
+                   EngineAttach.verdict(list, expecting: filled) == .attach {
                     scheduleAttachRetry()
                 }
             }
@@ -438,34 +429,32 @@ final class SubstrateEngine: ObservableObject {
     /// Whether the engine this app attached to still qualifies, asked again on every poll: the one on
     /// the socket can be replaced by another without this app seeing it go. Both halves are asked
     /// again, this app's CLI included, since a redeploy or a checkout can change what it writes.
-    /// Nil when that cannot be told: a probe went unanswered (a busy engine), or this app is no
-    /// longer attached.
+    /// Nil when that cannot be told: this app's CLI did not answer, or this app is no longer
+    /// attached.
     func stillAttachable(_ list: WireScopeList) async -> Bool? {
         guard let source = serving, source.attached else { return nil }
         // What the roster says is decided first: a replacement that is the wrong kind of server is
-        // let go whether or not it answers the schema probe.
+        // let go whatever this app's CLI says.
         guard EngineAttach.qualifiesByRoster(list) else { return false }
-        // A missing answer, from this app's CLI or the probe, is not a verdict on its own; one that
-        // stays missing is (`EngineRefresh.watch`).
+        // A missing answer from this app's CLI is not a verdict on its own; one that stays missing
+        // is (`EngineRefresh.watch`).
         let expected = await Self.expectation(source)
-        guard expected.schema != nil, expected.registry != nil else { return nil }
-        guard let theirs = await probe.engineSchema() else { return nil }
-        return EngineAttach.verdict(list, engineSchema: theirs, expecting: expected) == .attach
+        guard expected.registry != nil else { return nil }
+        return EngineAttach.verdict(list, expecting: expected) == .attach
     }
 
-    /// This app's own build, as its CLI reports it (`substrate version`): the registry it resolves
-    /// and the index schema it writes. Asked of the CLI rather than worked out here, because the CLI
-    /// is what writes. No CLI, or one that predates the command, and there is nothing to attach by.
+    /// This app's own build, as its CLI reports it (`substrate version`): the registry it resolves.
+    /// Asked of the CLI rather than worked out here, because the CLI is what records scopes. No CLI,
+    /// or one that predates the command, and there is nothing to attach by.
     private static func expectation(_ source: Source) async -> EngineAttach.Expectation {
-        guard let cli = source.cli else { return EngineAttach.Expectation(registry: nil, schema: nil) }
+        guard let cli = source.cli else { return EngineAttach.Expectation(registry: nil) }
         let run = await SubstrateCLI.run(cli, ["version"])
         guard run.succeeded,
               let object = try? JSONSerialization.jsonObject(with: Data(run.stdout.utf8))
                   as? [String: Any] else {
-            return EngineAttach.Expectation(registry: nil, schema: nil)
+            return EngineAttach.Expectation(registry: nil)
         }
-        return EngineAttach.Expectation(registry: object["registry"] as? String,
-                                        schema: object["schema"] as? Int)
+        return EngineAttach.Expectation(registry: object["registry"] as? String)
     }
 
     private func spawn(_ source: Source, searchModel: String?) throws {

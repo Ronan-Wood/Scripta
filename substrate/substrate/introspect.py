@@ -141,7 +141,10 @@ def scopes_payload(registry: str | None = None) -> dict:
     out = []
     for name, entry in sorted(scopes.load(registry).items()):
         row = {"scope": name, "db": str(entry.db), "vault": str(entry.vault),
-               "composed": entry.composed, "index_present": entry.db.is_file(),
+               # Null and `pending` while it waits for its first compose (`scopes.register`), so
+               # a client can tell a scope not built yet from one whose index went missing.
+               "composed": entry.composed or None, "pending": entry.pending,
+               "index_present": entry.db.is_file(),
                # This is the "how are all my scopes doing" view — it already reports
                # `index_present` and a per-scope fault, so a frozen scope rendering here exactly
                # like a healthy one is the same indistinguishability the field exists to remove,

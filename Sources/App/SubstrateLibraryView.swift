@@ -774,10 +774,22 @@ private struct LibraryRefreshRail: View {
                     .disabled(isRunning || !refresh.canRefresh)
             }
             if !refresh.canRefresh, engine.lifecycle.isServing {
-                LibraryNote(
-                    id: "refresh-no-cli", marker: "no cli", tone: Ink.textHelper,
-                    text: "This engine has no substrate command beside it, so Scripta cannot run "
-                        + "a pass itself.")
+                if engine.serving?.attached == true {
+                    LibraryNote(
+                        id: "refresh-no-requests", marker: "its own", tone: Ink.textHelper,
+                        text: "Scripta is using an engine it did not start, which does the indexing "
+                            + "and takes no requests to bring its pass forward. What Scripta writes "
+                            + "is indexed on that engine's next pass.")
+                } else {
+                    LibraryNote(
+                        id: "refresh-no-cli", marker: "no cli", tone: Ink.textHelper,
+                        text: "This engine has no substrate command beside it, so Scripta cannot "
+                            + "run a pass itself.")
+                }
+            }
+            if case .requestFailed(_, let reason) = refresh.state {
+                LibraryNote(id: "refresh-request-failed", marker: "refused", tone: Ink.warning,
+                            text: reason)
             }
             if let run = failure {
                 LibraryNote(
@@ -823,9 +835,21 @@ private struct LibraryRefreshRail: View {
         case .finished(let at, _) where failure != nil:
             Text("last pass refused at \(Self.stamp(at))")
                 .proseText(Register.proseSm, Ink.warning)
+        case .requested(let at, let reply) where requestIsNews(at: at, reply: reply):
+            Text("the engine runs \(reply.phrase)")
+                .proseText(Register.proseSm, Ink.textSecondary)
         default:
             schedule
         }
+    }
+
+    /// What the engine said about the pass it brought forward stays up until a pass after it moves
+    /// a scope, or a whole refresh period after it was due: a pass that moved nothing (every scope
+    /// skipped, an empty registry) must not leave it up for good.
+    private func requestIsNews(at: Date, reply: WireRefreshRequest) -> Bool {
+        if let moved = scopes.lastMoved, moved > at { return false }
+        let period = scopes.server?.refreshEvery ?? 900
+        return Date().timeIntervalSince(at) < reply.waitSeconds + period
     }
 
     /// What the engine says about its own refreshing (`list_scopes` → `server`).
@@ -893,7 +917,12 @@ private struct LibraryReportCard: View {
                 ActionButton(title: "Done", rank: .tertiary, action: model.dismiss)
             }
             ForEach(report.steps) { LibraryStepRow(step: $0) }
-            if let scope = report.scope {
+            if let scope = report.scope, report.pending {
+                LibraryNote(id: "registered", marker: "pending", tone: Ink.textHelper,
+                            text: "`\(scope)` is registered. The engine Scripta is using composes "
+                                + "it on its next pass, and it answers in Ask once that pass has "
+                                + "run; its row above says when it has.")
+            } else if let scope = report.scope {
                 LibraryNote(id: "registered", marker: "registered", tone: Ink.textHelper,
                             text: "`\(scope)` is composed and registered, so it is answering in "
                                 + "Ask now. That is the whole point of composing here rather than "
@@ -964,6 +993,10 @@ private struct LibraryStepRow: View {
                 Text(failure).proseText(Register.proseSm, Ink.danger)
                     .padding(.leading, EnvelopeMarker.indent)
             }
+            if let pending = step.pending, !step.failed {
+                Text(pending).proseText(Register.proseSm, Ink.textHelper)
+                    .padding(.leading, EnvelopeMarker.indent)
+            }
             if expanded, let run = step.run {
                 VaultVerbatim(text: run.line)
                 if !run.transcript.isEmpty { VaultVerbatim(text: run.transcript) }
@@ -996,6 +1029,7 @@ private struct LibraryStepRow: View {
     private var marker: String {
         if step.skipped { return "not run" }
         if step.failed { return "refused" }
+        if step.pending != nil { return "pending" }
         return "done"
     }
 

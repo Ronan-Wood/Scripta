@@ -442,12 +442,19 @@ final class AppModel: ObservableObject {
         /// and the scope composed — it is findable — but the embed did not run, so only the lexical
         /// arm answers and a query worded differently from the text will miss it. Reporting that as
         /// `done` claims "searchable everywhere", which is the specific thing that is not true.
-        enum State: Equatable { case processing, done, addedWithoutVectors(String), failed(String) }
+        ///
+        /// `handedOff` is not `done` either: attached to an engine this app did not start, the
+        /// document is in the vault and that engine indexes it on its next pass, so it is not
+        /// findable yet.
+        enum State: Equatable {
+            case processing, done, addedWithoutVectors(String), handedOff(String), failed(String)
+        }
         /// This row has something the operator needs to read, so it waits to be dismissed rather
         /// than clearing itself. False for `done`, which is equally finished and says nothing.
         var needsDismissal: Bool {
             if case .failed = state { return true }
             if case .addedWithoutVectors = state { return true }
+            if case .handedOff = state { return true }
             return false
         }
     }
@@ -505,6 +512,10 @@ final class AppModel: ObservableObject {
         // searchable everywhere" over passages with no vectors. A log the operator will never open
         // is the same silence the whole embed-reporting change exists to end; it stays as the
         // durable record, and the row is what actually tells them.
+        if let pending = outcome.composed?.pendingNote {
+            // Not findable until the engine's pass, so no "ready" notification for it either.
+            return setJob(job.id, .handedOff(pending))
+        }
         if outcome.composed?.embedFailed == true {
             // THE VAULT'S SCOPE, falling back to the workspace this add was given — which is what
             // `runAdd` does too. The fallback only fires when no vault resolved, and then the two

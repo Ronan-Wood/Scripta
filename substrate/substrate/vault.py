@@ -490,9 +490,9 @@ def assert_composed(store, *, ingested_doc_ids: set[str]) -> dict:
          names the vault — the CORE tier vanishing is the chapter-title bug reincarnate (plausible
          project-only results, core silently gone).
       2. no indexed doc that this compose did NOT ingest. A stale ingest dir left by a previous run
-         (a since-deleted note that `compose` without --clean never cleared) would keep answering
-         queries; out-of-scope content in the index root would answer from sources the manifest
-         never authorised. Both are `indexed − ingested`.
+         (one compose could not attribute to a deleted note, and so did not prune) would keep
+         answering queries; out-of-scope content in the index root would answer from sources the
+         manifest never authorised. Both are `indexed − ingested`.
 
     A vault that legitimately contributes zero notes (e.g. a freshly-scaffolded, empty core) is NOT
     an error — it simply adds nothing to either side of the equality, so it is neither required to
@@ -518,13 +518,15 @@ def assert_composed(store, *, ingested_doc_ids: set[str]) -> dict:
         )
 
     # (2) indexed ⊆ ingested. An indexed doc this compose did not produce = a stale/polluted index
-    # root (a since-deleted note's leftover dir, or out-of-scope content) still answering queries.
+    # root still answering queries. A deleted note's folder is pruned before this (`prune`), so what
+    # is left is content compose could not attribute to one.
     stale = indexed_ids - ingested_doc_ids
     if stale:
         raise VaultError(
             f"{len(stale)} indexed doc(s) this compose did not ingest: "
             f"{sorted((d, doc_vault[d]) for d in stale)[:5]}. The index root holds stale or "
-            "out-of-scope content — re-run with --clean so a deleted note leaves no stale dir."
+            "out-of-scope content that compose could not attribute to a deleted note (it prunes "
+            "only those) — re-run with --clean."
         )
 
     # Counted by the store, not here: this hand-rolled its own GROUP BY with a third missing-value

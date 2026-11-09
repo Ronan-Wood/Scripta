@@ -5,14 +5,14 @@ import XCTest
 /// Before this, any engine already on the socket was refused outright, so a `substrate serve` run on
 /// its own was a wall rather than the engine.
 final class EngineAttachTests: XCTestCase {
-    private let mine = EngineAttach.Expectation(registry: "/r/scopes.toml", schema: 11)
+    private let mine = EngineAttach.Expectation(registry: "/r/scopes.toml")
 
     private func list(_ server: WireServerInfo?, registry: String = "/r/scopes.toml") -> WireScopeList {
         WireScopeList(scopes: [], registry: registry, server: server)
     }
 
-    private func verdict(_ list: WireScopeList, schema: Int? = 11) -> EngineAttach.Verdict {
-        EngineAttach.verdict(list, engineSchema: schema, expecting: mine)
+    private func verdict(_ list: WireScopeList) -> EngineAttach.Verdict {
+        EngineAttach.verdict(list, expecting: mine)
     }
 
     private let serve = WireServerInfo(readOnly: true, agentMode: false, refreshEvery: 900)
@@ -76,33 +76,22 @@ final class EngineAttachTests: XCTestCase {
         XCTAssertTrue(why.contains("agent-mode"), why)
     }
 
-    /// This app's CLI writes an attached engine's indexes. Another registry would leave the calls
-    /// it records where the engine never looks; another schema would have each rebuild the other's.
-    func testAnEngineOnAnotherRegistryOrSchemaIsRefused() {
+    /// While attached, this app records scopes in its registry for the engine to index, so an
+    /// engine on another registry would never see them.
+    func testAnEngineOnAnotherRegistryIsRefused() {
         guard case .refuse(let registry) = verdict(list(serve, registry: "/elsewhere/scopes.toml"))
         else { return XCTFail("an engine on another registry was attached") }
         XCTAssertTrue(registry.contains("/elsewhere/scopes.toml"), registry)
-        guard case .refuse(let schema) = verdict(list(serve), schema: 12) else {
-            return XCTFail("an engine on another schema was attached")
-        }
-        XCTAssertTrue(schema.contains("v12") && schema.contains("v11"), schema)
-        guard case .refuse(let unknown) = verdict(list(serve), schema: nil) else {
-            return XCTFail("an engine whose schema is unknown was attached")
-        }
-        XCTAssertTrue(unknown.contains("did not report"), unknown)
     }
 
-    /// An app whose own CLI cannot say what it writes has nothing to hold an engine to, and the
-    /// sentence says the gap is the app's, not the engine's.
+    /// An app whose own CLI cannot say which registry it writes has nothing to hold an engine to,
+    /// and the sentence says the gap is the app's, not the engine's.
     func testAnAppThatCannotSayWhatItWritesAttachesToNothing() {
-        for gap in [EngineAttach.Expectation(registry: nil, schema: 11),
-                    EngineAttach.Expectation(registry: "/r/scopes.toml", schema: nil)] {
-            guard case .refuse(let why) = EngineAttach.verdict(list(serve), engineSchema: 11,
-                                                               expecting: gap) else {
-                return XCTFail("attached with nothing to compare against: \(gap)")
-            }
-            XCTAssertTrue(why.contains("this app's own substrate command"), why)
+        guard case .refuse(let why) = EngineAttach.verdict(list(serve),
+                                                           expecting: .init(registry: nil)) else {
+            return XCTFail("attached with nothing to compare against")
         }
+        XCTAssertTrue(why.contains("this app's own substrate command"), why)
     }
 
     /// What a host retries on: a refusal for a missing answer, not one on the engine itself.

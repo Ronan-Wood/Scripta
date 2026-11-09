@@ -271,6 +271,10 @@
       "outcome",
       "succeeded"
     ],
+    "refresh_request": [
+      "next_pass",
+      "wait_seconds"
+    ],
     "retrieval_mode": [
       "cohort",
       "degraded",
@@ -297,6 +301,7 @@
       "db",
       "error",
       "index_present",
+      "pending",
       "refresh",
       "scope",
       "sources",
@@ -318,7 +323,8 @@
       "notes_min_version",
       "notes_version",
       "read_only",
-      "refresh_every"
+      "refresh_every",
+      "refresh_requests"
     ],
     "snapshot": [
       "age_seconds",
