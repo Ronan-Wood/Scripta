@@ -150,10 +150,20 @@ for required in substrate/cli.py pyproject.toml uv.lock; do
   [ -f "$STAGE/$required" ] || die "$TREE does not contain a substrate engine (no $required)"
 done
 
-# The manifest is taken over the STAGE, before anything has run in it, and it is written BESIDE the
-# stage rather than inside it. `uv` puts a `.venv` in the tree and Python puts `__pycache__` beside
-# every module; both appear after deployment, and a manifest that covered itself or them would fail
-# its own verification on the next tick.
+# THE ENGINE STATES WHAT IT IS: `engine-manifest.json`, which Scripta reads instead of looking for
+# the engine's files. Written by the exported commit's OWN writer, so an older commit states only
+# what it has, and one from before the writer states nothing and is checked the way it always was.
+# Before the manifest below, so the manifest covers it.
+if [ -f "$STAGE/tools/engine-manifest.py" ]; then
+  python3 -I "$STAGE/tools/engine-manifest.py" "$STAGE" --commit "$COMMIT" \
+    || die "$TREE's tools/engine-manifest.py could not write engine-manifest.json"
+fi
+
+# The manifest is taken over the STAGE, before anything has run in it but the exported commit's own
+# `engine-manifest.py` above, and it is written BESIDE the stage rather than inside it. `uv` puts a
+# `.venv` in the tree and Python puts `__pycache__` beside every module; both appear after
+# deployment, and a manifest that covered itself or them would fail its own verification on the
+# next tick.
 python3 "$DEPLOYMENT" --manifest "$STAGE" >"$STAGE.manifest"
 
 rm -rf "$ENGINE.previous"

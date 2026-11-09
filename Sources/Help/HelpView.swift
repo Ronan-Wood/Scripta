@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import SubstrateKit
 
 /// Docs — the render's documentation page: title + sectioned content with an "On this page"
 /// rail, the functional Connect-Claude controls embedded in their section, acknowledgements
@@ -52,17 +53,14 @@ struct HelpView: View {
     }
 
     /// Whether the engine a client would spawn has a `--connect` that reaches the socket. The
-    /// bundled and pinned tiers are a package tree under their working directory, so the modules
-    /// that implement it are checked for directly: `bridge.py` alone is the TCP-only bridge, which
-    /// exits 2 on a socket path. The developer shim runs whatever the repo has checked out, which this
-    /// app cannot see, so it is not assumed. With nothing resolved, the fallback is this build's
-    /// own bundled engine, which has it.
+    /// bundled and pinned tiers are an engine root, which is asked (`EngineManifest`). The
+    /// developer shim runs whatever the repo has checked out, which this app cannot see, so it is
+    /// not assumed. With nothing resolved, the fallback is this build's own bundled engine, which
+    /// has it.
     private var mcpConnects: Bool {
         guard let source = SubstrateEngine.resolved else { return true }
         guard let root = source.workingDirectory else { return false }
-        return ["substrate/mcp/bridge.py", "substrate/local_socket.py"].allSatisfy {
-            FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path)
-        }
+        return EngineManifest.offers(.connectUnix, at: root)
     }
 
     /// Single-quoted per argument, so the `sh -c` script above survives being pasted into a shell.

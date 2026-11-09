@@ -200,8 +200,8 @@ final class SubstrateEngine: ObservableObject {
 
     /// What to exec for an engine that SERVES AND REFRESHES: `substrate serve` from the same build's
     /// CLI (`substrate.refresh`), which keeps every scope current on its own timer. The refresh
-    /// loop is the engine's, not this app's. A tier with no CLI, or a package tree from before
-    /// `serve` (no `substrate/refresh.py`), falls back to `substrate-mcp --socket`, which refreshes
+    /// loop is the engine's, not this app's. A tier with no CLI, or an engine that does not offer
+    /// `refresh` (`EngineManifest`), falls back to `substrate-mcp --socket`, which refreshes
     /// nothing, and the Library says so (`SubstrateScopes.server`).
     private static func engineCommand(_ source: Source,
                                       searchModel: String?) -> (URL, [String], URL?) {
@@ -214,10 +214,10 @@ final class SubstrateEngine: ObservableObject {
     }
 
     /// The developer shim runs whatever the repo has checked out, which this app cannot see, so it
-    /// is assumed current; a package tree is checked for the module that implements the loop.
+    /// is assumed current; an engine root is asked.
     private static func servesAndRefreshes(_ cli: Command) -> Bool {
         guard let root = cli.workingDirectory else { return true }
-        return exists(root.appendingPathComponent("substrate/refresh.py"))
+        return EngineManifest.offers(.refresh, at: root)
     }
 
     /// The `--hyde-model` the current start passes (nil: none). The engine reads it once, at
@@ -744,7 +744,7 @@ final class SubstrateEngine: ObservableObject {
         let deployed = home.appendingPathComponent(".substrate/engine", isDirectory: true)
         let python = deployed.appendingPathComponent(".venv/bin/python")
         searched.append(python.path)
-        if isRunnable(python), exists(deployed.appendingPathComponent("substrate/mcp/server.py")) {
+        if isRunnable(python), EngineManifest.offers(.serve, at: deployed) {
             // `python -m substrate.cli` out of the SAME venv and the same working directory — one
             // export, one set of pinned dependencies, one schema. `substrate/cli.py` is checked
             // because the deployment could in principle export the server without it.

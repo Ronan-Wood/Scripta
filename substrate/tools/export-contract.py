@@ -113,13 +113,13 @@ class ExportError(Exception):
 
 
 class _Module:
-    def __init__(self, root: Path, relative: str):
-        self.name = relative
-        path = root / "substrate" / relative
+    def __init__(self, root: Path, relative: str, base: str = "substrate"):
+        self.name = relative if base == "substrate" else f"{base}/{relative}"
+        path = root / base / relative
         try:
-            self.tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
+            self.tree = ast.parse(path.read_text(encoding="utf-8"), filename=self.name)
         except (OSError, SyntaxError, ValueError, RecursionError) as e:
-            raise ExportError(f"cannot read {relative}: {e}") from None
+            raise ExportError(f"cannot read {self.name}: {e}") from None
 
     def binding(self, name: str) -> ast.expr:
         """The value of the one module-level `NAME = …` or `NAME: T = …`. Any other binding of the
@@ -716,6 +716,7 @@ def _export(root: Path) -> dict:
     m = {name: _Module(root, name) for name in MODULES}
     wire, spine, classes, stack = m["wire.py"], m["spine.py"], m["classes.py"], m["stack.py"]
     retriever = m["retrieve/retriever.py"]
+    manifest = _Module(root, "engine-manifest.py", base="tools")
     return {
         "wire": {
             "version": wire.integer("VERSION"),
@@ -756,6 +757,10 @@ def _export(root: Path) -> dict:
         # What a one-line quoted frontmatter scalar may hold; every other character becomes a space.
         # A writer that keeps a different set writes notes this engine reads differently.
         "yaml": {"printable": _printable(m["markdown/yaml_scalar.py"])},
+        # The file at an engine root that says what the engine there is and what a client may run
+        # (`tools/engine-manifest.py`), and the features it may name.
+        "engine_manifest": {"file": manifest.string("NAME"),
+                            "features": manifest.members("FEATURES")},
         "payloads": wire_objects(m),
         "extends": {name: sorted(b for b, _ in bases) for name, bases in sorted(EXTENDS.items())},
         "tiers": _tiers(root),

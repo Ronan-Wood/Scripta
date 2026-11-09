@@ -58,6 +58,8 @@ def _tree(tmp_path: Path) -> Path:
     shutil.copytree(ROOT / "substrate", root / "substrate",
                     ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy2(ROOT / "EXPERIMENTS.md", root / "EXPERIMENTS.md")
+    (root / "tools").mkdir()
+    shutil.copy2(ROOT / "tools" / "engine-manifest.py", root / "tools" / "engine-manifest.py")
     return root
 
 
@@ -136,6 +138,9 @@ def test_a_changed_wire_version_changes_the_export(tmp_path):
 @pytest.mark.parametrize("module, old, new, refusal", [
     # A constant that is not a literal.
     ("wire.py", "\nVERSION = 1\n", "\nVERSION = int(1)\n", "not an integer literal"),
+    # Features an engine root may state, built rather than written down.
+    ("../tools/engine-manifest.py", 'FEATURES = ("serve", "refresh", "connect-unix")',
+     'FEATURES = tuple(["serve", "refresh", "connect-unix"])', "not a set of string literals"),
     # A name bound twice: Python keeps the last, a first-match reader would keep the first.
     ("wire.py", "\nVERSION = 1\n", "\nVERSION = 1\nVERSION = 2\n", "bound 2 times"),
     # A vocabulary member that is not a string.

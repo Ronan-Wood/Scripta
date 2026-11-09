@@ -85,8 +85,15 @@ struct EngineContract: Decodable {
         }
     }
 
+    /// The file at an engine root that says what the engine there is (`EngineManifest`).
+    struct Manifest: Decodable {
+        let file: String
+        let features: Set<String>
+    }
+
     let wire: Wire
     let socket: Socket
+    let engineManifest: Manifest
     let spine: Spine
     let classes: Classes
     let retrieval: Retrieval
@@ -98,6 +105,11 @@ struct EngineContract: Decodable {
     /// (`scope_list_reply` on the registry's roster or the agent's).
     let extends: [String: [String]]
     let tiers: Tiers
+
+    enum CodingKeys: String, CodingKey {
+        case wire, socket, spine, classes, retrieval, refresh, payloads, extends, tiers
+        case engineManifest = "engine_manifest"
+    }
 
     init(data: Data) throws {
         self = try JSONDecoder().decode(EngineContract.self, from: data)
