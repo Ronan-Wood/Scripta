@@ -2,18 +2,33 @@
 # Generates and signs the appcast for the notarized dmg in dist/archive, tags the commit that dmg was
 # built from, and publishes the GitHub release that IS the update feed. Distribution/RELEASING.md is
 # the runbook; run Distribution/build-and-notarize first.
+#
+# --dry-run does everything up to the tag, the appcast and its keychain prompt included, prints the
+# assets the release would carry, and stops: no tag, no push, no release.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 fail() { echo "publish-release: $*" >&2; exit 1; }
+# A commit is its own content here: refs/replace would let git archive and git ls-tree agree on
+# another commit's files under the built commit's id.
+export GIT_NO_REPLACE_OBJECTS=1
+
+DRY_RUN=0
+case "$#:${1:-}" in
+  0:) ;;
+  1:--dry-run) DRY_RUN=1 ;;
+  *) fail "usage: Distribution/publish-release [--dry-run]" ;;
+esac
 
 APP=build/Distribution/Scripta.app
 VERSION=$(defaults read "$(pwd)/$APP/Contents/Info.plist" CFBundleShortVersionString)
 TAG="v$VERSION"
 DMG="dist/archive/Scripta-$VERSION.dmg"
-[ -n "$VERSION" ] && [ -f "$DMG" ] \
-  || fail "no notarized dmg for version '$VERSION' in dist/archive; run Distribution/build-and-notarize"
+[[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]] || fail "the app's version '$VERSION' is not dotted numbers"
+[ -f "$DMG" ] || fail "no notarized dmg for version '$VERSION' in dist/archive; run Distribution/build-and-notarize"
 COMMIT=$(cat "dist/commits/Scripta-$VERSION.commit" 2>/dev/null || true)
 [ -n "$COMMIT" ] || fail "no recorded build commit for $VERSION; run Distribution/build-and-notarize"
+[ "$(git rev-parse -q --verify "$COMMIT^{commit}" || true)" = "$COMMIT" ] \
+  || fail "dist/commits/Scripta-$VERSION.commit holds '$COMMIT', not a commit's full id"
 NOTES="dist/release-notes-$VERSION.md"
 [ -s "$NOTES" ] || fail "write this release's notes to $NOTES first"
 
@@ -35,7 +50,7 @@ find dist/archive -maxdepth 1 -name '*.delta' -delete
   --download-url-prefix "https://github.com/Ronan-Wood/Scripta/releases/download/$TAG/" \
   --link "https://github.com/Ronan-Wood/Scripta/releases" \
   --maximum-versions 1 --maximum-deltas 3 \
-  -o dist/appcast.xml
+  -o dist/appcast.xml >&2
 
 # generate_appcast reads the private key through a keychain prompt. DENIED, OR WITH THE KEY LOST, IT
 # STILL EXITS 0, with a warning and a feed carrying no signatures that every installed copy refuses.
@@ -53,14 +68,71 @@ outside=$(grep -oE 'url="[^"]+"' dist/appcast.xml | grep -v -F "releases/downloa
 
 # THE TAG IS THE COMMIT THAT WAS BUILT. An existing tag on another commit is a refusal, never a move;
 # `--verify-tag` stops GitHub creating a tag of its own on the default branch.
+TAGGED=0
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
   [ "$(git rev-list -n 1 "$TAG")" = "$COMMIT" ] || fail "tag $TAG already exists on a different commit than the build"
-else
-  git tag -a "$TAG" "$COMMIT" -m "Scripta $TAG"
+  TAGGED=1
 fi
+
+# The source of this release, Scripta's and the engine's it bundles: the built commit, which the tag
+# names, so it is `git archive v$VERSION` whether or not the tag exists yet. Outside dist/archive,
+# where generate_appcast would take it for an update.
+SOURCE="dist/Scripta-$VERSION-source.tar.gz"
+rm -f "$SOURCE" "$SOURCE.partial"
+git archive --format=tar.gz --prefix="Scripta-$VERSION/" -o "$SOURCE.partial" "$COMMIT"
+
+# THE SOURCE IS THE COMMIT, byte for byte. git archive applies attributes and config, this clone's
+# and the user's as well as the commit's own .gitattributes (export-ignore, export-subst, eol,
+# filters, ident), so every file is checked against the commit's blob and mode, and none may be
+# missing or extra. That refuses a submodule too, which git archive writes as an empty folder.
+# Checked under .partial, so after a refusal or a half-written tarball nothing has the asset's name.
+OBJECT_FORMAT=$(git rev-parse --show-object-format)
+/usr/bin/python3 -I - "$SOURCE.partial" "Scripta-$VERSION/" "$OBJECT_FORMAT" \
+  <(git ls-tree -r -z "$COMMIT") <<'PY' || fail "$SOURCE.partial is not $COMMIT byte for byte"
+import hashlib, sys, tarfile
+
+source, prefix, algorithm, tree = sys.argv[1:]
+want = {}
+for entry in open(tree, "rb").read().split(b"\0"):
+    if entry:
+        meta, path = entry.split(b"\t", 1)
+        mode, _, oid = meta.decode().split(" ")
+        want[path.decode("utf-8", "surrogateescape")] = (mode, oid)
+
+got = {}
+with tarfile.open(source, "r:gz") as tar:
+    for member in tar:
+        if member.isdir():
+            continue
+        name = member.name[len(prefix):] if member.name.startswith(prefix) else "/" + member.name
+        if member.isfile():
+            data = tar.extractfile(member).read()
+            mode = "100755" if member.mode & 0o100 else "100644"
+        elif member.issym():
+            data, mode = member.linkname.encode("utf-8", "surrogateescape"), "120000"
+        else:
+            data, mode = b"", f"type {member.type!r}"
+        oid = hashlib.new(algorithm, b"blob %d\0" % len(data) + data).hexdigest()
+        got[name] = (mode, oid)
+
+wrong = sorted(path for path in want.keys() | got.keys() if want.get(path) != got.get(path))
+for path in wrong:
+    print(f"publish-release: {path}: commit {want.get(path)}, tarball {got.get(path)}", file=sys.stderr)
+sys.exit(1 if wrong else 0)
+PY
+mv "$SOURCE.partial" "$SOURCE"
+
+ASSETS=("$DMG" dist/appcast.xml "$SOURCE")
+while IFS= read -r delta; do ASSETS+=("$delta"); done < <(find dist/archive -maxdepth 1 -name '*.delta')
+
+if [ "$DRY_RUN" = 1 ]; then
+  echo "publish-release: dry run; $TAG at $COMMIT would carry:" >&2
+  printf '%s\n' "${ASSETS[@]}"
+  exit 0
+fi
+
+[ "$TAGGED" = 1 ] || git tag -a "$TAG" "$COMMIT" -m "Scripta $TAG"
 git push origin "$TAG"
 
-ASSETS=("$DMG" dist/appcast.xml)
-while IFS= read -r delta; do ASSETS+=("$delta"); done < <(find dist/archive -maxdepth 1 -name '*.delta')
 gh release create "$TAG" "${ASSETS[@]}" \
   --title "Scripta $TAG" --notes-file "$NOTES" --latest --verify-tag
