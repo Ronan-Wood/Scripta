@@ -1,0 +1,27 @@
+# Dependency updates, weekly, as pull requests.
+#
+# FOR THE ENGINE'S OWN REPOSITORY. GitHub reads `.github` only at a repository's root, so while the
+# engine is `substrate/` inside Scripta this file is inert, and Scripta's own `.github` runs its jobs.
+# These two entries are Scripta's entries for the engine with the directory moved to this root, and
+# Scripta's `.github/staged-engine-check` fails while the engine is inside it if they differ.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(engine)"
+    # The engine is a closed set that ships inside a signed bundle, so a version bump is a rebuild
+    # and a re-notarization. Grouped to keep that to one review rather than a dozen.
+    groups:
+      engine:
+        patterns:
+          - "*"

@@ -1,5 +1,5 @@
 # The engine interpreter, file by file. Written by tools/engine-interpreter-pin.py --write and
-# checked by tools/build-bundled-engine; re-pin only as Distribution/RELEASING.md describes.
+# checked by tools/build-bundled-engine; re-pin only as the engine's RELEASING.md describes.
 # python 3.14.7, python-build-standalone 20260805
 prefix	/Users/ronanwood/.local/share/uv/python/cpython-3.14.7-macos-aarch64-none
 f	a10d6c9db47cd4ed801aefa8601afa701f0db1e35ce0337e0dc861610774c1c6	BUILD

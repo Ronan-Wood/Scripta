@@ -147,34 +147,9 @@ after touching the script's `notarize`.
 
 ## The engine's Python is pinned
 
-`substrate/tools/engine-interpreter.pin` names every file and symlink of the uv-managed CPython the
-engine ships, with its sha256, and the install path it was made at. The engine build checks its copy
-of the interpreter against it before anything runs or signs that copy, and refuses on any difference:
-
-- **"was made for `<path>`"** — the interpreter is a different install: a new Python, or a uv store
-  somewhere else. The pin is per install path, because uv writes that path into the interpreter.
-- **"N changed, M missing, K unexpected"** — the same install, different contents. If you did not
-  just update Python, something modified uv's store after the install: `uv python install --reinstall
-  <version>` and build again. Do not re-pin to make it pass.
-
-Bytecode is not pinned. The build deletes it from its copy, checks the copy a second time just
-before signing, and only then compiles the bytecode from the sources it has just checked.
-
-The pin covers the interpreter and nothing else. The engine's dependencies are installed from uv's
-cache (`~/.cache/uv`), which the same user can write, and the pin does not check it.
-
-**Re-pinning when Python changes.** Reinstall first, so the pin describes a fresh download rather
-than whatever was on disk: uv checks the archive against its own checksum when it downloads it.
-
-```sh
-uv python install --reinstall 3.14.N
-PY=$(uv python find 3.14 --python-preference only-managed --no-project --system)
-/usr/bin/python3 -I substrate/tools/engine-interpreter-pin.py --write "$(cd "$(dirname "$PY")/.." && pwd -P)" substrate/tools/engine-interpreter.pin
-git diff --stat substrate/tools/engine-interpreter.pin
-```
-
-Read the header the diff shows (the Python version, the python-build-standalone release and the
-prefix) before committing. The pin is part of the build fingerprint, so the next build is a full one.
+The engine build checks the interpreter it bundles against `substrate/tools/engine-interpreter.pin`
+before anything runs or signs it, and refuses on any difference. What each refusal means, and how
+to re-pin when Python changes, is in the engine's own runbook: `substrate/RELEASING.md`.
 
 ## The appcast, and the release that carries it
 

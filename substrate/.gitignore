@@ -28,3 +28,6 @@ out-vault/
 *.db-wal
 
 bin/
+
+# Release assets, written by tools/publish-engine-release
+dist/

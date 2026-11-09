@@ -21,7 +21,7 @@ to whatever proxy HTTP_PROXY or the macOS system settings name, and follows redi
 which the host check sees. With HTTP_PROXY set, an embed POST addressed to 127.0.0.1 reached the
 proxy with the corpus in its body (reproduced 2026-09-16).
 
-THE ENGINE IS LOOPBACK-ONLY, NARROWER THAN THE APP ON PURPOSE. `Sources/Engine/Locality.swift` also
+THE ENGINE IS LOOPBACK-ONLY, NARROWER THAN THE APP ON PURPOSE. Scripta's own locality policy also
 admits a private-LAN model host the operator has confirmed, for the app's own endpoints. The engine
 takes no model host from the app — it is started with `--http <endpoint> --read-only` — so the two
 policies never meet, and neither is widened to match the other.
