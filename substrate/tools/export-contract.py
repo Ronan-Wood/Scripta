@@ -720,6 +720,7 @@ def _export(root: Path) -> dict:
     return {
         "wire": {
             "version": wire.integer("VERSION"),
+            "min_version": wire.integer("MIN_VERSION"),
             "header": wire.string("HEADER"),
             "mismatch": wire.integer("MISMATCH"),
             "unstated": wire.integer("UNSTATED"),
@@ -729,6 +730,10 @@ def _export(root: Path) -> dict:
             "lock_suffix": _lock_suffix(m["local_socket.py"]),
         },
         "cli": {"declined_exit": m["refresh.py"].integer("EX_DECLINED")},
+        # The note format a writer must produce for this engine to index it, as a range
+        # (`spine.NOTES_VERSION`): an attached client writes notes, and this engine indexes them.
+        "notes": {"version": spine.integer("NOTES_VERSION"),
+                  "min_version": spine.integer("NOTES_MIN_VERSION")},
         "spine": {
             "statuses": spine.members("STATUSES"),
             "included_statuses": spine.members("INCLUDED_STATUSES"),

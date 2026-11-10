@@ -78,10 +78,10 @@ public enum SubstrateTransportFailure: Equatable, Sendable, CustomStringConverti
     /// Carries the decoder's own description, which names the key or type that disagreed.
     case undecodablePayload(String)
 
-    /// This client and the engine speak different versions of the wire (`SubstrateWire`), so the
-    /// reply was not decoded: either the engine refused this client's version, or it stated one this
-    /// client does not read. It is an engine, so neither "start it" nor "something else holds the
-    /// socket" is the remedy. The remedy is updating whichever of the two is older.
+    /// This client and the engine do not share a wire version (`SubstrateWire`), so the reply was not
+    /// decoded: either the engine refused this client's version as outside the range it serves, or
+    /// it stated one older than this client's. It is an engine, so neither "start it" nor "something
+    /// else holds the socket" is the remedy. The message says which of the two to update.
     case wireMismatch(String)
 
     /// Whether this "failure" is really the caller's own cancellation coming back as one.

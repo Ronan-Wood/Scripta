@@ -16,6 +16,8 @@ import sys
 import tempfile
 import threading
 from unittest import mock
+
+import pytest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -69,7 +71,7 @@ def test_a_version_the_engine_does_not_serve_is_refused_under_the_callers_id() -
         reply = json.loads(body)
         assert status == 200 and reply["id"] == 7, reply
         assert reply["error"]["code"] == wire.MISMATCH
-        assert reply["error"]["data"] == {"engine": wire.VERSION}
+        assert reply["error"]["data"] == {"engine": wire.VERSION, "engine_min": wire.MIN_VERSION}
         assert "99" in reply["error"]["message"]
         assert resp.getheader(wire.HEADER) == str(wire.VERSION)
 
@@ -190,18 +192,45 @@ def test_an_engine_that_states_no_version_is_read_as_version_one() -> None:
 
 
 def test_a_reply_in_a_version_the_client_does_not_read_is_refused_before_decoding() -> None:
-    for stated in ("2", "nope", ""):
+    """Unreadable, or from an engine older than this client: an engine that served this client
+    states its own version or a newer one."""
+    with mock.patch.object(wire, "VERSION", 3):
+        for stated in ("2", "nope", ""):
+            with _canned(f"{wire.HEADER}: {stated}\r\n") as (path, _):
+                try:
+                    local_socket.post(path, b"{}", timeout=5)
+                except wire.WireMismatch as e:
+                    assert stated in str(e), e
+                else:
+                    raise AssertionError(f"a reply stating wire {stated!r} was handed on")
+
+
+def test_a_reply_from_a_newer_engine_is_read() -> None:
+    """THE RANGE, from the client's side. The engine answered, so this client is inside its range,
+    and every change since this client's version is one it can ignore."""
+    for stated in (str(wire.VERSION), str(wire.VERSION + 1), str(wire.VERSION + 7)):
         with _canned(f"{wire.HEADER}: {stated}\r\n") as (path, _):
-            try:
-                local_socket.post(path, b"{}", timeout=5)
-            except wire.WireMismatch as e:
-                assert stated in str(e), e
-            else:
-                raise AssertionError(f"a reply stating wire {stated!r} was handed on")
+            status, _ = local_socket.post(path, b"{}", timeout=5)
+            assert status == 200, stated
+
+
+@pytest.mark.parametrize(("lowest", "highest", "client", "served", "says"), [
+    (1, 3, "1", True, None), (1, 3, "2", True, None), (1, 3, "3", True, None),
+    (2, 3, "1", False, "update the client"), (1, 3, "4", False, "update the engine"),
+    (2, 2, "3", False, "serves substrate wire 2 and"), (1, 3, "4", False, "serves substrate wire 1 to 3"),
+])
+def test_the_engine_serves_every_client_in_its_declared_range(lowest, highest, client, served,
+                                                              says) -> None:
+    """THE RANGE, from the engine's side: `MIN_VERSION` to `VERSION`, and nothing outside it."""
+    with mock.patch.object(wire, "MIN_VERSION", lowest), mock.patch.object(wire, "VERSION", highest):
+        why = wire.unserved([client])
+    assert (why is None) == served, why
+    if says:
+        assert says in why and client in why, why
 
 
 def test_the_bridge_says_the_two_releases_do_not_share_a_format() -> None:
-    with _canned(f"{wire.HEADER}: 2\r\n") as (path, _):
+    with mock.patch.object(wire, "VERSION", 3), _canned(f"{wire.HEADER}: 2\r\n") as (path, _):
         reply = bridge.Remote(path)(3, "search", {"scope": "demo", "query": "x"})
     assert reply["id"] == 3 and reply["result"]["isError"] is True
     text = reply["result"]["content"][0]["text"]

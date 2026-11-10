@@ -65,7 +65,7 @@ from pathlib import Path
 from typing import Any
 
 from substrate import (
-    agent, guard, introspect, local_socket, net, notes, private, render, scopes, stack, wire,
+    agent, guard, introspect, local_socket, net, notes, private, render, scopes, spine, stack, wire,
 )
 from substrate.mcp import bridge
 from substrate.retrieve.local_models import RERANK_SENDS, cloud_refusal
@@ -916,8 +916,12 @@ def _tool_list_scopes(args: dict, cfg: Config) -> dict:
     # WHAT KIND OF SERVER THIS IS, for a client deciding whether to use an engine it did not start:
     # a writable one, an agent-mode one, or one that leaves refreshing to its client is not the
     # engine a host app would have started.
+    # And the note formats it indexes (`spine`), which a client attaching to write notes for it
+    # checks itself against. Its wire range needs no field: a client outside it is never answered.
     payload["server"] = {"read_only": cfg.read_only, "agent_mode": cfg.agent is not None,
-                         "refresh_every": cfg.refresh_every}
+                         "refresh_every": cfg.refresh_every,
+                         "notes_version": spine.NOTES_VERSION,
+                         "notes_min_version": spine.NOTES_MIN_VERSION}
     return payload
 
 
