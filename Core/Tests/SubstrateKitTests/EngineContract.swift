@@ -5,10 +5,11 @@ import XCTest
 //
 // `contract.json` is what the engine says about itself: its wire constants, its closed
 // vocabularies and the keys of every wire object this client decodes. The engine writes it
-// (`substrate/tools/export-contract.py`) and its own suite fails when the file stops describing the
+// (its `tools/export-contract.py`) and its own suite fails when the file stops describing the
 // code. This reads the app's byte-identical copy of it, `Core/Tests/EngineContract/contract.json`,
-// which `Distribution/engine-contract check` holds to the engine's. So the parity tests read no
-// engine source: they compare this client against what the engine states, wherever the engine is.
+// which `engine pin` (`Distribution/fetch-engine --check`) holds to the pinned release's. So the
+// parity tests read no engine source: they compare this client against what the engine states,
+// wherever the engine is.
 
 struct EngineContract: Decodable {
     struct Wire: Decodable {

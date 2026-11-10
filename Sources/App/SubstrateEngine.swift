@@ -156,7 +156,7 @@ final class SubstrateEngine: ObservableObject {
     /// A UNIX SOCKET, NOT 127.0.0.1:8765. Loopback TCP let every user on the Mac query every scope,
     /// and let any process that bound the port while Scripta was closed be sent every query. The
     /// engine creates the socket's directory 0700, and both sides refuse a peer of another uid
-    /// (`UnixSocketHTTP`, `substrate/substrate/local_socket.py`).
+    /// (`UnixSocketHTTP`, `substrate/local_socket.py`).
     nonisolated static var socketPath: String { SubstrateClient.defaultSocketPath }
 
     /// `--read-only` IS STATED, not inherited. It already defaults on under `--socket` (Doc 3 §3:
@@ -701,7 +701,7 @@ final class SubstrateEngine: ObservableObject {
         var searched: [String] = []
 
         // 1. THE ENGINE THAT SHIPS WITH THE APP. Doc 3 §2 says the runtime and its dependencies
-        //    ship with Scripta, and `substrate/tools/build-bundled-engine` now puts them here as a
+        //    ship with Scripta, and the engine's `tools/build-bundled-engine` now puts them here as a
         //    post-build phase on the `Scripta` target: a relocated python-build-standalone under
         //    `runtime/`, its `.venv`, the engine package, and the two shims below.
         //
@@ -735,7 +735,7 @@ final class SubstrateEngine: ObservableObject {
         // install step. A release build resolves the bundled engine or reports `notInstalled` with
         // the paths it searched — it does not quietly run something out of $HOME.
         #if DEBUG
-        // 2. THE PINNED DEPLOYMENT. `substrate/tools/substrate-deploy` exports one commit to
+        // 2. THE PINNED DEPLOYMENT. The engine's `tools/substrate-deploy` exports one commit to
         //    ~/.substrate/engine and primes its environment with `uv sync --frozen`, so the venv's
         //    python is a direct entry point — one process, no `uv` in the middle to forward signals.
         let deployed = home.appendingPathComponent(".substrate/engine", isDirectory: true)

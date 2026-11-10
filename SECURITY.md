@@ -19,8 +19,11 @@ than to a policy. You will be credited in the advisory unless you ask not to be.
 
 - The app: recording, transcription, the vault it writes, the Library, Ask, and the settings that
   govern them.
-- The bundled engine (`substrate/`): ingestion, the index, retrieval, and the MCP server it exposes
-  to Claude.
+- How the app runs the bundled engine: spawning it, the socket and the attach checks, and the
+  pinned release it bundles (`engine.lock`). The engine itself (ingestion, the index, retrieval,
+  and the MCP server it exposes to Claude) is
+  [Ronan-Wood/substrate](https://github.com/Ronan-Wood/substrate), and its reports go to that
+  repository's security policy.
 - The update mechanism: the appcast, its signing key, and the installer path.
 - The build and release scripts in `Distribution/`, including what ends up inside a signed bundle.
 

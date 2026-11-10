@@ -1,9 +1,10 @@
 import Foundation
 
 /// The engine's vocabularies, as the engine states them in its contract: the app's byte-identical
-/// copy at `Core/Tests/EngineContract/contract.json`, which `Distribution/engine-contract check`
-/// holds to the engine's. The note and transcript gates check what the app DECLARES against these,
-/// rather than against the engine's source or a second copy of the decision.
+/// copy at `Core/Tests/EngineContract/contract.json`, which `engine pin`
+/// (`Distribution/fetch-engine --check`) holds to the pinned release's. The note and transcript
+/// gates check what the app DECLARES against these, rather than against the engine's source or a
+/// second copy of the decision.
 ///
 /// Its own small reader, because this test target cannot see SubstrateKitTests' `EngineContract`
 /// (two test targets, deliberately apart: see `Package.swift`). It mirrors that type's nesting for

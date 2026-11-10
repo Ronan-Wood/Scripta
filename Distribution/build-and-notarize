@@ -179,10 +179,14 @@ notarize() {
 # A RELEASE IS BUILT FROM A COMMIT. The tag published with it is what anyone taking the GPL source
 # will use, so the binary must be exactly that commit, with no uncommitted edits or untracked files.
 [ -z "$(git status --porcelain)" ] || fail "the working tree has uncommitted changes; commit them first"
-# Nor another checkout's engine. The build phase refuses it too; this says so before the compile.
+# Nor another engine. The build phase refuses it too; this says so before the compile.
 [ -z "${SUBSTRATE_ENGINE_SRC:-}" ] \
-  || fail "SUBSTRATE_ENGINE_SRC is set; a release bundles this checkout's substrate/ only. Unset it."
+  || fail "SUBSTRATE_ENGINE_SRC is set; a release bundles the engine engine.lock pins only. Unset it."
 COMMIT=$(git rev-parse HEAD)
+# THE ENGINE IS THE COMMIT'S TOO: engine.lock names it by hash, and this fetches exactly that into
+# vendor/, which the build phase then unpacks afresh. `--release` refuses a pre-release pin, which
+# is for a draft pull request, never for what users install.
+Distribution/fetch-engine --release
 
 xcodegen generate
 # Info.plist IS GENERATED from project.yml. If regenerating changes the committed file, the commit

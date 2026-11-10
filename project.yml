@@ -306,30 +306,61 @@ targets:
         # its contents, which does not warn — it refuses to launch.
         outputFiles:
           - $(CODESIGNING_FOLDER_PATH)/Contents/Resources/substrate-engine/.build-fingerprint
-        # `SUBSTRATE_ENGINE_SRC` BUILDS ANOTHER CHECKOUT'S ENGINE: the absolute path of an engine
-        # root (a checkout's `substrate/`, the folder holding `tools/`), bundled into a Debug app
-        # without copying it here. Its fingerprint covers file contents and paths inside the engine
-        # root, so the same tree in another folder is the same build, and a skip proves it.
+        # THE ENGINE IS THE PINNED RELEASE: `engine.lock` names it, and `Distribution/fetch-engine`
+        # unpacks it into `vendor/substrate`, stamped with the lock it came from. This phase never
+        # downloads. Outside Debug it unpacks the release afresh, `--offline`, from the tarball in
+        # `vendor/` that the lock's SHA-256 checks, so an edit to the unpacked tree cannot reach a
+        # signed build; Distribution adds `--release`, which refuses a pre-release pin. Debug builds
+        # what is there, warning when its stamp is not `engine.lock`, and fails by name when nothing
+        # is.
+        #
+        # `SUBSTRATE_ENGINE_SRC` BUILDS ANOTHER ENGINE: the absolute path of an engine root (an
+        # engine checkout, the folder holding `tools/`), bundled into a Debug app without copying it
+        # here. Its fingerprint covers file contents and paths inside the engine root, so the same
+        # tree in another folder is the same build, and a skip proves it.
         #
         # DEBUG ONLY, allowed rather than denied: Release signs with the team's identity and
-        # Distribution is the release, so every configuration but Debug bundles this checkout's own
-        # `substrate/` and refuses the variable by name rather than ignoring it. A configuration
-        # added later is refused too, without having to remember this line.
+        # Distribution is the release, so every configuration but Debug bundles the pinned release
+        # and refuses the variable by name rather than ignoring it. A configuration added later is
+        # refused too, without having to remember this line.
         script: |
           set -euo pipefail
-          if [ -n "${SUBSTRATE_ENGINE_SRC:-}" ]; then
+          ENGINE=${SUBSTRATE_ENGINE_SRC:-}
+          if [ -n "$ENGINE" ]; then
             if [ "${CONFIGURATION:-}" != "Debug" ]; then
-              echo "error: SUBSTRATE_ENGINE_SRC is set ($SUBSTRATE_ENGINE_SRC); only a Debug build may bundle another checkout's engine, and this is ${CONFIGURATION:-an unnamed configuration}. Unset it." >&2
+              echo "error: SUBSTRATE_ENGINE_SRC is set ($ENGINE); only a Debug build may bundle another engine, and this is ${CONFIGURATION:-an unnamed configuration}. Unset it." >&2
               exit 1
             fi
-            case "$SUBSTRATE_ENGINE_SRC" in
+            case "$ENGINE" in
               /*) ;;
-              *) echo "error: SUBSTRATE_ENGINE_SRC=$SUBSTRATE_ENGINE_SRC is not an absolute path." >&2; exit 1 ;;
+              *) echo "error: SUBSTRATE_ENGINE_SRC=$ENGINE is not an absolute path." >&2; exit 1 ;;
             esac
-            [ -x "$SUBSTRATE_ENGINE_SRC/tools/build-bundled-engine" ] || {
-              echo "error: SUBSTRATE_ENGINE_SRC=$SUBSTRATE_ENGINE_SRC is not an engine root: it has no tools/build-bundled-engine (a checkout's substrate/ is)." >&2
+            [ -x "$ENGINE/tools/build-bundled-engine" ] || {
+              echo "error: SUBSTRATE_ENGINE_SRC=$ENGINE is not an engine root: it has no tools/build-bundled-engine (an engine checkout's root is)." >&2
               exit 1
             }
+          else
+            ENGINE=$SRCROOT/vendor/substrate
+            if [ "${CONFIGURATION:-}" != "Debug" ]; then
+              FETCH=(--offline)
+              if [ "${CONFIGURATION:-}" = "Distribution" ]; then FETCH+=(--release); fi
+              "$SRCROOT/Distribution/fetch-engine" "${FETCH[@]}" || {
+                echo "error: could not unpack the release engine.lock pins from vendor/. Run Distribution/fetch-engine." >&2
+                exit 1
+              }
+            fi
+            [ -x "$ENGINE/tools/build-bundled-engine" ] || {
+              echo "error: no engine at vendor/substrate. Run Distribution/fetch-engine: it fetches the release engine.lock pins." >&2
+              exit 1
+            }
+            if ! cmp -s "$SRCROOT/engine.lock" "$ENGINE/.engine.lock"; then
+              if [ "${CONFIGURATION:-}" = "Debug" ]; then
+                echo "warning: vendor/substrate is not the release engine.lock pins. Run Distribution/fetch-engine." >&2
+              else
+                echo "error: vendor/substrate is not the release engine.lock pins, and only a Debug build may bundle another engine. Run Distribution/fetch-engine." >&2
+                exit 1
+              fi
+            fi
           fi
           ARGS=("$CODESIGNING_FOLDER_PATH/Contents/Resources/substrate-engine")
           if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] && [ "${EXPANDED_CODE_SIGN_IDENTITY}" != "-" ]; then
@@ -338,7 +369,7 @@ targets:
           fi
           # The shipping configuration may not produce an unsigned engine, even quietly.
           if [ "${CONFIGURATION:-}" = "Distribution" ]; then export SUBSTRATE_REQUIRE_SIGNING=1; fi
-          "${SUBSTRATE_ENGINE_SRC:-$SRCROOT/substrate}/tools/build-bundled-engine" "${ARGS[@]}"
+          "$ENGINE/tools/build-bundled-engine" "${ARGS[@]}"
       # WHY THIS EXISTS. Xcode embeds Sparkle.framework and signs it on copy — the framework's own
       # binary only. `Autoupdate` and `Updater.app` keep the ad-hoc signature the SwiftPM artifact
       # ships with: no team, no timestamp. Notarization refuses both, and

@@ -74,9 +74,9 @@ if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
   TAGGED=1
 fi
 
-# The source of this release, Scripta's and the engine's it bundles: the built commit, which the tag
-# names, so it is `git archive v$VERSION` whether or not the tag exists yet. Outside dist/archive,
-# where generate_appcast would take it for an update.
+# The source of this release: the built commit, which the tag names, so it is `git archive v$VERSION`
+# whether or not the tag exists yet. Outside dist/archive, where generate_appcast would take it for
+# an update. The engine it bundles is the asset after it.
 SOURCE="dist/Scripta-$VERSION-source.tar.gz"
 rm -f "$SOURCE" "$SOURCE.partial"
 git archive --format=tar.gz --prefix="Scripta-$VERSION/" -o "$SOURCE.partial" "$COMMIT"
@@ -122,7 +122,31 @@ sys.exit(1 if wrong else 0)
 PY
 mv "$SOURCE.partial" "$SOURCE"
 
-ASSETS=("$DMG" dist/appcast.xml "$SOURCE")
+# THE ENGINE IT BUNDLES, as a COPY of the engine release's tarball, so the corresponding source
+# stays with the binary even if that release moves. The BUILT commit's engine.lock names it, the
+# lock the build phase held the bundle to, and the copy must be the bytes it pins.
+ENGINE_LOCK=$(git show "$COMMIT:engine.lock" 2>/dev/null) || fail "the built commit $COMMIT has no engine.lock"
+lock_value() {
+  local found
+  found=$(printf '%s\n' "$ENGINE_LOCK" | sed -n "s/^$1=//p")
+  [ "$(printf '%s\n' "$found" | grep -c .)" = 1 ] \
+    || fail "the built commit's engine.lock does not give '$1' exactly once"
+  printf '%s' "$found"
+}
+ENGINE_TARBALL=$(lock_value tarball)
+ENGINE_SHA=$(lock_value sha256)
+[[ "$ENGINE_TARBALL" =~ ^substrate-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz$ ]] \
+  || fail "the built commit's engine.lock names '$ENGINE_TARBALL', not a released engine's tarball"
+[[ "$ENGINE_SHA" =~ ^[0-9a-f]{64}$ ]] || fail "the built commit's engine.lock sha256 '$ENGINE_SHA' is not 64 hex digits"
+ENGINE="dist/$ENGINE_TARBALL"
+rm -f "$ENGINE" "$ENGINE.partial"
+[ -f "vendor/$ENGINE_TARBALL" ] || fail "no vendor/$ENGINE_TARBALL; run Distribution/fetch-engine"
+cp "vendor/$ENGINE_TARBALL" "$ENGINE.partial"
+[ "$(shasum -a 256 "$ENGINE.partial" | cut -d' ' -f1)" = "$ENGINE_SHA" ] \
+  || { rm -f "$ENGINE.partial"; fail "vendor/$ENGINE_TARBALL is not the engine tarball the built commit's engine.lock pins"; }
+mv "$ENGINE.partial" "$ENGINE"
+
+ASSETS=("$DMG" dist/appcast.xml "$SOURCE" "$ENGINE")
 while IFS= read -r delta; do ASSETS+=("$delta"); done < <(find dist/archive -maxdepth 1 -name '*.delta')
 
 if [ "$DRY_RUN" = 1 ]; then

@@ -1,10 +1,9 @@
-# CodeQL, on the two languages this repository actually contains.
+# CodeQL, on Swift: the language this repository's code is written in. The engine, where untrusted
+# input lands, is a pinned release of its own repository, and is scanned there.
 #
-# SCOPE IS DELIBERATE. Python covers the engine, which is where untrusted input lands: PDFs, images,
-# zip containers, HTML and the JSON a subprocess hands back. Swift covers `Core/`, which builds on a
-# runner with one SwiftPM command. The app target is NOT scanned: building it means building the
-# bundled engine, an hour of downloading and compiling for a target CodeQL analyses no better than
-# the package it already sees.
+# SCOPE IS DELIBERATE. Swift covers `Core/`, which builds on a runner with one SwiftPM command. The
+# app target is NOT scanned: building it means building the bundled engine, an hour of downloading
+# and compiling for a target CodeQL analyses no better than the package it already sees.
 #
 # Actions pinned by commit, for the reason the test workflow gives.
 name: code scanning
@@ -25,26 +24,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  python:
-    name: codeql python
-    # Code scanning on a personal account's private repo is a paid feature: the analysis runs, then
-    # the upload is refused. Skipped while private, so the job runs again once the repo is public.
-    if: ${{ !github.event.repository.private }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: github/codeql-action/init@977e6ceaea7361825998245d787fa3b4d6b9e5df # v2.27.0
-        with:
-          languages: python
-          build-mode: none
-      - uses: github/codeql-action/analyze@977e6ceaea7361825998245d787fa3b4d6b9e5df # v2.27.0
-
   swift:
     name: codeql swift
     if: ${{ !github.event.repository.private }}

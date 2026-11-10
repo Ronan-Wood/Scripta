@@ -36,13 +36,28 @@ final class ReleaseScriptTests: XCTestCase {
         }
     }
 
-    /// A release bundles this checkout's engine. The Xcode phase refuses `SUBSTRATE_ENGINE_SRC`
-    /// too; the release says so before the compile rather than after it.
+    /// A release bundles the engine `engine.lock` pins. The Xcode phase refuses
+    /// `SUBSTRATE_ENGINE_SRC` too; the release says so before the compile rather than after it.
     func testTheReleaseRefusesAnotherCheckoutsEngineBeforeBuilding() throws {
         let text = try String(contentsOf: Self.script, encoding: .utf8)
         let refusal = try XCTUnwrap(text.range(of: #"[ -z "${SUBSTRATE_ENGINE_SRC:-}" ]"#)?.lowerBound,
                                     "build-and-notarize does not refuse SUBSTRATE_ENGINE_SRC")
         let build = try XCTUnwrap(text.range(of: "xcodebuild -project")?.lowerBound)
         XCTAssertLessThan(refusal, build)
+    }
+
+    /// THE ENGINE IS THE BUILT COMMIT'S. The release fetches what `engine.lock` pins after the
+    /// clean-tree check, so the lock it reads is the commit's, and before the compile, whose phase
+    /// unpacks it afresh. `--release` refuses a pre-release pin.
+    func testTheReleaseFetchesThePinnedEngineAfterTheCleanTreeCheck() throws {
+        let text = try String(contentsOf: Self.script, encoding: .utf8)
+        func at(_ needle: String) throws -> String.Index {
+            try XCTUnwrap(text.range(of: needle)?.lowerBound, "build-and-notarize no longer has `\(needle)`")
+        }
+        let clean = try at("git status --porcelain")
+        let fetch = try at("\nDistribution/fetch-engine --release\n")
+        let build = try at("xcodebuild -project")
+        XCTAssertLessThan(clean, fetch)
+        XCTAssertLessThan(fetch, build)
     }
 }

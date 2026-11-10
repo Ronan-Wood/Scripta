@@ -940,7 +940,7 @@ final class ScriptaVaultTests: XCTestCase {
             .appendingPathComponent(".substrate/engine", isDirectory: true)
         let python = engine.appendingPathComponent(".venv/bin/python")
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
-            throw XCTSkip("no deployed engine at \(engine.path); run substrate/tools/substrate-deploy")
+            throw XCTSkip("no deployed engine at \(engine.path); run tools/substrate-deploy from an engine checkout")
         }
 
         let vault = try ScriptaVault.vault(forScope: "GateTest", under: root)

@@ -1,9 +1,11 @@
 import Foundation
 import XCTest
 
-/// The Xcode phase that bundles the engine, run from `project.yml` itself with a stub in place of
-/// `build-bundled-engine`: which checkout's engine it builds, and that a shipping build refuses
-/// `SUBSTRATE_ENGINE_SRC`. The app target has no test target, so the script is read out of the
+/// The Xcode phase that bundles the engine, run from `project.yml` itself with stubs in place of
+/// `build-bundled-engine` and `Distribution/fetch-engine`: that it builds the pinned release in
+/// `vendor/substrate`, unpacked afresh outside Debug; that only Debug may build another engine
+/// (`SUBSTRATE_ENGINE_SRC`, or a `vendor/substrate` that is not `engine.lock`'s); and that it never
+/// builds what is not there. The app target has no test target, so the script is read out of the
 /// project file rather than copied: a copy would pass while the phase changed.
 final class EngineBundlePhaseTests: XCTestCase {
     /// `#filePath`, not the working directory: `swift test` and Xcode disagree about cwd.
@@ -16,10 +18,37 @@ final class EngineBundlePhaseTests: XCTestCase {
 
     private var root: URL!
 
+    /// The pinned engine's checkout-relative home, and the lock it is stamped with.
+    private static let vendored = "src/vendor/substrate"
+    private static let lock = "repo=o/substrate\ntag=v1.0.0\n"
+
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("engine-phase-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("src"),
+                                                withIntermediateDirectories: true)
+        try Data(Self.lock.utf8).write(to: root.appendingPathComponent("src/engine.lock"))
+        try fetcher(exit: 0)
+    }
+
+    /// A `Distribution/fetch-engine` that records what it was asked, beside the stub engine's
+    /// record, and exits with `status`.
+    private func fetcher(exit status: Int32) throws {
+        let tool = root.appendingPathComponent("src/Distribution/fetch-engine")
+        try FileManager.default.createDirectory(at: tool.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try Data("""
+        #!/bin/bash
+        printf '%s\\n' "$*" > "$CALLS.fetch"
+        exit \(status)
+        """.utf8).write(to: tool)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+    }
+
+    /// What the stub fetch-engine was asked, or nil if it did not run.
+    private var fetched: String? {
+        (try? String(contentsOf: root.appendingPathComponent("calls.fetch"), encoding: .utf8))?
+            .trimmingCharacters(in: .newlines)
     }
 
     override func tearDownWithError() throws {
@@ -56,11 +85,16 @@ final class EngineBundlePhaseTests: XCTestCase {
         return script
     }
 
-    /// A `build-bundled-engine` that records where it ran from and what it was handed.
-    private func engine(at checkout: String) throws -> URL {
+    /// A `build-bundled-engine` that records where it ran from and what it was handed, stamped
+    /// with `stamp` as `fetch-engine` stamps what it unpacks (nil: no stamp).
+    private func engine(at checkout: String, stamp: String? = lock) throws -> URL {
         let tool = root.appendingPathComponent(checkout).appendingPathComponent("tools/build-bundled-engine")
         try FileManager.default.createDirectory(at: tool.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
+        if let stamp {
+            try Data(stamp.utf8).write(to: root.appendingPathComponent(checkout)
+                .appendingPathComponent(".engine.lock"))
+        }
         try Data("""
         #!/bin/bash
         printf '%s\\n' "$0" "$@" "require=${SUBSTRATE_REQUIRE_SIGNING:-}" > "$CALLS"
@@ -80,6 +114,7 @@ final class EngineBundlePhaseTests: XCTestCase {
                      identity: String? = nil) throws -> Run {
         let calls = root.appendingPathComponent("calls")
         try? FileManager.default.removeItem(at: calls)
+        try? FileManager.default.removeItem(at: root.appendingPathComponent("calls.fetch"))
         var env = ["PATH": "/usr/bin:/bin", "CONFIGURATION": configuration, "CALLS": calls.path,
                    "SRCROOT": root.appendingPathComponent("src").path,
                    "CODESIGNING_FOLDER_PATH": root.appendingPathComponent("Scripta.app").path]
@@ -104,16 +139,71 @@ final class EngineBundlePhaseTests: XCTestCase {
         root.appendingPathComponent("Scripta.app/Contents/Resources/substrate-engine").path
     }
 
-    func testADebugBuildBundlesThisCheckoutsEngine() throws {
-        let own = try engine(at: "src/substrate")
+    func testADebugBuildBundlesThePinnedRelease() throws {
+        let own = try engine(at: Self.vendored)
         let run = try run("Debug")
         XCTAssertEqual(run.status, 0, run.stderr)
         XCTAssertEqual(run.calls, [own.path, destination, "require="])
+        XCTAssertFalse(run.stderr.contains("warning:"), run.stderr)
+        XCTAssertNil(fetched, "a Debug build ran fetch-engine")
+    }
+
+    /// OUTSIDE DEBUG THE RELEASE IS UNPACKED AFRESH, offline, from the SHA-checked tarball, so an
+    /// edit to the unpacked tree never reaches a signed build; Distribution also refuses a
+    /// pre-release pin. A fetch that fails stops the build before any engine is built.
+    func testOutsideDebugTheReleaseIsUnpackedAfreshAndOffline() throws {
+        let own = try engine(at: Self.vendored)
+        for (configuration, asked) in [("Release", "--offline"), ("Distribution", "--offline --release")] {
+            let run = try run(configuration, identity: "Developer ID Application: Test")
+            XCTAssertEqual(run.status, 0, run.stderr)
+            XCTAssertEqual(fetched, asked, configuration)
+            XCTAssertEqual(run.calls?.first, own.path, configuration)
+        }
+        try fetcher(exit: 1)
+        let run = try run("Distribution", identity: "Developer ID Application: Test")
+        XCTAssertNotEqual(run.status, 0)
+        XCTAssertTrue(run.stderr.contains("could not unpack the release engine.lock pins"), run.stderr)
+        XCTAssertNil(run.calls, "an engine was built after the fetch failed")
+    }
+
+    /// The phase never fetches: with nothing unpacked it says what to run, in every configuration,
+    /// rather than bash's "No such file or directory".
+    func testNoUnpackedReleaseIsRefusedByName() throws {
+        for configuration in ["Debug", "Distribution"] {
+            let run = try run(configuration, identity: "Developer ID Application: Test")
+            XCTAssertNotEqual(run.status, 0, configuration)
+            XCTAssertTrue(run.stderr.contains("Run Distribution/fetch-engine"), run.stderr)
+            XCTAssertNil(run.calls)
+        }
+    }
+
+    /// `vendor/substrate` holding another release than `engine.lock` names, or one nothing stamped:
+    /// Debug builds it and says so, and every other configuration refuses, as it refuses the variable.
+    func testAnUnpackedReleaseThatIsNotTheLocksIsOnlyForDebug() throws {
+        for stamp in ["repo=o/substrate\ntag=v0.9.0\n", nil] {
+            let own = try engine(at: Self.vendored, stamp: stamp)
+            if stamp == nil {
+                try? FileManager.default.removeItem(at: root.appendingPathComponent(Self.vendored)
+                    .appendingPathComponent(".engine.lock"))
+            }
+            let debug = try run("Debug")
+            XCTAssertEqual(debug.status, 0, debug.stderr)
+            XCTAssertEqual(debug.calls?.first, own.path)
+            XCTAssertTrue(debug.stderr.contains("warning: vendor/substrate is not the release engine.lock pins"),
+                          debug.stderr)
+            for configuration in ["Distribution", "Release", "Staging"] {
+                let run = try run(configuration, identity: "Developer ID Application: Test")
+                XCTAssertNotEqual(run.status, 0, configuration)
+                XCTAssertTrue(run.stderr.contains("error: vendor/substrate is not the release engine.lock pins"),
+                              run.stderr)
+                XCTAssertNil(run.calls, "\(configuration) bundled an engine that is not engine.lock's")
+            }
+        }
     }
 
     /// THE OVERRIDE: another checkout's engine, and this one's is not run.
     func testADebugBuildBundlesTheCheckoutTheVariableNames() throws {
-        _ = try engine(at: "src/substrate")
+        _ = try engine(at: Self.vendored)
         let other = try engine(at: "engine-checkout")
         let run = try run("Debug", override: other.deletingLastPathComponent()
             .deletingLastPathComponent().path)
@@ -122,16 +212,16 @@ final class EngineBundlePhaseTests: XCTestCase {
     }
 
     func testAnEmptyVariableIsNoOverride() throws {
-        let own = try engine(at: "src/substrate")
+        let own = try engine(at: Self.vendored)
         let run = try run("Debug", override: "")
         XCTAssertEqual(run.calls?.first, own.path)
     }
 
-    /// Every configuration but Debug bundles this checkout's own engine, and says why it refuses
+    /// Every configuration but Debug bundles the pinned release, and says why it refuses
     /// rather than building something else or ignoring it: Distribution is the release, Release
     /// signs with the team's identity, and one added later is refused without being named.
     func testEveryConfigurationButDebugRefusesTheVariableByName() throws {
-        _ = try engine(at: "src/substrate")
+        _ = try engine(at: Self.vendored)
         let other = try engine(at: "engine-checkout")
         for configuration in ["Distribution", "Release", "Staging"] {
             let run = try run(configuration, override: other.deletingLastPathComponent()
@@ -142,10 +232,10 @@ final class EngineBundlePhaseTests: XCTestCase {
         }
     }
 
-    /// The natural mistake is a checkout's root rather than its `substrate/`, which has no
-    /// `tools/`; bash would only say "No such file or directory".
+    /// The natural mistake is the folder above an engine root, which has no `tools/`; bash would
+    /// only say "No such file or directory".
     func testAPathThatIsNotAnEngineRootIsRefusedByName() throws {
-        _ = try engine(at: "src/substrate")
+        _ = try engine(at: Self.vendored)
         _ = try engine(at: "checkout/substrate")
         let run = try run("Debug", override: root.appendingPathComponent("checkout").path)
         XCTAssertNotEqual(run.status, 0)
@@ -155,7 +245,7 @@ final class EngineBundlePhaseTests: XCTestCase {
 
     /// Relative to the phase's working directory, which is not the shell it was typed in.
     func testARelativePathIsRefused() throws {
-        _ = try engine(at: "src/substrate")
+        _ = try engine(at: Self.vendored)
         let run = try run("Debug", override: "checkout/substrate")
         XCTAssertNotEqual(run.status, 0)
         XCTAssertTrue(run.stderr.contains("not an absolute path"), run.stderr)
@@ -163,10 +253,11 @@ final class EngineBundlePhaseTests: XCTestCase {
     }
 
     func testADistributionBuildWithoutItSignsTimestampsAndRequiresSigning() throws {
-        let own = try engine(at: "src/substrate")
+        let own = try engine(at: Self.vendored)
         let run = try run("Distribution", identity: "Developer ID Application: Test")
         XCTAssertEqual(run.status, 0, run.stderr)
         XCTAssertEqual(run.calls, [own.path, destination, "--sign", "Developer ID Application: Test",
                                    "--timestamp", "require=1"])
+        XCTAssertEqual(fetched, "--offline --release")
     }
 }

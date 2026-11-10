@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - JSON-RPC 2.0 over HTTP on the engine's Unix socket
 //
-// The engine (`substrate/substrate/mcp/server.py`) speaks one JSON-RPC frame per POST. There is no
+// The engine (`substrate/mcp/server.py`) speaks one JSON-RPC frame per POST. There is no
 // SSE stream and no request path: `do_GET` refuses with 405 and `do_POST` deliberately does not
 // examine the URL, because every URL on that server is the one endpoint.
 //

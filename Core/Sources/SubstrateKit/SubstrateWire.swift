@@ -2,7 +2,7 @@ import Foundation
 
 /// The version of the shared socket's wire: the reply shapes `WirePayloads` decodes.
 ///
-/// The engine's `substrate/substrate/wire.py` is the authority and says when to bump; this mirrors
+/// The engine's `substrate/wire.py` is the authority and says when to bump; this mirrors
 /// it, and `WireParityTests` holds the two together. Each request states `Substrate-Wire`, and each
 /// reply does too. The engine serves a range of client versions (`wire.MIN_VERSION` to
 /// `wire.VERSION`), every change inside it additive, and refuses a client outside it. So a reply

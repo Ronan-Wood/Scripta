@@ -2,10 +2,10 @@ import Foundation
 
 // MARK: - The engine's wire shape, decoded
 //
-// `substrate/substrate/render.py` is the AUTHORITY on every name and type below, with
-// `substrate/substrate/introspect.py` for `status` / `list_scopes`, `substrate/refresh_state.py`
+// `substrate/render.py` is the AUTHORITY on every name and type below, with
+// `substrate/introspect.py` for `status` / `list_scopes`, `substrate/refresh_state.py`
 // for the `refresh` block, `substrate/freshness.py` for `drift`, and
-// `substrate/substrate/mcp/server.py` for `expand`'s envelope and its `note`. Nothing here is
+// `substrate/mcp/server.py` for `expand`'s envelope and its `note`. Nothing here is
 // inferred from what the view layer would like to receive.
 //
 // THESE ARE NOT THE VIEW TYPES, and the separation is the point. `Passage`, `EngineEnvelope` and
