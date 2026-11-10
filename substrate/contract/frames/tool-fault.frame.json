@@ -1,1 +1,0 @@
-{"jsonrpc": "2.0", "id": 7, "result": {"content": [{"type": "text", "text": "ToolError: unknown scope 'no-such-scope'. Registered: demo."}], "isError": true}}

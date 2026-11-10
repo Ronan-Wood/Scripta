@@ -3,26 +3,28 @@ import XCTest
 
 // MARK: - Real frames from the real engine
 //
-// WHERE THEY LIVE. The engine owns them, in `substrate/contract/frames/`, and its suite checks them
-// there. This reads `Core/Tests/EngineContract/frames/`, a byte-identical copy that
-// `Distribution/engine-contract sync` writes and `Distribution/engine-contract check` (run by the
-// `app core` CI job) holds to the engine's, so the decoder tests take no frame from the engine's
-// tree. (The parity tests still read its Python source; that is a separate dependency.)
+// WHERE THEY LIVE. The engine owns them, in its `contract/frames/`, and its suite checks them
+// there. This reads `Core/Tests/EngineContract/frames/`, a byte-identical copy of the pinned
+// release's that `Distribution/fetch-engine --bump` writes and `Distribution/fetch-engine --check`
+// (the `engine pin` CI job) holds to it, so the decoder tests take no frame from the engine's tree.
 //
 // PROVENANCE. Every frame except `http-415-refusal.body.json` is a response the engine
-// in this repo produced, written by a test in the engine's own suite rather than by hand, and
+// produced, written by a test in the engine's own suite rather than by hand, and
 // nothing in them was reformatted or trimmed. The non-agent frames come from
-// `substrate/tests/test_swift_golden_frames.py`, run over the repo's SYNTHETIC demo vaults
-// (`substrate/vaults/demo-vault`, inheriting `demo-core-vault`) in a registry holding one scope,
+// the engine's `tests/test_swift_golden_frames.py`, run over its SYNTHETIC demo vaults
+// (`vaults/demo-vault`, inheriting `demo-core-vault`) in a registry holding one scope,
 // `demo`. Its docstring is the authority on how: what it runs, and the three things it stands in
 // (the workspace path as `/demo-substrate`, the workspace folder's mode, and a model daemon that
-// refuses every connection). The `agent-*` frames come from `substrate/tests/test_agent_mode.py`;
-// see `agentStatus` below. Re-capture with:
+// refuses every connection). The `agent-*` frames come from its `tests/test_agent_mode.py`;
+// see `agentStatus` below. Re-capture in an engine checkout, and release the change:
 //
-//   cd substrate && SUBSTRATE_CAPTURE_SWIFT_FIXTURES=1 PYTHONPATH=$PWD \
+//   SUBSTRATE_CAPTURE_SWIFT_FIXTURES=1 PYTHONPATH=$PWD \
 //     uv run --no-sync python -m pytest tests/test_swift_golden_frames.py tests/test_agent_mode.py \
 //     -q -k swift
-//   cd .. && Distribution/engine-contract sync
+//
+// then, here, `Distribution/fetch-engine --bump <its tag>`. While developing,
+// `Distribution/engine-contract sync --from <engine checkout>/contract` vendors an unreleased
+// copy for a local `swift test`; `engine pin` refuses it.
 //
 // Without the variable those tests fail when the engine's shape moves away from these files, or
 // when a committed file carries a path of the machine that wrote it.
@@ -86,7 +88,7 @@ enum GoldenFixture {
     static let documents = "documents.frame.json"
     static let toolFault = "tool-fault.frame.json"
     /// AGENT MODE (`substrate-mcp --agent-mode`), and a different provenance from every frame above:
-    /// captured from the engine's own `world` fixture in `substrate/tests/test_agent_mode.py`, whose
+    /// captured from the engine's own `world` fixture in its `tests/test_agent_mode.py`, whose
     /// allowed scope is `demo`, because agent mode answers only from a published snapshot. They
     /// are the bytes `server.handle` returns, written by
     /// `test_the_swift_decoders_fixtures_are_what_agent_mode_sends` with
@@ -117,7 +119,8 @@ enum GoldenFixture {
             .appendingPathComponent(name)
         guard FileManager.default.fileExists(atPath: url.path) else {
             XCTFail("golden fixture missing at \(url.path). These are captured engine responses; "
-                    + "if substrate/contract/frames/ has it, run Distribution/engine-contract sync, "
+                    + "if the pinned release's contract/frames/ has it, run Distribution/fetch-engine, "
+                    + "then Distribution/engine-contract sync, "
                     + "else see the provenance note in GoldenFixtures.swift to re-capture.",
                     file: file, line: line)
             throw CocoaError(.fileNoSuchFile)

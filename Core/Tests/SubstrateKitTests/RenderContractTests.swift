@@ -48,7 +48,7 @@ final class RenderContractTests: XCTestCase {
     /// It pins the VALUES as well as the key. A class this build has no case for refuses by name in
     /// `mappedDocumentClass`, so the vocabularies must agree. That the engine sends `null` rather than
     /// a class name for an absent one is the engine's to keep, and its suite does
-    /// (`substrate/tests/test_render.py`, the `document_class is None` case).
+    /// (the engine's `tests/test_render.py`, the `document_class is None` case).
     func testPassageCarriesDocumentClassAndItsValuesAreTheClassPolicies() {
         XCTAssertTrue(contract.keys(of: "passage").contains("document_class"),
                       "the engine's passage has stopped carrying document_class. Every passage now "
@@ -279,7 +279,7 @@ final class RenderContractTests: XCTestCase {
     /// `retrieval_mode.unavailable` is free prose, and the arm names in `health.arms` are recovered
     /// from each entry's LEADING TOKEN by the engine (`Stack.unavailable_arms`). This client reads
     /// the map, never the sentences; that every entry leads with its arm is the engine's to keep,
-    /// and its suite does (`substrate/tests/test_unavailable_arms.py`). Pinned here: the arm names
+    /// and its suite does (the engine's `tests/test_unavailable_arms.py`). Pinned here: the arm names
     /// that map is keyed by.
     func testTheArmNamesAreTheEngines() {
         XCTAssertEqual(contract.retrieval.arms, ["embedder", "hyde", "reranker"])

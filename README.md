@@ -68,18 +68,20 @@ Everything works with nothing installed, using Apple's on-device models. Point S
 
 ```sh
 brew install xcodegen uv
+Distribution/fetch-engine
 xcodegen generate
 xcodebuild -project Scripta.xcodeproj -scheme Scripta build
 ```
 
-The build vendors a Python runtime and the engine's dependencies into the app bundle, so the first build is slow and later ones skip in seconds unless the engine changed. The first build also compiles OpenCV from source with FFmpeg switched off, because every prebuilt macOS OpenCV bundles a GPL-licensed FFmpeg; uv caches the result, so that happens once per machine. The app itself downloads nothing at runtime apart from the optional update check.
+The engine is its own repository, [Ronan-Wood/substrate](https://github.com/Ronan-Wood/substrate), and the app is built from one of its releases: `engine.lock` names it, and `Distribution/fetch-engine` downloads it, checks it against the lock and unpacks it into `vendor/`. The build vendors a Python runtime and the engine's dependencies into the app bundle, so the first build is slow and later ones skip in seconds unless the engine changed. The first build also compiles OpenCV from source with FFmpeg switched off, because every prebuilt macOS OpenCV bundles a GPL-licensed FFmpeg; uv caches the result, so that happens once per machine. The app itself downloads nothing at runtime apart from the optional update check.
 
 Tests:
 
 ```sh
 cd Core && swift test                 # app + shared core
-cd substrate && uv run pytest tests/  # engine
 ```
+
+The engine's tests are in its own repository.
 
 Signing, notarization and stapling are documented in [`Distribution/RELEASING.md`](Distribution/RELEASING.md).
 
@@ -89,7 +91,7 @@ Signing, notarization and stapling are documented in [`Distribution/RELEASING.md
 |---|---|
 | `Sources/` | the macOS app — capture, transcription, UI, engine supervision |
 | `Core/` | local SwiftPM package: parsing, indexing, vault layout, the engine's wire types |
-| `substrate/` | the Python engine — ingest, chunking, index, retrieval, MCP server |
+| `engine.lock` | the engine release the app is built from; the engine itself is [Ronan-Wood/substrate](https://github.com/Ronan-Wood/substrate) |
 | `Distribution/` | release runbook, release scripts, and collateral |
 
 ## Status

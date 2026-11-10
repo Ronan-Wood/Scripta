@@ -189,8 +189,8 @@ public enum EngineHealth {
 
 /// The measured tiers.
 ///
-/// MEASUREMENTS, not settings. Their source of truth is `substrate/EXPERIMENTS.md` — the ceiling at
-/// its §"44-case cohort" table, the floor at its §"THE FLOOR — what a user gets with nothing
+/// MEASUREMENTS, not settings. Their source of truth is the engine's `EXPERIMENTS.md` — the ceiling
+/// at its §"44-case cohort" table, the floor at its §"THE FLOOR — what a user gets with nothing
 /// installed. 0.593." Nothing links that file to this declaration but this comment, so a number
 /// changed there and not here is a client claiming a tier the engine never measured.
 ///

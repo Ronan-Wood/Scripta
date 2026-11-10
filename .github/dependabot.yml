@@ -13,19 +13,6 @@ updates:
     commit-message:
       prefix: "ci"
 
-  - package-ecosystem: uv
-    directory: /substrate
-    schedule:
-      interval: weekly
-    commit-message:
-      prefix: "deps(engine)"
-    # The engine is a closed set that ships inside a signed bundle, so a version bump is a rebuild
-    # and a re-notarization. Grouped to keep that to one review rather than a dozen.
-    groups:
-      engine:
-        patterns:
-          - "*"
-
   - package-ecosystem: swift
     directory: /Core
     schedule:

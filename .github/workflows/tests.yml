@@ -21,132 +21,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  engine:
+  pin:
     # THE NAME IS A CONTRACT once a rule requires this check: a required check that never reports
-    # blocks every merge. So it does not carry the test count, which changes with every test added.
-    name: engine
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # THE ENGINE ALONE: its tracked tree, with nothing of this repository beside it, run from there
-      # (`.github/engine-alone` says why). A test still reaching outside it fails here.
-      - run: |
-          bash .github/engine-alone "$RUNNER_TEMP/engine"
-          echo "PYTHONPATH=$RUNNER_TEMP/engine" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      # NOT `uv sync`. The engine's full dependency set is torch, docling and an OpenCV built from
-      # source — gigabytes, and twenty minutes of compiling, for a suite that touches none of it.
-      # Measured 2026-09-16: a few packages run the whole suite in seconds from a small environment.
-      # A test that needs more than this should say so by failing here.
-      - run: uv venv --python 3.14
-        working-directory: ${{ runner.temp }}/engine
-      # The `test` group (pytest, and the frontmatter tests' hypothesis and ruamel.yaml) exactly as
-      # the lock holds it, hashes checked, so this job and the one below run the same versions.
-      - run: |
-          uv export --frozen --only-group test --no-emit-project -o "$RUNNER_TEMP/test-group.txt"
-          uv pip install --require-hashes -r "$RUNNER_TEMP/test-group.txt"
-        working-directory: ${{ runner.temp }}/engine
-      - run: uv pip install pypdfium2 pillow numpy pyyaml
-        working-directory: ${{ runner.temp }}/engine
-      - run: uv run --no-sync python -m pytest tests -q
-        working-directory: ${{ runner.temp }}/engine
-
-  staged:
-    # The engine's staged `.github` (`substrate/.github`, live once the engine is its own repository)
-    # must say what this one does about the engine: its Dependabot entries, and its jobs' pins and
-    # settings (`.github/staged-engine-check`). NOT A REQUIRED CHECK, on purpose: Dependabot bumps the
-    # pins here and not the staged copy, so its pull requests fail this until the copy is bumped too,
-    # and they must still be mergeable. The extraction needs it green.
-    name: staged engine config
+    # blocks every merge.
+    #
+    # The engine is a pinned release of its own repository (`engine.lock`). This holds the pin to
+    # the release: the tarball's SHA-256, the contract's leak scans and wire version, GitHub's tag on
+    # the lock's commit, signed and verified, every file in the tarball that commit's, and the app's
+    # copy of the contract (`Core/Tests/EngineContract/`) byte for byte the tarball's.
+    name: engine pin
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      # The engine's locked `test` group, hashes checked as in `engine`: pytest, and the YAML 1.2
-      # reader (`ruamel.yaml`) the check reads both trees with, as GitHub reads them.
-      - run: |
-          uv venv "$RUNNER_TEMP/staged" --python 3.14
-          uv export --frozen --only-group test --no-emit-project --project substrate -o "$RUNNER_TEMP/test-group.txt"
-          uv pip install --python "$RUNNER_TEMP/staged" --require-hashes -r "$RUNNER_TEMP/test-group.txt"
-      - run: |
-          "$RUNNER_TEMP/staged/bin/python" -I .github/staged-engine-check
-          "$RUNNER_TEMP/staged/bin/python" -I -m pytest .github/test_staged_engine_check.py -q -p no:cacheprovider
-
-  docling:
-    # `engine` above has no docling, so the paths #64 and #67 broke skip there. This one runs the whole
-    # suite against the LOCKED engine, so a docling test added later runs without anyone listing it.
-    # MACOS, NOT LINUX: the engine ships for Apple silicon only, the lock resolves torch to its CUDA
-    # build on Linux, and ocrmac cannot install there. Nothing here is signed, so the hardened runtime
-    # stays `build-bundled-engine`'s to check.
-    name: engine docling
-    runs-on: macos-15
-    timeout-minutes: 20
-    env:
-      # Opts in the docling round-trips in `tests/test_ingest_formats.py`.
-      SUBSTRATE_DOCLING_TESTS: "1"
-      # NO MODEL DOWNLOADS. No test needs docling's layout or table weights (measured 2026-11-04: the
-      # suite passes offline against an empty HF_HOME). A test that starts needing them fails here by
-      # name instead of quietly fetching them on every run.
-      HF_HUB_OFFLINE: "1"
-      # Build tools are pinned by version, never by hash (`uv sync` takes none). This ignores any file
-      # added to those releases later; only the sdist build env is filtered, not the frozen lock.
-      # A build-constraint pin newer than this date fails `uv sync` by name: move the date with it.
-      UV_EXCLUDE_NEWER: "2026-11-04T00:00:00Z"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # The engine alone, as in the job above.
-      - run: |
-          bash .github/engine-alone "$RUNNER_TEMP/engine"
-          echo "PYTHONPATH=$RUNNER_TEMP/engine" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-        with:
-          # The uv that enforces the lock's hashes, pinned like the lock it reads.
-          version: "0.12.2"
-      # Minus OpenCV: twenty minutes to compile, and only TableFormer, which needs the weights, uses it.
-      # A uv-managed 3.14, as the bundle ships, so `test_bundled_engine_runtime` has one to find.
-      - run: >-
-          uv sync --frozen --no-dev --group test --managed-python --python 3.14
-          --no-install-package opencv-python-headless
-        working-directory: ${{ runner.temp }}/engine
-      # Fails the job if docling cannot import, rather than letting its tests skip green.
-      - run: >-
-          uv run --no-sync python -c "import docling.document_converter, torch;
-          from importlib.metadata import version;
-          print('docling', version('docling'), 'torch', torch.__version__,
-          'mps', torch.backends.mps.is_available())"
-        working-directory: ${{ runner.temp }}/engine
-      # The interpreter pin's tests on uv's real output need it AT THE PIN'S PATH: uv writes its
-      # install path into libpython and `_sysconfigdata`, so an install anywhere else is other bytes
-      # (measured 2026-11-05 on the operator's Mac: those two files are the only difference, and uv
-      # re-ids libpython with the host's install_name_tool). That path is under the operator's home,
-      # hence sudo. WHICH BUILD comes from this job's uv, not the pin: a re-pin made with a newer uv
-      # fails here or in the pin's tests, so move `version` above with it.
-      - run: |
-          pin=tools/engine-interpreter.pin
-          prefix=$(awk -F '\t' '$1 == "prefix" { print $2; exit }' "$pin")
-          build=$(sed -n 's/^# python [^,]*, python-build-standalone \([0-9][0-9]*\)$/\1/p' "$pin")
-          case "$prefix" in /*/*[!/]) ;; *) echo "no usable prefix in $pin: '$prefix'" >&2; exit 1 ;; esac
-          case "${prefix##*/}" in cpython-[0-9]*.[0-9]*.[0-9]*-*) ;;
-            *) echo "$pin's prefix '$prefix' is not a uv CPython install" >&2; exit 1 ;; esac
-          test -n "$build" || { echo "no python-build-standalone release in $pin" >&2; exit 1; }
-          sudo -n install -d -o "$(id -un)" "${prefix%/*}"
-          uv python install --no-bin --install-dir "${prefix%/*}" "${prefix##*/}"
-          got=$(cat "$prefix/BUILD") || { echo "uv wrote no BUILD into $prefix" >&2; exit 1; }
-          test "$got" = "$build" || { echo "uv installed build $got, $pin is $build" >&2; exit 1; }
-        working-directory: ${{ runner.temp }}/engine
-      # ZERO SKIPS is the point of this job.
-      - run: >-
-          uv run --no-sync python -m pytest tests -q -rsx --junitxml "$RUNNER_TEMP/junit.xml"
-        working-directory: ${{ runner.temp }}/engine
-      - run: test -s "$RUNNER_TEMP/junit.xml" && ! grep -q '<skipped' "$RUNNER_TEMP/junit.xml"
+      # The token only reads the engine repository's public tag; `contents: read` above is all it has.
+      - run: Distribution/fetch-engine --check
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   core:
     name: app core
@@ -156,17 +49,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The app's tests read a COPY of the engine's contract (its golden frames and contract.json).
-      # A copy that fell behind the engine's would pass while testing last month's contract, so it
-      # must match. First, because it is the last step that needs the engine's tree.
-      - run: Distribution/engine-contract check
-      # THE APP ALONE. The engine's tree goes before the tests, so a test that still reads it fails
-      # here instead of passing because the monorepo happened to be checked out. Both run even when
-      # the check above fails, so one run reports both.
-      - if: ${{ !cancelled() }}
-        run: rm -rf substrate
-      # The package targets macOS 14 and uses no macOS 26 API, so it builds on the runner image even
-      # though the app around it requires macOS 26 and cannot be built here at all.
-      - if: ${{ !cancelled() }}
-        run: swift test
+      # The app's tests read a COPY of the engine's contract, which `engine pin` holds to the pinned
+      # release. The package targets macOS 14 and uses no macOS 26 API, so it builds on the runner
+      # image even though the app around it requires macOS 26 and cannot be built here at all.
+      - run: swift test
         working-directory: Core

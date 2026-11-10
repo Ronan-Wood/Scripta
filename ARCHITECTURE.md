@@ -45,7 +45,7 @@ start, and starts its own if that one goes away.
 (`~/.substrate/run/substrate.sock`, in the engine's own home), and both ends refuse a peer of
 another uid: loopback TCP let every user on the Mac query every scope. The socket's 0.3.4 path,
 which clients were registered with, is kept as a symlink to it (`LegacyEngineSocket`). Both
-ends state and check a wire version (`Substrate-Wire`, `substrate/substrate/wire.py`). The engine
+ends state and check a wire version (`Substrate-Wire`, the engine's `substrate/wire.py`). The engine
 serves a declared range of client versions, every change inside it additive, and an app outside
 that range is refused rather than left to mis-decode a reply.
 
@@ -252,7 +252,11 @@ whole book. Both were invisible precisely because nothing gated on them.
 ## 7. Packaging
 
 The engine ships **inside the app bundle**, built by a post-build phase on the `Scripta` target
-(`substrate/tools/build-bundled-engine`). *Verified 2026-08-15:* a relaunched app spawns
+(the engine's `tools/build-bundled-engine`). The engine is a release of its own repository,
+[Ronan-Wood/substrate](https://github.com/Ronan-Wood/substrate): `engine.lock` pins its tag, commit
+and tarball SHA-256, and `Distribution/fetch-engine` unpacks it into `vendor/substrate`, which the
+phase builds. The `engine pin` CI job holds the pin to the release. *Verified 2026-08-15:* a
+relaunched app spawns
 `Scripta.app/Contents/Resources/substrate-engine/.venv/bin/python -B -E -s -m substrate.mcp.server`.
 
 | component | size | notes |
@@ -330,7 +334,7 @@ that does nothing.
 
 ---
 
-Related: `substrate/PRINCIPLES.md` (the four laws), `substrate/SESSION-HANDOFF.md` (current state
-and open items), `Distribution/RELEASING.md` (the shipping runbook). The structural spec is Doc 2 in
+Related: the engine repository's `docs/principles.md` (the four laws), and
+`Distribution/RELEASING.md` (the shipping runbook). The structural spec is Doc 2 in
 `~/vaults/core-vault/00-operator/specs/`; the decision records are Doc 3–5 in
 `~/vaults/scripta-vault/03-references/`.

@@ -1,5 +1,7 @@
 build/
 dist/
+# The pinned engine release, fetched and unpacked by Distribution/fetch-engine.
+/vendor/
 *.xcodeproj/
 .DS_Store
 

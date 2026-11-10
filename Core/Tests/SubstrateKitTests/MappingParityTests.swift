@@ -14,7 +14,7 @@ import XCTest
 /// form that is checkable from Swift: **every field the reader sees is the field the engine sent.**
 /// The CLI is not invoked. It renders through the same `render.py` the wire payload came from, so
 /// running it would test Python against itself; what is unverified is the Swift side, and `stack.py`
-/// parity between entry points is already pinned by `substrate/tests/test_entrypoint_parity.py`.
+/// parity between entry points is already pinned by the engine's `tests/test_entrypoint_parity.py`.
 ///
 /// ONE FIELD IS ALLOWED TO DIVERGE AND ONLY UPWARD. `EngineEnvelope` re-derives `degraded` from the
 /// arms, because an arm sitting in `.fellBack` with an empty `fallbacks` array rendered a

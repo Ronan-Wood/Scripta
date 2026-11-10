@@ -1,9 +1,11 @@
+import CryptoKit
 import Foundation
 import XCTest
 
 /// `Distribution/publish-release`, run for real in a throwaway repository: the release carries the
-/// source of the commit that was built, and `--dry-run` publishes nothing. Sparkle's tools and `gh`
-/// are stubs, and `origin` is a bare repository beside it, so nothing leaves the machine.
+/// source of the commit that was built and a copy of the engine tarball that commit pins, and
+/// `--dry-run` publishes nothing. Sparkle's tools and `gh` are stubs, and `origin` is a bare
+/// repository beside it, so nothing leaves the machine.
 final class PublishReleaseTests: XCTestCase {
     /// `#filePath`, not the working directory: `swift test` and Xcode disagree about cwd.
     private static let script = URL(fileURLWithPath: #filePath)
@@ -16,6 +18,14 @@ final class PublishReleaseTests: XCTestCase {
     private static let version = "1.2.3"
     private static let tag = "v1.2.3"
     private static let source = "dist/Scripta-1.2.3-source.tar.gz"
+    /// The engine release the built commit pins, and the bytes `fetch-engine` left in `vendor/`.
+    private static let engine = "dist/substrate-9.8.7.tar.gz"
+    private static let engineBytes = Data("the pinned engine tarball".utf8)
+
+    private static func lock(tarball: String, bytes: Data) -> String {
+        let sha = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        return "# the engine\nrepo=o/substrate\ntag=v9.8.7\ntarball=\(tarball)\nsha256=\(sha)\nwire=1\n"
+    }
 
     private var root: URL!
     private var repo: URL { root.appendingPathComponent("repo") }
@@ -92,21 +102,25 @@ final class PublishReleaseTests: XCTestCase {
         try git("remote", "add", "origin", origin.path)
 
         // What is committed: the script under test, a Sparkle locator stub, and the two files the
-        // plan names, which a source tarball of this repository must hold.
+        // plan names, which a source tarball of this repository must hold: the project, and the
+        // lock naming the engine it bundles.
         try write(String(contentsOf: Self.script, encoding: .utf8), to: "Distribution/publish-release",
                   executable: true)
         let sparkle = root.appendingPathComponent("sparkle")
         try write("#!/bin/bash\necho \(sparkle.path)/bin\n", to: "Distribution/sparkle-bin", executable: true)
         try write("name: Scripta\n", to: "project.yml")
-        try write("[project]\nname = \"substrate\"\n", to: "substrate/pyproject.toml")
-        try write("build/\ndist/\n", to: ".gitignore")
+        try write(Self.lock(tarball: "substrate-9.8.7.tar.gz", bytes: Self.engineBytes), to: "engine.lock")
+        try write("build/\ndist/\nvendor/\n", to: ".gitignore")
         try git("add", "-A")
         try git("commit", "-q", "-m", "built")
         built = try git("rev-parse", "HEAD")
 
-        // After the build: a later commit and an uncommitted edit, neither of which was built.
+        // After the build: a later commit, pinning another engine, and an uncommitted edit, neither
+        // of which was built.
         try write("later\n", to: "LATER.md")
-        try git("add", "LATER.md")
+        try write(Self.lock(tarball: "substrate-9.9.0.tar.gz", bytes: Data("later".utf8)), to: "engine.lock")
+        try write(Data("later".utf8), to: "vendor/substrate-9.9.0.tar.gz")
+        try git("add", "LATER.md", "engine.lock")
         try git("commit", "-q", "-m", "after the build")
         try write("name: edited after the build\n", to: "project.yml")
 
@@ -117,6 +131,7 @@ final class PublishReleaseTests: XCTestCase {
         try write("dmg", to: "dist/archive/Scripta-\(Self.version).dmg")
         try write("\(built)\n", to: "dist/commits/Scripta-\(Self.version).commit")
         try write("Notes.\n", to: "dist/release-notes-\(Self.version).md")
+        try write(Self.engineBytes, to: "vendor/substrate-9.8.7.tar.gz")
 
         // Sparkle's tools: a matching framework version, and a generate_appcast that reports on
         // stdout as the real one does, writes one signed item under this tag, and a delta.
@@ -152,13 +167,13 @@ final class PublishReleaseTests: XCTestCase {
     private var ghRan: Bool { FileManager.default.fileExists(atPath: ghCalls.path) }
 
     private var expectedAssets: [String] {
-        ["dist/archive/Scripta-\(Self.version).dmg", "dist/appcast.xml", Self.source,
+        ["dist/archive/Scripta-\(Self.version).dmg", "dist/appcast.xml", Self.source, Self.engine,
          "dist/archive/Scripta2-1.2.2.delta"]
     }
 
-    /// THE SOURCE IS THE BUILT COMMIT: its files exactly, `project.yml` and
-    /// `substrate/pyproject.toml` among them, under `Scripta-<V>/`. So neither the commit after the
-    /// build nor the edit in the working tree, and nothing ignored.
+    /// THE SOURCE IS THE BUILT COMMIT: its files exactly, `project.yml` and `engine.lock` among
+    /// them, under `Scripta-<V>/`. So neither the commit after the build nor the edit in the working
+    /// tree, and nothing ignored. The engine beside it is the built commit's pin, byte for byte.
     private func assertSourceIsTheBuiltCommit(file: StaticString = #filePath, line: UInt = #line) throws {
         let listing = try sh(["/usr/bin/tar", "-tzf", Self.source])
         XCTAssertEqual(listing.status, 0, listing.err, file: file, line: line)
@@ -168,6 +183,7 @@ final class PublishReleaseTests: XCTestCase {
         XCTAssertEqual(files.sorted(), committed.sorted(), file: file, line: line)
         let yml = try sh(["/usr/bin/tar", "-xzOf", Self.source, "Scripta-\(Self.version)/project.yml"])
         XCTAssertEqual(yml.out, "name: Scripta\n", file: file, line: line)
+        XCTAssertEqual(try Data(contentsOf: url(Self.engine)), Self.engineBytes, file: file, line: line)
     }
 
     private func assertReleased(_ run: Run, file: StaticString = #filePath, line: UInt = #line) throws {
@@ -277,6 +293,26 @@ final class PublishReleaseTests: XCTestCase {
         XCTAssertTrue(run.err.contains("project.yml: commit"), run.err)
         XCTAssertFalse(FileManager.default.fileExists(atPath: url(Self.source).path),
                        "a refused tarball has the asset's name")
+    }
+
+    /// THE ENGINE COPY IS THE PIN. A tarball in `vendor/` that is not the bytes the built commit's
+    /// `engine.lock` pins, or none at all, is refused, and nothing is left under the asset's name.
+    func testAnEngineTarballThatIsNotThePinIsRefused() throws {
+        for bytes in [Data("another engine".utf8), nil] {
+            let vendored = url("vendor/substrate-9.8.7.tar.gz")
+            try? FileManager.default.removeItem(at: vendored)
+            if let bytes { try write(bytes, to: vendored.path) }
+            let run = try publish(["--dry-run"])
+            XCTAssertNotEqual(run.status, 0)
+            XCTAssertTrue(run.err.contains(bytes == nil ? "no vendor/substrate-9.8.7.tar.gz"
+                                                        : "is not the engine tarball the built commit's engine.lock pins"),
+                          run.err)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url(Self.engine).path),
+                           "a refused engine copy has the asset's name")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url(Self.engine + ".partial").path),
+                           "a refused engine copy was left as .partial")
+        }
+        XCTAssertFalse(ghRan)
     }
 
     /// The commit file and the version become `git archive` arguments and the tarball's prefix.

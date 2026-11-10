@@ -5,7 +5,7 @@ import Foundation
 // The engine used to listen on loopback TCP, and loopback authenticates nobody. Every user on the
 // Mac could query every scope through it. While Scripta was closed, any process could bind the port
 // and be sent every query, and its answers reached the reader as vault content. The engine now
-// serves on a Unix socket in a 0700 directory (`substrate/substrate/local_socket.py`), and this
+// serves on a Unix socket in a 0700 directory (`substrate/local_socket.py`), and this
 // side refuses anything that is not provably this user's, BEFORE a byte of the request is written:
 //
 //   the directory   lstat'd, not followed: a directory, owned by this uid, no group or other bits

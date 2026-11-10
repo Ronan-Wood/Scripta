@@ -145,11 +145,33 @@ forward then was a full rebuild. The cause, found 2026-10-31, is the reset descr
 `--wait`. `Distribution/test-notarize` runs each of these paths against a stubbed `xcrun`; run it
 after touching the script's `notarize`.
 
-## The engine's Python is pinned
+## The engine is a pinned release
 
-The engine build checks the interpreter it bundles against `substrate/tools/engine-interpreter.pin`
-before anything runs or signs it, and refuses on any difference. What each refusal means, and how
-to re-pin when Python changes, is in the engine's own runbook: `substrate/RELEASING.md`.
+The engine is its own repository, [Ronan-Wood/substrate](https://github.com/Ronan-Wood/substrate),
+and the app bundles one of its releases. `engine.lock` names it: the tag, the commit, the tarball and
+its SHA-256, and the wire version this app speaks. `build-and-notarize` runs
+`Distribution/fetch-engine --release` after its clean-tree check, so the engine is the built
+commit's too:
+
+- the tarball must have the lock's SHA-256, and its contract must serve the lock's wire version and
+  pass the leak scans before anything is unpacked;
+- what ties those bytes to the signed tag is the `engine pin` job, on every pull request: GitHub's
+  tag must name the lock's commit, signed and verified, and every file in the tarball must be that
+  commit's;
+- outside Debug the build phase unpacks it afresh into `vendor/substrate`, offline, and refuses
+  `SUBSTRATE_ENGINE_SRC`;
+- a pre-release pin (`vX.Y.Z-rc.N`) is refused.
+
+**To move to a new engine release,** after it is published from its signed tag:
+`Distribution/fetch-engine --bump vX.Y.Z`. It rewrites `engine.lock` from GitHub's tag and the
+release's `SHA256SUMS`, refusing a release that is not immutable or a tarball that is not the tag's
+commit, unpacks it, and re-vendors `Core/Tests/EngineContract/`. Commit both
+with any SubstrateKit change the new contract needs; `engine pin` holds the pull request to the
+release.
+
+The interpreter the engine bundles is pinned in the engine (`tools/engine-interpreter.pin`), and
+the build refuses any difference. What each refusal means, and how to re-pin when Python changes, is
+in the engine's own runbook, its `RELEASING.md`.
 
 ## The appcast, and the release that carries it
 
@@ -172,11 +194,15 @@ denied it still exits 0 with an unsigned feed, which the assertion catches. It t
 the dmg was built from, pushes the tag, and creates the release with `--verify-tag`, so GitHub cannot
 put the tag on a different commit.
 
-Every release also carries `Scripta-<version>-source.tar.gz`: `git archive` of the tagged commit
-under `Scripta-<version>/`, so the source of the app and of the engine it bundles (`substrate/`).
-The script refuses a tarball that is not that commit byte for byte. `--dry-run` runs every step up
-to the tag, the appcast's keychain prompt included, prints the assets the release would carry, and
-stops.
+Every release also carries the source of what it ships:
+- `Scripta-<version>-source.tar.gz`: `git archive` of the tagged commit under `Scripta-<version>/`.
+  The script refuses a tarball that is not that commit byte for byte.
+- `substrate-<v>.tar.gz`: a copy of the engine release's tarball, the one the tagged commit's
+  `engine.lock` pins, from `vendor/`. A copy rather than a link, so the engine's source stays with
+  the binary even if that release moves. The script refuses one whose SHA-256 is not the lock's.
+
+`--dry-run` runs every step up to the tag, the appcast's keychain prompt included, prints the assets
+the release would carry, and stops.
 
 A pre-release is invisible to the updater by construction (`releases/latest` skips them), which is
 the right default. Deltas are per version pair — the three most recent archives get one each; a
@@ -186,9 +212,9 @@ about it; the point of deltas is that most releases do not change the engine.
 
 **`generate_appcast` builds no delta from 0.3.0 or 0.3.2.** Sparkle refuses to diff a tree in which
 any file carries a code signature in its extended attributes, and both shipped 142 — debug symbols
-the engine build phase signed. `tools/slim-bundled-engine` removes them and the build refuses a tree
-with any. For those two archives the tool prints "Diffing code signed extended attributes are not
-supported" and still writes a valid, signed appcast with the full dmg. Measured 2026-11-01: a delta
+the engine build phase signed. The engine's `tools/slim-bundled-engine` removes them and the build
+refuses a tree with any. For those two archives the tool prints "Diffing code signed extended
+attributes are not supported" and still writes a valid, signed appcast with the full dmg. Measured 2026-11-01: a delta
 built from a copy of 0.3.2 with those attributes removed was 2.7 MB against a 214 MB dmg, and
 `BinaryDelta apply` installed it onto an unmodified 0.3.2 cleanly — but `publish-release` does not
 make that copy, so without it the first delta comes one release after the first built with this.
@@ -222,7 +248,7 @@ refused. The GitHub release notes are unaffected.
 nested binaries, ~15 minutes end to end, dominated by the upload. Every nested binary passed; the
 single rejection before it was the entitlement in the table above, not the size or the contents.
 Budget ~15 minutes per submission and two submissions per release. The nested binaries are signed and timestamped by the
-build phase (`substrate/tools/build-bundled-engine`), which also verifies every one carries a valid
+build phase (the engine's `tools/build-bundled-engine`), which also verifies every one carries a valid
 signature and the hardened-runtime flag before it will finish — so a failure here should be about
 the submission, not the contents.
 
@@ -236,8 +262,8 @@ Doc 4 §7 moved calls into vaults the substrate engine composes, and Phase 3 del
 server rather than keep two answering the same questions differently. What replaced it:
 
 - **Reads** — the engine's own MCP server, over the same tools every other scope uses.
-- **The privacy wall it enforced** — `substrate/guard.py`. A workspace vault declares `guard_state`
-  and the engine withholds that vault's own notes unless the app is running and vouching for it.
+- **The privacy wall it enforced** — the engine's `substrate/guard.py`. A workspace vault declares
+  `guard_state` and the engine withholds that vault's own notes unless the app is running and vouching for it.
   Narrower than the helper's, which refused the whole scope. **Currently inert:** no vault on this
   machine declares `guard_state`, so the wall is off in practice.
 - **The four entity tools** (`people`, `tags`, `commitments`, `entity_detail`) — dropped by

@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - The four fields where `null` is a claim
 //
-// `substrate/substrate/render.py` opens with the rule this file implements: "Nothing that was
+// `substrate/render.py` opens with the rule this file implements: "Nothing that was
 // withheld is silent. Every spine field is emitted UNCONDITIONALLY, null included." A `null` there
 // is a VALUE the engine chose to send, and for four fields it is a different claim from `false` and
 // from `0`. Each of them gets an enum with a named no-verdict case, so the ONE expression that

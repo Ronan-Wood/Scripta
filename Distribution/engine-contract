@@ -4,12 +4,13 @@
 #   Distribution/engine-contract sync  [--from DIR] [--to DIR]
 #   Distribution/engine-contract check [--from DIR] [--to DIR]
 #
-# The engine owns its contract (`substrate/contract/`: `contract.json`, the vocabularies and wire
+# The engine owns its contract (its `contract/`: `contract.json`, the vocabularies and wire
 # constants it states, and the golden frames in `frames/`; its own suite writes, checks and
 # leak-scans both). The app's tests read a COPY, `Core/Tests/EngineContract/`, so they take nothing
 # of it from the engine's tree. A copy can go stale, so `check` runs in CI and fails on any difference: a
-# changed byte, a missing file, an extra file. `--from` names another source, which is how a pinned
-# engine release will be held to the same copy.
+# changed byte, a missing file, an extra file. The source is the pinned release's, unpacked by
+# `Distribution/fetch-engine` into `vendor/substrate/contract`. `--from` names another, such as an
+# engine checkout's `contract/` while developing; CI holds the copy to the release's.
 #
 # A CONTRACT HOLDS JSON AND NOTHING ELSE: `contract.json` and `frames/<name>.json`, names of letters,
 # digits and `_.-`. Both trees are refused (exit 2) on anything else — another folder, another file, a dotfile,
@@ -34,7 +35,7 @@ bare() { local p=$1; while [ "$p" != / ] && [ "${p%/}" != "$p" ]; do p=${p%/}; d
 [ $# -ge 1 ] || die "usage: $me sync|check [--from DIR] [--to DIR]"
 cmd=$1; shift
 case "$cmd" in sync|check) ;; *) die "unknown command '$cmd' (want sync or check)" ;; esac
-FROM="$ROOT/substrate/contract"
+FROM="$ROOT/vendor/substrate/contract"
 TO="$ROOT/Core/Tests/EngineContract"
 while [ $# -gt 0 ]; do
   case "$1" in

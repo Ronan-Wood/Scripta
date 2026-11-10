@@ -1,0 +1,388 @@
+#!/usr/bin/env bash
+# The engine this app bundles: the release `engine.lock` pins, fetched, checked and unpacked.
+#
+#   Distribution/fetch-engine [--offline] [--release]
+#       the pinned tarball, unpacked afresh into vendor/substrate-<v>/, with vendor/substrate
+#       pointing at it. --offline never downloads: it fails unless vendor/ already holds the
+#       tarball. --release also refuses a pre-release pin.
+#   Distribution/fetch-engine --check
+#       that, then GitHub must agree: the tag is signed, verified and on the lock's commit, and
+#       every file in the tarball is that commit's. Core/Tests/EngineContract must be the tarball's
+#       contract/. This is the `engine pin` CI job.
+#   Distribution/fetch-engine --bump vX.Y.Z
+#       engine.lock rewritten for that release, checked as --check checks it, then unpacked, and
+#       Core/Tests/EngineContract re-vendored from it.
+#
+# THE LOCK IS THE TRUST, and GitHub is asked only where nothing else can answer. A release asset
+# can be replaced, so nothing here believes a download: its SHA-256 must be the lock's, and the
+# contract it carries must serve the lock's `wire`, the version this app speaks
+# (`SubstrateWire.version`, which `WireParityTests` holds to the lock). What ties those bytes to the
+# signed tag is `--check`, on every pull request: GitHub's tag must name the lock's commit, signed
+# and verified, and each file the tarball holds must be that commit's blob, with its mode, and
+# nothing more or less. The commit `git archive` writes into the tarball's header is compared too,
+# but only as a mistake check: anyone can write that header.
+#
+# ONE REPOSITORY. The lock may not name another: an engine from anywhere else would pass every check
+# above with its own signed tag, so moving it is a change to this file, not to the lock.
+#
+# The download is kept as vendor/<tarball>, so an unchanged pin never uses the network again. The
+# Xcode build never does: its phase reads vendor/, and outside Debug runs this with --offline.
+#
+# THE CONTRACT IS SCANNED BEFORE ANYTHING IS UNPACKED. Its frames are captured on the engine's
+# machine and vendored into this repository, which is public, and once the engine is a repository
+# of its own nothing in this one would read what a release carries. So this scans it the way the
+# engine's own suite does (`tests/_swift_fixtures.py`): no host string anywhere, and no path in any
+# JSON string but the stand-ins the captures write.
+#
+# Exit status: 0 done; 1 a check failed; 2 usage, or a lock or tarball this refuses.
+set -euo pipefail
+unset CDPATH
+export LC_ALL=C
+ROOT=$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)
+me=fetch-engine
+die() { echo "$me: $*" >&2; exit 2; }
+fail() { echo "$me: $*" >&2; exit 1; }
+shown() { printf '%s' "${1#"$ROOT"/}"; }
+sha() { shasum -a 256 -- "$1" | cut -d' ' -f1; }
+
+PINNED_REPO=Ronan-Wood/substrate
+LOCK="$ROOT/engine.lock"
+VENDOR="$ROOT/vendor"
+usage="usage: Distribution/fetch-engine [--offline] [--release] | --check | --bump vX.Y.Z"
+mode=fetch offline=0 release=0
+case "$#:${1:-}" in
+  1:--check) mode=check ;;
+  2:--bump) mode=bump; want=$2 ;;
+  *)
+    for arg in "$@"; do
+      case $arg in
+        --offline) offline=1 ;;
+        --release) release=1 ;;
+        *) die "$usage" ;;
+      esac
+    done
+    ;;
+esac
+
+# --------------------------------------------------------------------------------------- the lock
+#
+# Every key exactly once, and nothing else: a key the reader skipped or read twice is how a lock
+# says one thing to this script and another to the one beside it.
+KEYS="repo tag commit tarball sha256 wire"
+read_lock() {
+  local file=$1 line key value seen=" "
+  repo='' tag='' commit='' tarball='' sha256='' wire=''
+  [ -f "$file" ] && [ ! -L "$file" ] || die "no $(shown "$file")"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    key=${line%%=*}
+    value=${line#*=}
+    [ "$key" != "$line" ] || die "$(shown "$file"): a line that is not key=value: $line"
+    case " $KEYS " in *" $key "*) ;; *) die "$(shown "$file"): unknown key '$key'" ;; esac
+    case "$seen" in *" $key "*) die "$(shown "$file"): '$key' given twice" ;; esac
+    seen="$seen$key "
+    printf -v "$key" '%s' "$value"
+  done <"$file"
+  for key in $KEYS; do
+    case "$seen" in *" $key "*) ;; *) die "$(shown "$file"): no '$key'" ;; esac
+  done
+  valid_tag "$tag" || die "$(shown "$file"): tag '$tag' is not vX.Y.Z or vX.Y.Z-rc.N"
+  [ "$repo" = "$PINNED_REPO" ] \
+    || die "$(shown "$file"): repo '$repo' is not $PINNED_REPO, the only engine this app builds"
+  [[ $commit =~ ^[0-9a-f]{40}$ ]] || die "$(shown "$file"): commit '$commit' is not a full commit id"
+  [[ $sha256 =~ ^[0-9a-f]{64}$ ]] || die "$(shown "$file"): sha256 '$sha256' is not 64 hex digits"
+  [[ $wire =~ ^[1-9][0-9]*$ ]] || die "$(shown "$file"): wire '$wire' is not a wire version"
+  version=$(engine_version "$tag")
+  [ "$tarball" = "substrate-$version.tar.gz" ] \
+    || die "$(shown "$file"): tarball '$tarball' is not $tag's; run Distribution/fetch-engine --bump $tag"
+}
+# The engine's own tag forms, `vX.Y.Z` and `vX.Y.Z-rc.N` (`tools/publish-engine-release`).
+valid_tag() { [[ $1 =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; }
+# The version its tarball and folder are named by, as the engine names them: `X.Y.Z`, `X.Y.ZrcN`.
+engine_version() {
+  local v=${1#v}
+  case $v in *-rc.*) v="${v%%-rc.*}rc${v##*-rc.}" ;; esac
+  printf '%s' "$v"
+}
+
+# ------------------------------------------------------------------------------------- the tarball
+
+url() { printf 'https://github.com/%s/releases/download/%s/%s' "$repo" "$tag" "$1"; }
+
+download() {
+  local from=$1 to=$2
+  echo "$me: downloading $from" >&2
+  curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 -o "$to" -- "$from" \
+    || { rm -f -- "$to"; fail "could not download $from"; }
+}
+
+# vendor/<tarball>, holding the lock's bytes: kept from an earlier run, or downloaded now.
+obtain() {
+  local cached="$VENDOR/$tarball" part got
+  if [ -e "$cached" ] || [ -L "$cached" ]; then
+    [ -f "$cached" ] && [ ! -L "$cached" ] || die "$(shown "$cached") is not a plain file"
+    got=$(sha "$cached")
+    [ "$got" = "$sha256" ] || die "$(shown "$cached") is not the pinned tarball: its sha256 is $got, engine.lock's is $sha256. Delete it and run this again"
+    return 0
+  fi
+  [ "$offline" = 0 ] || fail "no $(shown "$cached"), and --offline does not download; run Distribution/fetch-engine"
+  part=$(mktemp "$VENDOR/.$tarball.XXXXXX")
+  CLEANUP+=("$part")
+  download "$(url "$tarball")" "$part"
+  got=$(sha "$part")
+  [ "$got" = "$sha256" ] \
+    || { rm -f -- "$part"; fail "$(url "$tarball") has sha256 $got; engine.lock pins $sha256. Refusing it"; }
+  mv -- "$part" "$cached"
+}
+
+# The tarball's tree, checked, into $2, with nothing else written anywhere. Checks, in order: the
+# commit in its header; every member a plain file or folder under substrate-<v>/, with no `..` and
+# no path or folder spelled two ways, which a case-insensitive disk would merge; with GITHUB_TREE set (a
+# file holding GitHub's recursive tree of the commit), every file that commit's blob with its mode;
+# the files a bundle build needs; the contract's scans; that the contract serves the lock's wire.
+# Prints the range it serves.
+GITHUB_TREE=-
+unpack() {
+  /usr/bin/python3 -I - "$1" "$2" "substrate-$version" "$commit" "$wire" "$GITHUB_TREE" <<'PY'
+import hashlib, json, os, re, sys, tarfile, unicodedata
+from pathlib import Path, PurePosixPath
+
+tarball, into, top, commit, wire, github_tree = sys.argv[1:]
+into = Path(into)
+
+def refuse(why):
+    print(f"fetch-engine: {tarball}: {why}", file=sys.stderr)
+    sys.exit(2)
+
+# `tests/_swift_fixtures.py` in the engine: what no frame may hold, and the paths it may.
+HOST_STRINGS = ("/Users/", "OneDrive", "CloudStorage", "/var/folders", "/private/var")
+STAND_INS = ("/demo-substrate", "/agent-snapshots", "/.substrate/run/substrate.sock")
+PATH_TOKEN = re.compile(r"(?<![\w.-])/[\w.~-]+(?:/[\w.~-]+)*")
+LOOPBACK_URL = re.compile(r"https?://(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:/[\w./%~-]*)?")
+
+def strings(value):
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield from strings(k)
+            yield from strings(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from strings(v)
+    elif isinstance(value, str):
+        yield value
+        if value.lstrip()[:1] in ("{", "["):
+            try:
+                nested = json.loads(value)
+            except (ValueError, RecursionError):
+                return
+            yield from strings(nested)
+
+def leaks(name, data):
+    text = data.decode("utf-8", errors="replace")
+    found = [s for s in HOST_STRINGS if s in text]
+    home = os.path.expanduser("~")
+    if home not in ("", "/") and home in text:
+        found.append("the home folder")
+    if name.endswith(".json"):
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            refuse(f"{name} is not JSON")
+        for s in strings(payload):
+            for p in PATH_TOKEN.findall(LOOPBACK_URL.sub(" ", s)):
+                if not any(p == a or (p.startswith(a + "/") and "/.." not in p) for a in STAND_INS):
+                    found.append(p)
+    return found
+
+# How APFS and HFS+ compare names by default: two members equal here are one file on disk.
+def folded(name):
+    return unicodedata.normalize("NFD", name).casefold()
+
+try:
+    tar = tarfile.open(tarball, "r:gz")
+    members = tar.getmembers()
+except (OSError, tarfile.TarError) as e:
+    refuse(f"not a readable tar.gz ({e})")
+if tar.pax_headers.get("comment") != commit:
+    refuse(f"was archived from commit {tar.pax_headers.get('comment')!r}, not engine.lock's {commit}")
+
+# Every path and every folder above it has one spelling: on such a disk `a/X` and `a/x`, or
+# `MCP/` and `mcp/`, are one place, so a tree checked as separate files would unpack as another.
+files, spelled, seen = {}, {}, set()
+for m in members:
+    path = PurePosixPath(m.name)
+    if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != top:
+        refuse(f"{m.name!r} is not under {top}/")
+    for depth in range(1, len(path.parts) + 1):
+        prefix = "/".join(path.parts[:depth])
+        if spelled.setdefault(folded(prefix), prefix) != prefix:
+            refuse(f"{m.name!r} spells {spelled[folded(prefix)]!r} another way, "
+                   "and a case-insensitive disk would write them to one place")
+    if str(path) in seen:
+        refuse(f"{m.name!r} appears twice")
+    seen.add(str(path))
+    rel = PurePosixPath(*path.parts[1:]) if len(path.parts) > 1 else None
+    if m.isdir():
+        continue
+    if rel is None or not m.isfile():
+        refuse(f"{m.name!r} is neither a file nor a folder")
+    files[rel] = m
+
+data = {r: tar.extractfile(m).read() for r, m in files.items()}
+mode = {r: "100755" if m.mode & 0o100 else "100644" for r, m in files.items()}
+
+if github_tree != "-":
+    try:
+        tree = json.load(open(github_tree, encoding="utf-8"))
+        entries = tree["tree"]
+    except (OSError, ValueError, KeyError, TypeError):
+        refuse(f"GitHub's tree for {commit} could not be read")
+    if tree.get("truncated") is not False or tree.get("sha") is None:
+        refuse(f"GitHub's tree for {commit} is truncated or incomplete")
+    want = {}
+    for e in entries:
+        if e.get("type") == "tree":
+            continue
+        if e.get("type") != "blob" or e.get("mode") not in ("100644", "100755"):
+            refuse(f"commit {commit} holds {e.get('path')!r} as {e.get('type')} {e.get('mode')}, "
+                   "which this does not unpack")
+        want[e["path"]] = (e["mode"], e["sha"])
+    got = {str(r): (mode[r], hashlib.sha1(b"blob %d\0" % len(d) + d).hexdigest()) for r, d in data.items()}
+    wrong = sorted(p for p in want.keys() | got.keys() if want.get(p) != got.get(p))
+    if wrong:
+        refuse(f"is not commit {commit}'s tree: {len(wrong)} files differ, first "
+               + ", ".join(f"{p} (commit {want.get(p)}, tarball {got.get(p)})" for p in wrong[:3]))
+
+needed = ["tools/build-bundled-engine", "pyproject.toml", "uv.lock", "contract/contract.json"]
+missing = [n for n in needed if PurePosixPath(n) not in files]
+frames = [r for r in files if r.parent == PurePosixPath("contract/frames") and r.suffix == ".json"]
+if missing or not frames:
+    refuse(f"holds no {', '.join(missing) or 'contract/frames/*.json'}: not an engine release")
+
+contract = {r: d for r, d in data.items() if r.parts[0] == "contract"}
+dirty = {str(r): f for r, d in contract.items() if (f := leaks(str(r), d))}
+if dirty:
+    refuse("its contract carries what no frame may: "
+           + "; ".join(f"{r}: {', '.join(f)}" for r, f in sorted(dirty.items())))
+stated = json.loads(contract[PurePosixPath("contract/contract.json")]).get("wire", {})
+low, high = stated.get("min_version"), stated.get("version")
+if not (isinstance(low, int) and isinstance(high, int) and low <= int(wire) <= high):
+    refuse(f"its contract serves wire {low!r} to {high!r}; this app speaks {wire} (engine.lock wire=, "
+           "SubstrateWire.version). Move both into its range first")
+
+for rel, d in data.items():
+    target = into / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(d)
+    target.chmod(int(mode[rel][3:], 8))
+print(f"{low} to {high}")
+PY
+}
+
+# vendor/substrate-<v>, unpacked afresh from vendor/<tarball> beside it and swapped in, then
+# stamped with the lock it came from; vendor/substrate then names it.
+install() {
+  local dest="$VENDOR/substrate-$version" link="$VENDOR/substrate"
+  [ ! -L "$dest" ] || die "$(shown "$dest") is a symlink; refusing to write through it"
+  [ ! -e "$link" ] || [ -L "$link" ] || die "$(shown "$link") is not a symlink; it is not this script's"
+  STAGE=$(mktemp -d "$VENDOR/.substrate-$version.XXXXXX")
+  CLEANUP+=("$STAGE")
+  mkdir -- "$STAGE/tree"
+  stated=$(unpack "$VENDOR/$tarball" "$STAGE/tree") || exit $?
+  cp -- "$LOCK" "$STAGE/tree/.engine.lock"
+  if [ -e "$dest" ]; then mv -- "$dest" "$STAGE/old"; fi
+  mv -- "$STAGE/tree" "$dest"
+  ln -sfn -- "substrate-$version" "$link"
+  echo "$me: $(shown "$link") is $tag ($commit), serving wire $stated, this app's $wire"
+}
+
+# ------------------------------------------------------------------------------ what GitHub says
+
+# The tag is annotated, names the lock's commit, and is signed and verified. Prints
+# "commit <sha> <verified>".
+tag_commit() {
+  local object
+  object=$(gh api "repos/$repo/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha') \
+    || fail "could not read $repo's tag $tag from GitHub"
+  [[ $object =~ ^tag\ [0-9a-f]{40}$ ]] || fail "$repo's $tag is not an annotated tag ($object)"
+  gh api "repos/$repo/git/tags/${object#tag }" \
+    --jq '.object.type + " " + .object.sha + " " + (.verification.verified | tostring)' \
+    || fail "could not read $repo's tag object for $tag from GitHub"
+}
+
+# GitHub's recursive tree of the commit, into $1, for unpack to hold every file to.
+commit_tree() {
+  gh api "repos/$repo/git/trees/$commit?recursive=1" >"$1" \
+    || fail "could not read commit $commit's tree from GitHub"
+  GITHUB_TREE=$1
+}
+
+# Everything this run made in vendor/ and has not put in place goes when it exits, however it exits.
+CLEANUP=()
+trap '[ ${#CLEANUP[@]} -eq 0 ] || rm -rf -- "${CLEANUP[@]}"' EXIT
+trap 'exit 130' INT TERM HUP
+
+mkdir -p -- "$VENDOR"
+case $mode in
+  fetch)
+    read_lock "$LOCK"
+    if [ "$release" = 1 ]; then
+      case $tag in *-*) fail "engine.lock pins the pre-release $tag; a release bundles a released engine" ;; esac
+    fi
+    obtain
+    install
+    ;;
+  check)
+    read_lock "$LOCK"
+    got=$(tag_commit)
+    [ "$got" = "commit $commit true" ] \
+      || fail "$repo's $tag is '$got' on GitHub; engine.lock pins commit $commit, signed and verified"
+    obtain
+    tree=$(mktemp "$VENDOR/.tree.XXXXXX")
+    CLEANUP+=("$tree")
+    commit_tree "$tree"
+    install
+    "$ROOT/Distribution/engine-contract" check || exit 1
+    echo "$me: engine.lock, the release and Core/Tests/EngineContract agree on $tag"
+    ;;
+  bump)
+    valid_tag "$want" || die "'$want' is not vX.Y.Z or vX.Y.Z-rc.N"
+    read_lock "$LOCK"
+    tag=$want version=$(engine_version "$want")
+    tarball="substrate-$version.tar.gz"
+    got=$(tag_commit)
+    [[ $got =~ ^commit\ [0-9a-f]{40}\ true$ ]] \
+      || fail "$repo's $tag is '$got' on GitHub, not a verified signed tag on a commit"
+    commit=${got#commit }
+    commit=${commit% true}
+    # Immutable, so the bytes pinned below are the only ones that release can ever serve.
+    immutable=$(gh release view "$tag" --repo "$repo" --json isImmutable --jq .isImmutable) \
+      || fail "could not read $repo's release $tag from GitHub"
+    [ "$immutable" = true ] || fail "$repo's release $tag is not immutable, so its assets could still be replaced"
+    work=$(mktemp -d "$VENDOR/.bump.XXXXXX")
+    CLEANUP+=("$work")
+    download "$(url "$tarball")" "$work/$tarball"
+    download "$(url SHA256SUMS)" "$work/SHA256SUMS"
+    sha256=$(sha "$work/$tarball")
+    listed=$(awk -v f="$tarball" '$2 == f { print $1 }' "$work/SHA256SUMS")
+    [ "$listed" = "$sha256" ] || fail "$tarball has sha256 $sha256; the release's SHA256SUMS lists '$listed'"
+    commit_tree "$work/tree.json"
+    mkdir -- "$work/tree"
+    unpack "$work/$tarball" "$work/tree" >/dev/null || exit $?
+    [ ! -e "$VENDOR/$tarball" ] || [ "$(sha "$VENDOR/$tarball")" = "$sha256" ] \
+      || die "$(shown "$VENDOR/$tarball") is not the release's tarball; delete it and run this again"
+    mv -- "$work/$tarball" "$VENDOR/$tarball"
+    { sed -n '/^#/p' "$LOCK"
+      printf '%s\n' "repo=$repo" "tag=$tag" "commit=$commit" "tarball=$tarball" "sha256=$sha256" "wire=$wire"
+    } >"$work/engine.lock"
+    # THE LOCK MOVES LAST, so a bump that fails after this leaves it and the contract copy as they
+    # were, describing each other: the new release is unpacked under the new lock's stamp, the copy
+    # re-vendored from it, and only then the lock replaced.
+    GITHUB_TREE=-
+    read_lock "$work/engine.lock"
+    LOCK="$work/engine.lock" install
+    "$ROOT/Distribution/engine-contract" sync
+    mv -- "$work/engine.lock" "$LOCK"
+    git -C "$ROOT" --no-pager diff --stat -- engine.lock Core/Tests/EngineContract
+    ;;
+esac

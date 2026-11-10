@@ -4,7 +4,7 @@ import XCTest
 
 /// Every free-text value the app writes into frontmatter is a single-quoted YAML scalar, which
 /// YAML 1.2, YAML 1.1, the engine's line reader and `Frontmatter.field` all read back as written.
-/// The engine side of the same property is `substrate/tests/test_frontmatter_yaml.py`, which reads
+/// The engine side of the same property is the engine's `tests/test_frontmatter_yaml.py`, which reads
 /// back the always-single-quoted form this app writes. The character rule is checked here, against
 /// the engine's contract (`yaml.printable`), which the engine's suite holds to its own `sanitize`.
 ///

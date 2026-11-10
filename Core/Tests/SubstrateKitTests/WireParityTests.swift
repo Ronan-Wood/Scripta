@@ -36,6 +36,19 @@ final class WireParityTests: XCTestCase {
         XCTAssertEqual(Self.disagreements(with: try EngineContract.load()), [])
     }
 
+    /// `engine.lock`'s `wire=` is the version this client speaks: `Distribution/fetch-engine`
+    /// refuses a pinned release whose contract does not serve it, so the two must be one number.
+    func testTheEngineLockStatesTheWireThisClientSpeaks() throws {
+        let lock = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // SubstrateKitTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // Core
+            .deletingLastPathComponent()   // repository root
+            .appendingPathComponent("engine.lock")
+        let lines = try String(contentsOf: lock, encoding: .utf8).split(separator: "\n")
+        XCTAssertEqual(lines.filter { $0.hasPrefix("wire=") }, ["wire=\(SubstrateWire.version)"])
+    }
+
     /// THE RANGE: an engine one wire version ahead, which still serves this client, agrees.
     func testAnEngineOneVersionAheadThatStillServesThisClientAgrees() throws {
         XCTAssertEqual(Self.disagreements(with: try contract("wire", "version", by: 1)), [])

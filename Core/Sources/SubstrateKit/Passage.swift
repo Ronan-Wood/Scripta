@@ -14,8 +14,8 @@ import Foundation
 // types as extensions in `Sources/Theme/Components`; nothing in this module knows a colour, a
 // typeface or a badge exists.
 //
-// The vocabulary is `substrate/substrate/spine.py` and `substrate/substrate/classes.py`, and the
-// wire shape is `substrate/substrate/render.py`. Those files are the authority: a value that does
+// The vocabulary is `substrate/spine.py` and `substrate/classes.py`, and the
+// wire shape is `substrate/render.py`. Those files are the authority: a value that does
 // not appear there is not a value this type may have.
 
 /// One class of document a result set can withhold, in the engine's own vocabulary.
