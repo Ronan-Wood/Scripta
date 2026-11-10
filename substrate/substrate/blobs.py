@@ -73,7 +73,8 @@ class BlobCorrupt(BlobError):
 
 
 def config_path() -> Path:
-    """The engine's own settings file. Read, never written: the operator owns it."""
+    """The engine's own settings file. Read, never written: the operator owns it. `substrate
+    serve`'s models and period are in `serve.toml` beside it (`serve_config`)."""
     return scopes.engine_home() / CONFIG_NAME
 
 

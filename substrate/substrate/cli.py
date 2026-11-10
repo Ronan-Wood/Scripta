@@ -2714,8 +2714,9 @@ def main(argv: list[str] | None = None) -> int:
                              "scope on a timer; any other flag goes to substrate-mcp")
     sv.add_argument("--socket", default=None, metavar="PATH",
                     help="the socket to serve (default ~/.substrate/run/substrate.sock)")
-    sv.add_argument("--every", type=float, default=refresh.DEFAULT_EVERY, metavar="SECONDS",
-                    help=f"seconds between refresh passes (default {refresh.DEFAULT_EVERY:.0f})")
+    sv.add_argument("--every", type=float, default=None, metavar="SECONDS",
+                    help=f"seconds between refresh passes (default: `every` in "
+                         f"~/.substrate/serve.toml, else {refresh.DEFAULT_EVERY:.0f})")
     sv.add_argument("--no-refresh", action="store_true", help="serve without refreshing")
     sv.add_argument("--registry", default=None,
                     help=f"scope registry (default ${scopes.ENV_VAR}, else {scopes.DEFAULT_REGISTRY})")
@@ -2808,14 +2809,31 @@ def cmd_refresh(args: argparse.Namespace) -> int:
 
 def cmd_serve(args: argparse.Namespace) -> int:
     """The shared engine on its Unix socket, refreshing every registered scope on a timer: the
-    engine running on its own, with no host app. Every other flag goes to the server unchanged."""
-    from substrate import local_socket
+    engine running on its own, with no host app. Every other flag goes to the server unchanged.
+
+    The models and the period come from `~/.substrate/serve.toml` where a flag does not set them
+    (`serve_config`): read once, here, and refused before anything binds when it cannot be used."""
+    from substrate import local_socket, serve_config
     from substrate.mcp import server
 
-    argv = ["--socket", args.socket or local_socket.DEFAULT_SOCKET, *args.server_argv]
+    try:
+        config = serve_config.load()
+    except serve_config.ServeConfigError as e:
+        print(f"substrate serve: {e}. Nothing was started.", file=sys.stderr)
+        return 2
+    if config:
+        # Said at start, so the operator can see which models a running engine took from the file.
+        print(f"substrate serve: {serve_config.path()} sets "
+              + ", ".join(f"{k}={v!r}" for k, v in config.items())
+              + "; a flag given to serve overrides it", file=sys.stderr)
+    # The file's flags first: the server keeps the last of a repeated flag, so the command line wins.
+    argv = ["--socket", args.socket or local_socket.DEFAULT_SOCKET,
+            *serve_config.server_flags(config), *args.server_argv]
     if args.registry:
         argv = ["--registry", args.registry, *argv]
-    every = None if args.no_refresh else args.every
+    every = (None if args.no_refresh
+             else args.every if args.every is not None
+             else config.get("every", refresh.DEFAULT_EVERY))
     if every is not None and not (math.isfinite(every) and every > 0):
         print("substrate serve: --every must be a positive number of seconds", file=sys.stderr)
         return 2

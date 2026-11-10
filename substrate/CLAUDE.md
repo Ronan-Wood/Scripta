@@ -52,7 +52,11 @@ What refreshes, as of PR C2 (2026-11-06):
 
 - `substrate serve` is the shared socket server plus a refresh loop (`substrate/refresh.py`). It
   runs a pass at bind and every `--every` seconds after, with or without a host app. `substrate
-  refresh` runs one pass now; Scripta's "Refresh now" runs it.
+  refresh` runs one pass now; Scripta's "Refresh now" runs it. Its models and period come from
+  `~/.substrate/serve.toml` (`hyde_model`, `rerank_model`, `every`) where no flag sets them, read
+  once at start (`serve_config.py`). The operator edits it by hand; Scripta never writes it. It has
+  no embedder key, by design: `serve --embed-model` moves only the query side, and search then
+  matches no vectors.
 - **Scripta spawns `substrate serve`** (`SubstrateEngine`), and schedules nothing itself. Its engine
   still dies with it. An engine already answering on the socket is USED when it is read-only,
   refreshing, not agent mode, indexing Scripta's note format, and on Scripta's registry

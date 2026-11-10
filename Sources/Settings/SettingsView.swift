@@ -719,7 +719,7 @@ struct SettingsView: View {
                     SubstrateEngine.shared.searchModelChanged()
                 }
                 if engine.serving?.attached == true {
-                    Text("The engine on the socket was not started by Scripta, so this choice does not reach it. The Auto row shows what it runs.")
+                    Text("Scripta is using an engine it did not start, and that engine runs its own models: the ones it was started with, or those in its ~/.substrate/serve.toml. This choice does not reach it. The Auto row shows what it runs.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
