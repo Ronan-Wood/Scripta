@@ -953,3 +953,29 @@ def test_the_fingerprint_covers_the_pin_and_its_checker() -> None:
     fingerprint = BUILD.read_text().split("fingerprint() {", 1)[1].split("\n}\n", 1)[0]
     assert '"$REPO/tools/engine-interpreter.pin"' in fingerprint
     assert '"$REPO/tools/engine-interpreter-pin.py"' in fingerprint
+
+
+# ------------------------------------------------------------------ where a refusal points
+
+
+def test_every_refusal_and_the_pin_point_at_the_engines_own_runbook(tmp_path: Path, capsys) -> None:
+    """The engine is its own repository, so what to do about a refusal is in its own `RELEASING.md`,
+    never in a file of the app that bundles it, and that runbook holds the re-pin it points at."""
+    store, pin, staged = _pinned(tmp_path)
+    assert _run("--check", staged, tmp_path / "elsewhere", pin) == 1
+    (staged / "lib/python3.14/os.py").write_text("import evil\n")
+    assert _run("--check", staged, store, pin) == 1
+    err = capsys.readouterr().err
+    assert err.count("the engine's RELEASING.md") == 2, err
+    assert "Distribution/" not in err
+    assert "the engine's RELEASING.md" in pin.read_text() and "Distribution/" not in pin.read_text()
+    runbook = (ROOT / "RELEASING.md").read_text()
+    assert "tools/engine-interpreter-pin.py --write" in runbook
+    assert "tools/engine-interpreter.pin" in runbook
+    assert "substrate/tools/" not in runbook
+
+
+def test_the_committed_pins_header_is_the_one_write_renders(tmp_path: Path) -> None:
+    """The header's first two lines are fixed text, so the committed pin carries `render`'s."""
+    _, pin, _ = _pinned(tmp_path)
+    assert PIN.read_text().splitlines()[:2] == pin.read_text().splitlines()[:2]

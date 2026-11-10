@@ -1,0 +1,97 @@
+# The engine's whole suite against the locked environment, docling included, on macOS.
+#
+# FOR THE ENGINE'S OWN REPOSITORY. GitHub reads `.github` only at a repository's root, so while the
+# engine is `substrate/` inside Scripta this file is inert, and Scripta's own `.github` runs its jobs.
+#
+# ON PULL REQUESTS ONLY, AND NOT FOR DOCS. A macOS minute costs ten Linux ones, so this skips a
+# change that touches only the documents below, and does not run again on the merge to `main`.
+# Everything else, `tools/` included, runs it: this is the only job where the darwin-only and
+# docling-gated tests run, so a filter that listed what to run would leave a change to a file it
+# missed tested nowhere. Not a required check, which is what makes skipping safe: a required check
+# that never reports blocks every merge. `engine` in `tests.yml` runs on every change, and
+# `workflow_dispatch` runs this by hand.
+#
+# Actions pinned by commit, for the reason `tests.yml` gives.
+name: docling
+
+on:
+  pull_request:
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".github/dependabot.yml"
+      - ".github/workflows/codeql.yml"
+      - ".github/workflows/tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docling-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docling:
+    # `engine` in `tests.yml` has no docling, so the docling paths skip there. This one runs the whole
+    # suite against the LOCKED engine, so a docling test added later runs without anyone listing it.
+    # MACOS, NOT LINUX: the engine ships for Apple silicon only, the lock resolves torch to its CUDA
+    # build on Linux, and ocrmac cannot install there. Nothing here is signed, so the hardened runtime
+    # stays `build-bundled-engine`'s to check.
+    name: engine docling
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      # Opts in the docling round-trips in `tests/test_ingest_formats.py`.
+      SUBSTRATE_DOCLING_TESTS: "1"
+      # NO MODEL DOWNLOADS. No test needs docling's layout or table weights (measured 2026-11-04: the
+      # suite passes offline against an empty HF_HOME). A test that starts needing them fails here by
+      # name instead of quietly fetching them on every run.
+      HF_HUB_OFFLINE: "1"
+      # Build tools are pinned by version, never by hash (`uv sync` takes none). This ignores any file
+      # added to those releases later; only the sdist build env is filtered, not the frozen lock.
+      # A build-constraint pin newer than this date fails `uv sync` by name: move the date with it.
+      UV_EXCLUDE_NEWER: "2026-11-04T00:00:00Z"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: echo "PYTHONPATH=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          # The uv that enforces the lock's hashes, pinned like the lock it reads.
+          version: "0.12.2"
+      # Minus OpenCV: twenty minutes to compile, and only TableFormer, which needs the weights, uses it.
+      # A uv-managed 3.14, as the bundle ships, so `test_bundled_engine_runtime` has one to find.
+      - run: >-
+          uv sync --frozen --no-dev --group test --managed-python --python 3.14
+          --no-install-package opencv-python-headless
+      # Fails the job if docling cannot import, rather than letting its tests skip green.
+      - run: >-
+          uv run --no-sync python -c "import docling.document_converter, torch;
+          from importlib.metadata import version;
+          print('docling', version('docling'), 'torch', torch.__version__,
+          'mps', torch.backends.mps.is_available())"
+      # The interpreter pin's tests on uv's real output need it AT THE PIN'S PATH: uv writes its
+      # install path into libpython and `_sysconfigdata`, so an install anywhere else is other bytes
+      # (measured 2026-11-05: those two files are the only difference, and uv re-ids libpython with
+      # the host's install_name_tool). That path is under the maintainer's home, hence sudo. WHICH
+      # BUILD comes from this job's uv, not the pin: a re-pin made with a newer uv fails here or in
+      # the pin's tests, so move `version` above with it.
+      - run: |
+          pin=tools/engine-interpreter.pin
+          prefix=$(awk -F '\t' '$1 == "prefix" { print $2; exit }' "$pin")
+          build=$(sed -n 's/^# python [^,]*, python-build-standalone \([0-9][0-9]*\)$/\1/p' "$pin")
+          case "$prefix" in /*/*[!/]) ;; *) echo "no usable prefix in $pin: '$prefix'" >&2; exit 1 ;; esac
+          case "${prefix##*/}" in cpython-[0-9]*.[0-9]*.[0-9]*-*) ;;
+            *) echo "$pin's prefix '$prefix' is not a uv CPython install" >&2; exit 1 ;; esac
+          test -n "$build" || { echo "no python-build-standalone release in $pin" >&2; exit 1; }
+          sudo -n install -d -o "$(id -un)" "${prefix%/*}"
+          uv python install --no-bin --install-dir "${prefix%/*}" "${prefix##*/}"
+          got=$(cat "$prefix/BUILD") || { echo "uv wrote no BUILD into $prefix" >&2; exit 1; }
+          test "$got" = "$build" || { echo "uv installed build $got, $pin is $build" >&2; exit 1; }
+      # ZERO SKIPS is the point of this job.
+      - run: >-
+          uv run --no-sync python -m pytest tests -q -rsx --junitxml "$RUNNER_TEMP/junit.xml"
+      - run: test -s "$RUNNER_TEMP/junit.xml" && ! grep -q '<skipped' "$RUNNER_TEMP/junit.xml"

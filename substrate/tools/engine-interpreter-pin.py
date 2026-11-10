@@ -316,7 +316,7 @@ def scan(root: Path, *, checking: bool, relocated: Relocation | None = None) -> 
 def render(prefix: str, entries: dict[str, tuple[str, str]], python: str, build: str) -> str:
     lines = [
         "# The engine interpreter, file by file. Written by tools/engine-interpreter-pin.py --write and",
-        "# checked by tools/build-bundled-engine; re-pin only as Distribution/RELEASING.md describes.",
+        "# checked by tools/build-bundled-engine; re-pin only as the engine's RELEASING.md describes.",
         f"# python {python}, python-build-standalone {build}",
         f"{PREFIX_KEY}\t{prefix}",
     ]
@@ -439,7 +439,7 @@ def _compare(tree: Path, root: Path, pin: Path, *, recheck: bool) -> None:
         raise Refused(
             f"the engine interpreter is {root_s}, but {pin.name} was made for {pinned_prefix}. "
             "A Python update, or a uv store somewhere else, needs a new pin; "
-            "Distribution/RELEASING.md says how"
+            "the engine's RELEASING.md says how"
         )
     relocated = _relocation(tree, root_s) if recheck else None
     actual = scan(tree, checking=True, relocated=relocated)
@@ -458,7 +458,7 @@ def _compare(tree: Path, root: Path, pin: Path, *, recheck: bool) -> None:
         raise Refused(
             f"the copy of {root_s} does not match {pin.name} {when}: {len(changed)} changed, "
             f"{len(missing)} missing, {len(unexpected)} unexpected.{detail}\n"
-            "If this is a deliberate Python update, re-pin as Distribution/RELEASING.md describes. If it "
+            "If this is a deliberate Python update, re-pin as the engine's RELEASING.md describes. If it "
             "is not, the interpreter was modified after uv installed it: run "
             "`uv python install --reinstall <version>` and build again."
         )

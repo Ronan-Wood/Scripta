@@ -54,8 +54,32 @@ jobs:
       - run: uv run --no-sync python -m pytest tests -q
         working-directory: ${{ runner.temp }}/engine
 
+  staged:
+    # The engine's staged `.github` (`substrate/.github`, live once the engine is its own repository)
+    # must say what this one does about the engine: its Dependabot entries, and its jobs' pins and
+    # settings (`.github/staged-engine-check`). NOT A REQUIRED CHECK, on purpose: Dependabot bumps the
+    # pins here and not the staged copy, so its pull requests fail this until the copy is bumped too,
+    # and they must still be mergeable. The extraction needs it green.
+    name: staged engine config
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      # The engine's locked `test` group, hashes checked as in `engine`: pytest, and the YAML 1.2
+      # reader (`ruamel.yaml`) the check reads both trees with, as GitHub reads them.
+      - run: |
+          uv venv "$RUNNER_TEMP/staged" --python 3.14
+          uv export --frozen --only-group test --no-emit-project --project substrate -o "$RUNNER_TEMP/test-group.txt"
+          uv pip install --python "$RUNNER_TEMP/staged" --require-hashes -r "$RUNNER_TEMP/test-group.txt"
+      - run: |
+          "$RUNNER_TEMP/staged/bin/python" -I .github/staged-engine-check
+          "$RUNNER_TEMP/staged/bin/python" -I -m pytest .github/test_staged_engine_check.py -q -p no:cacheprovider
+
   docling:
-    # The job above has no docling, so the paths #64 and #67 broke skip there. This one runs the whole
+    # `engine` above has no docling, so the paths #64 and #67 broke skip there. This one runs the whole
     # suite against the LOCKED engine, so a docling test added later runs without anyone listing it.
     # MACOS, NOT LINUX: the engine ships for Apple silicon only, the lock resolves torch to its CUDA
     # build on Linux, and ocrmac cannot install there. Nothing here is signed, so the hardened runtime
