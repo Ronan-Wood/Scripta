@@ -5,7 +5,7 @@ This guide takes you from download to your first transcript, then through the fe
 ## 1. Install
 
 - You need **macOS 26 or later on Apple Silicon**. Apple Intelligence is optional; titles and summaries use it when it's on.
-- Download `Scripta.dmg` from the [latest release](../../releases/latest), open it, and drag **Scripta** into **Applications**. The app is signed and notarized, so it opens normally.
+- Download `Scripta-<version>.dmg` from the [latest release](https://github.com/Ronan-Wood/Scripta/releases/latest), open it, and drag **Scripta** into **Applications**. The app is signed and notarized, so it opens normally.
 - On first launch Scripta asks where to save transcripts. **Use Default** saves them to `Documents/Scripta`. **Choose Folder…** lets you pick another place, such as an Obsidian vault. You can change it later in **Settings → Output**.
 
 Scripta opens its main window, the Hub, and adds an icon to the menu bar. If you'd rather it lived only in the menu bar, turn off **Show in Dock** in **Settings → General**.
@@ -20,7 +20,7 @@ Scripta asks for each permission the first time it needs it, not all at once.
 | **Screen Recording** | macOS requires it to capture system audio, which is how the other participants are recorded | only your voice is transcribed |
 | **Calendar** (optional) | shows upcoming meetings and pre-fills a call's name | nothing else changes |
 
-Screen Recording surprises people. Scripta isn't recording your screen: macOS puts system-audio capture behind that permission. If you turn on screen context, screenshots are discarded as soon as their text is read.
+Screen Recording surprises people. Scripta isn't recording your screen: macOS puts system-audio capture behind that permission. If you turn on screen context, screenshots are discarded as soon as their text is read, or after the call's captioning pass if you set up a vision model.
 
 ## 3. Record your first call
 
@@ -51,17 +51,17 @@ Set the default in **Settings → Recording → Default mode**. Turn on **Choose
 
 ## 5. Organise with workspaces
 
-Workspaces keep unrelated work apart, for example Deals and Personal. In **Settings → Calendar**, assign each calendar to a workspace, and calls from its meetings land there. Search, Ask and Claude only see the active workspace; searching across workspaces is an explicit, one-off action.
+Workspaces keep unrelated work apart, for example Deals and Personal. In **Settings → Calendar**, assign each calendar to a workspace, and calls from its meetings land there. Search, Ask and Claude only see the active workspace and the vaults it inherits: the context vaults you add in Settings, and whatever those inherit. Searching across workspaces is an explicit, one-off action.
 
 ## 6. Add documents and notes
 
 Open **Library** and go to its **Add** section, where you choose what you're adding:
 
-- **A document**: PDF, Word, PowerPoint, Excel, a web page, plain text, subtitles, email, or an image;
+- **A document**: PDF, Word, PowerPoint, Excel, a web page, Markdown or plain text, CSV, WebVTT subtitles, email, EPUB, or an image. The Library lists every format the engine accepts;
 - **A call transcript** you already have;
 - **A note** you write yourself.
 
-Everything is extracted on-device and filed into the active workspace, so it answers alongside your calls. Nothing needs installing: a PDF is read from its own text, and Apple's on-device text recognition reads scanned pages and images. A document that can't be read cleanly is refused with the reason, rather than filed half-extracted.
+Everything is extracted on-device and filed into the active workspace, so it answers alongside your calls. Nothing needs installing: a PDF is read from its own text, and Apple's on-device text recognition reads scanned pages and images. A document that yields no text, or loses text in conversion where Scripta can check, is refused with the reason, rather than filed half-extracted.
 
 If you already have docling's layout and table models, choose their folder in **Settings → Local model → Document models**, and tables read better. Scripta never downloads them. If the folder goes missing, for example on an unplugged drive, documents are read without them.
 
@@ -69,17 +69,19 @@ If you already have docling's layout and table models, choose their folder in **
 
 Open **Ask** and type a question in your own words. Answers come from the calls, notes and documents in the active workspace, with citations to what was used. If part of the search was unavailable, the answer says so instead of quietly being weaker.
 
-Everything works with Apple's on-device models. For better answers to loosely worded questions, run a local model server such as [Ollama](https://ollama.com) and point Scripta at it in **Settings → Local model**. Only servers on your Mac or your local network are accepted.
+Everything works with Apple's on-device models. For better answers to loosely worded questions, run a local model server such as [Ollama](https://ollama.com) and point Scripta at it in **Settings → Local model**. Only servers on your Mac or your local network are accepted, and a local-network address asks you to allow it once. Public addresses are refused. A model marked *(cloud)* runs in your server's cloud, so what you send it leaves your Mac; Auto never picks one, and Search never uses one.
 
 ## 8. Connect Claude (optional)
 
 Scripta's engine is an MCP server, so Claude can search your calls and documents. The steps are in the Hub under **Docs → Claude & MCP**.
 
-- **Claude Code:** copy the command shown there and run it in Terminal. For an app installed in Applications it reads:
+- **Claude Code:** copy the command shown there and run it in Terminal. For an app installed in Applications it amounts to:
 
   ```sh
-  claude mcp add -s user substrate -- "/Applications/Scripta.app/Contents/Resources/substrate-engine/bin/substrate-mcp"
+  claude mcp add -s user substrate -- /Applications/Scripta.app/Contents/Resources/substrate-engine/bin/substrate-mcp --connect ~/.substrate/run/substrate.sock
   ```
+
+  `--connect` makes Claude use the engine Scripta is running rather than start another.
 
 - **Claude Desktop:** click **Add to Claude Desktop**, pick Claude's settings folder when asked, then quit Claude Desktop with ⌘Q and reopen it.
 - **The Scripta skill** (Claude Code only): click **Install Claude skill** and pick your `.claude` folder. It teaches Claude playbooks such as "summarize my week".
@@ -96,7 +98,7 @@ Versions before in-app updates can't update themselves. Quit Scripta, download t
 
 - **Only your voice was transcribed.** Check that Scripta has Screen Recording permission in **System Settings → Privacy & Security**, and that you recorded in **Call** mode.
 - **Search or Ask is missing something recent.** The index updates while Scripta is open. Notes edited while it was closed are picked up the next time it runs.
-- **The engine didn't start.** Settings shows the engine's state, with the reason and a **Restart** control.
-- **Still stuck?** [Open an issue](../../issues) with what you did and what you saw.
+- **The engine didn't start.** Ask and the Library say why, with the engine's own error, and offer **Start the engine**.
+- **Still stuck?** [Open an issue](https://github.com/Ronan-Wood/Scripta/issues/new/choose) with what you did and what you saw. It's public, so leave out your transcripts and names.
 
-For what Scripta does and doesn't send anywhere, see [Privacy](README.md#privacy) in the README.
+For what Scripta does and doesn't send anywhere, see [Privacy](../README.md#privacy) in the README.

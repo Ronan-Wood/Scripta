@@ -18,7 +18,7 @@ struct RelatedHit: Identifiable {
 /// The card both panels render for one hit — actually shared (crosscheck: the previous version
 /// claimed this via `RelatedHit` alone while the ~11-line card view stayed copy-pasted in both
 /// files). A visual change here reaches every related-item surface, including the notes/docs one
-/// SPEC.md defers, without a second copy to keep in sync.
+/// docs/history/SPEC.md defers, without a second copy to keep in sync.
 struct RelatedHitCard: View {
     let hit: RelatedHit
     let onSelect: () -> Void
