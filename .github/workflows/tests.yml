@@ -106,7 +106,7 @@ jobs:
       - run: |
           bash .github/engine-alone "$RUNNER_TEMP/engine"
           echo "PYTHONPATH=$RUNNER_TEMP/engine" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           # The uv that enforces the lock's hashes, pinned like the lock it reads.
           version: "0.12.2"
