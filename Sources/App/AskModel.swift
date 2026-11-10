@@ -197,6 +197,8 @@ final class AskModel: ObservableObject {
 
     /// The generator, resolved once per conversation (multi-turn history lives inside the chat).
     private var chat: ChatConversing?
+    /// The endpoint model `chat` was built on, or nil when it runs on Apple FM.
+    private var chatModel: String?
     private var sizeClass: SizeClass = .compact
     private var engineLabel: String?
     private var usingEndpoint = false
@@ -736,10 +738,15 @@ final class AskModel: ObservableObject {
 
     // MARK: - Generation
 
-    /// Resolves the Ask engine once per conversation (multi-turn history lives inside the chat).
+    /// Resolves the Ask engine once per conversation (multi-turn history lives inside the chat),
+    /// and again when the endpoint model it was built on is no longer the one Ask resolves to: a
+    /// changed pick, or a cloud opt-in withdrawn mid-thread, must not keep sending to that model.
+    /// The rebuilt chat starts without the earlier turns. A chat on Apple FM, including the
+    /// fallback after an endpoint failure, is kept.
     private func ensureChat() {
-        guard chat == nil else { return }
+        if chat != nil, chatModel == nil || chatModel == EngineRouter.endpointModel(for: .ask) { return }
         let engine = EngineRouter.chatEngine(for: .ask)
+        chatModel = (engine as? EndpointEngine)?.model
         sizeClass = engine.sizeClass
         engineLabel = engine.label
         usingEndpoint = EngineRouter.usesEndpoint(for: .ask)
@@ -747,6 +754,7 @@ final class AskModel: ObservableObject {
     }
 
     private func resetToAppleFM() {
+        chatModel = nil
         let engine = AppleFMEngine()
         sizeClass = engine.sizeClass
         engineLabel = "\(engine.label) (fallback)"

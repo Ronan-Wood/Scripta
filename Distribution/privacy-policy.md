@@ -44,8 +44,16 @@ Nothing, by default. Specifically:
   yourself (for example Ollama) on your own machine or private network. If you do, the text
   being processed goes to that server of yours, and addresses on the public internet are
   refused outright. Some servers also offer models that run in their own cloud, which the app
-  marks "(cloud)" in Settings. If you choose one, what it processes is sent to that provider
-  under its own terms. The app never picks a cloud model on its own, and search never uses one.
+  marks "(cloud)" in Settings. Choosing one for a feature sends nothing until you also turn on
+  that feature's "Allow this cloud model" switch, which is off by default and says what would be
+  sent. Once you do, what that feature processes is sent to the company that runs the model (for
+  an Ollama cloud model, Ollama) under its own terms. Allowing one covers that model on that
+  server only. A model counts as local only when Ollama's description of it confirms that, so a
+  model your server only names (any server but Ollama, or Ollama when it can't say) needs the same
+  opt-in before it is used. The app never picks a cloud or unconfirmed model on its own, and
+  search never uses a cloud one. A server of yours that forwards requests to another service while
+  describing its models as Ollama does looks local to the app, and what it receives goes wherever
+  that server sends it.
 - **Optional AI assistant connection:** if you connect an AI assistant such as Claude, the
   assistant can read your transcripts when you ask it questions — that data is then handled
   by the assistant under its own privacy policy, using your own account with that provider.

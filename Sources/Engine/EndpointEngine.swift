@@ -1,4 +1,5 @@
 import Foundation
+import ScriptaCore
 import ScriptaShared   // ChatHistoryBudget — the retention rule, kept where a test can reach it
 
 /// A local OpenAI-format server as a model engine. Chat streams via SSE; enrichment uses JSON mode.
@@ -7,7 +8,11 @@ final class EndpointEngine: ChatEngine, EnrichEngine {
     let sizeClass: SizeClass
     private let wire: OpenAIWire
 
-    var label: String { "\(model) (local)" }
+    /// Shown with each Ask answer and saved with it, so a model is called local only when the
+    /// server confirms it.
+    var label: String {
+        "\(model) (\(ModelResolver.localityWord(model, in: AppSettings.endpointCatalog)))"
+    }
 
     init(baseURL: URL, model: String, lanConfirmed: Bool) {
         self.model = model

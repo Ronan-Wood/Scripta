@@ -89,6 +89,8 @@ struct SettingsView: View {
     @State private var mirrorEnabled = AppSettings.mirrorEnabled
     @State private var visionModel = AppSettings.visionModel
     @State private var searchModel = AppSettings.searchModel
+    /// Bumped on every opt-in change, so the toggles re-read `AppSettings.cloudAllowed`.
+    @State private var consentRevision = 0
     @State private var searchRestart: Task<Void, Never>?
     @State private var automaticUpdates: Bool = AppUpdater.shared.automaticallyChecksForUpdates
     @ObservedObject private var updater = AppUpdater.shared
@@ -685,14 +687,17 @@ struct SettingsView: View {
                     modelOptions(.ask, selection: askModel, none: "Apple Intelligence (default)")
                 }
                 .onChange(of: askModel) { _, v in AppSettings.setEndpointModel(v.isEmpty ? nil : v, for: .ask) }
+                cloudConsent(.ask, selection: askModel)
                 Picker("Titles & summaries", selection: $enrichModel) {
                     modelOptions(.enrich, selection: enrichModel, none: "Apple Intelligence (default)")
                 }
                 .onChange(of: enrichModel) { _, v in AppSettings.setEndpointModel(v.isEmpty ? nil : v, for: .enrich) }
+                cloudConsent(.enrich, selection: enrichModel)
                 Picker("Screen captioning (vision)", selection: $visionModel) {
                     modelOptions(.vision, selection: visionModel, none: "Off — OCR text only")
                 }
                 .onChange(of: visionModel) { _, v in AppSettings.visionModel = v }
+                cloudConsent(.vision, selection: visionModel)
                 // Off and Auto are honoured whatever the server; a NAMED model only when this server
                 // is the engine's own Ollama. So off it, only those two are offered, and a saved
                 // named pick shows as the Auto that actually runs (`ModelResolver.searchShown`) —
@@ -736,7 +741,7 @@ struct SettingsView: View {
         } header: {
             Text("Local Model (advanced)")
         } footer: {
-            Text("Point the app at an OpenAI-compatible server on this Mac or your LAN (Ollama, LM Studio) and assign a bigger model per task. Apple Intelligence stays the default and the automatic fallback. Only a server on localhost or a private address is accepted — public hosts are refused. Setup: `brew install ollama`, then `ollama pull` any chat model. On Ollama, Auto picks by size: the largest model for Ask, the smallest for titles and captions. Other servers report no sizes, so there Auto goes by name, and captioning needs a model picked by hand. Search always runs on the local Ollama, and its Auto row shows what the engine picked. Auto never picks a cloud model, and Search never uses one.")
+            Text("Point the app at an OpenAI-compatible server on this Mac or your LAN (Ollama, LM Studio) and assign a bigger model per task. Apple Intelligence stays the default and the automatic fallback. Only a server on localhost or a private address is accepted — public hosts are refused. Setup: `brew install ollama`, then `ollama pull` any chat model. On Ollama, Auto picks by size: the largest model for Ask, the smallest for titles and captions. Other servers don't describe their models, so Scripta can't confirm one runs on this Mac: there Auto picks nothing, and a model you pick runs once you allow it. Search always runs on the local Ollama, and its Auto row shows what the engine picked. Auto never picks a cloud model, and Search never uses one. A cloud model, or one the server doesn't describe, runs for Ask, titles or captioning only after you allow it for that feature.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -792,7 +797,7 @@ struct SettingsView: View {
         } header: {
             Text("Index")
         } footer: {
-            Text("The search index is a rebuildable cache derived from your transcripts — never your notes. Rebuild it if search or Ask results look wrong. Topic tags let a call surface by subject even when the word was never spoken; older calls can be tagged in one on-device pass.")
+            Text("The search index is a rebuildable cache derived from your transcripts — never your notes. Rebuild it if search or Ask results look wrong. Topic tags let a call surface by subject even when the word was never spoken; older calls can be tagged in one pass, on the Titles & summaries model.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -856,6 +861,51 @@ struct SettingsView: View {
         }
     }
 
+    /// Under a picker: the opt-in when its pick is a cloud model or one the server does not
+    /// describe, saying what it would be sent and what runs until it is allowed; and, while no
+    /// catalog has been read from this server, that the pick is not used yet. Consent covers this
+    /// pick on this server (`CloudConsent`), so a new pick starts unallowed.
+    @ViewBuilder
+    private func cloudConsent(_ role: ModelRole, selection: String) -> some View {
+        let cloud = isCloud(selection)
+        let named = !selection.isEmpty && selection != ModelResolver.auto
+        // With no catalog nothing is confirmed, so a pick allowed earlier runs on that consent: show
+        // the switch, on, so it can be withdrawn.
+        let unconfirmed = !cloud && (ModelResolver.isUnconfirmed(selection, in: catalog)
+                                     || (catalog == nil && named && allowedCloud(role, selection)))
+        if cloud || unconfirmed,
+           let warning = cloud ? ModelResolver.cloudWarning(for: role) : ModelResolver.unconfirmedWarning(for: role) {
+            let allowed = Binding(
+                get: { _ = consentRevision; return allowedCloud(role, selection) },
+                set: { AppSettings.setCloudAllowed($0, for: role, binding: selection); consentRevision += 1 })
+            Toggle(cloud ? "Allow this cloud model" : "Allow this unconfirmed model", isOn: allowed)
+            Text(allowed.wrappedValue ? warning
+                 : "\(warning) Until you allow it, \(runsInstead(role, selection, cloudAllowed: false)).")
+                .font(.caption)
+                .foregroundStyle(allowed.wrappedValue ? Color.orange : Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if catalog == nil, named {
+            Text("Not checked against this server yet, so \(runsInstead(role, selection, cloudAllowed: false)). Test connection to use it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func allowedCloud(_ role: ModelRole, _ selection: String) -> Bool {
+        _ = consentRevision
+        return AppSettings.cloudAllowed(for: role, binding: selection)
+    }
+
+    /// What runs for `role` in place of `selection`: a local stand-in, Apple Intelligence, or no
+    /// captions. One wording for the stale-pick row and the cloud opt-in.
+    private func runsInstead(_ role: ModelRole, _ selection: String, cloudAllowed: Bool) -> String {
+        if case .model(let name, _) = ModelResolver.resolve(binding: selection, role: role, catalog: catalog,
+                                                            cloudAllowed: cloudAllowed) {
+            return "using \(name)"
+        }
+        return role == .vision ? "captioning off" : "using Apple Intelligence"
+    }
+
     /// The Search picker's selection: what the engine runs, written back as the user's choice.
     private var shownSearchModel: Binding<String> {
         Binding(get: { ModelResolver.searchShown(binding: searchModel, servesEngine: searchServesEngine) },
@@ -869,7 +919,7 @@ struct SettingsView: View {
     }
 
     private func isCloud(_ name: String) -> Bool {
-        ModelResolver.isRemote(catalog?.first { ModelResolver.sameModel($0.name, name) } ?? ServerModel(name: name))
+        ModelResolver.isCloud(name, in: catalog)
     }
 
     /// Pulls the server's current catalog into the pickers. Runs when the pane opens and when the
@@ -902,6 +952,7 @@ struct SettingsView: View {
         // Without a catalog Auto resolves to nothing, so say so rather than promise a pick.
         guard let catalog else { return "Auto (test connection to choose)" }
         if let name = ModelResolver.best(for: role, in: catalog) { return "Auto (\(name))" }
+        if catalog.contains(where: { !$0.isDescribed }) { return "Auto (no model confirmed local)" }
         return role == .vision ? "Auto (no vision model on server)" : "Auto (no suitable model on server)"
     }
 
@@ -929,16 +980,12 @@ struct SettingsView: View {
         if role == .search {
             return "\(selection) (\(gone) — \(ModelResolver.searchStandIn(engineSearchPick)))"
         }
-        switch ModelResolver.resolve(binding: selection, role: role, catalog: catalog) {
-        case .model(let name, .substituted):
-            return "\(selection) (\(gone) — using \(name))"
-        case .model:
+        let allowed = allowedCloud(role, selection)
+        if case .model(_, .asSaved) = ModelResolver.resolve(binding: selection, role: role, catalog: catalog,
+                                                            cloudAllowed: allowed) {
             return "\(selection) (\(gone))"
-        case .none:
-            // Search returned above; of the rest, only captions have no Apple fallback.
-            let fallback = role == .vision ? "captioning off" : "using Apple Intelligence"
-            return "\(selection) (\(gone) — \(fallback))"
         }
+        return "\(selection) (\(gone) — \(runsInstead(role, selection, cloudAllowed: allowed)))"
     }
 
     private func byteString(_ bytes: Int) -> String {

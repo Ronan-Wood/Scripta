@@ -14,8 +14,9 @@
 
 ## Privacy section (ASC questionnaire)
 
-- **Privacy label:** Data Not Collected (truthfully — no data leaves the device, no
-  accounts, no analytics, no third-party SDKs)
+- **Privacy label:** Data Not Collected (truthfully — the developer receives nothing: no
+  accounts, no analytics, no third-party SDKs. Content leaves the Mac only to a model server the
+  user configures, a cloud model they allow for a feature, or an AI assistant they connect)
 - **Privacy policy URL:** host `Distribution/privacy-policy.md` and paste the URL
 - **Encryption:** `ITSAppUsesNonExemptEncryption = false` already in Info.plist (standard
   TLS only, exempt)
@@ -23,7 +24,7 @@
 ## Description
 
 > Scripta records and transcribes your calls and meetings entirely on your Mac.
-> No account, no cloud, no meeting bots — nothing ever leaves your machine.
+> No account, no cloud service, no meeting bots — nothing leaves your Mac unless you send it.
 >
 > Press record during any call (Zoom, Teams, Meet, phone audio through your Mac — anything
 > your Mac can play) and get a clean, speaker-labeled transcript: your side from the
@@ -84,7 +85,10 @@ keyword budget on them.)
 >
 > The "local AI server" setting is optional and off by default; it accepts only
 > loopback/private-LAN addresses the user runs themselves (e.g. Ollama) and refuses public
-> hosts. The app itself makes no network connections.
+> hosts. A model that server runs in its own cloud (Ollama's cloud models) is used only after
+> the user allows it for that feature. Otherwise the app connects only to that server and, if
+> the user agrees, to GitHub once a day to check for updates. Search runs on the local Ollama
+> at 127.0.0.1:11434 when one is running.
 >
 > The Claude connector mentioned in the Docs pane is a separate, free, optional download
 > signed with the same Team ID; this app bundle contains no embedded helper executables.

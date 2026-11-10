@@ -48,6 +48,9 @@ enum AppSettings {
         static let mirrorEnabled = "mirrorEnabled"
         static let visionModel = "visionModel"
         static let searchModel = "searchModel"
+        static let cloudAllowedAsk = "cloudAllowedAsk"
+        static let cloudAllowedEnrich = "cloudAllowedEnrich"
+        static let cloudAllowedVision = "cloudAllowedVision"
         static let sidebarExpanded = "sidebarExpanded"
         static let globalHotkey = "globalHotkey"
         static let liveTranscription = "liveTranscription"
@@ -518,6 +521,8 @@ enum AppSettings {
     /// refresh, long after the drive is back.
     static func storeCatalog(_ models: [ServerModel], from url: URL) {
         guard !models.isEmpty, url.absoluteString == endpointURL?.absoluteString else { return }
+        // A model the last catalog marked cloud stays marked when this one could not describe it.
+        let models = ModelResolver.carryingCloudMarks(models, from: endpointCatalog)
         defaults.set(try? JSONEncoder().encode(StoredCatalog(url: url.absoluteString, models: models)),
                      forKey: Keys.endpointCatalog)
         endpointKnownModels = models.map(\.name)
@@ -539,9 +544,40 @@ enum AppSettings {
     }
 
     /// The model a role runs on right now: the saved pick, Auto's choice, or a stand-in for a pick
-    /// the server no longer has. See `ModelResolver`.
+    /// the server no longer has, or a cloud pick the user has not allowed. See `ModelResolver`.
     static func resolvedModel(for role: ModelRole) -> ResolvedModel {
-        ModelResolver.resolve(binding: modelBinding(for: role), role: role, catalog: endpointCatalog)
+        let binding = modelBinding(for: role)
+        return ModelResolver.resolve(binding: binding, role: role, catalog: endpointCatalog,
+                                     cloudAllowed: cloudAllowed(for: role, binding: binding))
+    }
+
+    /// Whether the user allowed `binding` as a cloud model for this feature, on the configured
+    /// server (`CloudConsent`). Never for Search, which has no key: it never runs one.
+    static func cloudAllowed(for role: ModelRole, binding: String) -> Bool {
+        guard let key = cloudKey(for: role), let data = defaults.data(forKey: key),
+              let consent = try? JSONDecoder().decode(CloudConsent.self, from: data) else { return false }
+        return consent.covers(url: endpointURL, binding: binding)
+    }
+
+    /// Records, or withdraws, the opt-in for `binding` on the configured server. Withdrawing clears
+    /// the feature's consent whatever it covered.
+    static func setCloudAllowed(_ allowed: Bool, for role: ModelRole, binding: String) {
+        guard let key = cloudKey(for: role) else { return }
+        if allowed, let url = endpointURL?.absoluteString,
+           let data = try? JSONEncoder().encode(CloudConsent(url: url, model: binding)) {
+            defaults.set(data, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    private static func cloudKey(for role: ModelRole) -> String? {
+        switch role {
+        case .ask: return Keys.cloudAllowedAsk
+        case .enrich: return Keys.cloudAllowedEnrich
+        case .vision: return Keys.cloudAllowedVision
+        case .search: return nil
+        }
     }
 
     /// Which prompt tier Apple FM gets. `.compact` today; a hidden override lets a newer-silicon

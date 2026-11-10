@@ -69,7 +69,7 @@ If you already have docling's layout and table models, choose their folder in **
 
 Open **Ask** and type a question in your own words. Answers come from the calls, notes and documents in the active workspace, with citations to what was used. If part of the search was unavailable, the answer says so instead of quietly being weaker.
 
-Everything works with Apple's on-device models. For better answers to loosely worded questions, run a local model server such as [Ollama](https://ollama.com) and point Scripta at it in **Settings → Local model**. Only servers on your Mac or your local network are accepted, and a local-network address asks you to allow it once. Public addresses are refused. A model marked *(cloud)* runs in your server's cloud, so what you send it leaves your Mac; Auto never picks one, and Search never uses one.
+Everything works with Apple's on-device models. For better answers to loosely worded questions, run a local model server such as [Ollama](https://ollama.com) and point Scripta at it in **Settings → Local model**. Only servers on your Mac or your local network are accepted, and a local-network address asks you to allow it once. Public addresses are refused. A model marked *(cloud)* runs in your server's cloud, so what you send it leaves your Mac. Picking one for a feature sends nothing until you turn on that feature's *Allow this cloud model* switch, which is off by default. A model counts as local only when Ollama describes it, so on any other server a model you pick needs its *Allow this unconfirmed model* switch too, and Auto picks nothing there. Auto never picks a cloud model, and Search never uses one.
 
 ## 8. Connect Claude (optional)
 

@@ -11,6 +11,12 @@ enum EngineRouter {
         endpointEngine(for: task) ?? AppleFMEngine()
     }
 
+    /// The endpoint model a task runs on now, or nil for Apple FM. Ask re-reads it each turn, so a
+    /// pick or a cloud opt-in changed mid-conversation takes effect on the next question.
+    static func endpointModel(for task: EngineTask) -> String? {
+        endpointEngine(for: task)?.model
+    }
+
     /// True when a task is configured to use the endpoint but will fall back to Apple FM (endpoint
     /// off/unreachable/unassigned) — drives the "using Apple Intelligence" UI notice.
     static func usesEndpoint(for task: EngineTask) -> Bool {
@@ -68,6 +74,7 @@ enum EngineRouter {
     /// The embedding engine (Phase B), or nil to stay FTS-only. Requires the endpoint on + local +
     // MARK: -
 
+    /// EVERY TASK ROUTED HERE is something `ModelResolver.cloudWarning` says that role sends.
     private static func endpointEngine(for task: EngineTask) -> EndpointEngine? {
         guard AppSettings.endpointEnabled,
               let url = AppSettings.endpointURL,

@@ -18,8 +18,9 @@ final class ModelResolverTests: XCTestCase {
         ServerModel(name: "nomic-embed-text:latest", capabilities: ["embedding"], sizeBytes: 3 * gb / 10),
     ]
 
-    private func resolve(_ binding: String, _ role: ModelRole, _ catalog: [ServerModel]?) -> ResolvedModel {
-        ModelResolver.resolve(binding: binding, role: role, catalog: catalog)
+    private func resolve(_ binding: String, _ role: ModelRole, _ catalog: [ServerModel]?,
+                         cloudAllowed: Bool = false) -> ResolvedModel {
+        ModelResolver.resolve(binding: binding, role: role, catalog: catalog, cloudAllowed: cloudAllowed)
     }
 
     func testEmptyBindingIsNone() {
@@ -57,15 +58,171 @@ final class ModelResolverTests: XCTestCase {
         XCTAssertEqual(resolve("auto", .vision, catalog), .model("qwen3.5:4b-mlx", .auto))
         XCTAssertEqual(resolve("qwen2.5vl:7b", .vision, catalog), .model("qwen3.5:4b-mlx", .substituted(for: "qwen2.5vl:7b")))
         XCTAssertEqual(resolve("auto", .vision, [cloud]), .none)
-        XCTAssertEqual(resolve("qwen3-vl:235b-cloud", .vision, catalog), .model("qwen3-vl:235b-cloud", .asSaved))
         XCTAssertTrue(ModelResolver.offers(cloud, for: .vision))
+    }
+
+    // MARK: - Cloud models need the user's opt-in
+
+    private lazy var cloud = ServerModel(name: "qwen3-vl:235b-cloud", capabilities: chat, sizeBytes: 400, isRemote: true)
+    /// Cloud only by the server's word: nothing in the name says so.
+    private lazy var remoteByListing = ServerModel(name: "big:latest", capabilities: chat, sizeBytes: 400, isRemote: true)
+
+    /// A saved cloud pick used to run for Ask, titles and captions with nothing but "(cloud)" in
+    /// Settings. Without the feature's opt-in it is treated as gone: a local model stands in.
+    func testASavedCloudPickDoesNotRunWithoutConsent() {
+        let catalog = ollama + [cloud, remoteByListing]
+        for pick in [cloud.name, remoteByListing.name, "big"] {
+            XCTAssertEqual(resolve(pick, .ask, catalog), .model("qwen3.5:9b-mlx", .substituted(for: pick)))
+            XCTAssertEqual(resolve(pick, .enrich, catalog), .model("qwen3.5:4b-mlx", .substituted(for: pick)))
+            XCTAssertEqual(resolve(pick, .vision, catalog), .model("qwen3.5:4b-mlx", .substituted(for: pick)))
+            // Nothing local to stand in: nothing runs, rather than the cloud pick.
+            XCTAssertEqual(resolve(pick, .ask, [cloud, remoteByListing]), .none)
+        }
+    }
+
+    func testASavedCloudPickRunsOnceItsFeatureAllowsIt() {
+        let catalog = ollama + [cloud, remoteByListing]
+        for role in [ModelRole.ask, .enrich, .vision] {
+            XCTAssertEqual(resolve(cloud.name, role, catalog, cloudAllowed: true),
+                           .model(cloud.name, .asSaved))
+            XCTAssertEqual(resolve("big", role, catalog, cloudAllowed: true),
+                           .model("big:latest", .asSaved))
+        }
+    }
+
+    /// Consent is to the model the user picked. Auto, and the stand-in for a pick the server no
+    /// longer has, never choose a cloud model even where the feature allows one.
+    func testConsentNeverLetsAutoOrTheStandInPickACloudModel() {
+        let catalog = ollama + [cloud, remoteByListing]
+        for role in [ModelRole.ask, .enrich, .vision] {
+            for binding in ["auto", "qwen2.5:14b"] {
+                let resolved = resolve(binding, role, catalog, cloudAllowed: true)
+                XCTAssertNotNil(resolved.name, "\(role) \(binding)")
+                XCTAssertFalse(ModelResolver.isCloud(resolved.name ?? "", in: catalog), "\(role) \(binding)")
+            }
+            for binding in ["auto", "qwen2.5:14b"] {
+                XCTAssertEqual(ModelResolver.resolve(binding: binding, role: role, catalog: [cloud, remoteByListing],
+                                                     cloudAllowed: true), .none, "\(role) \(binding)")
+            }
+        }
+    }
+
+    /// Search never runs one, consent or not: there is no Search opt-in to give.
+    func testSearchIgnoresConsent() {
+        let catalog = ollama + [cloud]
+        XCTAssertEqual(resolve(cloud.name, .search, catalog, cloudAllowed: true), .none)
+        XCTAssertEqual(resolve(cloud.name, .search, nil, cloudAllowed: true), .none)
+        XCTAssertNil(ModelResolver.cloudWarning(for: .search))
+    }
+
+    /// No catalog says whether a named pick is local, and a cloud model's name need not say so. So
+    /// it runs only where a cloud model would be allowed; Auto has nothing to choose from.
+    func testWithoutACatalogANamedPickRunsOnlyWithConsent() {
+        for role in [ModelRole.ask, .enrich, .vision] {
+            XCTAssertEqual(resolve("qwen2.5:14b", role, nil), .none)
+            XCTAssertEqual(resolve(cloud.name, role, nil), .none)
+            XCTAssertEqual(resolve("qwen2.5:14b", role, nil, cloudAllowed: true),
+                           .model("qwen2.5:14b", .asSaved))
+            XCTAssertEqual(resolve("auto", role, nil), .none)
+        }
+        // Search's pick runs in the engine, which reads its own Ollama's listing.
+        XCTAssertEqual(resolve("qwen2.5:14b", .search, nil), .model("qwen2.5:14b", .asSaved))
+    }
+
+    func testEachOptInSaysWhatIsSentAndToWhom() {
+        for (role, what) in [(ModelRole.ask, "questions"), (.enrich, "transcript of every call"), (.vision, "20 screenshots per call")] {
+            let warning = ModelResolver.cloudWarning(for: role) ?? ""
+            XCTAssertTrue(warning.contains(what), warning)
+            XCTAssertTrue(warning.contains("off this Mac") && warning.contains("Ollama"), warning)
+        }
+    }
+
+    /// A "yes" covers the model it was given for, on the server it was given on. Picking another
+    /// cloud model, or pointing Settings at another server, starts unallowed.
+    func testConsentCoversOneModelOnOneServer() {
+        let here = URL(string: "http://localhost:11434/v1")!
+        let consent = CloudConsent(url: here.absoluteString, model: "glm-4.6:cloud")
+        XCTAssertTrue(consent.covers(url: here, binding: "glm-4.6:cloud"))
+        XCTAssertTrue(CloudConsent(url: here.absoluteString, model: "big").covers(url: here, binding: "big:latest"))
+        XCTAssertFalse(consent.covers(url: here, binding: "gpt-oss:120b-cloud"))
+        XCTAssertFalse(consent.covers(url: URL(string: "http://192.168.1.20:11434/v1")!, binding: "glm-4.6:cloud"))
+        XCTAssertFalse(consent.covers(url: nil, binding: "glm-4.6:cloud"))
+        XCTAssertFalse(CloudConsent(url: here.absoluteString, model: "auto").covers(url: here, binding: "auto"))
+        XCTAssertFalse(CloudConsent(url: here.absoluteString, model: "").covers(url: here, binding: ""))
+    }
+
+    /// `/api/tags` failing leaves names alone. A model the last catalog marked cloud keeps the
+    /// mark; a model it described as local does NOT keep that description, since its details are
+    /// missing now: the pick waits for consent or the next full read.
+    func testACatalogThatCouldNotDescribeAModelKeepsOnlyItsCloudMark() {
+        let named = [ServerModel(name: "big:latest"), ServerModel(name: "qwen3.5:4b-mlx")]
+        let carried = ModelResolver.carryingCloudMarks(named, from: ollama + [remoteByListing])
+        XCTAssertEqual(carried.map(\.isRemote), [true, false])
+        XCTAssertTrue(ModelResolver.isCloud("big", in: carried))
+        XCTAssertTrue(ModelResolver.isUnconfirmed("qwen3.5:4b-mlx", in: carried))
+        XCTAssertEqual(resolve("qwen3.5:4b-mlx", .enrich, carried), .none)
+        XCTAssertEqual(resolve("big", .ask, carried), .none)
+        // A model the fresh catalog does describe is taken as it says.
+        let described = [ServerModel(name: "big:latest", capabilities: chat, sizeBytes: gb)]
+        XCTAssertEqual(ModelResolver.carryingCloudMarks(described, from: [remoteByListing]), described)
+        XCTAssertEqual(ModelResolver.carryingCloudMarks(named, from: nil), named)
+    }
+
+    /// A described entry whose NAME says cloud, with no `remote_host`: still never confirmed local.
+    func testADescribedModelNamedCloudIsNeverConfirmedLocal() {
+        let named = ServerModel(name: "glm-4.6:cloud", capabilities: chat, sizeBytes: 1)
+        let catalog = ollama + [named]
+        XCTAssertFalse(ModelResolver.isConfirmedLocal(named))
+        XCTAssertEqual(resolve("glm-4.6:cloud", .ask, catalog), .model("qwen3.5:9b-mlx", .substituted(for: "glm-4.6:cloud")))
+        XCTAssertEqual(resolve("auto", .enrich, [named]), .none)
+    }
+
+    /// FAIL CLOSED. A model the server only names is not confirmed local, whatever its name: on
+    /// Ollama a cloud model's name need not say so (`ollama cp x:cloud big`), and a first catalog
+    /// read without `/api/tags` has nothing to carry. It runs only with consent, and Auto and the
+    /// stand-in never pick it.
+    func testAModelTheServerOnlyNamesRunsOnlyWithConsent() {
+        let namesOnly = ["big:latest", "llama3:8b"].map { ServerModel(name: $0) }
+        for role in [ModelRole.ask, .enrich, .vision] {
+            XCTAssertEqual(resolve("big", role, namesOnly), .none)
+            XCTAssertEqual(resolve("big", role, namesOnly, cloudAllowed: true), .model("big:latest", .asSaved))
+            XCTAssertEqual(resolve("auto", role, namesOnly, cloudAllowed: true), .none)
+            // With a confirmed-local model beside it, that one stands in, never the unconfirmed one.
+            XCTAssertEqual(resolve("big", role, namesOnly + ollama),
+                           .model(role == .ask ? "qwen3.5:9b-mlx" : "qwen3.5:4b-mlx", .substituted(for: "big")))
+        }
+        XCTAssertTrue(ModelResolver.isUnconfirmed("big", in: namesOnly))
+        XCTAssertFalse(ModelResolver.isUnconfirmed("qwen3.5:4b-mlx", in: ollama))
+        XCTAssertFalse(ModelResolver.isUnconfirmed("glm-4.6:cloud", in: [ServerModel(name: "glm-4.6:cloud")]))
+        XCTAssertNotNil(ModelResolver.unconfirmedWarning(for: .ask))
+        XCTAssertNil(ModelResolver.unconfirmedWarning(for: .search))
+        // Search's pick runs in the engine, which reads its own Ollama's listing.
+        XCTAssertEqual(resolve("llama3:8b", .search, namesOnly), .model("llama3:8b", .asSaved))
+    }
+
+    func testTheWordShownWithAnAnswer() {
+        XCTAssertEqual(ModelResolver.localityWord("qwen3.5:4b-mlx", in: ollama), "local")
+        XCTAssertEqual(ModelResolver.localityWord("big", in: [remoteByListing]), "cloud")
+        XCTAssertEqual(ModelResolver.localityWord("glm-4.6:cloud", in: nil), "cloud")
+        XCTAssertEqual(ModelResolver.localityWord("llama3:8b", in: [ServerModel(name: "llama3:8b")]), "not confirmed local")
+        XCTAssertEqual(ModelResolver.localityWord("llama3:8b", in: nil), "not confirmed local")
+    }
+
+    func testIsCloudReadsTheCatalogThenTheName() {
+        XCTAssertTrue(ModelResolver.isCloud("big", in: [remoteByListing]))
+        XCTAssertFalse(ModelResolver.isCloud("big", in: nil))
+        XCTAssertTrue(ModelResolver.isCloud("glm-4.6:cloud", in: nil))
+        XCTAssertFalse(ModelResolver.isCloud("qwen3.5:4b-mlx", in: ollama))
     }
 
     /// When `/api/tags` can't be read nothing marks a model remote, so the name has to.
     func testCloudNamesAreRecognisedWithoutTheServersWord() {
         let names = ["gpt-oss:120b-cloud", "glm-4.6:cloud", "llama3:8b"].map { ServerModel(name: $0) }
-        XCTAssertEqual(resolve("auto", .ask, names), .model("llama3:8b", .auto))
-        XCTAssertEqual(resolve("auto", .enrich, names), .model("llama3:8b", .auto))
+        XCTAssertTrue(ModelResolver.isCloud("gpt-oss:120b-cloud", in: names))
+        XCTAssertTrue(ModelResolver.isCloud("glm-4.6:cloud", in: names))
+        XCTAssertFalse(ModelResolver.isCloud("llama3:8b", in: names))
+        // None is described, so none is confirmed local: Auto picks nothing.
+        XCTAssertEqual(resolve("auto", .ask, names), .none)
         XCTAssertEqual(resolve("qwen2.5:7b", .enrich, Array(names.prefix(2))), .none)
         XCTAssertTrue(ModelResolver.offers(names[0], for: .ask))
     }
@@ -91,17 +248,15 @@ final class ModelResolverTests: XCTestCase {
         XCTAssertEqual(resolve("qwen2.5vl:7b", .vision, noVision), .none)
     }
 
-    func testWithoutACatalogNamedPicksAreTrustedAndAutoIsNone() {
-        XCTAssertEqual(resolve("qwen2.5:14b", .ask, nil), .model("qwen2.5:14b", .asSaved))
-        XCTAssertEqual(resolve("auto", .ask, nil), .none)
-    }
-
-    /// A non-Ollama server: names only. Chat still avoids embedders and rerankers by name; vision
-    /// is never guessed, though the user can still pick a model for it.
+    /// A non-Ollama server: names only, so nothing is confirmed local. Auto picks nothing, and a
+    /// model the user picks runs once they allow it. The picker still hides embedders and rerankers
+    /// by name, and still lists any other model, vision included.
     func testServerThatWontDescribeItsModels() {
         let names = ["bge-m3", "nomic-embed-text", "jina-reranker-v2", "llama3:8b"].map { ServerModel(name: $0) }
-        XCTAssertEqual(resolve("auto", .ask, names), .model("llama3:8b", .auto))
+        XCTAssertEqual(resolve("auto", .ask, names), .none)
         XCTAssertEqual(resolve("auto", .vision, names), .none)
+        XCTAssertEqual(resolve("llama3:8b", .ask, names), .none)
+        XCTAssertEqual(resolve("llama3:8b", .ask, names, cloudAllowed: true), .model("llama3:8b", .asSaved))
         XCTAssertTrue(ModelResolver.offers(ServerModel(name: "llama3:8b"), for: .vision))
         XCTAssertFalse(ModelResolver.offers(ServerModel(name: "jina-reranker-v2"), for: .ask))
     }
