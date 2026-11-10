@@ -39,9 +39,12 @@ Stated so a report can be aimed at what matters:
   Apple, and stapled. The engine's binaries are signed individually under the hardened runtime.
 - **Updates are signed twice over.** The appcast is served over HTTPS, every item carries an EdDSA
   signature, and the feed itself is signed. The app verifies before extracting and refuses an
-  unsigned feed. The private key lives on an encrypted volume and is never exported in the clear.
-- **No network except two places.** A model server you chose, restricted to loopback or a private
-  address, and the update check, which you allow before it first runs.
+  unsigned feed. The private key is kept in the release machine's keychain, and backed up only in
+  encrypted form, in an encrypted disk image or a password manager.
+- **The app connects to two places only.** A model server you chose, restricted to loopback or a private
+  address, and the update check, which you allow before it first runs. Content leaves the Mac only
+  if you choose a model your server runs in its cloud, which Settings marks *(cloud)*, or connect
+  an assistant such as Claude, which sends what it retrieves to its provider.
 - **No account, no telemetry.** There is no server belonging to this project to talk to.
 - **Nothing is fetched at runtime.** The Python engine, its dependencies and its interpreter are
   built into the bundle, and every binary in it is verified at build time to link only macOS

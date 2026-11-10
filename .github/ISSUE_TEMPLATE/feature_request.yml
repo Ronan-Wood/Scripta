@@ -1,0 +1,50 @@
+name: Feature request
+description: Something Scripta should do that it doesn't.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This tracker is public. Describe what you need with a made-up example, not your own calls,
+        notes, names or paths.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you're trying to do, and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: The behaviour you'd like. If it changes what Scripta writes into your vault, or what leaves your Mac, say so.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Recording and transcription
+        - Calls and the vault Scripta writes
+        - Library and documents
+        - Ask and search
+        - Claude and MCP
+        - Workspaces and calendar
+        - Settings and local models
+        - Updates and install
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to work on this myself.

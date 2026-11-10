@@ -1,16 +1,20 @@
 # Architecture — Scripta and the substrate engine
 
-The whole system, in one document: what each half does, the stack, the retrieval techniques and
-what they measured, and the machinery that makes the engine refuse rather than mislead.
+How Scripta is built: what the app does, how it runs the engine and talks to it, how the engine is
+packaged into the app, and what the app deliberately leaves out.
 
-**Read this before `README.md`.** That file describes the app as it was before Doc 4 — a bundled
-`scripta-mcp` helper (deleted, Phase 3), an app "sandboxed in every configuration" (unsandboxed
-since Doc 3 §1), a seven-pane hub (now five), `DocumentImporter` (deleted, Phase 4b), a Swift
-`Retriever` with a gated vector slot (the entire Swift retrieval stack went in Phase 6) — and it
-never mentions the substrate engine, which is now most of the system.
+The engine is its own repository, [Ronan-Wood/substrate](https://github.com/Ronan-Wood/substrate),
+and documents its own internals: its [architecture](https://github.com/Ronan-Wood/substrate/blob/main/docs/architecture.md),
+its [configuration](https://github.com/Ronan-Wood/substrate/blob/main/docs/configuration.md) (vault
+manifests, note frontmatter, the registry), its [security model](https://github.com/Ronan-Wood/substrate/blob/main/docs/security.md),
+the [client contract](https://github.com/Ronan-Wood/substrate/blob/main/docs/client-contract.md)
+the app is held to, and the [principles](https://github.com/Ronan-Wood/substrate/blob/main/docs/principles.md)
+both halves follow. Sections 3 to 6 below summarize what the app relies on and link there.
 
-Numbers below carry the conditions they were measured under. Where a claim is a decision rather
-than a measurement, it says so.
+Numbers below carry the date and conditions they were measured under. Where a claim is a decision
+rather than a measurement, it says so. Code comments cite design records as "Doc 2" to "Doc 5".
+Those are the maintainer's notes and aren't published; the comment beside each citation says what
+the decision was.
 
 ---
 
@@ -40,14 +44,19 @@ read-only, refreshing, not agent mode, indexing Scripta's note format, and on Sc
 (`EngineAttach`). While attached, Scripta writes notes and registers scopes, and that engine does
 all the indexing: "Refresh now" asks it for its next pass. Scripta never stops an engine it did not
 start, and starts its own if that one goes away.
-*Measured 2026-08-12:* app running → 3 engine processes, quit → 0 orphans, relaunch → back on
-`:8765`. The engine has since moved off TCP to a Unix socket in a 0700 directory
-(`~/.substrate/run/substrate.sock`, in the engine's own home), and both ends refuse a peer of
-another uid: loopback TCP let every user on the Mac query every scope. The socket's 0.3.4 path,
-which clients were registered with, is kept as a symlink to it (`LegacyEngineSocket`). Both
-ends state and check a wire version (`Substrate-Wire`, the engine's `substrate/wire.py`). The engine
-serves a declared range of client versions, every change inside it additive, and an app outside
-that range is refused rather than left to mis-decode a reply.
+
+**The socket.** The engine listens on a Unix socket in a 0700 directory in its own folder,
+`~/.substrate/run/substrate.sock`, and both ends refuse a peer running as another user. It used to
+listen on loopback TCP, which let every user on the Mac query every scope. The socket path 0.3.4
+used, which clients were registered with, is kept as a symlink to it (`LegacyEngineSocket`).
+
+**The wire version.** Both ends state and check a wire version (the `Substrate-Wire` header). The
+engine serves a declared range of client versions, every change inside it additive, and refuses an
+app outside that range rather than leave it to mis-decode a reply. `engine.lock` records the wire
+version this app speaks, and `WireParityTests` holds `SubstrateWire.version` to it.
+
+*Measured 2026-08-12, when the engine still used TCP:* app running → 3 engine processes, quit → 0
+orphans, relaunch → back up.
 
 ---
 
@@ -66,139 +75,70 @@ the same speech and would double every line.
 | 3 | clean + enrich | deterministic filler removal, then optional title/summary/topics from Apple Foundation Models — deterministic first, so the model is never trusted with what a rule can do |
 | 4 | write | YAML frontmatter + timestamped body into the workspace's vault. From here the file is the artefact; everything downstream is derived |
 
-**Screen context.** During a call the app can periodically OCR a chosen window — tables become
-Markdown through `RecognizeDocumentsRequest` — and interleave it into the transcript, timestamped.
-Screenshots are discarded immediately after extraction.
+**Screen context.** During a call the app can periodically OCR the frontmost window, the whole
+screen or a window you pick. Tables become Markdown through `RecognizeDocumentsRequest`, and the
+text is interleaved into the transcript, timestamped. Each screenshot is discarded once its text is
+read. The one exception: with a local vision model set up, up to 20 frames wait as images for the
+post-call captioning pass, and are deleted after it.
 
 ---
 
-## 3. The corpus — a vault is a contract
+## 3. The corpus: a vault is a contract
 
-Substrate does not index arbitrary directories. It composes **scopes**: a project vault plus the
-vaults it inherits, resolved from a `.substrate.toml` manifest at the project vault's root. One
-scope spans several directories, which is why `list_scopes` is the only reliable way to learn what
-exists.
+Scripta writes each call as a note into the active workspace's vault, and registers that vault with
+the engine. The engine doesn't index arbitrary folders. It composes **scopes**: a project vault plus
+the vaults it inherits, as the `.substrate.toml` at the vault's root declares. One scope spans
+several folders, which is why a client asks the engine which scopes exist rather than guessing.
 
-### Three tiers
+Every note declares a **spine**: `status`, `doc_type`, `confidence` and `domains`. Retrieval filters
+and ranks on them, and archived or superseded notes are withheld by default. The fields and their
+values are in the engine's [configuration](https://github.com/Ronan-Wood/substrate/blob/main/docs/configuration.md).
 
-| tier | holds | reuse |
-|---|---|---|
-| 1 | operator knowledge — who you are, how you work, patterns outliving projects | every scope |
-| 2 | shared references — concepts useful to more than one project | several scopes |
-| 3 | project-local material — decisions, notes, recorded calls | one scope |
-
-### The spine
-
-Four declared fields. Retrieval filters and ranks on them, so a note without them answers badly.
-
-| field | vocabulary | effect |
-|---|---|---|
-| `status` | `active` · `complete` · `archived` · `superseded` | the first two are retrieved by default; the others withheld |
-| `doc_type` | `decision` · `explanation` · `reference` · `how-to` · `digest` | one note, one job — a note doing two gets split |
-| `confidence` | `proposed` · `inferred` · `stated` · `verified` | how settled the claims are. `unstated` means *not yet judged*, never *uncertain* |
-| `domains` | free list | subject filtering across scopes |
-
-A fifth field decides visibility. **Recorded calls are `document_class: conversation` and are
-withheld from retrieval by default** — a question about something said on a call returns curated
-notes unless the caller passes `include_sources: true`. The reply always states what was excluded,
-because silence would read as "no such call".
+**Recorded calls are withheld from retrieval by default.** Scripta's notes are
+`document_class: conversation`, and a search returns them only when the caller asks with
+`include_sources: true`. The reply always says what it excluded, because silence would read as "no
+such call". The app's own surfaces ask for calls; a Claude client has to.
 
 ---
 
 ## 4. Ingestion
 
-A chunker that splits on token count destroys the one thing that makes a document navigable:
-position. Substrate chunks along document structure and **denormalizes position onto every
-passage** — heading path, page label, `document_class`, version, `source_sha256` — so a retrieved
-passage can state whether it is current without a join.
+The Library hands documents to the engine, which converts each one to Markdown and puts it through
+the same ingest path as a note. PDFs read from their own text layer, and scanned pages and images
+go through Apple's document recognizer, so nothing needs installing. Office files, HTML, CSV,
+subtitles, email and EPUB convert without models. `substrate formats` lists every format the engine
+accepts and every one it refuses.
 
-### Formats
+A PDF or an image can instead go through docling's layout and table models, which render tables as
+tables, when Settings → Local model → Document models names a folder holding them. The folder is
+checked and never created or downloaded into. If it goes missing, for example on an unplugged
+drive, the engine reads documents without the models and says so, rather than refusing them.
 
-Markdown and text are read by the engine's own reader; everything else converts to Markdown first
-and enters the same ingest path, so a DOCX passes the gates the native path also runs.
-
-| arm | formats | needs models |
-|---|---|---|
-| native | `md` `txt` | no |
-| converted | `docx` `pptx` `xlsx` `html` `csv` `vtt` `eml` `adoc` `tex` `epub` | no |
-| PDF | `pdf` | no — its own text layer through pdfium; Apple's document recognizer for scanned pages |
-| image | `png` `jpg` `tiff` `bmp` `webp` | no — Apple's document recognizer |
-
-A PDF or an image can instead go through docling with its layout and table models, which renders
-tables as tables, when `--docling-models DIR` names a folder holding them (Settings → Local model →
-Document models). The folder is checked and never created or downloaded into. The CLI refuses a
-missing folder; the app leaves the flag off, so an unplugged models drive reads documents without
-models rather than refusing them.
-
-### Two gates that are ingestion's own
-
-- **Non-empty.** A conversion yielding no word is refused. Not hypothetical: a blank image converts
-  with `status=SUCCESS` and a zero-character body, and every downstream check passes it, because
-  coverage over an empty document is 1.0 by construction.
-- **Raw-text coverage.** Where a cheap independent reading of the source exists (OOXML text nodes,
-  HTML text nodes, plain bytes), 95% of its word tokens must survive into the Markdown. Where no
-  such reading exists, coverage is recorded as `null` with the probe named `unavailable` — never as
-  a passing number. Absent evidence is not a clean result.
+The engine refuses a conversion that yields no words. Where a cheap independent reading of the
+source exists (Office files, HTML, plain text), it also refuses one that loses more than 5% of the
+words that reading finds. For PDFs and images no such reading exists, so coverage is recorded as
+unmeasured rather than as a pass. The engine's [ingestion findings](https://github.com/Ronan-Wood/substrate/blob/main/docs/ingestion-findings.md) say
+why each gate exists.
 
 ---
 
 ## 5. Retrieval
 
-BM25 over passages via SQLite FTS5, optionally plus a vector arm, optionally query expansion,
-optionally reranking. Every arm is measured against a gold set, and the shipped configuration is a
-*measured* configuration: change one model and the engine returns `expected_mrr: null` rather than
-quoting a number that no longer applies.
+BM25 over passages via SQLite FTS5, optionally with a vector arm, query expansion (HyDE) and
+reranking. The engine measures each stack against a gold set, and quotes a figure only for a stack
+it has measured: change one model and it reports `expected_mrr: null` instead.
 
-### Measured stacks
+Apple's on-device models give every arm with nothing installed. A local Ollama with the default
+embedder and the cross-encoder reranker answers paraphrased questions noticeably better. Each reply
+states which arms ran and, for a measured stack, its tier. The engine's
+[experiments log](https://github.com/Ronan-Wood/substrate/blob/main/EXPERIMENTS.md) holds the
+measurements and the conditions behind them.
 
-Mean reciprocal rank, same 44-case cohort, model-specific. Quoting a figure from a different cohort
-beside these would be the cross-cohort subtraction this project forbids.
-
-| stack | MRR | requires |
-|---|---|---|
-| full Ollama + cross-encoder rerank — **shipped default** | 0.708 | Ollama running |
-| full Ollama, listwise rerank | 0.698 | Ollama running |
-| **full Apple — on-device, nothing installed** | 0.593 | nothing |
-| Apple embedder alone | 0.343 | nothing |
-
-### The reranker reversed on the real corpus
-
-On reference books the two arms tied (0.698 vs 0.708, "total spread under two cases") and the
-listwise arm shipped because it was ~10× faster. Re-measured 2026-08-10 on the operator's own
-vaults (34-case gold set, only the rerank arm varying), **both halves of that argument reversed**:
-
-| arm | semantic MRR | overall MRR | p50 (uncached) |
-|---|---|---|---|
-| none | 0.494 | 0.613 | 161 ms |
-| listwise `qwen2.5:7b` (was default) | 0.426 | 0.671 | 4,050 ms |
-| **cross-encoder (now default)** | 0.679 | 0.683 | 586 ms |
-
-The shipped arm scored *below no reranker at all* on paraphrased queries and was the slowest of the
-three. The latency reversal is structural, not incidental: the listwise arm asks a 6.4 GB chat model
-to generate an ordering over 20 candidates, while the cross-encoder runs 20 short scoring passes
-through a 2.5 GB model trained on the relevance judgment the other one improvises.
-
-### A technique measured and switched OFF
-
-Section routing — match the query against outline records, then pull passages beneath the winning
-section — is a sound idea: a plain-language question often shares no vocabulary with any passage but
-matches a section's orientation record well. It was built, fused with Reciprocal Rank Fusion
-(k=60, parameter-free and scale-free, which matters because BM25 over passages and BM25 over outline
-records are not on the same scale), and **turned off, because it did not pay.**
-
-| config | lexical | semantic MRR |
-|---|---|---|
-| direct only | 28/28 | 0.207 |
-| RRF fusion, equal weight | 27/28 ✗ | 0.219 |
-| RRF fusion, routed ×0.45 | 27/28 ✗ | 0.250 |
-| backfill (cannot displace) | 28/28 | 0.207 (no-op) |
-
-Two mutually exclusive failure modes. **Fusion displaces:** routed passages were retrieved because
-their *section* matched, so interleaving them floods top-k with section-mates and pushes the exact
-answer out. **Backfill is inert:** restricting routed results to slots direct retrieval did not earn
-is safe by construction, but BM25 always returns k results, so there is never a free slot. The gain
-was one case improving while two regressed — variance, not a technique. Kept with its measurement so
-it is not re-litigated from scratch.
+Two findings shaped the defaults. A cross-encoder replaced a listwise chat-model reranker after a
+re-measurement on real vaults (2026-08-10): the listwise arm scored below no reranker at all on
+paraphrased questions, and was the slowest of the three. And section routing, which fused passages
+from a matching section into the results, was built, measured and switched off, because it pushed
+exact answers out of the top results more often than it found new ones.
 
 ---
 
@@ -207,14 +147,9 @@ it is not re-litigated from scratch.
 > **Information that exists but does not cross the boundary to its consumer reads as absence — and
 > absence reads as fine.**
 
-The dominant failure shape of this project: five incidents, different subsystems, one structure. In
-every case the missing information already existed; the failure was attaching it to the thing that
-crossed. An output missing its conditions is indistinguishable from one that had none — a heading
-path naming the wrong chapter is well-formed, an MRR over zero vectors is a valid float, degraded
-results are still results.
-
-The cure is structural: **attach the condition to the output as a field** — not prose, which a
-summary paraphrases away; on the output, not beside it; quantified where possible.
+That is the engine's first [principle](https://github.com/Ronan-Wood/substrate/blob/main/docs/principles.md), and the app is the consumer it protects.
+So every reply carries its conditions as fields, and the app renders them rather than paraphrasing
+them away:
 
 | field | what it prevents |
 |---|---|
@@ -224,28 +159,10 @@ summary paraphrases away; on the output, not beside it; quantified where possibl
 | `refresh.frozen` | tri-state: `true` a rebuild refused and results are superseded, `false` index and vault agreed, `null` no basis |
 | `filters.sources_excluded` | that calls were withheld, so silence cannot read as "no such call" |
 
-**The sixth incident was predicted before its cause existed.** The document describing this pattern
-once ended: *"a version stamp that implied staleness was handled would be the sixth occurrence."*
-What produced it was the fix for the manual half — an unattended agent making refresh automatic. A
-scope whose rebuild *refused* kept its old index and answered in an envelope byte-identical to a
-healthy run. The cure was the cure: `refresh` became a field on the envelope, tri-state, read by the
-shared render layer rather than attached by each adapter — because an adapter that has to remember
-to attach it is one that eventually will not.
-
-### Composition gates
-
-Composing a scope runs a lettered assertion series and **refuses the entire scope if any single note
-fails**, because a partially composed scope is a silently-wrong retrieval set. A18 measures the
-Markdown against the resulting chunks; A20 status membership; A21 doc types; A22 a per-note sweep;
-A23 confidence.
-
-> Promoting a check suite to a gate is an audit of every check in it, executed in one step — and the
-> correct expectation is a crop of false rejects.
-
-Observed exactly that way: wiring the per-document series into `compose` immediately exposed two
-checks wrong since Markdown ingestion existed. One counted ordinary exclamation marks as hyphen
-residue; the other computed a stale-ancestor ratio against a denominator that only made sense for a
-whole book. Both were invisible precisely because nothing gated on them.
+`TriStateHonestyTests` and `RenderContractTests` hold the app's decoding and rendering of these to
+the engine's golden frames. The engine also refuses to compose a scope if any one note fails its
+checks, because a partly composed scope is a silently wrong retrieval set. That is why an edited
+note with no `status` stops its whole scope refreshing, and the app shows the scope as frozen.
 
 ---
 
@@ -255,9 +172,9 @@ The engine ships **inside the app bundle**, built by a post-build phase on the `
 (the engine's `tools/build-bundled-engine`). The engine is a release of its own repository,
 [Ronan-Wood/substrate](https://github.com/Ronan-Wood/substrate): `engine.lock` pins its tag, commit
 and tarball SHA-256, and `Distribution/fetch-engine` unpacks it into `vendor/substrate`, which the
-phase builds. The `engine pin` CI job holds the pin to the release. *Verified 2026-08-15:* a
-relaunched app spawns
-`Scripta.app/Contents/Resources/substrate-engine/.venv/bin/python -B -E -s -m substrate.mcp.server`.
+phase builds. The `engine pin` CI job holds the pin to the release. The app runs the bundled CLI as `substrate serve --socket <path> --read-only`, from
+`Scripta.app/Contents/Resources/substrate-engine/`. An engine that offers no `refresh` falls back to
+`substrate-mcp --socket`, which refreshes nothing, and the Library says so.
 
 | component | size | notes |
 |---|---|---|
@@ -298,21 +215,13 @@ corpora are PDF-heavy, so any split would have triggered the large download almo
 | extraction | pdfium · Apple's document recognizer · docling | PDFs and images need no model weights; docling converts Office and web formats, and with its optional models reads PDF layout and tables. Every import is lazy, so the runtime path never loads it |
 | embeddings | Ollama, or Apple `NLContextualEmbedding` | the on-device arm needs no install and is not gated on Apple Intelligence |
 | reranking | cross-encoder | a model trained on the relevance judgment rather than a chat model improvising one |
-| transport | JSON-RPC — stdio and loopback HTTP | one server for the app and for Claude Code; `--read-only` on the socket |
+| transport | JSON-RPC on a Unix socket; MCP over stdio | the app talks to `substrate serve` on the socket, `--read-only`; Claude clients run `substrate-mcp`, which connects to the same engine |
 | build | XcodeGen | targets generated from `project.yml`; sources are a directory sweep, not a hand-maintained list |
 
 ### Tests and gates
 
-| suite | count | covers |
-|---|---|---|
-| engine, `uv run pytest tests/ -q` | 587 | ingest, chunking, spine, gates, retrieval, refusals |
-| Core, `cd Core && swift test` | 247 | vault layout, parsing, index, wire mapping, conversation storage |
-| eval fixture | 1,811 chunks | pinned by signature `4a560ce34aa6378a`; a run refuses to report MRR if the fixture moved |
-
-Two rules the project runs on, both learned expensively: **a new test is mutation-checked before it
-is trusted** — break the code, watch it fail, restore it — and **a view change is not done until the
-app has been opened**, because a green build says nothing about layout, reachability, or a control
-that does nothing.
+[CONTRIBUTING.md](CONTRIBUTING.md#tests) lists the test bundles and the CI checks. The engine's tests
+are in its own repository.
 
 ---
 
@@ -334,7 +243,6 @@ that does nothing.
 
 ---
 
-Related: the engine repository's `docs/principles.md` (the four laws), and
-`Distribution/RELEASING.md` (the shipping runbook). The structural spec is Doc 2 in
-`~/vaults/core-vault/00-operator/specs/`; the decision records are Doc 3–5 in
-`~/vaults/scripta-vault/03-references/`.
+Related: the engine's [principles](https://github.com/Ronan-Wood/substrate/blob/main/docs/principles.md),
+[`Distribution/RELEASING.md`](Distribution/RELEASING.md) (the shipping runbook), and
+[`docs/history/`](docs/history/README.md) (dated records, such as the July 2026 spec).

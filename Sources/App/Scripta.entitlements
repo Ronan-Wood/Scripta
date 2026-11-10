@@ -7,7 +7,7 @@
 	     process. THE FIRST REASON IS GONE — that helper was deleted 2026-08-07 (Doc 4 Phase 3) —
 	     and the second alone still decides it: a sandboxed app cannot spawn a subprocess outside
 	     its bundle, so `com.apple.security.app-sandbox` and the engine supervisor remain mutually
-	     exclusive. SPEC.md's locked-decision row records the move and both dates.
+	     exclusive. docs/history/SPEC.md's locked-decision row records the move and both dates.
 
 	     WHAT EACH REMAINING KEY IS NOW WORTH, since half of them were sandbox concepts:
 

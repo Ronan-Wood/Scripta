@@ -1,0 +1,72 @@
+name: Bug report
+description: Something Scripta does wrong, crashes on, or reports misleadingly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **A security problem doesn't go here.** Report it privately, as SECURITY.md describes.
+
+        This tracker is public. Don't paste transcripts, note titles, participants' names, document
+        text or paths from your own Mac. If you need to show content, make up a short example call
+        that shows the same problem.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what Scripta did, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: From opening the app, as exactly as you can.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: What Scripta showed
+      description: The error Scripta showed, or what Ask or the Library says about the engine, word for word. Replace your name, workspace and vault names, call titles, and anything under your home folder.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Scripta version
+      description: Settings → General shows it, for example 0.3.5 (8).
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      description: Apple menu → About This Mac, for example 26.1.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Recording and transcription
+        - Calls and the vault Scripta writes
+        - Library and documents
+        - Ask and search
+        - Claude and MCP
+        - Workspaces and calendar
+        - Settings and local models
+        - Updates and install
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: models
+    attributes:
+      label: Local model server
+      description: Settings → Local model.
+      options:
+        - None (Apple's on-device models only)
+        - Ollama on this Mac
+        - Another server on this Mac or my network
+        - Not relevant

@@ -1,6 +1,6 @@
 # Privacy Policy — Scripta
 
-**Effective date:** September 14, 2026
+**Effective date:** November 10, 2026
 **Contact:** scripta.app@outlook.com
 
 <!-- Host this page publicly (GitHub Pages or any static host) and put its URL in the App
@@ -42,8 +42,10 @@ Nothing, by default. Specifically:
   nothing.
 - **Optional local AI server:** in Settings you can connect the app to an AI server you run
   yourself (for example Ollama) on your own machine or private network. If you do, the text
-  being processed goes only to that server of yours. Addresses on the public internet are
-  refused outright.
+  being processed goes to that server of yours, and addresses on the public internet are
+  refused outright. Some servers also offer models that run in their own cloud, which the app
+  marks "(cloud)" in Settings. If you choose one, what it processes is sent to that provider
+  under its own terms. The app never picks a cloud model on its own, and search never uses one.
 - **Optional AI assistant connection:** if you connect an AI assistant such as Claude, the
   assistant can read your transcripts when you ask it questions — that data is then handled
   by the assistant under its own privacy policy, using your own account with that provider.

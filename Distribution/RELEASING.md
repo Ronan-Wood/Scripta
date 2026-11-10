@@ -69,7 +69,7 @@ defaults read "$(pwd)/build/Distribution/Scripta.app/Contents/Info.plist" CFBund
    Distribution/backup-sparkle-key
    ```
 
-   The first run creates `~/SparkleKey.dmg` and asks for a password for it. Every run mounts the
+   The first run creates `SparkleKey.dmg` in your home folder and asks for a password for it. Every run mounts the
    image, exports the key into it, and ejects it, warning if the volume stays mounted.
    `generate_keys` raises a keychain prompt for the key, which is expected.
 
@@ -186,7 +186,10 @@ release being cut and one `--download-url-prefix` covers them all.
 Distribution/publish-release
 ```
 
-Write the release notes to `dist/release-notes-<version>.md` first. The script checks that this
+Write the release notes to `dist/release-notes-<version>.md` first, from the version's section of
+`CHANGELOG.md`. That section has to be on `main` before the tag: move the **Unreleased** entries
+under a heading for the version in the version bump PR, if no earlier PR did, so the tagged
+commit's changelog describes what it ships. The script checks that this
 checkout's Sparkle tools match the framework the app embeds, then generates and signs the appcast
 and asserts it: signatures on the item and on the feed, exactly one item, and every URL under this
 release's tag. `generate_appcast` reads the key through a keychain prompt, and if that prompt is
@@ -264,8 +267,10 @@ server rather than keep two answering the same questions differently. What repla
 - **Reads** — the engine's own MCP server, over the same tools every other scope uses.
 - **The privacy wall it enforced** — the engine's `substrate/guard.py`. A workspace vault declares
   `guard_state` and the engine withholds that vault's own notes unless the app is running and vouching for it.
-  Narrower than the helper's, which refused the whole scope. **Currently inert:** no vault on this
-  machine declares `guard_state`, so the wall is off in practice.
+  Narrower than the helper's, which refused the whole scope. A workspace vault declares it when the
+  app creates or regenerates its manifest (`ScriptaVault.manifest()`), and every released version
+  has, since 0.1.0. A manifest a development build wrote before 2026-08-07 with no `inherits` isn't
+  rewritten, so that vault stays unguarded until it is.
 - **The four entity tools** (`people`, `tags`, `commitments`, `entity_detail`) — dropped by
   decision. The entity surfaces remain in the app; they are no longer reachable by a model client.
 
@@ -280,8 +285,7 @@ record, not as a task.
 Executed across code, config, docs, skill, and MCP registrations. Bundle ID is
 `com.ronanwood.Scripta`. Deliberately NOT renamed (they name on-disk data, not the brand): the
 `app: call-transcriber` frontmatter marker, `.calltranscriber-registry.json`, the entity-mirror
-markers, and the App Group ID `6CTH5M9UWZ.com.ronanwood.calltranscriber`. Repo folder is still
-`~/CodeHome/CallTranscriber` (rename any time; nothing depends on it).
+markers, and the App Group ID `6CTH5M9UWZ.com.ronanwood.calltranscriber`.
 
 ## Hosting the privacy policy
 
