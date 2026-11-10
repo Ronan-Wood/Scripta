@@ -36,11 +36,12 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from substrate import refresh_state, scopes
+from substrate import prune, refresh_state, scopes
 
 # The exit status of a compose or embed that did not run because another held the lock: BSD's
 # EX_TEMPFAIL, "try again later". Distinct from every failure status, which the caller records.
@@ -52,6 +53,9 @@ LOCK_NAME = "vaults.lock"
 DEFAULT_WAIT = 60.0
 # The app's cadence, kept: chosen to match the vault sync, and a quiet pass costs a few seconds.
 DEFAULT_EVERY = 900.0
+# The least time between the end of one pass and the start of a REQUESTED one (`Loop.request`), so
+# a client asking again and again brings passes forward without running them back to back.
+REQUEST_GAP = 10.0
 # How long the loop's embed waits for the lock. The compose it vectors has already run, so a
 # decline here leaves a scope current but unvectored; it waits out anything short of a full
 # re-embed by another caller.
@@ -189,6 +193,10 @@ def terminate_children(grace: float = 10.0) -> None:
             child.kill()
 
 
+def _joined(*parts: str) -> str:
+    return "\n".join(p for p in parts if p)
+
+
 def _tail(text: str) -> str:
     lines = [ln for ln in text.strip().splitlines() if ln.strip()]
     return "\n".join(lines[-_TAIL_LINES:])
@@ -266,16 +274,20 @@ def run_pass(registry: str | Path | None = None, only: list[str] | None = None, 
             if _interrupted(compose, stopping):
                 results.append(ScopeResult(name, None, "interrupted"))
                 break
+            # What compose pruned is said in the pass's report whatever the pass then records.
+            pruned = "\n".join(ln.strip() for ln in (compose.stdout or "").splitlines()
+                                if ln.strip().startswith(prune.PRUNED))
             if compose.returncode != 0:
-                result = ScopeResult(name, "compose_failed", _tail(compose.stderr))
+                result = ScopeResult(name, "compose_failed", _joined(pruned, _tail(compose.stderr)))
             else:
                 embed = runner([*cli, "embed", "--db", str(entry.db), "--registry", str(reg),
                                 "--wait", str(EMBED_WAIT)], env)
                 if _interrupted(embed, stopping):
                     results.append(ScopeResult(name, None, "interrupted"))
                     break
-                result = (ScopeResult(name, "refreshed") if embed.returncode == 0
-                          else ScopeResult(name, "embed_failed", _tail(embed.stderr)))
+                result = (ScopeResult(name, "refreshed", pruned) if embed.returncode == 0
+                          else ScopeResult(name, "embed_failed",
+                                           _joined(pruned, _tail(embed.stderr))))
         results.append(_record(result, reg, say))
     return results
 
@@ -294,26 +306,86 @@ def _record(result: ScopeResult, registry: Path, say: Say) -> ScopeResult:
     return ScopeResult(result.scope, result.outcome, result.detail, recorded=True)
 
 
+class _Stop(threading.Event):
+    """`Loop.stop`: setting it also wakes the loop's wait, so a stop never waits out a request gap."""
+
+    def __init__(self, wake: threading.Event) -> None:
+        super().__init__()
+        self._wake = wake
+
+    def set(self) -> None:
+        super().set()
+        self._wake.set()
+
+
 class Loop(threading.Thread):
     """A pass now, then one every `every` seconds, until `stop` is set or the process ends.
 
     SERIAL BY CONSTRUCTION: the wait comes after a pass, so a pass that overruns delays the next
     rather than stacking a second on top of it. A pass that raises is logged and the loop carries
-    on, because one unreadable registry moment must not end refreshing for the server's life."""
+    on, because one unreadable registry moment must not end refreshing for the server's life.
+
+    `request()` brings the next pass forward, for a client that has just written notes for this
+    engine to index. Requests COALESCE: however many arrive during a pass or a wait, one pass
+    follows, and it starts no sooner than `REQUEST_GAP` after the last one ended, so no caller can
+    make the loop run more often than that."""
 
     def __init__(self, registry: str | Path | None = None, *, every: float = DEFAULT_EVERY,
-                 log: Say | None = None, **pass_kwargs) -> None:
+                 log: Say | None = None, gap: float = REQUEST_GAP,
+                 clock: Callable[[], float] = time.monotonic, **pass_kwargs) -> None:
         super().__init__(name="substrate-refresh", daemon=True)
         self.registry = registry
         self.every = every
-        self.stop = threading.Event()
+        self.gap = gap
+        self._clock = clock
+        self._wake = threading.Event()
+        self.stop = _Stop(self._wake)
         self._say = log or _stderr
         self._pass_kwargs = pass_kwargs
+        self._lock = threading.Lock()
+        self._running = False
+        self._ended: float | None = None
+
+    def request(self) -> tuple[str, float]:
+        """Bring the next pass forward. Returns when it starts: `("now", 0)`, `("after_pass", 0)`
+        while one runs, or `("after_gap", seconds)` within `gap` of the last one's end."""
+        with self._lock:
+            running, ended = self._running, self._ended
+            self._wake.set()
+        if running:
+            return "after_pass", 0.0
+        wait = 0.0 if ended is None else max(0.0, ended + self.gap - self._clock())
+        return ("after_gap", wait) if wait > 0 else ("now", 0.0)
+
+    def _wait(self) -> None:
+        """Until `every` has passed, or a request has and `gap` too, or `stop` is set."""
+        deadline = self._clock() + self.every
+        while not self.stop.is_set():
+            left = deadline - self._clock()
+            if left <= 0 or not self._wake.wait(left):
+                return
+            if self.stop.is_set():
+                return
+            with self._lock:
+                self._wake.clear()
+                ended = self._ended or self._clock()
+            # A request: the pass it asks for, once the gap since the last one has passed.
+            soonest = ended + self.gap - self._clock()
+            if soonest <= 0 or not self.stop.wait(soonest):
+                return
 
     def run(self) -> None:
         while not self.stop.is_set():
+            with self._lock:
+                self._running = True
+                # A request made before this pass started is answered by it.
+                self._wake.clear()
             try:
                 run_pass(self.registry, log=self._say, stopping=self.stop, **self._pass_kwargs)
             except Exception as e:  # noqa: BLE001 — the loop outlives any single pass
                 self._say(f"substrate refresh: the pass failed: {type(e).__name__}: {e}")
-            self.stop.wait(self.every)
+            finally:
+                with self._lock:
+                    self._running = False
+                    self._ended = self._clock()
+            self._wait()

@@ -84,6 +84,8 @@ private struct ImportJobRow: View {
                 Image(systemName: "checkmark.circle.fill").font(.system(size: 14)).foregroundStyle(Carbon.success)
             case .addedWithoutVectors:
                 Image(systemName: "exclamationmark.circle.fill").font(.system(size: 14)).foregroundStyle(Carbon.warningText)
+            case .handedOff:
+                Image(systemName: "clock").font(.system(size: 14)).foregroundStyle(Carbon.textHelper)
             case .failed:
                 Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 14)).foregroundStyle(Carbon.danger)
             }
@@ -112,7 +114,7 @@ private struct ImportJobRow: View {
         switch job.state {
         case .failed: return Carbon.danger
         case .addedWithoutVectors: return Carbon.warningText
-        case .processing, .done: return Carbon.textHelper
+        case .processing, .done, .handedOff: return Carbon.textHelper
         }
     }
 
@@ -124,6 +126,7 @@ private struct ImportJobRow: View {
         // — once there and once in this view — for one state, so a reworded explanation would land
         // in whichever copy the next person happened to open.
         case .addedWithoutVectors(let message): return message
+        case .handedOff(let message): return message
         case .failed(let message): return message
         }
     }

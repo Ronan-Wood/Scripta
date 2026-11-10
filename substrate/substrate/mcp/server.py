@@ -54,6 +54,7 @@ from __future__ import annotations
 import copy
 import functools
 import json
+import math
 import os
 import socketserver
 import sys
@@ -62,7 +63,7 @@ import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from substrate import (
     agent, guard, introspect, local_socket, net, notes, private, render, scopes, spine, stack, wire,
@@ -70,6 +71,10 @@ from substrate import (
 from substrate.mcp import bridge
 from substrate.retrieve.local_models import RERANK_SENDS, cloud_refusal
 from substrate.store import schema
+
+if TYPE_CHECKING:
+    # Imported where it runs, in `_serve_refreshing`: a plain server never loads the loop.
+    from substrate.refresh import Loop
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "substrate"
@@ -487,11 +492,27 @@ TOOLS = [
     {
         "name": "list_scopes",
         "description": (
-            "What scopes exist and what each one composes. A scope appears here only once it has "
-            "actually been composed, so this is the authoritative list — a name that is missing "
-            "has no index behind it, rather than an index you have not found. `sources` is the "
+            "What scopes exist and what each one composes. A scope appears here once it has been "
+            "composed, or registered for this engine's next refresh pass to compose: `pending` "
+            "says it is waiting for that first pass, and it answers nothing until then. A name "
+            "that is missing has no index behind it, rather than an index you have not found. "
+            "`sources` is the "
             "vault chain the manifest resolves to, resolved fresh, so you can see whether a "
             "project scope really inherits the shared core tier."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "refresh",
+        "description": (
+            "Bring this engine's next refresh pass forward, for a client that has just written "
+            "notes it should index. It composes and embeds every registered scope, as the timer "
+            "does. Requests coalesce, and a requested pass starts no sooner than a short gap "
+            "after the last one, so asking again does not make passes run more often. "
+            "`next_pass` says when it starts: `now`, `after_pass` (one is running), or "
+            "`after_gap`, with `wait_seconds`. Each scope's outcome lands in `list_scopes`' "
+            "`refresh` block as the pass reaches it. Only an engine that refreshes on its own "
+            "(`substrate serve`) has this tool."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -920,9 +941,17 @@ def _tool_list_scopes(args: dict, cfg: Config) -> dict:
     # checks itself against. Its wire range needs no field: a client outside it is never answered.
     payload["server"] = {"read_only": cfg.read_only, "agent_mode": cfg.agent is not None,
                          "refresh_every": cfg.refresh_every,
+                         "refresh_requests": cfg.refresh_loop is not None,
                          "notes_version": spine.NOTES_VERSION,
                          "notes_min_version": spine.NOTES_MIN_VERSION}
     return payload
+
+
+def _tool_refresh(args: dict, cfg: Config) -> dict:
+    # Only a server with a loop has the tool (`_handler`). The wait is rounded UP, so a pass due in
+    # a few milliseconds is never reported as due in no time at all.
+    when, wait = cfg.refresh_loop.request()
+    return {"next_pass": when, "wait_seconds": math.ceil(wait * 10) / 10}
 
 
 def _tool_status(args: dict, cfg: Config) -> dict:
@@ -1027,7 +1056,10 @@ def _tool_documents(args: dict, cfg: Config) -> dict:
 
 HANDLERS = {"search": _tool_search, "expand": _tool_expand, "ingest": _tool_ingest,
             "amend": _tool_amend, "list_scopes": _tool_list_scopes, "status": _tool_status,
-            "documents": _tool_documents}
+            "documents": _tool_documents, "refresh": _tool_refresh}
+
+# The tools only a server with its own refresh loop has (`substrate serve`).
+LOOP_TOOLS = frozenset({"refresh"})
 
 # The tools that WRITE. Named once because read-only has to mean the same thing to `tools/list`
 # and to `tools/call`: a tool hidden from the list but still runnable when called is not read-only,
@@ -1079,6 +1111,8 @@ class Config:
         # Seconds between this server's own refresh passes (`substrate serve`), or None when it
         # refreshes nothing: a plain `substrate-mcp`, which leaves refreshing to whoever runs it.
         self.refresh_every: float | None = None
+        # `substrate serve`'s loop, for the `refresh` tool to bring its next pass forward.
+        self.refresh_loop: Loop | None = None
         # `stack.recheck` bound to the arguments the stack was built with, or None to keep the
         # stack exactly as built — every test, and any caller that did not ask for recovery.
         self._recheck = recheck
@@ -1164,9 +1198,11 @@ def _available_tools(cfg: Config) -> list[dict]:
     """What this server will actually run. A read-only transport does not ADVERTISE the write tools: a
     model told a tool exists will call it, and Doc 3 §3 takes the write primitive off the socket
     rather than letting it fail late."""
+    tools = TOOLS if cfg.refresh_loop is not None else [t for t in TOOLS
+                                                        if t["name"] not in LOOP_TOOLS]
     if not cfg.read_only:
-        return TOOLS
-    return [t for t in TOOLS if t["name"] not in WRITE_TOOLS]
+        return tools
+    return [t for t in tools if t["name"] not in WRITE_TOOLS]
 
 
 def _handler(name: object, cfg: Config):
@@ -1174,6 +1210,10 @@ def _handler(name: object, cfg: Config):
     are ABSENT rather than refused: there is no transport on which an agent server writes, so
     there is nothing to point a caller towards, unlike the read-only socket below."""
     if cfg.agent is not None and name in WRITE_TOOLS:
+        return None
+    # Not on a `--connect` bridge either: `tools/list` there is this process's, which has no loop,
+    # and an agent session reaching the engine through a bridge has no pass to ask for.
+    if cfg.refresh_loop is None and name in LOOP_TOOLS:
         return None
     return HANDLERS.get(name)
 
@@ -2086,6 +2126,7 @@ def _serve_refreshing(cfg: Config, socket_path: Path, registry: str | None, ever
     from substrate import refresh
 
     loop = refresh.Loop(registry, every=every)
+    cfg.refresh_loop = loop
     # Only the main thread may install a handler; a caller running this elsewhere keeps its own.
     main = threading.current_thread() is threading.main_thread()
     stops = (signal.SIGTERM, signal.SIGINT)

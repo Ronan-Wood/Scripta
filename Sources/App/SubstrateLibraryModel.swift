@@ -55,6 +55,9 @@ final class SubstrateLibraryModel: ObservableObject {
         /// This step did not run. Usually because an earlier one failed; also, on the removal rail,
         /// because there was nothing left to do. Drawn as absence, never as success or as failure.
         let skipped: Bool
+        /// Handed to the engine this app attached to, which composes on its own pass: what that
+        /// engine said, in a sentence. Drawn as pending, neither done nor failed.
+        var pending: String? = nil
 
         var failed: Bool {
             if skipped { return false }
@@ -81,6 +84,8 @@ final class SubstrateLibraryModel: ObservableObject {
         /// The scope the engine says it registered — read from compose's own output, not predicted
         /// here. `nil` when the job did not get that far.
         let scope: String?
+        /// The scope was registered for the engine to compose on its next pass, not composed here.
+        var pending: Bool = false
         /// The vault directory a failed compose left a document in. Its presence is what makes the
         /// remedy reachable: this is precisely the state where a note exists and cannot be found.
         let orphaned: URL?
@@ -668,7 +673,7 @@ final class SubstrateLibraryModel: ObservableObject {
                 embedSkipped])
         }
         done.append(Step(id: "compose", title: "Compose and register the scope", run: composed.run,
-                         appFailure: nil, skipped: false))
+                         appFailure: nil, skipped: false, pending: composed.pendingNote))
         // THE EMBED THIS ADD ALREADY RAN, finally reported. `composeVault` has embedded on every
         // path since the two note paths stopped doing it themselves — but this one took `.run` and
         // discarded the rest, so a document added while the embedder was unreachable showed three
@@ -819,12 +824,13 @@ final class SubstrateLibraryModel: ObservableObject {
             job = .running(Running(title: title, step: "Recomposing", started: Date(), done: steps))
             // Recomposed against the workspace vault the document was promoted into. `--clean`
             // because a removal must leave no ingest directory behind still answering queries.
+            // Attached, nothing is composed here: the engine's pass prunes the removed note's.
             let vault = try? ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder)
             let composed = await Self.composeVault(cli: cli,
                                          vault: vault?.root ?? AppSettings.outputFolder,
                                          name: vault?.scope ?? "library", clean: true)
             steps.append(Step(id: "compose", title: "Recompose the scope", run: composed.run,
-                              appFailure: nil, skipped: false))
+                              appFailure: nil, skipped: false, pending: composed.pendingNote))
             // This recompose is `--clean`: the index root is wiped and rebuilt, so the embed after
             // it is doing real work rather than a no-op, and a failure here leaves the whole scope
             // — not just the removed source's neighbours — reachable by exact word match only.
@@ -902,7 +908,7 @@ final class SubstrateLibraryModel: ObservableObject {
             let composed = await Self.composeVault(cli: cli, vault: vault.root,
                                                    name: vault.scope, clean: false)
             var steps = [written, Step(id: "compose", title: "Compose the scope", run: composed.run,
-                                       appFailure: nil, skipped: false)]
+                                       appFailure: nil, skipped: false, pending: composed.pendingNote)]
             steps.append(Self.embedStep(scope: vault.scope, composed: composed))
             finish(title: jobTitle, steps: steps)
         }
@@ -972,7 +978,7 @@ final class SubstrateLibraryModel: ObservableObject {
                     cli: cli, vault: URL(fileURLWithPath: row.vault, isDirectory: true),
                     name: row.scope, clean: false)
                 steps.append(Step(id: "compose-\(row.scope)", title: "Compose \(row.scope)",
-                                  run: composed.run, appFailure: nil, skipped: false))
+                                  run: composed.run, appFailure: nil, skipped: false, pending: composed.pendingNote))
                 steps.append(Self.embedStep(scope: row.scope, composed: composed))
             }
             finish(title: jobTitle, steps: steps)
@@ -1000,6 +1006,11 @@ final class SubstrateLibraryModel: ObservableObject {
         let title = "Vector the new passages"
         guard let composed, composed.run.succeeded else {
             return Step(id: "embed-\(scope)", title: title, run: nil, appFailure: nil, skipped: true)
+        }
+        // Handed to the engine this app attached to: it vectors on the pass that composes.
+        if composed.handedOff {
+            return Step(id: "embed-\(scope)", title: title, run: nil, appFailure: nil, skipped: false,
+                        pending: "The engine vectors them on the same pass.")
         }
         // REPORTS WHAT `composeVault` ALREADY DID rather than running its own. The database was
         // looked up here once through `registeredDatabase`, which reads the cached scope roster —
@@ -1113,6 +1124,28 @@ final class SubstrateLibraryModel: ObservableObject {
         Task { [weak self] in
             let composed = await Self.composeVault(cli: cli, vault: vault, name: slugged,
                                                    clean: true)
+            if composed.handedOff, composed.run.succeeded {
+                // Attached: the engine indexes the call on its pass (`composeVault`). Said in the
+                // log, the surface a path with no surface has, as the outcomes below are.
+                Self.log.info("""
+                    recording into \(slugged, privacy: .public) handed to the engine Scripta is \
+                    using; it composes the scope on its next pass
+                    """)
+                VaultBrowseModel.shared.corpusChanged()
+                await SubstrateScopes.shared.listScopes()
+                return
+            }
+            if composed.handedOff {
+                // `register` failed: nothing was composed here, so nothing here was disturbed. A
+                // scope already registered still has the engine's pass coming round; a new one is
+                // not in the registry, and the call is unindexed until one is recorded.
+                Self.log.error("""
+                    register failed after recording into \(slugged, privacy: .public) — the \
+                    engine Scripta is using composes only registered scopes, so a new one stays \
+                    unindexed until it is registered; \(composed.run.stderr, privacy: .private)
+                    """)
+                return
+            }
             // QUIET IS NOT SILENT, and this path had taken it to mean silent. It deliberately writes
             // no `job` — a recording finishing must not replace a report the operator is reading —
             // but it also discarded the whole outcome, so every call recorded during an embedder
@@ -1195,7 +1228,7 @@ final class SubstrateLibraryModel: ObservableObject {
         let composed = await Self.composeVault(cli: cli, vault: vault, name: name, clean: true)
         finish(title: title,
                steps: [Step(id: "compose", title: "Compose and register the scope",
-                            run: composed.run, appFailure: nil, skipped: false),
+                            run: composed.run, appFailure: nil, skipped: false, pending: composed.pendingNote),
                        Self.embedStep(scope: name, composed: composed)])
     }
 
@@ -1248,13 +1281,28 @@ final class SubstrateLibraryModel: ObservableObject {
 
         /// The compose worked and the embed did not: current content, no vectors. The one state
         /// that reported as success everywhere it was not explicitly checked for.
-        var embedFailed: Bool { run.succeeded && embed?.succeeded != true }
+        var embedFailed: Bool { !handedOff && run.succeeded && embed?.succeeded != true }
 
         /// The compose stood down: another compose, embed or refresh held the vaults lock past its
         /// wait, so it exited 75 (`refresh.EX_DECLINED`) having written nothing. It did not run and
         /// did not fail. DECODED HERE, ONCE, so no caller spells the status itself and reads a
         /// decline as a failure.
         var declined: Bool { run.status == 75 }
+
+        /// ATTACHED to an engine this app did not start, which does the indexing: `run` is the
+        /// `substrate register` that recorded the scope, and nothing was composed or embedded here.
+        var handedOff = false
+        /// What that engine said when asked for its next pass: nil when it takes no requests or
+        /// did not answer.
+        var refreshReply: WireRefreshRequest?
+
+        /// The sentence a step shows while the engine has the scope, or nil when this app composed.
+        var pendingNote: String? {
+            guard handedOff, run.succeeded else { return nil }
+            return "Registered. The engine Scripta is using composes and vectors it on "
+                + "\(refreshReply?.phrase ?? "its next pass, on its own schedule"); it answers in "
+                + "Ask once that pass has run."
+        }
     }
 
     static func composeVault(cli: SubstrateEngine.Command, vault: URL, name: String,
@@ -1284,6 +1332,17 @@ final class SubstrateLibraryModel: ObservableObject {
         try? FileManager.default.createDirectory(at: database.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
+        // ATTACHED: the engine indexes (plan §9.4). This app records the scope, which is a no-op
+        // when it is already registered to this vault, and asks for the next pass. Nothing is
+        // composed or embedded here, so the two never maintain one index from two builds.
+        if SubstrateEngine.shared.serving?.attached == true {
+            let run = await SubstrateCLI.run(cli, ["register", vault.path,
+                                                   "--index-root", indexRoot.path,
+                                                   "--db", database.path])
+            guard run.succeeded else { return ComposeOutcome(run: run, embed: nil, handedOff: true) }
+            return ComposeOutcome(run: run, embed: nil, handedOff: true,
+                                  refreshReply: await EngineRefresh.shared.handOff())
+        }
         var arguments = ["compose", vault.path,
                          "--index-root", indexRoot.path,
                          "--db", database.path]
@@ -1341,7 +1400,8 @@ final class SubstrateLibraryModel: ObservableObject {
         let composes = steps.filter { $0.id == "compose" || $0.id.hasPrefix("compose-") }
         let composed = composes.first { $0.run?.succeeded == true }?.run
         let scope = Self.registeredScope(in: composed)
-        job = .finished(Report(title: title, steps: steps, scope: scope, orphaned: orphaned))
+        job = .finished(Report(title: title, steps: steps, scope: scope,
+                               pending: composes.contains { $0.pending != nil }, orphaned: orphaned))
         // ONLY WHEN A COMPOSE ACTUALLY LANDED. `scope` is non-nil exactly when compose succeeded and
         // named one, so a refused or failed job does not invalidate a list that is still correct.
         if scope != nil { VaultBrowseModel.shared.corpusChanged() }

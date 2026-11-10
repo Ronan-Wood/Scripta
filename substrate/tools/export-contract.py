@@ -90,6 +90,8 @@ WIRE_OBJECTS: dict[str, tuple[str, str, tuple[int, ...], str | None]] = {
     # What the `list_scopes` TOOL adds around the roster (`EXTENDS`), and the `server` block in it.
     "scope_list_reply": ("mcp/server.py", "_tool_list_scopes", (), "payload"),
     "server": ("mcp/server.py", "_tool_list_scopes", (0,), None),
+    # What `refresh` answers: when the pass it brought forward starts.
+    "refresh_request": ("mcp/server.py", "_tool_refresh", (0,), None),
 }
 # A wire object whose local starts as another one's: it carries the other's keys plus its own. Each
 # base is named with the exact call that produces it, receiver included, and the local must be

@@ -1064,6 +1064,9 @@ public struct WireScopeRow: Codable, Equatable, Sendable {
     /// `null` from an agent-mode server whose snapshot manifest carries no `published` stamp.
     public let composed: String?
     public let indexPresent: Bool
+    /// The scope is registered and waits for the engine's first pass to compose it
+    /// (`substrate register`). Nil from an engine older than the field, or an agent-mode server.
+    public let pending: Bool?
     public let refresh: WireRefreshReport
     /// The vaults this scope composes, resolved fresh from the manifest. `null` when resolution
     /// failed, in which case `error` says why.
@@ -1073,12 +1076,14 @@ public struct WireScopeRow: Codable, Equatable, Sendable {
     public let error: String?
 
     public init(scope: String, db: String, vault: String?, composed: String?, indexPresent: Bool,
-                refresh: WireRefreshReport, sources: [String]?, error: String?) {
+                refresh: WireRefreshReport, sources: [String]?, error: String?,
+                pending: Bool? = nil) {
         self.scope = scope
         self.db = db
         self.vault = vault
         self.composed = composed
         self.indexPresent = indexPresent
+        self.pending = pending
         self.refresh = refresh
         self.sources = sources
         self.error = error
@@ -1087,8 +1092,11 @@ public struct WireScopeRow: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case scope, db, vault, composed
         case indexPresent = "index_present"
-        case refresh, sources, error
+        case pending, refresh, sources, error
     }
+
+    /// Waiting for the engine's first pass: not built yet, rather than an index that went missing.
+    public var isPending: Bool { pending == true }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1099,6 +1107,7 @@ public struct WireScopeRow: Codable, Equatable, Sendable {
         vault = try c.decode(String?.self, forKey: .vault)
         composed = try c.decode(String?.self, forKey: .composed)
         indexPresent = try c.decode(Bool.self, forKey: .indexPresent)
+        pending = try c.decodeIfPresent(Bool.self, forKey: .pending)
         refresh = try c.decodeRefresh(forKey: .refresh)
         sources = try c.decodeIfPresent([String].self, forKey: .sources)
         error = try c.decodeIfPresent(String.self, forKey: .error)
@@ -1111,6 +1120,7 @@ public struct WireScopeRow: Codable, Equatable, Sendable {
         try c.encodeExplicitNull(vault, forKey: .vault)
         try c.encodeExplicitNull(composed, forKey: .composed)
         try c.encode(indexPresent, forKey: .indexPresent)
+        try c.encodeIfPresent(pending, forKey: .pending)
         if refresh.wasSent { try c.encode(refresh, forKey: .refresh) }
         try c.encodeExplicitNull(sources, forKey: .sources)
         // `error` is the one key `scopes_payload` sets conditionally, in its except branch. Omitted
@@ -1127,16 +1137,20 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
     /// Seconds between the server's own refresh passes (`substrate serve`), or nil when it
     /// refreshes nothing and leaves that to whoever runs it.
     public let refreshEvery: Double?
+    /// Whether the engine takes `refresh` requests to bring its next pass forward. Nil from an
+    /// engine older than the tool, which takes none.
+    public let refreshRequests: Bool?
     /// The note formats the engine indexes, oldest and newest. Nil from an engine older than the
     /// ranges, which indexed format 1 alone.
     public let notesVersion: Int?
     public let notesMinVersion: Int?
 
     public init(readOnly: Bool, agentMode: Bool, refreshEvery: Double?,
-                notesVersion: Int? = nil, notesMinVersion: Int? = nil) {
+                refreshRequests: Bool? = nil, notesVersion: Int? = nil, notesMinVersion: Int? = nil) {
         self.readOnly = readOnly
         self.agentMode = agentMode
         self.refreshEvery = refreshEvery
+        self.refreshRequests = refreshRequests
         self.notesVersion = notesVersion
         self.notesMinVersion = notesMinVersion
     }
@@ -1145,6 +1159,7 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
         case readOnly = "read_only"
         case agentMode = "agent_mode"
         case refreshEvery = "refresh_every"
+        case refreshRequests = "refresh_requests"
         case notesVersion = "notes_version"
         case notesMinVersion = "notes_min_version"
     }
@@ -1154,6 +1169,7 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
         readOnly = try c.decode(Bool.self, forKey: .readOnly)
         agentMode = try c.decode(Bool.self, forKey: .agentMode)
         refreshEvery = try c.decodeIfPresent(Double.self, forKey: .refreshEvery)
+        refreshRequests = try c.decodeIfPresent(Bool.self, forKey: .refreshRequests)
         notesVersion = try c.decodeIfPresent(Int.self, forKey: .notesVersion)
         notesMinVersion = try c.decodeIfPresent(Int.self, forKey: .notesMinVersion)
     }
@@ -1163,8 +1179,34 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
         try c.encode(readOnly, forKey: .readOnly)
         try c.encode(agentMode, forKey: .agentMode)
         try c.encodeExplicitNull(refreshEvery, forKey: .refreshEvery)
+        try c.encodeIfPresent(refreshRequests, forKey: .refreshRequests)
         try c.encodeIfPresent(notesVersion, forKey: .notesVersion)
         try c.encodeIfPresent(notesMinVersion, forKey: .notesMinVersion)
+    }
+}
+
+/// What `refresh` answers: when the pass it brought forward starts.
+public struct WireRefreshRequest: Codable, Equatable, Sendable {
+    public enum NextPass: String, Codable, Sendable {
+        /// Straight away.
+        case now
+        /// After the pass that is running, which may have started before the notes were written.
+        case afterPass = "after_pass"
+        /// After `waitSeconds`, the least gap the loop keeps between passes.
+        case afterGap = "after_gap"
+    }
+
+    public let nextPass: NextPass
+    public let waitSeconds: Double
+
+    public init(nextPass: NextPass, waitSeconds: Double) {
+        self.nextPass = nextPass
+        self.waitSeconds = waitSeconds
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case nextPass = "next_pass"
+        case waitSeconds = "wait_seconds"
     }
 }
 

@@ -26,9 +26,10 @@ import sqlite3
 import sys
 import tempfile
 import time
+from collections import Counter
 from pathlib import Path
 
-from substrate import blobs, classes, identity, private, refresh, render, scopes
+from substrate import blobs, classes, identity, private, prune, refresh, render, scopes
 from substrate.checks import document_checks, partition_check_failures
 from substrate.paths import ModelsFolderError, configure, internal_cache_footprint, models_folder
 
@@ -1049,6 +1050,49 @@ def _report_frontmatter(notes) -> None:
               f"`substrate frontmatter check` names them, `fix` rewrites them")
 
 
+def cmd_register(args: argparse.Namespace) -> int:
+    """Record a project vault's scope in the registry WITHOUT composing it: it is pending, and the
+    engine's next refresh pass composes it (`scopes.register`). For a client that writes notes for
+    an engine it did not start (plan §9.4), which leaves the indexing to that engine. A scope already
+    registered to this vault is left as it is, wherever its index is.
+
+    No vaults lock: it writes only the registry, under the registry's own lock, so it never waits
+    behind the pass it is handing the scope to."""
+    from substrate import vault as _vault
+
+    project = _path_arg(args.project_vault, "the project vault")
+    index_root = _path_arg(args.index_root, "--index-root")
+    db = _path_arg(args.db, "--db")
+    if project is None or index_root is None or db is None:
+        return 2
+    try:
+        scope = _vault.resolve_scope(project)
+    except _vault.VaultError as e:
+        print(f"FATAL (manifest): {e}", file=sys.stderr)
+        return 2
+    # A NEW ROW IS HELD TO WHAT COMPOSE HOLDS ITS INDEX TO, before anything is written: the
+    # engine's pass composes into these paths, and a row naming a tree inside a vault, or over
+    # other scopes' indexes, refuses that compose and every other scope's beside it.
+    try:
+        prior = scopes.load(args.registry).get(scope.name)
+        if prior is None or prior.vault != scopes.real_path(project):
+            refuse = _refuse_index_root(index_root, scope, db=db, registry=args.registry,
+                                        removing=False)
+            if refuse:
+                print(f"FATAL (--index-root): {refuse}", file=sys.stderr)
+                return 2
+        reg, changed = scopes.register(scope.name, vault=project, db=db, index_root=index_root,
+                                       registry=args.registry)
+    except (scopes.ScopeError, OSError) as e:
+        print(f"FATAL (scope registry): {e}", file=sys.stderr)
+        return 1
+    # The same line `compose` prints, so a caller reads the registered name the same way.
+    print(f"  scope: {scope.name!r} registered in {reg}")
+    print("  already registered: nothing changed" if not changed else
+          "  pending its first pass: the engine's next refresh composes it")
+    return 0
+
+
 def cmd_compose(args: argparse.Namespace) -> int:
     """Resolve a project vault's manifest, ingest the composed note set, index it, and PROVE the
     composition — the inheritance mechanism end to end (Doc 2 §1–2, §6).
@@ -1233,6 +1277,22 @@ def cmd_compose(args: argparse.Namespace) -> int:
               "pass the per-document gates:", file=sys.stderr)
         for path, name, detail in fatal:
             print(f"    {path}: {name} — {detail}", file=sys.stderr)
+        return 3
+
+    # DELETED NOTES. Their ingest folders are the only stale content a plain compose leaves, and
+    # `assert_composed` below refuses a scope that still holds one; `prune` says what it may remove.
+    deleted = prune.stale(index_root, scope.vaults, {d.name for _, d in ingest_dirs})
+    try:
+        emptied = prune.refuse_missing(deleted, scope.vaults, Counter(n.vault for n in scope.notes))
+        prune.remove(deleted, lambda s: print(f"  {prune.line(s)}", flush=True))
+        for name in emptied:
+            print(f"  {prune.emptied_line(name, deleted)}", flush=True)
+    except prune.PruneError as e:
+        print(f"\nFATAL (prune): {e}", file=sys.stderr)
+        return 3
+    except OSError as e:
+        print(f"\nFATAL (prune): could not remove a deleted note's ingest folder: {e}",
+              file=sys.stderr)
         return 3
 
     with IndexStore(db) as store:
@@ -2433,6 +2493,18 @@ def main(argv: list[str] | None = None) -> int:
                            f"{scopes.DEFAULT_REGISTRY})")
     comp.set_defaults(func=cmd_compose)
 
+    rgs = sub.add_parser("register",
+                         help="record a project vault's scope without composing it; the engine's "
+                              "next refresh pass composes it (for a client that only writes notes)")
+    rgs.add_argument("project_vault", help="path to the project vault (holds .substrate.toml)")
+    rgs.add_argument("--index-root", required=True,
+                     help="where the engine's pass writes the per-note ingest dirs")
+    rgs.add_argument("--db", required=True, help="the index the engine's pass composes into")
+    rgs.add_argument("--registry", default=None,
+                     help=f"scope registry to record into (default ${scopes.ENV_VAR}, else "
+                          f"{scopes.DEFAULT_REGISTRY})")
+    rgs.set_defaults(func=cmd_register)
+
     qry = sub.add_parser("query")
     qry.add_argument("--scope", default=None,
                      help="query a composed scope by its manifest name, resolved through the "
@@ -2701,8 +2773,8 @@ def _add_lock_wait(parser: argparse.ArgumentParser) -> None:
 def cmd_version(args: argparse.Namespace) -> int:
     """What this build reads and writes: the index schema (`schema.SCHEMA_VERSION`), the socket
     wire (`wire.VERSION`), and the registry it resolves, absolute (null when it cannot resolve
-    one). A host deciding whether to use an engine it did not start compares these with that
-    engine's, because its own CLI will write that engine's indexes."""
+    one). A host deciding whether to use an engine it did not start compares the registry with
+    that engine's, because its own CLI records the scopes that engine indexes."""
     from substrate import wire
     from substrate.store import schema
 

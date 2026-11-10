@@ -282,23 +282,10 @@ public actor SubstrateClient {
         await call(tool: "list_scopes", arguments: SubstrateNoArguments())
     }
 
-    /// The index schema the engine on the socket reads and writes, from its `initialize` answer
-    /// (`serverInfo.version` is `0.<schema>.0`, `server.SERVER_VERSION`). Nil when it did not answer,
-    /// answered in another wire, or said something else. Used before relying on an engine this app
-    /// did not start: this app's own CLI writes that engine's indexes, so the two must agree.
-    public func engineSchema() async -> Int? {
-        nextID += 1
-        let frame = #"{"jsonrpc":"2.0","id":\#(nextID),"method":"initialize","params":{}}"#
-        guard let (status, data, wire) = try? await UnixSocketHTTP.post(
-                  path: socketPath, body: Data(frame.utf8), timeout: timeout, trust: trust),
-              status == 200, SubstrateWire.unread(wire) == nil,
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let result = object["result"] as? [String: Any],
-              let info = result["serverInfo"] as? [String: Any],
-              let version = info["version"] as? String else { return nil }
-        let parts = version.split(separator: ".")
-        guard parts.count == 3, parts[0] == "0", parts[2] == "0" else { return nil }
-        return Int(parts[1])
+    /// Asks the engine's refresh loop to bring its next pass forward (`substrate serve` only), for
+    /// notes this app has just written for it to index. The reply says when the pass starts.
+    public func requestRefresh() async -> SubstrateCall<WireRefreshRequest> {
+        await call(tool: "refresh", arguments: SubstrateNoArguments())
     }
 
     public func expand(_ request: SubstrateExpandRequest) async -> SubstrateCall<WireExpandResult> {

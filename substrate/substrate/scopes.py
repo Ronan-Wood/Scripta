@@ -6,11 +6,13 @@ where that scope's composed INDEX lives — `compose` took it as a flag, and the
 only as prose in a handoff document. This module is that mapping as data, so both adapters read
 one definition rather than each inventing a filename convention.
 
-**Written by `compose`, on success.** So "what scopes exist" means "what has actually been
-composed", and a scope cannot be named before its index is built. That is the honest failure
-direction: a registry that could name an unbuilt index would hand a caller a scope that answers
-every query with nothing, which is indistinguishable from a scope whose content does not cover
-the question.
+**Written by `compose`, on success, and by `register`, which records a scope PENDING its first
+compose** (an empty `composed`). `register` is for a client that writes notes for an engine it did
+not start (plan §9.4): it records the scope, and that engine's next refresh pass composes it. A
+pending scope is never queried as if it had an index: `resolve_scope` refuses it as pending its
+first pass, distinct from a composed scope whose index was since deleted. The honest failure
+direction holds: a registry must never hand a caller a scope that answers every query with nothing,
+which is indistinguishable from a scope whose content does not cover the question.
 
 **Machine-local and disposable.** It points at index databases — the layer Doc 2 §5 says to keep
 off cloud-sync and rebuild per machine. Deleting it loses nothing that recomposing does not
@@ -128,14 +130,20 @@ def exclusive(registry: Path):
 
 @dataclass(frozen=True)
 class ScopeEntry:
-    """One composed scope. `vault` is the project vault composed; `db` the index it composed into;
-    `index_root` the disposable per-note ingest tree; `composed` when that happened."""
+    """One registered scope. `vault` is the project vault; `db` the index it composes into;
+    `index_root` the disposable per-note ingest tree; `composed` when that last happened, empty
+    while it is pending its first compose (`register`)."""
 
     name: str
     vault: Path
     db: Path
     index_root: Path | None    # None when the registry entry predates the field
     composed: str
+
+    @property
+    def pending(self) -> bool:
+        """Registered and not composed yet: never queried, whatever is at `db`."""
+        return not self.composed
 
 
 def engine_home() -> Path:
@@ -246,6 +254,15 @@ def record(
     lock stops two concurrent composes each writing a full snapshot, where the second silently
     drops the first's entry.
     """
+    path, vault, db, index_root = _prepare(name, vault, db, index_root, registry)
+    with exclusive(path):
+        return _record_locked(path, name, vault=vault, db=db, index_root=index_root,
+                              composed=datetime.now(UTC).isoformat(timespec="seconds"))
+
+
+def _prepare(name: str, vault: Path, db: Path, index_root: Path,
+             registry: str | Path | None) -> tuple[Path, Path, Path, Path]:
+    """The checks and spelling both writers share: the registry path and the three paths, real."""
     # A scope name becomes the first segment of every `expand_ref` this scope issues, so a name
     # containing the ref separator produces handles that parse back to a DIFFERENT scope — one
     # that either does not exist or, worse, does. Refused at registration, where the manifest can
@@ -260,30 +277,66 @@ def record(
     path = registry_path(registry)
     vault, db, index_root = (real_path(p) for p in (vault, db, index_root))
     path.parent.mkdir(parents=True, exist_ok=True)
+    return path, vault, db, index_root
 
+
+def register(
+    name: str,
+    *,
+    vault: Path,
+    db: Path,
+    index_root: Path,
+    registry: str | Path | None = None,
+) -> tuple[Path, bool]:
+    """Record one scope PENDING its first compose, for the engine's next refresh pass to compose.
+    Returns the registry path and whether anything changed.
+
+    The same refusals as `record`. A scope already registered to this vault is left exactly as it
+    is, composed or pending, whatever db and index root it is given: a client that only writes notes
+    never moves where the engine keeps an index, and never marks a composed scope pending. So a
+    second `register` is a no-op.
+
+    A new row is refused, under the registry lock, when its db or index root is another scope's
+    (`foreign_owner`): the row would answer this scope's queries from that index and freeze the
+    other scope's every compose after it. Where the index may be built at all is the caller's to
+    check first (`cli._refuse_index_root`), as compose does."""
+    path, vault, db, index_root = _prepare(name, vault, db, index_root, registry)
     with exclusive(path):
-        return _record_locked(path, name, vault=vault, db=db, index_root=index_root)
+        prior = load(path).get(name)
+        if prior is not None and prior.vault == vault:
+            return path, False
+        # A name another vault holds is refused by `_record_locked`, in its own words.
+        owner = (_foreign_owner_in(load(path), vault=vault, db=db, index_root=index_root)
+                 if prior is None else None)
+        if owner is not None:
+            raise ScopeError(
+                f"--db or --index-root is the index of scope {owner.name!r} (db {owner.db}), "
+                f"which composes {owner.vault}, not {vault}. Nothing was registered; register this "
+                f"vault with a --db and --index-root of its own.")
+        return _record_locked(path, name, vault=vault, db=db, index_root=index_root,
+                              composed=""), True
 
 
-def _record_locked(path: Path, name: str, *, vault: Path, db: Path, index_root: Path) -> Path:
+def _record_locked(path: Path, name: str, *, vault: Path, db: Path, index_root: Path,
+                   composed: str) -> Path:
     """The read-modify-write itself. Called only with the registry lock held."""
     existing = load(path)
     prior = existing.get(name)
     if prior is not None and prior.vault != vault:
         raise ScopeError(
-            f"scope {name!r} is already registered to {prior.vault}, but this compose was of "
+            f"scope {name!r} is already registered to {prior.vault}, but this was of "
             f"{vault}. Two vaults declaring one manifest name would make the first unreachable "
             f"and answer its queries from the second. Rename one vault's `name`, or remove the "
             f"stale entry from {path}."
         )
 
     existing[name] = ScopeEntry(
-        name=name, vault=vault, db=db, index_root=index_root,
-        composed=datetime.now(UTC).isoformat(timespec="seconds"),
+        name=name, vault=vault, db=db, index_root=index_root, composed=composed,
     )
 
     lines = [
-        "# Composed scopes, written by `substrate compose`.",
+        "# Registered scopes, written by `substrate compose` (and by `substrate register`, which",
+        "# leaves `composed` empty until the engine's next refresh pass composes the scope).",
         "#",
         "# Machine-local: these point at index databases on THIS machine. Safe to delete —",
         "# recomposing rewrites it. Paths are absolute so a client-launched server resolves",
@@ -332,7 +385,12 @@ def foreign_owner(
 
     Matched on the paths rather than the name, so another scope's index is refused under any name.
     """
-    for entry in load(registry).values():
+    return _foreign_owner_in(load(registry), vault=vault, db=db, index_root=index_root)
+
+
+def _foreign_owner_in(entries: dict[str, ScopeEntry], *, vault: Path, db: Path,
+                      index_root: Path) -> ScopeEntry | None:
+    for entry in entries.values():
         if _same_path(entry.vault, vault):
             continue
         if _same_path(entry.db, db):
@@ -524,6 +582,20 @@ def resolve(name: str, registry: str | Path | None = None) -> ScopeEntry:
     if entry is None:
         avail = ", ".join(sorted(known)) or "none — run `substrate compose` first"
         raise ScopeError(f"unknown scope {name!r}. Registered: {avail}.")
+    # PENDING FIRST, whatever is at `db`: a file there is not this scope's index until a compose
+    # of it has run, and may be a removed scope's leftover.
+    if entry.pending:
+        from substrate import refresh_state  # lazy: it imports this module
+        if refresh_state.report(name, registry)["outcome"] == "compose_failed":
+            raise ScopeError(
+                f"scope {name!r} is registered, and the engine's refresh could not compose it, so "
+                f"it has no index yet. `substrate refresh --scope {name}` runs it again and says "
+                f"why."
+            )
+        raise ScopeError(
+            f"scope {name!r} is registered and pending its first pass: the engine's next "
+            f"refresh composes it into {entry.db}. Ask again once that pass has run."
+        )
     if not entry.db.is_file():
         raise ScopeError(
             f"scope {name!r} is registered to {entry.db}, which does not exist. Recompose it "

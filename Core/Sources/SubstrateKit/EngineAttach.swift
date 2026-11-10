@@ -17,24 +17,19 @@ public enum EngineAttach {
     }
 
     /// What this app's own build is, for the checks an attached engine must pass: the registry its
-    /// CLI resolves and the index schema it writes. An attached engine's indexes are written by
-    /// THIS app's CLI (the Library, recordings, "Refresh now"), so a different registry or schema
-    /// would have the two maintaining different things, or rebuilding each other's indexes.
+    /// CLI resolves. While attached, this app writes notes and records scopes in that registry, and
+    /// the engine indexes them, so its registry must be this app's. Its index schema is its own:
+    /// this app writes no index for an engine it attached to.
     public struct Expectation: Equatable, Sendable {
         /// Nil when this app's CLI could not say which registry it writes.
         public let registry: String?
-        /// Nil when this app's CLI could not say which schema it writes (one from before
-        /// `substrate version`).
-        public let schema: Int?
 
-        public init(registry: String?, schema: Int?) {
+        public init(registry: String?) {
             self.registry = registry
-            self.schema = schema
         }
     }
 
-    public static func verdict(_ list: WireScopeList, engineSchema: Int?,
-                               expecting expected: Expectation) -> Verdict {
+    public static func verdict(_ list: WireScopeList, expecting expected: Expectation) -> Verdict {
         guard let server = list.server else {
             return .refuse("it is older than the report that says what kind of server it is, so "
                            + "there is no way to tell whether it is read-only")
@@ -70,34 +65,25 @@ public enum EngineAttach {
                            + "indexed as written; update " + (SubstrateNotes.version < lowest
                                                                ? "this app" : "the engine"))
         }
-        guard let mine = expected.schema, let myRegistry = expected.registry else {
-            return .refuse("this app's own substrate command did not report the registry and "
-                           + "index schema it writes (it may predate `substrate version`), so there "
-                           + "is nothing to hold the engine to")
+        guard let myRegistry = expected.registry else {
+            return .refuse("this app's own substrate command did not report the registry it writes "
+                           + "(it may predate `substrate version`), so there is nothing to hold the "
+                           + "engine to")
         }
         let theirs = list.registry.map { Self.canonical($0) }
         guard theirs == Self.canonical(myRegistry) else {
             return .refuse("it serves the registry \(list.registry ?? "(none)"), and this app writes "
                            + "\(myRegistry), so the calls it records would never reach it")
         }
-        guard let engineSchema else {
-            return .refuse("it did not report its index schema, and this app would be writing its "
-                           + "indexes")
-        }
-        guard engineSchema == mine else {
-            return .refuse("it reads index schema v\(engineSchema) and this app writes v\(mine), so "
-                           + "each would rebuild the other's indexes")
-        }
         return .attach
     }
 
-    /// Whether the engine passes every check that needs nothing from this app's CLI or a schema
-    /// probe: what kind of server it is. For a host deciding whether a refusal was only a missing
+    /// Whether the engine passes every check that needs nothing from this app's CLI: what kind of
+    /// server it is. For a host deciding whether a refusal was only a missing
     /// answer, worth asking again, or a verdict on the engine itself.
     public static func qualifiesByRoster(_ list: WireScopeList) -> Bool {
         guard let registry = list.registry else { return false }
-        return verdict(list, engineSchema: 0,
-                       expecting: Expectation(registry: registry, schema: 0)) == .attach
+        return verdict(list, expecting: Expectation(registry: registry)) == .attach
     }
 
     /// A path compared as a file, not as a string: `~`, `..` and symlinks resolved.

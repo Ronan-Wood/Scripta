@@ -475,6 +475,18 @@ enum VaultScopeHealth {
             return EngineNote(id: "scope-error", marker: "scope", tone: Ink.danger,
                               text: "This scope's inheritance no longer resolves: \(error)")
         }
+        if row.isPending, row.refresh.outcome == "compose_failed" {
+            // Its first pass ran and refused it: waiting would wait for nothing.
+            return EngineNote(id: "scope-pending-failed", marker: "not composed", tone: Ink.danger,
+                              text: "The engine's pass could not compose this scope, so it has no "
+                                  + "index yet. The Library's refresh shows why.")
+        }
+        if row.isPending {
+            // Registered for the engine to compose, not an index that went missing.
+            return EngineNote(id: "scope-pending", marker: "pending", tone: Ink.textHelper,
+                              text: "This scope is waiting for the engine's next pass to compose "
+                                  + "it, and answers once that pass has run.")
+        }
         if !row.indexPresent {
             return EngineNote(id: "scope-index", marker: "no index", tone: Ink.danger,
                               text: "This scope is registered but has no index on disk. Compose it "

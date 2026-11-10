@@ -10,7 +10,8 @@ import SubstrateKit
 /// So this type schedules nothing. It does what only the app can:
 ///
 ///   * "Refresh now" runs one pass through the same build's CLI (`substrate refresh`), so a press
-///     never waits for the engine's next tick;
+///     never waits for the engine's next tick. Attached to an engine this app did not start, it asks
+///     that engine to bring its next pass forward instead: that engine does the indexing;
 ///   * once a minute it looks at the engine (`SubstrateScopes.poll`), which notices a pass the
 ///     engine ran and tells Browse, so changes this app did not make show without a relaunch;
 ///   * it watches an engine this app ATTACHED to and did not start, and lets it go when it is gone
@@ -32,9 +33,15 @@ final class EngineRefresh: ObservableObject {
         case running(since: Date)
         /// The last "Refresh now", as it exited. Per-scope verdicts come back through the roster.
         case finished(at: Date, run: SubstrateRun)
+        /// The last "Refresh now" asked an attached engine for its next pass, and it said when.
+        case requested(at: Date, reply: WireRefreshRequest)
+        /// It asked, and the engine did not take the request: the reason, in a sentence.
+        case requestFailed(at: Date, reason: String)
     }
 
     @Published private(set) var state: State = .idle
+
+    private let client = SubstrateClient()
 
     private var poll: Task<Void, Never>?
     private var pass: Task<Void, Never>?
@@ -47,9 +54,9 @@ final class EngineRefresh: ObservableObject {
     /// clean one. One such look is not a verdict; a second, a minute or so later, is.
     private var firstStrikeAt: Date?
     private var stopped = false
-    /// Since when an attached engine's re-check has had no answer (its schema probe, or this app's
-    /// own `substrate version`). Missing for a minute is a busy engine; for `strikeWindow`, it is
-    /// an engine that cannot be held to the schema check at all, and counts as a strike.
+    /// Since when an attached engine's re-check has had no answer (this app's own
+    /// `substrate version`). Missing for a minute is a busy moment; for `strikeWindow`, it is an
+    /// engine that cannot be held to the registry check at all, and counts as a strike.
     private var unansweredSince: Date?
     /// The second strike must be this far after the first: the look at serving and the next poll
     /// tick can land seconds apart, across one brief restart of the operator's own engine.
@@ -98,8 +105,25 @@ final class EngineRefresh: ObservableObject {
         }
     }
 
-    /// Whether "Refresh now" can do anything: it needs this app's CLI.
-    var canRefresh: Bool { SubstrateEngine.shared.serving?.cli != nil }
+    /// Whether "Refresh now" can do anything. Attached, it needs an engine that takes requests to
+    /// bring its pass forward, unless it has not said yet (no listing): then the press asks, and the
+    /// answer says; otherwise, this app's CLI.
+    var canRefresh: Bool {
+        guard let serving = SubstrateEngine.shared.serving else { return false }
+        if serving.attached { return SubstrateScopes.shared.server?.refreshRequests != false }
+        return serving.cli != nil
+    }
+
+    /// ATTACHED, after this app handed the engine a scope to index: ask for its next pass, and show
+    /// the answer on the rail as a press would. Nil when the engine takes no requests or did not
+    /// answer; the pass then comes on its own schedule. Asked even before a listing says whether it
+    /// takes requests, since an engine without the tool only answers "unknown tool".
+    func handOff() async -> WireRefreshRequest? {
+        guard SubstrateScopes.shared.server?.refreshRequests != false else { return nil }
+        guard let reply = await client.requestRefresh().payloadIfOK else { return nil }
+        if pass == nil { state = .requested(at: Date(), reply: reply) }
+        return reply
+    }
 
     /// The operator asking for a pass now.
     func refreshNow() {
@@ -114,10 +138,13 @@ final class EngineRefresh: ObservableObject {
     }
 
     private func runPass(token: UUID) async {
-        // The same build's CLI, carried on the source, so the pass is the engine this app runs —
-        // or, attached to one it did not start, this app's own build of it (`EngineAttach` holds the
-        // two to one registry and one schema).
-        guard passToken == token, let cli = SubstrateEngine.shared.serving?.cli else { return }
+        guard passToken == token, let serving = SubstrateEngine.shared.serving else { return }
+        if serving.attached {
+            await requestPass(token: token)
+            return
+        }
+        // The same build's CLI, carried on the source, so the pass is the engine this app runs.
+        guard let cli = serving.cli else { return }
         state = .running(since: Date())
         let run = await SubstrateCLI.run(cli, ["refresh"])
         // Only this pass may write the state: one `stop()` cancelled can finish after a new one.
@@ -134,6 +161,28 @@ final class EngineRefresh: ObservableObject {
         _ = await SubstrateScopes.shared.poll()
         guard passToken == token else { return }
         state = .finished(at: Date(), run: run)
+    }
+
+    /// ATTACHED: the engine indexes, so this asks it to bring its next pass forward rather than
+    /// running one here. Its verdicts come back through the roster as the pass reaches each scope.
+    private func requestPass(token: UUID) async {
+        state = .running(since: Date())
+        let call = await client.requestRefresh()
+        guard !Task.isCancelled, passToken == token else {
+            if passToken == token { state = .idle }
+            return
+        }
+        switch call {
+        case .ok(let reply):
+            state = .requested(at: Date(), reply: reply)
+        case .toolFault(let text), .rpcError(_, let text):
+            Self.log.error("the attached engine did not take a refresh request: \(text, privacy: .public)")
+            state = .requestFailed(at: Date(), reason: "The engine did not take the request: \(text)")
+        case .transportFailure(let failure):
+            Self.log.error("the attached engine did not answer a refresh request: \(failure.description, privacy: .public)")
+            state = .requestFailed(at: Date(), reason: "The engine did not answer the request: "
+                                       + "\(failure.description)")
+        }
     }
 
     /// One look at the engine: the roster and its arms are refreshed, a pass the engine ran is
@@ -168,8 +217,8 @@ final class EngineRefresh: ObservableObject {
         case .answered(let list):
             let qualifies = await engine.stillAttachable(list)
             guard engine.generation == generation, engine.serving?.attached == true else { return }
-            // Unanswered is not a verdict: a busy engine misses a probe and is still the same one.
-            // Unanswered for long enough is.
+            // Unanswered is not a verdict: this app's own `substrate version`, which says which
+            // registry the engine is held to, can miss a busy moment. Unanswered for long enough is.
             if let qualifies {
                 unansweredSince = nil
                 reason = qualifies ? nil : "no longer qualifies"
@@ -177,7 +226,8 @@ final class EngineRefresh: ObservableObject {
                 let since = unansweredSince ?? Date()
                 unansweredSince = since
                 guard Date().timeIntervalSince(since) >= Self.strikeWindow else { return }
-                reason = "has not answered the schema check for five minutes"
+                reason = "cannot be held to this app's registry: its substrate command has not "
+                    + "said which one it writes for five minutes"
             }
         case .foreign:
             reason = "is now something this app will not use"
@@ -199,5 +249,17 @@ final class EngineRefresh: ObservableObject {
         firstStrikeAt = nil
         Self.log.notice("the engine this app attached to \(reason, privacy: .public); starting over")
         engine.restart()
+    }
+}
+
+extension WireRefreshRequest {
+    /// The pass the engine brought forward, as a phrase: "its next pass, starting now". One wording
+    /// for every place the answer is shown.
+    var phrase: String {
+        switch nextPass {
+        case .now: return "its next pass, starting now"
+        case .afterPass: return "the pass after the one it is running"
+        case .afterGap: return "its next pass, in \(Int(waitSeconds.rounded(.up))) s"
+        }
     }
 }
