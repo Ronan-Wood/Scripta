@@ -591,8 +591,7 @@ final class SubstrateLibraryModel: ObservableObject {
         // 3. COMPOSE. Without this the document is a file in a folder: present, unfindable, and
         //    indistinguishable from one that was never added.
         await progress(.composing)
-        let composedOutcome = await composeVault(cli: cli, vault: target.root, name: target.scope,
-                                          clean: false)
+        let composedOutcome = await composeVault(cli: cli, vault: target.root, clean: false)
         return AddOutcome(extraction: extraction, surfaceFailure: nil, promoted: promoted,
                           vault: target, promoteFailure: nil, composed: composedOutcome)
     }
@@ -828,7 +827,7 @@ final class SubstrateLibraryModel: ObservableObject {
             let vault = try? ScriptaVault.vault(forScope: workspace, under: AppSettings.outputFolder)
             let composed = await Self.composeVault(cli: cli,
                                          vault: vault?.root ?? AppSettings.outputFolder,
-                                         name: vault?.scope ?? "library", clean: true)
+                                         clean: true)
             steps.append(Step(id: "compose", title: "Recompose the scope", run: composed.run,
                               appFailure: nil, skipped: false, pending: composed.pendingNote))
             // This recompose is `--clean`: the index root is wiped and rebuilt, so the embed after
@@ -905,8 +904,7 @@ final class SubstrateLibraryModel: ObservableObject {
                                appFailure: nil, skipped: false)
             job = .running(Running(title: jobTitle, step: "Composing", started: Date(),
                                    done: [written]))
-            let composed = await Self.composeVault(cli: cli, vault: vault.root,
-                                                   name: vault.scope, clean: false)
+            let composed = await Self.composeVault(cli: cli, vault: vault.root, clean: false)
             var steps = [written, Step(id: "compose", title: "Compose the scope", run: composed.run,
                                        appFailure: nil, skipped: false, pending: composed.pendingNote)]
             steps.append(Self.embedStep(scope: vault.scope, composed: composed))
@@ -976,7 +974,7 @@ final class SubstrateLibraryModel: ObservableObject {
                                        started: Date(), done: steps))
                 let composed = await Self.composeVault(
                     cli: cli, vault: URL(fileURLWithPath: row.vault, isDirectory: true),
-                    name: row.scope, clean: false)
+                    clean: false)
                 steps.append(Step(id: "compose-\(row.scope)", title: "Compose \(row.scope)",
                                   run: composed.run, appFailure: nil, skipped: false, pending: composed.pendingNote))
                 steps.append(Self.embedStep(scope: row.scope, composed: composed))
@@ -1013,8 +1011,7 @@ final class SubstrateLibraryModel: ObservableObject {
                         pending: "The engine vectors them on the same pass.")
         }
         // REPORTS WHAT `composeVault` ALREADY DID rather than running its own. The database was
-        // looked up here once through `registeredDatabase`, which reads the cached scope roster —
-        // and a compose that has just REGISTERED a scope is absent from that cache until `finish`
+        // once looked up here from the cached scope roster — and a compose that has just REGISTERED a scope is absent from that cache until `finish`
         // re-lists it, which happens after this. So the first note into a new workspace, the case
         // the whole path exists for, reported "the engine did not register a database" about a
         // scope registered a second earlier.
@@ -1122,8 +1119,7 @@ final class SubstrateLibraryModel: ObservableObject {
                                                      under: AppSettings.outputFolder).vault
         else { return }
         Task { [weak self] in
-            let composed = await Self.composeVault(cli: cli, vault: vault, name: slugged,
-                                                   clean: true)
+            let composed = await Self.composeVault(cli: cli, vault: vault, clean: true)
             if composed.handedOff, composed.run.succeeded {
                 // Attached: the engine indexes the call on its pass (`composeVault`). Said in the
                 // log, the surface a path with no surface has, as the outcomes below are.
@@ -1225,39 +1221,24 @@ final class SubstrateLibraryModel: ObservableObject {
         // what capture put there, so a stale ingest directory is the one way a deleted call comes
         // back — and `assert_composed` would refuse the next compose over it anyway, after the
         // operator had already deleted it for a reason.
-        let composed = await Self.composeVault(cli: cli, vault: vault, name: name, clean: true)
+        let composed = await Self.composeVault(cli: cli, vault: vault, clean: true)
         finish(title: title,
                steps: [Step(id: "compose", title: "Compose and register the scope",
                             run: composed.run, appFailure: nil, skipped: false, pending: composed.pendingNote),
                        Self.embedStep(scope: name, composed: composed)])
     }
 
-    /// Where a scope's index ALREADY lives, when it is already registered.
-    ///
-    /// A COMPOSE MUST NOT MOVE AN INDEX. `scopes.record` refuses to repoint a name at a different
-    /// VAULT and permits a different db, so composing with this app's own default silently
-    /// relocated an existing scope's database — and the refresh agent of the time did not read the
-    /// registry. It recomposed `$DATA/<scope>.db` on its own schedule, so after a move the agent
-    /// maintained a file nothing resolved to and every query answered from an index that had
-    /// quietly stopped being refreshed. Nothing reports that: the scope still answers, with content ageing out.
-    ///
-    /// Reproduced on the operator's `acme` 2026-08-07 and restored the same way — recompose at the
-    /// path the roster names.
-    private static func registeredDatabase(named scope: String) -> URL? {
-        guard case .listed(let rows) = SubstrateScopes.shared.roster,
-              let row = rows.first(where: { $0.scope == scope }), !row.db.isEmpty else { return nil }
-        return URL(fileURLWithPath: row.db)
-    }
-
     // MARK: - Compose
 
-    /// The step that makes a vault answerable, with the index kept where indexes belong.
+    /// The step that makes a vault answerable, with the index where the ENGINE keeps it.
     ///
-    /// `--index-root` and `--db` are STATED rather than left to default. `compose` resolves both
-    /// against the working directory (`out-vault/index`, `out-vault/index.db`), so a run from an
-    /// app whose cwd is the engine's export would write the operator's index tree into the pinned
-    /// deployment. Both land under `~/.substrate/scripta/index`, which is the disposable layer the
-    /// flag's own help says to keep off cloud-sync.
+    /// NO `--db` OR `--index-root`. Given neither, `compose` keeps a registered scope where the
+    /// registry has it (a compose must not move an index: `acme`, 2026-08-07, recomposed into this
+    /// app's own default and left the refresh maintaining a file nothing resolved to) and puts a
+    /// new one in the engine's own folder, `~/.substrate/index/<scope>`, the same whoever composes
+    /// it. This app used to state `~/.substrate/scripta/index`, which gave one engine two layouts
+    /// depending on which client had composed a scope first. `relocate` is the one exception: the
+    /// first-run rebuild of an index still in that old folder (`relocateLegacyIndexes`).
 
     /// What one compose did, and what the embed after it did.
     ///
@@ -1305,48 +1286,27 @@ final class SubstrateLibraryModel: ObservableObject {
         }
     }
 
-    static func composeVault(cli: SubstrateEngine.Command, vault: URL, name: String,
-                             clean: Bool) async -> ComposeOutcome {
+    static func composeVault(cli: SubstrateEngine.Command, vault: URL, clean: Bool,
+                             relocate: Bool = false) async -> ComposeOutcome {
         // SERIALIZED BY THE ENGINE'S LOCK, not by a flag here. `compose` and `embed` take
         // `vaults.lock` whoever runs them (`substrate.refresh`): the engine's own refresh loop, a
         // terminal, or this app. A compose that cannot get it within its wait exits 75 having
         // written nothing, and `ComposeOutcome.declined` reads that, so each caller still decides
         // what a decline means. The in-process flag this replaced serialized only this app's own
         // calls, and the loop it was written for now runs in the engine.
-        // AN ALREADY-REGISTERED SCOPE KEEPS ITS OWN LOCATION, and the lookup is HERE rather than at
-        // each call site so no caller can forget it. All three compose the workspace's own scope
-        // now — the transcript rail and both document paths — so all three could move it.
-        let database: URL
-        let indexRoot: URL
-        if let existingDatabase = Self.registeredDatabase(named: name) {
-            database = existingDatabase
-            indexRoot = existingDatabase.deletingLastPathComponent()
-                .appendingPathComponent("\(name)-index", isDirectory: true)
-        } else {
-            let root = SubstrateLibrary.root.appendingPathComponent("index", isDirectory: true)
-            database = root.appendingPathComponent("\(name).db")
-            indexRoot = root.appendingPathComponent(name, isDirectory: true)
-        }
-        // 0700, intermediates included: `~` is readable by every staff account, and this tree holds
-        // every library scope's index. The engine seals the files; this is the directory.
-        try? FileManager.default.createDirectory(at: database.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true,
-                                                 attributes: [.posixPermissions: 0o700])
+        //
         // ATTACHED: the engine indexes (plan §9.4). This app records the scope, which is a no-op
         // when it is already registered to this vault, and asks for the next pass. Nothing is
         // composed or embedded here, so the two never maintain one index from two builds.
         if SubstrateEngine.shared.serving?.attached == true {
-            let run = await SubstrateCLI.run(cli, ["register", vault.path,
-                                                   "--index-root", indexRoot.path,
-                                                   "--db", database.path])
+            let run = await SubstrateCLI.run(cli, ["register", vault.path])
             guard run.succeeded else { return ComposeOutcome(run: run, embed: nil, handedOff: true) }
             return ComposeOutcome(run: run, embed: nil, handedOff: true,
                                   refreshReply: await EngineRefresh.shared.handOff())
         }
-        var arguments = ["compose", vault.path,
-                         "--index-root", indexRoot.path,
-                         "--db", database.path]
+        var arguments = ["compose", vault.path]
         if clean { arguments.append("--clean") }
+        if relocate { arguments.append("--default-location") }
         let run = await SubstrateCLI.run(cli, arguments)
 
         // THE EMBED LIVES HERE, at the one chokepoint every compose in this app goes through, and
@@ -1361,13 +1321,87 @@ final class SubstrateLibraryModel: ObservableObject {
         // matters today: the operator's embedding model lives on an external drive that is
         // currently throwing I/O errors, and a compose that failed because of it would be a working
         // index reported as broken.
+        //
+        // BY SCOPE, through the registry the compose just wrote, so this app needs no idea of where
+        // the index is. The name is the one compose says it registered, never this app's guess: a
+        // compose that registered nothing has no scope to vector, and reads as an embed that did
+        // not run (`embedFailed`). One `--scope=` element, so a name starting with "-" stays a name.
         let embed: SubstrateRun?
-        if run.succeeded {
-            embed = await SubstrateCLI.run(cli, ["embed", "--db", database.path])
+        if run.succeeded, let scope = Self.registeredScope(in: run) {
+            embed = await SubstrateCLI.run(cli, ["embed", "--scope=\(scope)"])
         } else {
             embed = nil
         }
         return ComposeOutcome(run: run, embed: embed)
+    }
+
+    /// Whether this launch has already looked for indexes left in this app's old folder.
+    private var relocationChecked = false
+
+    /// FIRST RUN after the engine took over where indexes live: each scope still registered in
+    /// this app's old folder (`~/.substrate/scripta/index`) is REBUILT in the engine's
+    /// (`compose --default-location`, then its embed), one at a time.
+    ///
+    /// Rebuilt, not moved: the new index is composed from the vault, the registry row then points
+    /// at it, and the old files are left where they were for the operator to delete. No note is
+    /// touched, and the scope answers from its old index until its row moves. Only with this app's
+    /// own engine: an engine this app attached to does its own indexing, and keeps a scope where
+    /// the registry has it. Idempotent by construction: a rebuilt scope is no longer in the old
+    /// folder, and one that failed or was declined is tried again next launch.
+    func relocateLegacyIndexes() async {
+        guard !relocationChecked, let serving = SubstrateEngine.shared.serving,
+              !serving.attached, let cli = serving.cli else { return }
+        await SubstrateScopes.shared.listScopes()
+        // Checked only once a listing has come back: a fault right after the engine starts is not
+        // a launch with nothing to rebuild.
+        guard case .listed(let rows) = SubstrateScopes.shared.roster else { return }
+        relocationChecked = true
+        let legacy = SubstrateLibrary.root.appendingPathComponent("index", isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        // A vault registered under two names is left for a hand fix: rebuilding one row from the
+        // vault's manifest could move the other, an index nobody asked to move.
+        let vaultCounts = Dictionary(grouping: rows.compactMap(\.vault), by: { $0 }).mapValues(\.count)
+        let stranded = rows.filter {
+            URL(fileURLWithPath: $0.db).resolvingSymlinksInPath().standardizedFileURL.path
+                .hasPrefix(legacy) && $0.vault.map { vaultCounts[$0] == 1 } == true
+        }
+        guard !stranded.isEmpty else { return }
+        // NOT WITH THE EMBEDDER DOWN. A rebuilt row points at a fresh index whose vectors come
+        // from the embed after it; with no embedder that index answers by exact wording only,
+        // where the old one it replaced had vectors. So the rebuild waits for a launch where the
+        // engine reports one.
+        await SubstrateScopes.shared.refreshArms()
+        guard SubstrateScopes.shared.arms?.embedder != nil else {
+            Self.log.notice("""
+                \(stranded.count, privacy: .public) index(es) are still in Scripta's old folder; \
+                the rebuild in the engine's waits for a launch where the embedder is reachable
+                """)
+            return
+        }
+        Self.log.notice("rebuilding \(stranded.count, privacy: .public) index(es) from Scripta's old folder in the engine's own")
+        for row in stranded {
+            guard let vault = row.vault else { continue }
+            let started = Date()
+            let composed = await Self.composeVault(cli: cli, vault: URL(fileURLWithPath: vault),
+                                                   clean: false, relocate: true)
+            let seconds = Int(Date().timeIntervalSince(started).rounded())
+            if composed.run.succeeded {
+                Self.log.notice("""
+                    rebuilt \(row.scope, privacy: .public) in the engine's folder in \(seconds, privacy: .public) s\
+                    \(composed.embedFailed ? "; its passages are not vectored yet" : ""); the old \
+                    index is left in place
+                    """)
+            } else {
+                Self.log.error("""
+                    could not rebuild \(row.scope, privacy: .public) in the engine's folder \
+                    (\(composed.declined ? "declined: another compose held the vaults lock" : "refused"), \
+                    so it stays where it is and is tried again next launch; \
+                    \(composed.run.stderr, privacy: .private)
+                    """)
+            }
+        }
+        VaultBrowseModel.shared.corpusChanged()
+        await SubstrateScopes.shared.listScopes()
     }
 
     /// The scope compose says it registered. READ FROM THE ENGINE'S OWN LINE rather than derived

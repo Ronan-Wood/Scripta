@@ -519,6 +519,9 @@ final class SubstrateEngine: ObservableObject {
                 // What this engine runs, which Settings' Search row draws (`SubstrateScopes.arms`).
                 Task { await SubstrateScopes.shared.refreshArms() }
                 EngineRefresh.shared.engineBecameServing()
+                // This app's own engine: any index still in this app's old folder is rebuilt in
+                // the engine's (`relocateLegacyIndexes`).
+                Task { await SubstrateLibraryModel.shared.relocateLegacyIndexes() }
                 return
             }
             guard !Task.isCancelled else { return }

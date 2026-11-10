@@ -1,7 +1,7 @@
 """`embed`'s vector cache must not land in the working directory.
 
 Scripta's bundled shims `cd` to the engine root — `Scripta.app/Contents/Resources/substrate-engine`
-— before exec'ing, and the app runs `embed --db <scope.db>` with no `--cache` after every compose:
+— before exec'ing, and the app runs `embed --scope <name>` with no `--cache` after every compose:
 each Library action and every background refresh pass. `--cache` defaulted to the RELATIVE
 `out/vector-cache.db`, so that embed wrote `substrate-engine/out/vector-cache.db` inside the signed
 bundle. Measured 2026-11-01 on a Distribution build: `codesign --verify --deep --strict` then failed

@@ -264,8 +264,10 @@ def run_pass(registry: str | Path | None = None, only: list[str] | None = None, 
             result = ScopeResult(name, "compose_failed",
                                  "its registry row names no index root; compose it once by hand")
         else:
-            compose = runner([*cli, "compose", str(entry.vault), "--index-root",
-                              str(entry.index_root), "--db", str(entry.db), "--registry", str(reg),
+            # NO PATHS: compose reads where the registry has the vault when it runs, under the
+            # vaults lock. Handed this pass's snapshot instead, a pass that started before another
+            # compose moved a scope (the app's first-run rebuild) recomposed it where it had been.
+            compose = runner([*cli, "compose", str(entry.vault), "--registry", str(reg),
                               "--no-wait"], env)
             if compose.returncode == EX_DECLINED:
                 results.append(ScopeResult(name, None, "a compose was in flight"))
@@ -280,7 +282,7 @@ def run_pass(registry: str | Path | None = None, only: list[str] | None = None, 
             if compose.returncode != 0:
                 result = ScopeResult(name, "compose_failed", _joined(pruned, _tail(compose.stderr)))
             else:
-                embed = runner([*cli, "embed", "--db", str(entry.db), "--registry", str(reg),
+                embed = runner([*cli, "embed", f"--scope={name}", "--registry", str(reg),
                                 "--wait", str(EMBED_WAIT)], env)
                 if _interrupted(embed, stopping):
                     results.append(ScopeResult(name, None, "interrupted"))

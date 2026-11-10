@@ -28,7 +28,9 @@ import ScriptaShared
 /// inode — which is exactly how the app's own transcripts folder came to be synced already.
 enum SubstrateLibrary {
 
-    /// Everything Scripta writes for the engine, under one root.
+    /// Everything Scripta writes for the engine, under one root. The INDEX is not among it any
+    /// more: the engine keeps every index in its own `~/.substrate/index`, and `root/index` is only
+    /// the old folder the first-run rebuild reads (`relocateLegacyIndexes`).
     static var root: URL {
         URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
             .appendingPathComponent(".substrate/scripta", isDirectory: true)

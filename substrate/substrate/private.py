@@ -806,7 +806,7 @@ def _seal_root(index_root: Path, r: Resolved, family: Family) -> list[Fail]:
 
 def seal_index(db: Path, index_root: Path | None, *, home: Path) -> list[str]:
     """Seal one scope's index, and only what the engine owns of it. `home` is the engine's own
-    folder, `~/.substrate`, where the app keeps its indexes.
+    folder, `~/.substrate`, where the engine keeps its indexes (`scopes.index_home`).
 
       * The folder holding the db or the tree: sealed, not recursively, only when `_engine_owns`
         it. Elsewhere it is the operator's (`--db ~/x.db` must not `chmod 700 ~`): reported.

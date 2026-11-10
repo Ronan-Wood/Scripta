@@ -49,6 +49,10 @@ uv run python -m substrate.cli query "engine boundary" --scope demo \
 `--no-vector` searches without embeddings. Run `substrate.cli embed` against a local Ollama for
 vector search.
 
+Without `--db` and `--index-root`, `compose` keeps a scope where the registry already has it, and
+puts a new one in the engine's own folder: `~/.substrate/index/<scope>.db`, with its ingest tree
+beside it. `--default-location` rebuilds a scope there and leaves its old index where it was.
+
 To keep those scopes refreshed and serve them over a socket in the same folder, run the command
 below. Without `--socket` it serves `~/.substrate/run/substrate.sock`, which is where Scripta looks.
 
