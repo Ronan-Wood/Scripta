@@ -68,6 +68,30 @@ final class EngineAttachTests: XCTestCase {
         XCTAssertTrue(why.contains("writes"), why)
     }
 
+    /// The engine this app spawns runs writes only for a client the user granted, and reports
+    /// `read_only: true` with `writes: granted`. It is this app's own kind of engine, so it attaches;
+    /// one that runs writes for anyone is refused by either field.
+    func testEachWritesModeIsJudgedByWhatItLetsThrough() {
+        func mode(_ writes: String?, readOnly: Bool = true) -> EngineAttach.Verdict {
+            verdict(list(.init(readOnly: readOnly, agentMode: false, refreshEvery: 900,
+                               writes: writes)))
+        }
+        XCTAssertEqual(mode("granted"), .attach)
+        XCTAssertEqual(mode("none"), .attach)
+        XCTAssertEqual(mode(nil), .attach, "an engine older than grants, read-only")
+        for (writes, readOnly) in [("open", false), ("open", true), (nil, false)] {
+            guard case .refuse(let why) = mode(writes, readOnly: readOnly) else {
+                return XCTFail("writes=\(writes ?? "nil") read_only=\(readOnly) was attached")
+            }
+            XCTAssertTrue(why.contains("accepts writes without a grant"), why)
+            XCTAssertFalse(why.contains("never does"), "the stale reason: \(why)")
+        }
+        guard case .refuse(let why) = mode("someday") else {
+            return XCTFail("an unknown write mode was attached")
+        }
+        XCTAssertTrue(why.contains("does not know (someday)") && why.contains("update this app"), why)
+    }
+
     func testAnAgentModeServerIsRefused() {
         guard case .refuse(let why) = verdict(
             list(.init(readOnly: true, agentMode: true, refreshEvery: nil))) else {

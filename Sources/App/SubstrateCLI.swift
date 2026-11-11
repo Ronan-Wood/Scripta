@@ -3,11 +3,10 @@ import OSLog
 
 // MARK: - The substrate CLI, as a subprocess
 //
-// EVERY WRITE THE APP MAKES GOES THROUGH HERE, AND NONE OF THEM GOES OVER THE TRANSPORT. Doc 3 §3
-// is not a preference: `--read-only` defaults ON and `ingest` is refused at HTTP dispatch, because
-// any local process can reach a loopback port and `ingest` writes notes into real vaults that the
-// next refresh serves back as settled knowledge. App-hosting narrows the window to "while Scripta
-// is open"; it does not make the primitive safe, so the primitive is not exposed. The app owns the
+// EVERY ENGINE WRITE THE APP MAKES GOES THROUGH HERE, AND NONE OF THEM GOES OVER THE TRANSPORT.
+// The socket runs `ingest` and `amend` only for an MCP client the user granted
+// (`--writes=granted`, Settings → Clients), and this app is not one: it composes, embeds, registers
+// and manages grants through the CLI, and writes its own notes with `NoteWriter`. The app owns the
 // engine PROCESS (Doc 3 §2), which is exactly what makes a subprocess the natural call — the read
 // path is a socket, the write path is a fork.
 //

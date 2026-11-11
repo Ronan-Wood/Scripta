@@ -580,4 +580,15 @@ final class WireDecodingTests: XCTestCase {
             with: try GoldenFixture.payload(fixture)) as? [String: Any])
         return try JSONSerialization.data(withJSONObject: strip(object))
     }
+
+    /// `writes` arrived with grants. An engine before it states none, which decodes as nil.
+    func testTheServerBlockDecodesItsWritesMode() throws {
+        let block = #"{"read_only": true, "writes": "granted", "agent_mode": false, "refresh_every": 900}"#
+        let server = try JSONDecoder().decode(WireServerInfo.self, from: Data(block.utf8))
+        XCTAssertEqual(server.writes, "granted")
+        XCTAssertTrue(server.readOnly)
+        let older = #"{"read_only": true, "agent_mode": false, "refresh_every": 900}"#
+        XCTAssertNil(try JSONDecoder().decode(WireServerInfo.self, from: Data(older.utf8)).writes)
+    }
+
 }

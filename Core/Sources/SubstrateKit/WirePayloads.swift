@@ -1144,15 +1144,21 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
     /// ranges, which indexed format 1 alone.
     public let notesVersion: Int?
     public let notesMinVersion: Int?
+    /// What the engine does with a write on the socket: `none`, `granted` (only for a client the
+    /// user allowed) or `open` (for anyone who can reach it). Nil from an engine older than grants,
+    /// whose `readOnly` alone says. Since then `readOnly` means "runs no write without a grant".
+    public let writes: String?
 
     public init(readOnly: Bool, agentMode: Bool, refreshEvery: Double?,
-                refreshRequests: Bool? = nil, notesVersion: Int? = nil, notesMinVersion: Int? = nil) {
+                refreshRequests: Bool? = nil, notesVersion: Int? = nil, notesMinVersion: Int? = nil,
+                writes: String? = nil) {
         self.readOnly = readOnly
         self.agentMode = agentMode
         self.refreshEvery = refreshEvery
         self.refreshRequests = refreshRequests
         self.notesVersion = notesVersion
         self.notesMinVersion = notesMinVersion
+        self.writes = writes
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1162,6 +1168,7 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
         case refreshRequests = "refresh_requests"
         case notesVersion = "notes_version"
         case notesMinVersion = "notes_min_version"
+        case writes
     }
 
     public init(from decoder: Decoder) throws {
@@ -1172,6 +1179,7 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
         refreshRequests = try c.decodeIfPresent(Bool.self, forKey: .refreshRequests)
         notesVersion = try c.decodeIfPresent(Int.self, forKey: .notesVersion)
         notesMinVersion = try c.decodeIfPresent(Int.self, forKey: .notesMinVersion)
+        writes = try c.decodeIfPresent(String.self, forKey: .writes)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1182,6 +1190,7 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
         try c.encodeIfPresent(refreshRequests, forKey: .refreshRequests)
         try c.encodeIfPresent(notesVersion, forKey: .notesVersion)
         try c.encodeIfPresent(notesMinVersion, forKey: .notesMinVersion)
+        try c.encodeIfPresent(writes, forKey: .writes)
     }
 }
 

@@ -38,9 +38,17 @@ public enum EngineAttach {
             return .refuse("it is an agent-mode server, which answers from published snapshots "
                            + "for a narrower account, not from this user's vaults")
         }
-        if !server.readOnly {
-            return .refuse("it accepts writes over the socket, which any process of this user "
-                           + "can reach, and the engine this app runs never does")
+        // `readOnly` means "runs no write without a grant", so an engine that runs writes only for
+        // a client the user allowed reports it, and is the engine this app runs. One that runs
+        // them for anyone is refused by either field, so neither alone can wave it through.
+        if !server.readOnly || server.writes == "open" {
+            return .refuse("it accepts writes without a grant, from any process of this user that "
+                           + "can reach the socket, and the engine this app runs takes a write only "
+                           + "from a client the user allowed")
+        }
+        if let writes = server.writes, !["none", "granted"].contains(writes) {
+            return .refuse("it reports a write mode this app does not know (\(writes)), so there "
+                           + "is no telling which writes it accepts; update this app")
         }
         // The app schedules no refresh of its own any more, so attaching to an engine that has no
         // loop would leave every index ageing with nothing running to refresh it.
