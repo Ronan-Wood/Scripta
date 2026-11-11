@@ -97,9 +97,16 @@ This is the point of the project, so it is specific rather than a slogan:
   check asks GitHub once a day whether a newer release exists; it sends your IP address and
   Scripta's version, and Scripta asks before the first one.
 - **Two choices send content off your Mac, and both are yours to make.** A model your local server
-  runs in its cloud, marked *(cloud)* in Settings, receives what it processes. Auto never picks one,
-  and Search never uses one. Claude, once you connect it, sends the passages it retrieves to
-  Anthropic under your own account.
+  runs in its cloud, marked *(cloud)* in Settings, receives what a feature sends it, and only once
+  you allow it. Picking one for Ask, titles and summaries, or screen captioning sends nothing until
+  you turn on that feature's *Allow this cloud model* switch, which is off by default and says what
+  would be sent; it covers that model on that server only. A model counts as local only when
+  Ollama's own description confirms it, so a model the server only names (any server but Ollama,
+  or Ollama when it can't say) needs the same opt-in, *Allow this unconfirmed model*. Auto and the
+  stand-in for a model the server no longer has only ever pick a confirmed-local model, and Search
+  never uses a cloud one. A server that forwards requests elsewhere while describing its models as
+  Ollama does looks local.
+  Claude, once you connect it, sends the passages it retrieves to Anthropic under your own account.
 - **No account, no telemetry, no analytics.** There is no server of ours to talk to.
 - **Raw audio and screenshots are always ephemeral.** They are deleted after the call. Only text is
   kept.

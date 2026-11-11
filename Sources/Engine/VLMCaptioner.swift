@@ -16,6 +16,7 @@ enum VLMCaptioner {
     (app/document/chart), any title, and the key figures or data. Be concise and factual; no preamble.
     """
 
+    /// What this sends is what `ModelResolver.cloudWarning(for: .vision)` says captioning sends.
     static func caption(imageData: Data) async -> String? {
         guard isConfigured, let url = AppSettings.endpointURL, let model else { return nil }
         let wire = OpenAIWire(baseURL: url, lanConfirmed: AppSettings.endpointLANConfirmed)
