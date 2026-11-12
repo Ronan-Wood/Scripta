@@ -55,11 +55,15 @@ public struct WirePassage: Codable, Equatable, Sendable {
     public let truncated: Bool
     /// `"outline"` on an orientation record, absent on a passage.
     public let kind: String?
+    /// What the engine's write log says about this passage's note. Absent from an engine older
+    /// than the log. Decoded so it round-trips; this app does not show it yet.
+    public let provenance: WireProvenance?
 
     public init(expandRef: String?, citation: String, path: String, page: Int?, nChars: Int,
                 documentClass: String?, status: String, docType: String, confidence: String,
                 domains: [String], vault: String?, supersedes: [String], snippet: String,
-                text: String?, truncated: Bool, kind: String? = nil) {
+                text: String?, truncated: Bool, kind: String? = nil,
+                provenance: WireProvenance? = nil) {
         self.expandRef = expandRef
         self.citation = citation
         self.path = path
@@ -76,6 +80,7 @@ public struct WirePassage: Codable, Equatable, Sendable {
         self.text = text
         self.truncated = truncated
         self.kind = kind
+        self.provenance = provenance
     }
 
     enum CodingKeys: String, CodingKey {
@@ -85,7 +90,7 @@ public struct WirePassage: Codable, Equatable, Sendable {
         case documentClass = "document_class"
         case status
         case docType = "doc_type"
-        case confidence, domains, vault, supersedes, snippet, text, truncated, kind
+        case confidence, domains, vault, supersedes, snippet, text, truncated, kind, provenance
     }
 
     public init(from decoder: Decoder) throws {
@@ -108,6 +113,7 @@ public struct WirePassage: Codable, Equatable, Sendable {
         text = try c.decodeIfPresent(String.self, forKey: .text)
         truncated = try c.decode(Bool.self, forKey: .truncated)
         kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        provenance = try c.decodeIfPresent(WireProvenance.self, forKey: .provenance)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -127,9 +133,61 @@ public struct WirePassage: Codable, Equatable, Sendable {
         try c.encode(snippet, forKey: .snippet)
         try c.encodeExplicitNull(text, forKey: .text)
         try c.encode(truncated, forKey: .truncated)
-        // The ONE key that is genuinely absent rather than null: `render.passage` never writes it,
-        // `render.outline_record` always does.
+        // The two keys that are genuinely absent rather than null. `kind`: `render.passage` never
+        // writes it, `render.outline_record` always does. `provenance`: absent from an engine older
+        // than the write log, an object (never null) from one after.
         try c.encodeIfPresent(kind, forKey: .kind)
+        try c.encodeIfPresent(provenance, forKey: .provenance)
+    }
+}
+
+/// A passage's `provenance` (`writelog.provenance_record` in the engine): what the engine's write
+/// log says about the note's indexed bytes, and whether the note's own `amended_by` /
+/// `written_by` agrees. One key set whatever the state, every value but `state` nullable, so each
+/// key is required and its value may be null.
+public struct WireProvenance: Codable, Equatable, Sendable {
+    /// `engine`, `edited`, `none` or `unknown` (the contract's `writes.states`).
+    public let state: String
+    public let client: String?
+    public let op: String?
+    public let at: String?
+    /// `matches`, `contradicted`, `unchecked`, or null when the note has no stamp.
+    public let stamp: String?
+    public let stampedBy: String?
+
+    public init(state: String, client: String? = nil, op: String? = nil, at: String? = nil,
+                stamp: String? = nil, stampedBy: String? = nil) {
+        self.state = state
+        self.client = client
+        self.op = op
+        self.at = at
+        self.stamp = stamp
+        self.stampedBy = stampedBy
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case state, client, op, at, stamp
+        case stampedBy = "stamped_by"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        state = try c.decode(String.self, forKey: .state)
+        client = try c.decode(String?.self, forKey: .client)
+        op = try c.decode(String?.self, forKey: .op)
+        at = try c.decode(String?.self, forKey: .at)
+        stamp = try c.decode(String?.self, forKey: .stamp)
+        stampedBy = try c.decode(String?.self, forKey: .stampedBy)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(state, forKey: .state)
+        try c.encodeExplicitNull(client, forKey: .client)
+        try c.encodeExplicitNull(op, forKey: .op)
+        try c.encodeExplicitNull(at, forKey: .at)
+        try c.encodeExplicitNull(stamp, forKey: .stamp)
+        try c.encodeExplicitNull(stampedBy, forKey: .stampedBy)
     }
 }
 
@@ -1148,10 +1206,12 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
     /// user allowed) or `open` (for anyone who can reach it). Nil from an engine older than grants,
     /// whose `readOnly` alone says. Since then `readOnly` means "runs no write without a grant".
     public let writes: String?
+    /// Where the engine's write log is: three states, because the wire has three.
+    public let writesLog: WireWritesLog
 
     public init(readOnly: Bool, agentMode: Bool, refreshEvery: Double?,
                 refreshRequests: Bool? = nil, notesVersion: Int? = nil, notesMinVersion: Int? = nil,
-                writes: String? = nil) {
+                writes: String? = nil, writesLog: WireWritesLog = .notSent) {
         self.readOnly = readOnly
         self.agentMode = agentMode
         self.refreshEvery = refreshEvery
@@ -1159,6 +1219,7 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
         self.notesVersion = notesVersion
         self.notesMinVersion = notesMinVersion
         self.writes = writes
+        self.writesLog = writesLog
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1169,6 +1230,7 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
         case notesVersion = "notes_version"
         case notesMinVersion = "notes_min_version"
         case writes
+        case writesLog = "writes_log"
     }
 
     public init(from decoder: Decoder) throws {
@@ -1180,6 +1242,13 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
         notesVersion = try c.decodeIfPresent(Int.self, forKey: .notesVersion)
         notesMinVersion = try c.decodeIfPresent(Int.self, forKey: .notesMinVersion)
         writes = try c.decodeIfPresent(String.self, forKey: .writes)
+        if !c.contains(.writesLog) {
+            writesLog = .notSent
+        } else if try c.decodeNil(forKey: .writesLog) {
+            writesLog = .noLog
+        } else {
+            writesLog = .path(try c.decode(String.self, forKey: .writesLog))
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1191,7 +1260,21 @@ public struct WireServerInfo: Codable, Equatable, Sendable {
         try c.encodeIfPresent(notesVersion, forKey: .notesVersion)
         try c.encodeIfPresent(notesMinVersion, forKey: .notesMinVersion)
         try c.encodeIfPresent(writes, forKey: .writes)
+        switch writesLog {
+        case .notSent: break
+        case .noLog: try c.encodeNil(forKey: .writesLog)
+        case .path(let path): try c.encode(path, forKey: .writesLog)
+        }
     }
+}
+
+/// `list_scopes`' `server.writes_log`. Three states, because the wire has three: an engine older
+/// than the write log sends no key; an agent-mode server sends `null`, since it reads no log; any
+/// other sends the log's path.
+public enum WireWritesLog: Equatable, Sendable {
+    case notSent
+    case noLog
+    case path(String)
 }
 
 /// What `refresh` answers: when the pass it brought forward starts.

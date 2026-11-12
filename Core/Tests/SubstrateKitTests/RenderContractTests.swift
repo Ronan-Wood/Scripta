@@ -25,8 +25,14 @@ final class RenderContractTests: XCTestCase {
         XCTAssertEqual(contract.keys(of: "passage"), [
             "expand_ref", "citation", "path", "page", "n_chars", "document_class",
             "status", "doc_type", "confidence", "domains", "vault", "supersedes",
-            "snippet", "text", "truncated",
+            "snippet", "text", "truncated", "provenance",
         ])
+    }
+
+    /// `provenance`'s keys, as `WireProvenance` decodes them.
+    func testTheProvenanceKeysMatchTheDecoder() throws {
+        XCTAssertEqual(contract.keys(of: "provenance"),
+                       ["state", "client", "op", "at", "stamp", "stamped_by"])
     }
 
     /// `outline_record` is a `passage` plus one discriminator. Checked separately so a second key
@@ -201,7 +207,7 @@ final class RenderContractTests: XCTestCase {
         XCTAssertEqual(Set(contract.extends["scope_list_reply"] ?? []),
                        ["scope_list", "agent_scope_list"])
         XCTAssertEqual(contract.keys(of: "server"), ["read_only", "agent_mode", "refresh_every",
-                                                     "refresh_requests", "writes",
+                                                     "refresh_requests", "writes", "writes_log",
                                                      "notes_version", "notes_min_version"])
         XCTAssertEqual(contract.keys(of: "refresh_request"),
                        ["next_pass", "wait_seconds"])
