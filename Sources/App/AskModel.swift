@@ -141,9 +141,8 @@ final class AskModel: ObservableObject {
     ///
     /// THE REQUEST, NOT THE RESULT, and keeping the two apart is the point of building it here.
     /// `TurnDisclosure.filter` is what the engine reports it actually applied, and the two
-    /// disagreeing — a guard withholding a vault nobody deselected — is a thing the reader is
-    /// entitled to see. Derived from the two toggles rather than stored, so it cannot drift from
-    /// what `run` will actually send.
+    /// disagreeing is a thing the reader is entitled to see. Derived from the two toggles rather
+    /// than stored, so it cannot drift from what `run` will actually send.
     var requestedFilter: ExclusionFilter {
         var searched = ExclusionFilter.defaultClasses
         if includeArchived { searched.insert(.archived) }

@@ -492,6 +492,202 @@ final class ScriptaVaultTests: XCTestCase {
         XCTAssertFalse(manifest.contains("reference_pins"), manifest)
     }
 
+    // MARK: - Workspaces are not access control (2026-11-11)
+
+    /// No guard, on either branch of `write()`: a fresh vault, and one regenerated with inherits.
+    func testAFreshManifestDeclaresNoGuard() throws {
+        let fresh = try ScriptaVault.vault(forScope: "ACME", under: root)
+        try fresh.write()
+        let curated = root.appendingPathComponent("acme-vault", isDirectory: true)
+        let bound = try ScriptaVault.vault(forScope: "Beta", under: root, inherits: [curated])
+        try bound.write()
+        for vault in [fresh, bound] {
+            let text = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            XCTAssertFalse(text.contains("guard_state"), text)
+        }
+    }
+
+    /// The line a 0.3.5 build wrote, where it wrote it: after `scripta_workspace`, before `inherits`.
+    private func declareGuard(in vault: ScriptaVault) throws -> String {
+        let text = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        let lines = text.components(separatedBy: "\n")
+        let at = try XCTUnwrap(lines.firstIndex(where: { $0.hasPrefix("scripta_workspace =") })) + 1
+        var guarded = lines
+        guarded.insert(#"guard_state = "/Users/someone/Library/Group Containers/x/mcp-state.json""#,
+                       at: at)
+        try guarded.joined(separator: "\n").write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+        return text
+    }
+
+    /// The operator's live vaults already declare the guard, and most are never regenerated: an
+    /// empty-inherits vault keeps its file as it is. So launch removes the line, and only the line —
+    /// a hand-added key and the inherits survive, which a regeneration would not keep.
+    func testAnExistingAppManifestLosesItsGuardAndNothingElse() throws {
+        let curated = root.appendingPathComponent("acme-vault", isDirectory: true)
+        let vault = try ScriptaVault.vault(forScope: "ACME", under: root, inherits: [curated])
+        try vault.write()
+        let handEdited = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "inherits = [", with: "reference_domains = [\"lease\"]\ninherits = [")
+        XCTAssertTrue(handEdited.contains("reference_domains"), handEdited)
+        try handEdited.write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+        let expected = try declareGuard(in: vault)
+        let empty = try ScriptaVault.vault(forScope: "Beta", under: root)
+        try empty.write()
+        let expectedEmpty = try declareGuard(in: empty)
+
+        ScriptaVault.removeGuardState(under: root)
+
+        XCTAssertEqual(try String(contentsOf: vault.manifestURL, encoding: .utf8), expected)
+        XCTAssertEqual(try String(contentsOf: empty.manifestURL, encoding: .utf8), expectedEmpty)
+        XCTAssertTrue(ScriptaVault.isAppVault(vault.root))
+    }
+
+    func testACRLFManifestLosesItsGuard() throws {
+        let vault = try ScriptaVault.vault(forScope: "ACME", under: root)
+        try vault.write()
+        let crlf = try declareGuard(in: vault).replacingOccurrences(of: "\n", with: "\r\n")
+        try String(contentsOf: vault.manifestURL, encoding: .utf8)
+            .replacingOccurrences(of: "\n", with: "\r\n")
+            .write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(ScriptaVault.removeGuardState(fromVaultAt: vault.root))
+        let text = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        XCTAssertFalse(text.contains("guard_state"), text)
+        XCTAssertEqual(text, crlf)
+    }
+
+    /// A vault without the ownership key is the operator's, whatever it declares and wherever it
+    /// sits. Checked through the launch pass and through the per-vault call, which must not rely on
+    /// `vaultRoots` having filtered it out.
+    func testAHandMadeVaultKeepsItsGuard() throws {
+        let theirs = root.appendingPathComponent("their-vault", isDirectory: true)
+        try FileManager.default.createDirectory(at: theirs, withIntermediateDirectories: true)
+        let manifest = theirs.appendingPathComponent(ScriptaVault.manifestName)
+        let text = "name = \"theirs\"\nguard_state = \"/somewhere/mcp-state.json\"\ninherits = []\n"
+        try text.write(to: manifest, atomically: true, encoding: .utf8)
+        let before = try FileManager.default.attributesOfItem(atPath: manifest.path)[.modificationDate]
+
+        ScriptaVault.removeGuardState(under: root)
+        XCTAssertFalse(ScriptaVault.removeGuardState(fromVaultAt: theirs))
+
+        XCTAssertEqual(try String(contentsOf: manifest, encoding: .utf8), text)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: manifest.path)[.modificationDate]
+                       as? Date, before as? Date)
+    }
+
+    /// Only the line the app wrote goes. A guard declared another way, naming the operator's own
+    /// state file, after a multi-line string, or inside a table, was put there by hand and the whole
+    /// file is left as it is.
+    func testAGuardInAnotherFormIsLeftAlone() throws {
+        let vault = try ScriptaVault.vault(forScope: "ACME", under: root)
+        try vault.write()
+        let written = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        for edit in [
+            "guard_state = \"/a/mcp-state.json\" # kept on purpose\n",
+            "guard_state = 5\n",
+            "guard_state = '/a/mcp-state.json'\n",
+            "guard_state = \"/a/their-state.json\"\n",
+            "note = \"\"\"\nguard_state = \"/a/mcp-state.json\"\n\"\"\"\n",
+        ] {
+            let text = written.replacingOccurrences(of: "inherits = []", with: edit + "inherits = []")
+            XCTAssertTrue(text.contains(edit), edit)
+            try text.write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+            XCTAssertFalse(ScriptaVault.removeGuardState(fromVaultAt: vault.root), edit)
+            XCTAssertEqual(try String(contentsOf: vault.manifestURL, encoding: .utf8), text, edit)
+        }
+        let tabled = written + "[reference_pins]\nguard_state = \"/a/mcp-state.json\"\n"
+        try tabled.write(to: vault.manifestURL, atomically: true, encoding: .utf8)
+        XCTAssertFalse(ScriptaVault.removeGuardState(fromVaultAt: vault.root))
+        XCTAssertEqual(try String(contentsOf: vault.manifestURL, encoding: .utf8), tabled)
+    }
+
+    /// A CAPTURE THAT RACES THE PASS LANDS AFTER IT, not under it. The pass re-reads the manifest
+    /// and then writes; a capture regenerating it between the two used to be overwritten with the
+    /// text the pass had read, losing the inherits the capture had just bound.
+    func testACaptureRacingThePassIsNotOverwritten() throws {
+        let vault = try ScriptaVault.vault(forScope: "ACME", under: root)
+        try vault.write()
+        _ = try declareGuard(in: vault)
+        let curated = root.appendingPathComponent("acme-vault", isDirectory: true)
+        let root = self.root!
+        let captured = expectation(description: "the capture wrote")
+
+        ScriptaVault.removeGuardState(fromVaultAt: vault.root, beforeWrite: {
+            let landed = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                try? ScriptaVault.vault(forScope: "ACME", under: root, inherits: [curated]).write()
+                landed.signal()
+                captured.fulfill()
+            }
+            _ = landed.wait(timeout: .now() + 0.5)
+        })
+        wait(for: [captured], timeout: 5)
+
+        let text = try String(contentsOf: vault.manifestURL, encoding: .utf8)
+        XCTAssertTrue(text.contains(curated.path), text)
+        XCTAssertFalse(text.contains("guard_state"), text)
+    }
+
+    /// The atomic write replaces a symlink with a plain file, so the file it points at would keep
+    /// its guard while the vault's own entry stopped being the link the operator made.
+    func testASymlinkedManifestIsLeftAlone() throws {
+        let vault = try ScriptaVault.vault(forScope: "ACME", under: root)
+        try vault.write()
+        _ = try declareGuard(in: vault)
+        let target = root.appendingPathComponent("manifest-elsewhere.toml")
+        try FileManager.default.moveItem(at: vault.manifestURL, to: target)
+        try FileManager.default.createSymbolicLink(at: vault.manifestURL, withDestinationURL: target)
+        let before = try String(contentsOf: target, encoding: .utf8)
+
+        XCTAssertFalse(ScriptaVault.removeGuardState(fromVaultAt: vault.root))
+
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: vault.manifestURL.path),
+                       target.path)
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), before)
+    }
+
+    /// The heartbeat 0.1.0 to 0.3.5 published goes, and only it.
+    func testTheRetiredHeartbeatIsDeleted() throws {
+        let heartbeat = root.appendingPathComponent("mcp-state.json")
+        let index = root.appendingPathComponent("index.db")
+        try Data("{}".utf8).write(to: heartbeat)
+        try Data().write(to: index)
+
+        SharedLocations.removeRetiredHeartbeat(in: root)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: heartbeat.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: index.path))
+    }
+
+    /// THE MERGE ORDER, HELD IN CI. Below v0.2.1 the engine enforces `guard_state`, and the guard is
+    /// also what keeps a workspace's calls out of its agent-mode snapshots. With the app no longer
+    /// writing the line, nor the heartbeat that satisfied it, an older pinned engine would withhold
+    /// unrewritten workspaces and publish the calls of rewritten ones.
+    func testThePinnedEngineIgnoresTheGuard() throws {
+        let lock = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // ScriptaCoreTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // Core
+            .deletingLastPathComponent()   // repository root
+            .appendingPathComponent("engine.lock")
+        let tag = try XCTUnwrap(try String(contentsOf: lock, encoding: .utf8)
+            .split(separator: "\n").first { $0.hasPrefix("tag=v") }?.dropFirst("tag=v".count))
+        let pieces = tag.split(separator: ".", omittingEmptySubsequences: false)
+        let parts = pieces.filter { !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }
+            .compactMap { Int($0) }
+        XCTAssertEqual(parts.count, 3, "engine.lock's tag is not vMAJOR.MINOR.PATCH: \(tag)")
+        XCTAssertEqual(pieces.count, 3, "engine.lock's tag is not vMAJOR.MINOR.PATCH: \(tag)")
+        XCTAssertFalse(parts.lexicographicallyPrecedes([0, 2, 1]),
+                       "engine.lock pins v\(tag), which still enforces guard_state; pin v0.2.1 or later")
+    }
+
+    /// Every launch runs this, so a manifest with no guard must not be rewritten.
+    func testAManifestWithNoGuardIsNotRewritten() throws {
+        let vault = try ScriptaVault.vault(forScope: "ACME", under: root)
+        try vault.write()
+        XCTAssertFalse(ScriptaVault.removeGuardState(fromVaultAt: vault.root))
+    }
+
     /// A quote or a backslash in a path is a TOML parse error, and the manifest is the one file
     /// that must parse or the whole scope refuses to compose.
     func testHostilePathsStayValidTOML() throws {
@@ -578,7 +774,7 @@ final class ScriptaVaultTests: XCTestCase {
         XCTAssertTrue(repaired.contains(curated.path), repaired)
         XCTAssertFalse(repaired.contains("\"\(vault.root.path)\""), repaired)
         // Everything outside the `inherits` block survives the repair: the ownership key is what
-        // says this vault may be rewritten at all, and the guard key is the privacy wall.
+        // says this vault may be rewritten at all.
         XCTAssertTrue(repaired.contains("scripta_workspace_vault = true"), repaired)
         XCTAssertTrue(repaired.contains("scripta_workspace = \"ACME\""), repaired)
         // THE ONE THAT SEPARATES A SPLICE FROM A REGENERATION: `manifest()` does not emit this key,

@@ -1173,7 +1173,7 @@ struct SettingsView: View {
         panel.directoryURL = URL(fileURLWithPath: outputPath)
         if panel.runModal() == .OK, let url = panel.url {
             AppSettings.setOutputFolder(url)
-            MCPStateFile.write()   // publish the new path to the MCP server promptly
+            Task.detached(priority: .utility) { ScriptaVault.removeGuardState(under: url) }
             outputPath = url.path
             // Re-point the watcher, registry, and index — otherwise they keep pointing at the
             // old corpus/registry until the next launch.

@@ -162,10 +162,6 @@ public struct ScriptaVault: Equatable {
     /// belongs.
     public static let defaultScope = "default"
 
-    /// The manifest key naming the file that must vouch for this vault before the engine will
-    /// answer from it. Generic on the engine's side (`guard.py`); Scripta's state file on ours.
-    static let guardKey = "guard_state"
-
     /// The manifest key naming the shared entity roster the engine resolves mentions against.
     static let identityKey = "identity"
 
@@ -220,6 +216,12 @@ public struct ScriptaVault: Equatable {
         guard let manifest = try? String(
             contentsOf: directory.appendingPathComponent(manifestName), encoding: .utf8)
         else { return nil }
+        return manifestValue(key, inManifest: manifest)
+    }
+
+    /// `manifestValue(_:in:)` over text already read, so a check and the rewrite it licenses act on
+    /// the same bytes.
+    static func manifestValue(_ key: String, inManifest manifest: String) -> String? {
         for line in manifest.components(separatedBy: "\n") {
             // NEWLINES TRIMMED TOO, not just spaces and tabs. Splitting a CRLF file on `\n` leaves a
             // `\r` on every line, and `.whitespaces` does not cover it — so `scripta_workspace_vault
@@ -433,8 +435,14 @@ public struct ScriptaVault: Equatable {
             repairSelfInheritance()
             return
         }
-        try manifest().write(to: manifestURL, atomically: true, encoding: .utf8)
+        try Self.manifestLock.withLock {
+            try manifest().write(to: manifestURL, atomically: true, encoding: .utf8)
+        }
     }
+
+    /// Held across every manifest rewrite's last check and its write, so one writer in this process
+    /// cannot land between another's check and write and be overwritten by text it never saw.
+    static let manifestLock = NSLock()
 
     /// `inherits` without any entry that IS this vault — the list the manifest may actually declare.
     ///
@@ -525,6 +533,8 @@ public struct ScriptaVault: Equatable {
         // the read above and the write below would be silently reverted to the stale text — losing
         // the `identity` line it had just added, or a vault the operator had just bound. Re-reading
         // costs one syscall on a path that only runs when a repair is actually due.
+        Self.manifestLock.lock()
+        defer { Self.manifestLock.unlock() }
         guard let current = try? String(contentsOf: manifestURL, encoding: .utf8), current == text
         else {
             Self.log.error("""
@@ -553,6 +563,88 @@ public struct ScriptaVault: Equatable {
                 (\(error.localizedDescription, privacy: .public)); the scope will not compose until \
                 this succeeds
                 """)
+        }
+    }
+
+    /// Remove `guard_state` from every manifest this app owns under `root`. Run off the main thread
+    /// at launch, and on the new folder when the output folder changes.
+    ///
+    /// Workspaces are navigation, not access control (operator, 2026-11-11), so `manifest()` no
+    /// longer declares the guard. That alone would leave it in most vaults: `write()` regenerates
+    /// only on a capture, and keeps the file as it is when the vault inherits nothing. The pinned
+    /// engine is v0.2.1 or later, which ignores the key (`testThePinnedEngineIgnoresTheGuard`).
+    public static func removeGuardState(under root: URL) {
+        let found = vaultRoots(under: root)
+        for failure in found.failures {
+            log.error("could not list the vaults to remove guard_state from: \(failure, privacy: .public)")
+        }
+        for vault in found.vaults {
+            removeGuardState(fromVaultAt: vault)
+        }
+    }
+
+    /// Drop the top-level `guard_state` line from one app-owned manifest, keeping every other line
+    /// byte for byte. A splice, not a regeneration, for the reason `repairSelfInheritance` gives:
+    /// regenerating would drop the operator's hand-added keys, and the inherits only a capture knows.
+    ///
+    /// Only the line 0.1.0 to 0.3.5 wrote is removed: `guard_state = "<…>/mcp-state.json"`, before any
+    /// table or multi-line string. Any other guard was written by hand and is left alone, as is a
+    /// manifest whose own text does not carry the ownership key, and one that is a symlink: the
+    /// atomic write would replace the link and leave the file it points at as it was. Returns
+    /// whether the file was rewritten. `beforeWrite` runs inside the lock, for tests.
+    @discardableResult
+    static func removeGuardState(fromVaultAt directory: URL,
+                                 beforeWrite: (() -> Void)? = nil) -> Bool {
+        let url = directory.appendingPathComponent(manifestName)
+        let isLink = (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink ?? false
+        guard !isLink, let text = try? String(contentsOf: url, encoding: .utf8),
+              manifestValue(ownershipKey, inManifest: text) == "true" else { return false }
+        var lines = text.components(separatedBy: "\n")
+        let header = lines.prefix(while: { !trimmed($0).hasPrefix("[") })
+        guard let at = header.firstIndex(where: { manifestKey(of: $0) == "guard_state" }) else {
+            return false
+        }
+        let line = trimmed(lines[at])
+        let value = line.firstIndex(of: "=").flatMap {
+            soleTomlString(in: trimmed(String(line[line.index(after: $0)...])))
+        }
+        let multiline = lines[..<at].contains { $0.contains("\"\"\"") || $0.contains("'''") }
+        guard let value, value.value.hasSuffix("/" + SharedLocations.retiredHeartbeatName),
+              !multiline else {
+            log.notice("""
+                \(directory.lastPathComponent, privacy: .public): guard_state is not the line this \
+                app wrote; leaving the manifest alone
+                """)
+            return false
+        }
+        lines.remove(at: at)
+        // The first read stays outside the lock, so a cloud file still downloading holds up no
+        // capture. Inside it, the manifest is read again and must be what this pass edited.
+        manifestLock.lock()
+        defer { manifestLock.unlock() }
+        guard let current = try? String(contentsOf: url, encoding: .utf8), current == text else {
+            // Another pass over the same folder may simply have got there first.
+            let stillGuarded = (try? String(contentsOf: url, encoding: .utf8))?
+                .components(separatedBy: "\n").prefix(while: { !trimmed($0).hasPrefix("[") })
+                .contains { manifestKey(of: $0) == "guard_state" } ?? false
+            if stillGuarded {
+                log.error("""
+                    \(directory.lastPathComponent, privacy: .public): the manifest changed while its \
+                    guard_state was being removed; leaving it for the next launch
+                    """)
+            }
+            return false
+        }
+        beforeWrite?()
+        do {
+            try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            log.error("""
+                \(directory.lastPathComponent, privacy: .public): could not remove guard_state \
+                (\(error.localizedDescription, privacy: .public))
+                """)
+            return false
         }
     }
 
@@ -619,7 +711,7 @@ public struct ScriptaVault: Equatable {
             index += 1
         }
         // An array with no closing bracket is a file the engine refuses outright; running off the
-        // end of it and splicing over whatever came next is how a bad parse deletes `guard_state`.
+        // end of it and splicing over whatever came next is how a bad parse deletes a key.
         return nil
     }
 
@@ -728,17 +820,6 @@ public struct ScriptaVault: Equatable {
             // and `WorkspaceDeleter` takes every transcript in a vault with no `group:` filter — so
             // wiping one would delete the other's calls.
             "\(Self.workspaceKey) = \(Self.tomlString(workspace))",
-            // THE PRIVACY WALL, DECLARED WHERE THE ENGINE CAN SEE IT. A workspace vault holds call
-            // transcripts, and before §7 the app's own MCP server was what kept a model out of them
-            // — it refused unless Scripta was running and this workspace was the active one. Moving
-            // the calls into a vault the engine composes made them reachable by any local process,
-            // because the wall lived in the server being retired rather than in the corpus.
-            //
-            // `guard.py` reads this key and refuses the scope unless the file below reports a fresh
-            // heartbeat naming this scope. The engine learns nothing about Scripta: it enforces a
-            // shape a vault asked for. An operator who removes this line gets an unguarded vault,
-            // which is a choice they can make and not one that happens by accident.
-            "\(Self.guardKey) = \(Self.tomlString(SharedLocations.mcpState.path))",
             // IDENTITY, SHARED ACROSS EVERY WORKSPACE (operator, 2026-08-07). One roster behind all
             // of them means the same person found in a call and in a project note is the same id,
             // which is the entire point of having ids — a registry per workspace would make

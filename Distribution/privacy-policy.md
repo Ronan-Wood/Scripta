@@ -57,7 +57,8 @@ Nothing, by default. Specifically:
 - **Optional AI assistant connection:** if you connect an AI assistant such as Claude, the
   assistant can read your transcripts when you ask it questions — that data is then handled
   by the assistant under its own privacy policy, using your own account with that provider.
-  This only happens if you set the connection up, and only while the app is running.
+  This only happens if you set the connection up, and only while the app's engine is running.
+  The assistant can read every workspace, not only the one the app is showing.
 - **Apple on-device intelligence:** transcription and the optional titles/summaries use
   Apple frameworks that run on-device. No audio or text is sent to Apple by this app.
 - **Update checks (optional):** on its second launch the app asks whether it may check for

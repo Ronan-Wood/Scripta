@@ -51,7 +51,7 @@ Set the default in **Settings → Recording → Default mode**. Turn on **Choose
 
 ## 5. Organise with workspaces
 
-Workspaces keep unrelated work apart, for example Deals and Personal. In **Settings → Calendar**, assign each calendar to a workspace, and calls from its meetings land there. Search, Ask and Claude only see the active workspace and the vaults it inherits: the context vaults you add in Settings, and whatever those inherit. Searching across workspaces is an explicit, one-off action.
+Workspaces keep unrelated work apart, for example Deals and Personal. In **Settings → Calendar**, assign each calendar to a workspace, and calls from its meetings land there. Search and Ask see the active workspace and the vaults it inherits: the context vaults you add in Settings, and whatever those inherit. Searching across workspaces is an explicit, one-off action. Workspaces don't limit what Claude reads (step 8).
 
 ## 6. Add documents and notes
 
@@ -86,7 +86,7 @@ Scripta's engine is an MCP server, so Claude can search your calls and documents
 - **Claude Desktop:** click **Add to Claude Desktop**, pick Claude's settings folder when asked, then quit Claude Desktop with ⌘Q and reopen it.
 - **The Scripta skill** (Claude Code only): click **Install Claude skill** and pick your `.claude` folder. It teaches Claude playbooks such as "summarize my week".
 
-Claude can read the active workspace only while Scripta is running. Calls are withheld from Claude until it asks for them, and its replies say what was left out.
+Claude reads every workspace while Scripta's engine is running, whichever workspace Scripta is showing. Calls are left out of its searches unless it asks for them (`include_sources`), and its replies say what was left out. It writes notes only after you allow it in **Settings → Clients**. An agent-mode snapshot leaves calls out unless its publish entry sets `include_sources = true`.
 
 ## 9. Updates
 

@@ -265,12 +265,12 @@ Doc 4 §7 moved calls into vaults the substrate engine composes, and Phase 3 del
 server rather than keep two answering the same questions differently. What replaced it:
 
 - **Reads** — the engine's own MCP server, over the same tools every other scope uses.
-- **The privacy wall it enforced** — the engine's `substrate/guard.py`. A workspace vault declares
-  `guard_state` and the engine withholds that vault's own notes unless the app is running and vouching for it.
-  Narrower than the helper's, which refused the whole scope. A workspace vault declares it when the
-  app creates or regenerates its manifest (`ScriptaVault.manifest()`), and every released version
-  has, since 0.1.0. A manifest a development build wrote before 2026-08-07 with no `inherits` isn't
-  rewritten, so that vault stays unguarded until it is.
+- **The privacy wall it enforced** — gone. Versions 0.1.0 to 0.3.5 declared `guard_state` in each
+  workspace vault, and the engine withheld that vault's notes unless the app was showing that
+  workspace. Workspaces are navigation now, not access control: after 0.3.5 the app declares no
+  guard and removes it from its own manifests at launch, so an MCP client reads every workspace.
+  The pin must be engine v0.2.1 or later (`testThePinnedEngineIgnoresTheGuard`): an older
+  engine's agent-mode snapshots kept calls out only through the guard.
 - **The four entity tools** (`people`, `tags`, `commitments`, `entity_detail`) — dropped by
   decision. The entity surfaces remain in the app; they are no longer reachable by a model client.
 

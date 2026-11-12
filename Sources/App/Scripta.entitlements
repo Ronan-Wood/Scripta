@@ -15,14 +15,11 @@
 	                            weaken. On macOS the group container is not a sandbox artefact: any
 	                            binary signed by this team and carrying this entitlement resolves
 	                            it. It used to matter because the unsandboxed helper read index.db
-	                            out of the same container. It now matters because `mcp-state.json`
-	                            lives there and a workspace vault's manifest records that ABSOLUTE
-	                            PATH as its `guard_state`. Drop the key and
+	                            out of the same container. It now matters because the app's own
+	                            index.db lives there. Drop the key and
 	                            `SharedLocations.supportDirectory` falls back to Application
-	                            Support, every existing manifest keeps naming the container path,
-	                            and the engine finds no heartbeat — so the guard fails closed and
-	                            every workspace's own calls stop answering, correctly and for
-	                            entirely the wrong reason.
+	                            Support, so the app opens a new, empty index there and leaves the
+	                            existing one behind.
 	       device.audio-input   KEPT. TCC, not the sandbox — unaffected either way, and the
 	                            microphone prompt is still driven by NSMicrophoneUsageDescription.
 	       calendars            KEPT, same reason.

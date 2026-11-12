@@ -1,5 +1,6 @@
 import AppKit
 import ScriptaCore
+import ScriptaShared
 import SwiftUI   // NSHostingController, for the Help window
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -45,6 +46,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         RecordingSession.sweepPendingCaptions()   // clear screenshots a crash may have orphaned
+        // Workspaces are navigation, not access control: the retired guard goes from every
+        // workspace vault's manifest, and its heartbeat with it.
+        SharedLocations.removeRetiredHeartbeat()
+        let folder = AppSettings.outputFolder
+        Task.detached(priority: .utility) { ScriptaVault.removeGuardState(under: folder) }
         // Recover any recordings a crash/forced-logout orphaned, then reconcile the retrieval
         // index (which picks up whatever recovery just wrote). Both are background work.
         Task.detached(priority: .utility) {
@@ -58,9 +64,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Keep the index fresh against external edits to the (often vault-hosted) output folder.
         IndexWatcher.shared?.start(folder: AppSettings.outputFolder)
-        // Publish the active-workspace scope + a heartbeat for the MCP server (which refuses when
-        // the beat is stale, so the privacy wall binds LLM clients too).
-        MCPStateFile.startHeartbeat()
         // Doc 3 §2: the app RUNS the engine. There is no launchd job for substrate — run Scripta to
         // have the engine, close Scripta and it stops. `applicationWillTerminate` is only the
         // ordinary half of that; see `SubstrateEngine` for the half that survives a force-quit.
