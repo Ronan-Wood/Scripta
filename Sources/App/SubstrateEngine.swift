@@ -159,10 +159,13 @@ final class SubstrateEngine: ObservableObject {
     /// (`UnixSocketHTTP`, `substrate/local_socket.py`).
     nonisolated static var socketPath: String { SubstrateClient.defaultSocketPath }
 
-    /// `--read-only` IS STATED, not inherited. It already defaults on under `--socket` (Doc 3 §3:
-    /// `ingest` writes notes into real Obsidian vaults that the next refresh serves back as settled
-    /// knowledge, and any process of this user can reach the socket), but a default is a thing that
-    /// can move. Nothing here ever passes `--no-read-only`.
+    /// `--writes=granted` IS STATED, not inherited. The engine runs `ingest` and `amend` on the
+    /// socket only for an MCP client the user allowed in Settings → Clients (`substrate grant`), and
+    /// stamps each note with that client's name; every other caller is refused, and asked for by name.
+    /// Unstated, the socket runs no write at all (Doc 3 §3: a write lands in a real Obsidian vault
+    /// that the next refresh serves back as settled knowledge, and any process of this user can
+    /// reach the socket), but a default is a thing that can move. Nothing here ever passes
+    /// `--no-read-only`, which would run a write for anyone who can reach the socket.
     /// `--rerank-model` IS DELIBERATELY NOT STATED, and this comment exists because stating it is
     /// the obvious-looking mistake. I made it on 2026-08-04, to stop tier 2 and tier 3 disagreeing,
     /// and it cost the one number the UI is required to show.
@@ -200,7 +203,8 @@ final class SubstrateEngine: ObservableObject {
     /// value serves the CLI, the MCP and this app alike.
     private static func serveArguments(searchModel: String?) -> [String] {
         // One `--flag=value` element, so a value starting with "-" is a value, never an option.
-        ["--socket", socketPath, "--read-only"] + (searchModel.map { ["--hyde-model=\($0)"] } ?? [])
+        ["--socket", socketPath, "--writes=granted"]
+            + (searchModel.map { ["--hyde-model=\($0)"] } ?? [])
     }
 
     /// What to exec for an engine that SERVES AND REFRESHES: `substrate serve` from the same build's

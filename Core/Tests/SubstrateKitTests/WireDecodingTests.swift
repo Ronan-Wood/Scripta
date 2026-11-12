@@ -118,7 +118,8 @@ final class WireDecodingTests: XCTestCase {
         let golden = try GoldenFixture.payload(GoldenFixture.listScopes)
         XCTAssertEqual(try JSONDecoder().decode(WireScopeList.self, from: golden).server,
                        WireServerInfo(readOnly: true, agentMode: false, refreshEvery: nil,
-                                      refreshRequests: false, notesVersion: 1, notesMinVersion: 1))
+                                      refreshRequests: false, notesVersion: 2, notesMinVersion: 1,
+                                      writes: "none"))
         var withoutBlock = try XCTUnwrap(
             JSONSerialization.jsonObject(with: golden) as? [String: Any])
         withoutBlock.removeValue(forKey: "server")
@@ -580,4 +581,15 @@ final class WireDecodingTests: XCTestCase {
             with: try GoldenFixture.payload(fixture)) as? [String: Any])
         return try JSONSerialization.data(withJSONObject: strip(object))
     }
+
+    /// `writes` arrived with grants. An engine before it states none, which decodes as nil.
+    func testTheServerBlockDecodesItsWritesMode() throws {
+        let block = #"{"read_only": true, "writes": "granted", "agent_mode": false, "refresh_every": 900}"#
+        let server = try JSONDecoder().decode(WireServerInfo.self, from: Data(block.utf8))
+        XCTAssertEqual(server.writes, "granted")
+        XCTAssertTrue(server.readOnly)
+        let older = #"{"read_only": true, "agent_mode": false, "refresh_every": 900}"#
+        XCTAssertNil(try JSONDecoder().decode(WireServerInfo.self, from: Data(older.utf8)).writes)
+    }
+
 }

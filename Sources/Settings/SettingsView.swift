@@ -7,7 +7,7 @@ import EventKit
 /// Recording / Calendar / Privacy & retention / Local model / Index) beside grouped-form content.
 /// Every control predates the redesign — this file only reorganizes them into categories.
 enum SettingsCategory: String, CaseIterable, Identifiable {
-    case general, output, intelligence, recording, calendar, privacy, localModel, index
+    case general, output, intelligence, recording, calendar, privacy, localModel, index, clients
 
     var id: String { rawValue }
 
@@ -21,6 +21,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .privacy: return "Privacy & retention"
         case .localModel: return "Local model"
         case .index: return "Index"
+        case .clients: return "Clients"
         }
     }
 
@@ -34,6 +35,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .privacy: return "eye.slash"
         case .localModel: return "cpu"
         case .index: return "doc.text.magnifyingglass"
+        case .clients: return "person.badge.key"
         }
     }
 }
@@ -189,6 +191,7 @@ struct SettingsView: View {
                 case .privacy: privacySections
                 case .localModel: localModelSections
                 case .index: indexSections
+                case .clients: ClientsSettings()
                 }
             }
             .formStyle(.grouped)

@@ -11,7 +11,7 @@ import Foundation
 /// is decoded. A reply that states none came from an engine older than the header, which spoke
 /// version 1.
 enum SubstrateWire {
-    static let version = 1
+    static let version = 2
     static let header = "Substrate-Wire"
     /// The JSON-RPC error code the engine answers a request in another version with.
     static let mismatchCode = -32010

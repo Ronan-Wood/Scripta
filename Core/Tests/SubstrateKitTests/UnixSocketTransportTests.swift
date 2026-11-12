@@ -15,11 +15,10 @@ final class UnixSocketTransportTests: XCTestCase {
 
     private struct Echo: Decodable, Equatable { let answer: Int }
 
-    private static let okReply: Data = {
-        let text = #"{\"answer\": 42}"#
-        let frame = #"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"\#(text)"}]}}"#
-        return httpReply(status: "200 OK", body: Data(frame.utf8))
-    }()
+    /// What a current engine sends: every reply states its wire, refusals included.
+    private static let stated = "Substrate-Wire: \(SubstrateWire.version)\r\n"
+
+    private static let okReply: Data = okReply(headers: stated)
 
     private static func httpReply(status: String, body: Data, headers: String = "") -> Data {
         var data = Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\n\(headers)Content-Length: \(body.count)\r\n\r\n".utf8)
@@ -56,7 +55,7 @@ final class UnixSocketTransportTests: XCTestCase {
     }
 
     func testTheRequestStatesThisClientsWireVersion() async throws {
-        let listener = try TestListener(reply: Self.okReply(headers: "Substrate-Wire: 1\r\n"))
+        let listener = try TestListener(reply: Self.okReply)
         let call: SubstrateCall<Echo> = await makeClient(listener).call(
             tool: "status", arguments: SubstrateNoArguments())
         XCTAssertEqual(call.payloadIfOK, Echo(answer: 42), "\(call)")
@@ -64,12 +63,19 @@ final class UnixSocketTransportTests: XCTestCase {
         XCTAssertTrue(request.contains("\r\nSubstrate-Wire: \(SubstrateWire.version)\r\n"), request)
     }
 
-    /// Every engine before the header existed spoke version 1.
+    /// Every engine before the header existed spoke version 1, which this app reads only while it
+    /// speaks 1 itself. Above that, such a reply is older than this app and is refused.
     func testAReplyStatingNoVersionIsReadAsVersionOne() async throws {
-        let listener = try TestListener(reply: Self.okReply)
+        let listener = try TestListener(reply: Self.okReply(headers: ""))
         let call: SubstrateCall<Echo> = await makeClient(listener).call(
             tool: "status", arguments: SubstrateNoArguments())
-        XCTAssertEqual(call.payloadIfOK, Echo(answer: 42), "\(call)")
+        if SubstrateWire.version == 1 {
+            return XCTAssertEqual(call.payloadIfOK, Echo(answer: 42), "\(call)")
+        }
+        guard case .transportFailure(.wireMismatch(let why)) = call else {
+            return XCTFail("expected .wireMismatch, got \(call)")
+        }
+        XCTAssertTrue(why.contains("wire 1, older than this app's \(SubstrateWire.version)"), why)
     }
 
     /// THE RANGE: a newer engine answered, so this app is inside the versions it serves, and every
@@ -198,7 +204,8 @@ final class UnixSocketTransportTests: XCTestCase {
 
     func testANonOKStatusCarriesItsBody() async throws {
         let body = Data(#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"no"}}"#.utf8)
-        let listener = try TestListener(reply: Self.httpReply(status: "415 Unsupported", body: body))
+        let listener = try TestListener(reply: Self.httpReply(status: "415 Unsupported", body: body,
+                                                              headers: Self.stated))
         let call: SubstrateCall<Echo> = await makeClient(listener).call(tool: "status",
                                                                     arguments: SubstrateNoArguments())
         guard case .transportFailure(.httpStatus(415, let text)) = call else {

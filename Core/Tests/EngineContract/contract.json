@@ -1,6 +1,6 @@
 {
   "wire": {
-    "version": 1,
+    "version": 2,
     "min_version": 1,
     "header": "Substrate-Wire",
     "mismatch": -32010,
@@ -13,8 +13,18 @@
   "cli": {
     "declined_exit": 75
   },
+  "grants": {
+    "client_header": "Substrate-Client",
+    "grant_header": "Substrate-Grant",
+    "client_info_header": "Substrate-Client-Info",
+    "writes_modes": [
+      "granted",
+      "none",
+      "open"
+    ]
+  },
   "notes": {
-    "version": 1,
+    "version": 2,
     "min_version": 1
   },
   "spine": {
@@ -324,7 +334,8 @@
       "notes_version",
       "read_only",
       "refresh_every",
-      "refresh_requests"
+      "refresh_requests",
+      "writes"
     ],
     "snapshot": [
       "age_seconds",

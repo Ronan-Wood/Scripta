@@ -40,8 +40,8 @@ Scripta (Swift/SwiftUI, macOS 26)          Substrate (Python 3.14)
 The app spawns the engine (`substrate serve`) as a child process; the same engine serves Claude
 Code over MCP and refreshes every scope itself, on its own timer, under the one lock every compose
 and embed take (`vaults.lock`). An engine already running on the socket is used instead when it is
-read-only, refreshing, not agent mode, indexing Scripta's note format, and on Scripta's registry
-(`EngineAttach`). While attached, Scripta writes notes and registers scopes, and that engine does
+one that runs no write without a grant, refreshing, not agent mode, indexing Scripta's note format,
+and on Scripta's registry (`EngineAttach`). While attached, Scripta writes notes and registers scopes, and that engine does
 all the indexing: "Refresh now" asks it for its next pass. Scripta never stops an engine it did not
 start, and starts its own if that one goes away.
 
@@ -172,7 +172,7 @@ The engine ships **inside the app bundle**, built by a post-build phase on the `
 (the engine's `tools/build-bundled-engine`). The engine is a release of its own repository,
 [Ronan-Wood/substrate](https://github.com/Ronan-Wood/substrate): `engine.lock` pins its tag, commit
 and tarball SHA-256, and `Distribution/fetch-engine` unpacks it into `vendor/substrate`, which the
-phase builds. The `engine pin` CI job holds the pin to the release. The app runs the bundled CLI as `substrate serve --socket <path> --read-only`, from
+phase builds. The `engine pin` CI job holds the pin to the release. The app runs the bundled CLI as `substrate serve --socket <path> --writes=granted`, from
 `Scripta.app/Contents/Resources/substrate-engine/`. An engine that offers no `refresh` falls back to
 `substrate-mcp --socket`, which refreshes nothing, and the Library says so.
 
@@ -215,7 +215,7 @@ corpora are PDF-heavy, so any split would have triggered the large download almo
 | extraction | pdfium · Apple's document recognizer · docling | PDFs and images need no model weights; docling converts Office and web formats, and with its optional models reads PDF layout and tables. Every import is lazy, so the runtime path never loads it |
 | embeddings | Ollama, or Apple `NLContextualEmbedding` | the on-device arm needs no install and is not gated on Apple Intelligence |
 | reranking | cross-encoder | a model trained on the relevance judgment rather than a chat model improvising one |
-| transport | JSON-RPC on a Unix socket; MCP over stdio | the app talks to `substrate serve` on the socket, `--read-only`; Claude clients run `substrate-mcp`, which connects to the same engine |
+| transport | JSON-RPC on a Unix socket; MCP over stdio | the app talks to `substrate serve` on the socket, `--writes=granted`; Claude clients run `substrate-mcp`, which connects to the same engine and writes only once allowed in Settings → Clients |
 | build | XcodeGen | targets generated from `project.yml`; sources are a directory sweep, not a hand-maintained list |
 
 ### Tests and gates
