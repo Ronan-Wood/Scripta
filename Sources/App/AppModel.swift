@@ -105,13 +105,12 @@ final class AppModel: ObservableObject {
     /// Non-nil while recording in a non-default mode (e.g. "Conference · System audio"), for the UI.
     @Published var recordingModeName: String?
 
-    /// The active workspace (the privacy partition). Retrieval is hard-scoped to it. Persisted, and
-    /// republished to the MCP heartbeat so LLM clients honor the same scope.
+    /// The active workspace: what the app shows and what Ask reads. Persisted. MCP clients are not
+    /// bound to it; they read every workspace vault.
     @Published var activeGroup: String = AppSettings.activeGroup {
         didSet {
             guard oldValue != activeGroup else { return }
             AppSettings.activeGroup = activeGroup
-            MCPStateFile.write()
             reloadCalls()
             // Doc 3 §7: the workspace binds the engine side too, and "switching workspaces is
             // instant — reading a different scope is a query parameter, recompose is only needed

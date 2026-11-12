@@ -1,9 +1,7 @@
 import Foundation
 
-/// Locations the app and the MCP server must agree on. Once the app is sandboxed, its
-/// Application Support and preferences live inside a private container the server can't see —
-/// so everything shared moves to the team App Group container, which both binaries are
-/// entitled to. Compiled into both targets (Sources/Shared).
+/// Where the app keeps its own support files: the team App Group container (see
+/// `Scripta.entitlements` for why the group is kept).
 public enum SharedLocations {
     /// macOS App Group IDs are team-ID-prefixed (unlike iOS's "group." form). Deliberately
     /// brand-neutral: this ID must outlive any app rename.
@@ -26,10 +24,16 @@ public enum SharedLocations {
         return dir
     }
 
-    /// The retrieval index. The app writes it; the MCP server reads it (WAL allows both).
+    /// The app's retrieval index.
     public static var indexDB: URL { supportDirectory.appendingPathComponent("index.db") }
 
-    /// The app→server handoff: `{outputFolderPath, activeGroup, heartbeat}`, heartbeat-refreshed
-    /// while the app runs. The server refuses index queries on a stale beat (privacy wall).
-    public static var mcpState: URL { supportDirectory.appendingPathComponent("mcp-state.json") }
+    /// The heartbeat 0.1.0 to 0.3.5 published for the engine's workspace guard, and the file every
+    /// app-written `guard_state` names.
+    public static let retiredHeartbeatName = "mcp-state.json"
+
+    /// Delete that heartbeat. Nothing writes or reads it now, and it held the last output folder
+    /// and workspace name.
+    public static func removeRetiredHeartbeat(in directory: URL = supportDirectory) {
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent(retiredHeartbeatName))
+    }
 }

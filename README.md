@@ -111,9 +111,10 @@ This is the point of the project, so it is specific rather than a slogan:
 - **Raw audio and screenshots are always ephemeral.** They are deleted after the call. Only text is
   kept.
 - **Recording is always manual.** The calendar is informational; nothing auto-records.
-- **Workspaces are a real boundary.** Retrieval, Ask and the MCP server are scoped to the active
-  workspace and the vaults it inherits, and a reply states what was withheld rather than silently
-  omitting it.
+- **Workspaces organise; they don't restrict Claude.** Search and Ask cover the active workspace
+  and the vaults it inherits. An MCP client reads every workspace, but calls are left out of its
+  searches unless it asks for them, and it writes only after you allow it in Settings → Clients.
+  A reply states what was withheld rather than silently omitting it.
 
 The [privacy policy](Distribution/privacy-policy.md) is the full statement, and
 [SECURITY.md](SECURITY.md) says what the app defends and how to report a problem.

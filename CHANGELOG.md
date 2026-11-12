@@ -5,6 +5,14 @@ What changed in each release of Scripta, newest first. The engine has
 
 ## Unreleased
 
+### Changed
+
+- **Workspaces no longer limit what Claude reads.** Claude and other MCP clients read every
+  workspace, whichever one Scripta is showing. Scripta stops writing `guard_state` into its
+  workspace vaults and removes it from them at launch; a guard you added by hand stays. This
+  needs engine v0.2.1 or later: an older one you run yourself withholds a workspace that still has
+  the line, and its agent-mode snapshots can carry the calls of one that does not.
+
 ## 0.3.5
 
 The first public release. It is built from a pinned release of the engine, substrate v0.1.0.

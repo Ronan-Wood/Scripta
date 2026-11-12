@@ -36,7 +36,7 @@ The user runs **Scripta**, a local macOS app that records and transcribes their 
 - **Who's connected to [person/topic]** → `entity_detail(name)` — co-occurring people and topics across everything that mentions them.
 
 ## Always
-- Tools refuse when the app isn't running, and answers are scoped to the app's **active workspace** — if refused, tell the user to open Scripta (or switch workspace) rather than guessing.
+- Scripta runs the engine, so if the tools can't connect, tell the user to open Scripta rather than guessing. Answers cover **every workspace**, not only the one the app is showing.
 - **Cite** the call title and the `[M:SS]` timestamp when you quote something, so the user can verify.
 - Summaries and screen-context OCR can be imprecise — for anything that matters (numbers, commitments, names), quote the **transcript body**, not the summary.
 - This is the user's private data. Never send it anywhere.

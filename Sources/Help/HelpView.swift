@@ -139,7 +139,7 @@ struct HelpView: View {
 
                         h2("Organizing", id: "organizing")
                         h3("Workspaces", id: "workspaces")
-                        body14("Calendars map to workspaces such as Deals or Personal. Search, Ask, and the MCP server are hard-scoped to the active workspace; cross-workspace search is an explicit, non-sticky action.")
+                        body14("Calendars map to workspaces such as Deals or Personal. Search and Ask are scoped to the active workspace; cross-workspace search is an explicit, non-sticky action. Workspaces don't limit what Claude reads.")
                         h3("Search & topics", id: "search-topics")
                         body14("Search is holistic — one query matches spoken passages and call topics, so searching “cycling” finds a call that only ever said “derailleur.” Topics are generated on-device and power concept browsing. Vocabulary terms you teach in the Library expand searches too: “ETA” also matches “estimated time of arrival.”")
 
@@ -156,7 +156,7 @@ struct HelpView: View {
                         h3("Connect Claude", id: "connect-claude")
                         connectClaude
                         h3("What Claude can do", id: "what-claude-can-do")
-                        body14("Through the MCP, Claude can list and read transcripts, search across your history, and retrieve ranked passages with call, timestamp, and speaker provenance — all scoped to the active workspace and refused on a stale heartbeat.")
+                        body14("Through the MCP, Claude can list and read transcripts, search across your history, and retrieve ranked passages with call, timestamp, and speaker provenance. Claude reads every workspace, whichever one Scripta is showing.")
 
                         h2("Privacy", id: "privacy")
                         h3("Everything on-device", id: "on-device")
@@ -250,7 +250,7 @@ struct HelpView: View {
         VStack(alignment: .leading, spacing: Space.x4) {
             body14("Your calls live in a vault the substrate engine composes, so Claude reads them through the engine — the same server that answers for every other vault you keep. Register it once:")
             if mcpConnects {
-                body14("Claude reaches the engine Scripta runs, so searching answers only while Scripta is open. Claude can still write a note into a vault while it is closed.")
+                body14("Claude reaches the engine Scripta runs, so searching answers while Scripta's engine is running. Claude can still write a note into a vault while Scripta is closed.")
             } else {
                 body14("This engine is too old to share Scripta's, so each Claude window runs its own copy of it.")
             }
@@ -284,7 +284,7 @@ struct HelpView: View {
                     Text(skillStatus).font(CarbonFont.label(12)).foregroundStyle(Carbon.textSecondary)
                 }
             }
-            body14("The skill (Claude Code only) teaches Claude the playbooks — “summarize my week”, “action items across calls”. You'll pick your .claude folder once. Claude can read your calls only while Scripta is running, and only the active workspace.")
+            body14("The skill (Claude Code only) teaches Claude the playbooks — “summarize my week”, “action items across calls”. You'll pick your .claude folder once.")
         }
         .padding(.vertical, Space.x2)
     }

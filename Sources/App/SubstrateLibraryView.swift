@@ -524,7 +524,7 @@ private struct LibraryTranscriptRail: View {
         VStack(alignment: .leading, spacing: Gap.s10) {
             LibrarySectionHeader(
                 title: "Call transcripts",
-                note: "One scope per workspace, and the scope name is the privacy wall (Doc 3 §4). "
+                note: "One scope per workspace. "
                     + "The engine writes the vault as `class: conversation`, which default "
                     + "retrieval withholds — a passage from mid-call can be reasoning the speaker "
                     + "abandoned ten minutes later, in the same register as the conclusion.")

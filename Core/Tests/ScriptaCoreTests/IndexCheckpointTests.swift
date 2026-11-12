@@ -31,8 +31,8 @@ final class IndexCheckpointTests: XCTestCase {
 
     func testCheckpointTruncatesWALWhileReadOnlyStillReads() throws {
         // Keep the writer alive for the whole test: while it's open it maintains the -shm the read-only
-        // openers attach through — the live-writer invariant the app upholds (the MCP even refuses on a
-        // stale heartbeat), and what lets a read-only connection read a WAL database at all.
+        // openers attach through — the live-writer invariant the app upholds, and what lets a
+        // read-only connection read a WAL database at all.
         let store = try IndexStore(url: dbURL)
 
         // A corpus large enough to push real bytes into the WAL, but well under the 1000-page default
