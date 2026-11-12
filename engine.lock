@@ -1,8 +1,8 @@
 # The engine release this app is built from. Written by `Distribution/fetch-engine --bump`, and
 # held to the release by `Distribution/fetch-engine --check` (the `engine pin` CI job).
 repo=Ronan-Wood/substrate
-tag=v0.2.0
-commit=1e6ecd995b9193a2c3bc8426c26f179186c1e488
-tarball=substrate-0.2.0.tar.gz
-sha256=bbdc18af3b5a750d9d4187eb517616d9b7da31743cd5e834210fba4fceaefc8c
+tag=v0.2.2
+commit=4f5fa7655a265ba96a80e76f9d12a3c4c39549a9
+tarball=substrate-0.2.2.tar.gz
+sha256=747f26dfb7d19a68874963210a6789bf8760d7c8254ce2cb2cdd5f946252c6e8
 wire=2

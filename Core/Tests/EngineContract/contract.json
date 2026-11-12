@@ -1,6 +1,6 @@
 {
   "wire": {
-    "version": 2,
+    "version": 3,
     "min_version": 1,
     "header": "Substrate-Wire",
     "mismatch": -32010,
@@ -21,6 +21,20 @@
       "granted",
       "none",
       "open"
+    ]
+  },
+  "writes": {
+    "log_file": "writes.jsonl",
+    "states": [
+      "edited",
+      "engine",
+      "none",
+      "unknown"
+    ],
+    "stamp_verdicts": [
+      "contradicted",
+      "matches",
+      "unchecked"
     ]
   },
   "notes": {
@@ -265,12 +279,21 @@
       "n_chars",
       "page",
       "path",
+      "provenance",
       "snippet",
       "status",
       "supersedes",
       "text",
       "truncated",
       "vault"
+    ],
+    "provenance": [
+      "at",
+      "client",
+      "op",
+      "stamp",
+      "stamped_by",
+      "state"
     ],
     "refresh": [
       "attempted",
@@ -335,7 +358,8 @@
       "read_only",
       "refresh_every",
       "refresh_requests",
-      "writes"
+      "writes",
+      "writes_log"
     ],
     "snapshot": [
       "age_seconds",

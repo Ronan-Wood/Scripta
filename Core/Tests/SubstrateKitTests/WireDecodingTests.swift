@@ -49,6 +49,43 @@ final class WireDecodingTests: XCTestCase {
         }
     }
 
+    /// `server.writes_log` has three wire states, like `exposed`: absent (an engine older than the
+    /// write log), `null` (agent mode, which reads none), and the log's path.
+    func testTheWritesLogDecodesAndRoundTripsEachWireState() throws {
+        let golden = try GoldenFixture.payload(GoldenFixture.listScopes)
+        let cases: [(Any?, WireWritesLog)] = [
+            (nil, .notSent),
+            (NSNull(), .noLog),
+            ("/x/writes.jsonl", .path("/x/writes.jsonl")),
+        ]
+        for (value, expected) in cases {
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: golden) as? [String: Any])
+            var server = try XCTUnwrap(object["server"] as? [String: Any])
+            server["writes_log"] = value
+            object["server"] = server
+            let payload = try JSONSerialization.data(withJSONObject: object)
+            XCTAssertEqual(try JSONDecoder().decode(WireScopeList.self, from: payload)
+                           .server?.writesLog, expected)
+            try JSONDiff.assertLossless(WireScopeList.self, payload: payload)
+        }
+    }
+
+    /// Every golden passage's `provenance` is `none` with nulls, so a value is decoded here.
+    func testAPopulatedProvenanceDecodesAndRoundTrips() throws {
+        let payload = Data(#"""
+            {"state": "engine", "client": "claude-code", "op": "amend",
+             "at": "2026-11-11T14:03:22.418Z", "stamp": "matches", "stamped_by": "claude-code"}
+            """#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(WireProvenance.self, from: payload),
+                       WireProvenance(state: "engine", client: "claude-code", op: "amend",
+                                      at: "2026-11-11T14:03:22.418Z", stamp: "matches",
+                                      stampedBy: "claude-code"))
+        try JSONDiff.assertLossless(WireProvenance.self, payload: payload)
+        let missing = Data(#"{"state": "none", "client": null}"#.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(WireProvenance.self, from: missing),
+                             "one key set: a key left out is not a null")
+    }
+
     /// `hyde_requested` has three wire states, like `exposed`: absent (an engine older than the
     /// field), `null` (HyDE off), and what HyDE was asked for. It is the engine's own account of
     /// its Search pick, which this app reads instead of keeping a copy of the engine's rule. The
@@ -119,7 +156,8 @@ final class WireDecodingTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(WireScopeList.self, from: golden).server,
                        WireServerInfo(readOnly: true, agentMode: false, refreshEvery: nil,
                                       refreshRequests: false, notesVersion: 2, notesMinVersion: 1,
-                                      writes: "none"))
+                                      writes: "none",
+                                      writesLog: .path("/demo-substrate/engine-home/writes.jsonl")))
         var withoutBlock = try XCTUnwrap(
             JSONSerialization.jsonObject(with: golden) as? [String: Any])
         withoutBlock.removeValue(forKey: "server")
