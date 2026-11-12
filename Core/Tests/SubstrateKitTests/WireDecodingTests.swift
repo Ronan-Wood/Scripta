@@ -118,7 +118,8 @@ final class WireDecodingTests: XCTestCase {
         let golden = try GoldenFixture.payload(GoldenFixture.listScopes)
         XCTAssertEqual(try JSONDecoder().decode(WireScopeList.self, from: golden).server,
                        WireServerInfo(readOnly: true, agentMode: false, refreshEvery: nil,
-                                      refreshRequests: false, notesVersion: 1, notesMinVersion: 1))
+                                      refreshRequests: false, notesVersion: 2, notesMinVersion: 1,
+                                      writes: "none"))
         var withoutBlock = try XCTUnwrap(
             JSONSerialization.jsonObject(with: golden) as? [String: Any])
         withoutBlock.removeValue(forKey: "server")

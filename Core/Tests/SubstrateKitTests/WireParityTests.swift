@@ -56,14 +56,16 @@ final class WireParityTests: XCTestCase {
     }
 
     /// The gate this exists for: an engine whose oldest served version is above this client's, a
-    /// breaking change, fails. Built from the real contract with the whole range moved up one, so
-    /// it is a well-formed range that starts above this client, not an inverted one.
+    /// breaking change, fails. Built from the real contract with the whole range moved up until it
+    /// starts one above this client, so it is a well-formed range, not an inverted one.
     func testAnEngineWhoseRangeStartsAboveThisClientFails() throws {
         let wire = try EngineContract.load().wire, notes = try EngineContract.load().notes
-        XCTAssertEqual(Self.disagreements(with: try contract("wire", "min_version", "version", by: 1)),
-                       ["version: engine \(wire.minVersion + 1) to \(wire.version + 1), client \(SubstrateWire.version)"])
-        XCTAssertEqual(Self.disagreements(with: try contract("notes", "min_version", "version", by: 1)),
-                       ["notes: engine \(notes.minVersion + 1) to \(notes.version + 1), client \(SubstrateNotes.version)"])
+        let up = SubstrateWire.version - wire.minVersion + 1
+        let notesUp = SubstrateNotes.version - notes.minVersion + 1
+        XCTAssertEqual(Self.disagreements(with: try contract("wire", "min_version", "version", by: up)),
+                       ["version: engine \(wire.minVersion + up) to \(wire.version + up), client \(SubstrateWire.version)"])
+        XCTAssertEqual(Self.disagreements(with: try contract("notes", "min_version", "version", by: notesUp)),
+                       ["notes: engine \(notes.minVersion + notesUp) to \(notes.version + notesUp), client \(SubstrateNotes.version)"])
     }
 
     /// A client above the engine's newest version is not served: the app is newer than anything
