@@ -453,6 +453,91 @@ final class ScriptaVaultTests: XCTestCase {
         XCTAssertTrue(isDirectory.boolValue)
     }
 
+    // MARK: - Creating a workspace
+
+    /// What "New workspace…" writes: the vault, with its manifest, on disk.
+    func testCreatingAWorkspaceWritesItsVault() throws {
+        let vault = try ScriptaVault.create(forScope: "Deals", under: root, inherits: [])
+        XCTAssertEqual(vault.root.lastPathComponent, "deals")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: vault.manifestURL.path))
+        XCTAssertTrue(ScriptaVault.isAppVault(vault.root))
+        XCTAssertEqual(ScriptaVault.workspace(ofVaultAt: vault.root), "Deals")
+    }
+
+    /// A failure after the directory exists and before the manifest does would leave a directory
+    /// that is not an app vault, refusing that name forever. The one this call made is removed.
+    func testAFailedWriteRemovesTheDirectoryThisCallMade() throws {
+        struct Interrupted: Error {}
+        let directory = root.appendingPathComponent("deals", isDirectory: true)
+        XCTAssertThrowsError(try ScriptaVault.create(
+            forScope: "Deals", under: root, inherits: [], beforeCreate: {}, write: {
+                try FileManager.default.createDirectory(at: $0.transcripts,
+                                                        withIntermediateDirectories: true)
+                throw Interrupted()
+            })) { XCTAssertTrue($0 is Interrupted, "\($0)") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    /// A refusal before anything is written removes nothing, whatever was there.
+    func testARefusalKeepsADirectoryThatWasAlreadyThere() throws {
+        let directory = root.appendingPathComponent("deals", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let theirs = directory.appendingPathComponent("theirs.md")
+        try Data("mine".utf8).write(to: theirs)
+
+        XCTAssertThrowsError(try ScriptaVault.create(forScope: "Deals", under: root, inherits: [])) {
+            guard case ScriptaVault.VaultError.nameCollidesWithExistingDirectory = $0 else {
+                return XCTFail("\($0)")
+            }
+        }
+        XCTAssertEqual(try String(contentsOf: theirs, encoding: .utf8), "mine")
+    }
+
+    /// A directory that appears after the checks is not this call's: it is refused, not written
+    /// into, and left as it was. The write would have succeeded, so the refusal is the check's.
+    func testADirectoryThatAppearsAfterTheCheckIsRefusedNotWrittenInto() throws {
+        let directory = root.appendingPathComponent("deals", isDirectory: true)
+        let theirs = directory.appendingPathComponent("theirs.md")
+        XCTAssertThrowsError(try ScriptaVault.create(
+            forScope: "Deals", under: root, inherits: [], beforeCreate: {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try Data("mine".utf8).write(to: theirs)
+            }, write: { try $0.write() })) {
+            guard case ScriptaVault.VaultError.nameCollidesWithExistingDirectory = $0 else {
+                return XCTFail("\($0)")
+            }
+        }
+        XCTAssertEqual(try String(contentsOf: theirs, encoding: .utf8), "mine")
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(ScriptaVault.manifestName).path))
+    }
+
+    /// A dangling symlink is something in the way, not nothing: `fileExists` follows it and says
+    /// absent. It is refused, never written through, and left in place.
+    func testADanglingSymlinkIsRefusedNotWrittenThrough() throws {
+        let target = root.appendingPathComponent("nowhere", isDirectory: true)
+        let link = root.appendingPathComponent("deals", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: link.path))
+
+        XCTAssertThrowsError(try ScriptaVault.create(forScope: "Deals", under: root, inherits: [])) {
+            guard case ScriptaVault.VaultError.nameCollidesWithExistingDirectory = $0 else {
+                return XCTFail("\($0)")
+            }
+        }
+        let type = try FileManager.default.attributesOfItem(atPath: link.path)[.type] as? FileAttributeType
+        XCTAssertEqual(type, .typeSymbolicLink)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+    }
+
+    /// This workspace's own vault, already on disk, is re-resolved and rewritten, not refused.
+    func testAnExistingVaultOfThisWorkspaceIsStillCreatable() throws {
+        let first = try ScriptaVault.create(forScope: "Deals", under: root, inherits: [])
+        let again = try ScriptaVault.create(forScope: "Deals", under: root, inherits: [])
+        XCTAssertEqual(again.root.standardizedFileURL, first.root.standardizedFileURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: again.manifestURL.path))
+    }
+
     /// Regenerated in place rather than written once: a manifest that survives only because an
     /// earlier build wrote it is a vault that stops composing after a hand-clean, with nothing
     /// saying why.

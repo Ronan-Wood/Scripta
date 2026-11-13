@@ -226,10 +226,10 @@ let aliasPass = beforeTerm.isEmpty && afterTerm.contains { $0.path == "/fx-alias
 print("  acronym query without term: \(beforeTerm.count) hits · with term seeded: \(afterTerm.count) hits")
 print("  → \(aliasPass ? "PASS — \"ETA\" reaches \"estimated time of arrival\"" : "FAIL — expansion did not fire")")
 
-// Registry privacy wall: the entity/vocabulary registry must scope like the store — confirmed
+// Registry workspace scoping: the entity/vocabulary registry must scope like the store — confirmed
 // aliases feed ASR bias, terms feed gloss injection, collision review is per-workspace, and
 // purge is the I6 cascade. Fixtures span Alpha/Beta/global ("").
-print("\nRegistry privacy wall")
+print("\nRegistry workspace scoping")
 let regURL = URL(fileURLWithPath: NSTemporaryDirectory())
     .appendingPathComponent("scripta-eval-registry-\(UUID().uuidString).json")
 let reg = EntityRegistry(url: regURL)

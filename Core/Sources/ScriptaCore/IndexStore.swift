@@ -17,7 +17,7 @@ public struct IndexedTranscript {
     public let mtime: Double
     /// "conference" for a single-source conference recording, "" for a normal call.
     public var mode: String = ""
-    /// The privacy/workspace partition. "" = ungrouped.
+    /// The workspace partition. "" = ungrouped.
     public var group: String = ""
     /// "call" for transcripts, "note" for knowledge notes. Call-listing surfaces filter on it;
     /// retrieval surfaces (Ask context, MCP retrieve) deliberately include both.
@@ -577,9 +577,11 @@ public final class IndexStore {
     /// spoken passages AND transcript-level fields (title/summary/tags/participants), so a call
     /// surfaces whether the word was said or is merely its topic. Passage hits rank first;
     /// topic-only calls are appended. participant/tag/date/speaker narrow results. [] if no terms.
-    /// `group` is the privacy wall: non-nil scopes to that workspace ("" = ungrouped), nil means
+    /// `group` is the workspace filter: non-nil scopes to that workspace ("" = ungrouped), nil means
     /// all groups (the explicit, non-default cross-group action). Applied inside the candidate
-    /// query, before LIMIT.
+    /// query, before LIMIT. It decides what the app shows, not what an MCP client can read: an MCP
+    /// client on the engine's socket reads every workspace, and the engine gates only its writes,
+    /// per client.
     public func search(_ rawQuery: String, participant: String? = nil, tag: String? = nil,
                 since: String? = nil, speaker: String? = nil, group: String? = nil, limit: Int = 30) -> [SearchHit] {
         let unlock = acquireLock(); defer { unlock() }
@@ -666,7 +668,7 @@ public final class IndexStore {
         if let tag, !tag.isEmpty { filter(Self.delimitedClause("t.tags"), Self.delimitedValue(tag)) }
         if let since, !since.isEmpty { filter(" AND t.date >= ?", since) }
         if let speaker, !speaker.isEmpty { filter(" AND c.speaker = ?", speaker) }
-        if let group { filter(" AND t.\"group\" = ?", group) }   // the privacy wall, before LIMIT
+        if let group { filter(" AND t.\"group\" = ?", group) }   // the workspace filter, before LIMIT
         // Over-fetch so the per-call diversity cap below still leaves `limit` results. (The cap is
         // applied in Swift, not via a SQL window function — FTS5 snippet/bm25 don't survive being
         // wrapped in a windowed subquery.)
@@ -714,7 +716,7 @@ public final class IndexStore {
         if let participant, !participant.isEmpty { filter(Self.delimitedClause("t.participants"), Self.delimitedValue(participant)) }
         if let tag, !tag.isEmpty { filter(Self.delimitedClause("t.tags"), Self.delimitedValue(tag)) }
         if let since, !since.isEmpty { filter(" AND t.date >= ?", since) }
-        if let group { filter(" AND t.\"group\" = ?", group) }   // the privacy wall
+        if let group { filter(" AND t.\"group\" = ?", group) }   // the workspace filter
         sql += " ORDER BY score LIMIT \(max(1, limit));"
 
         var hits: [SearchHit] = []
@@ -742,7 +744,7 @@ public final class IndexStore {
     }
 
     /// Recent calls in one workspace, newest first — the dashboard/digest feed. Scoped to the
-    /// group like every other read surface (the privacy wall applies to dashboards too).
+    /// group like every other read surface, so the dashboard shows the workspace the app is on.
     public func digest(group: String, limit: Int = 400) -> [DigestRow] {
         let unlock = acquireLock(); defer { unlock() }
         var rows: [DigestRow] = []

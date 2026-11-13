@@ -18,7 +18,7 @@ import ScriptaShared
 /// **It assigns; it does not guess.** Nothing here infers a workspace from a filename, a date or the
 /// active selection. The caller supplies the name because the operator is the only one who knows
 /// it — and a wrong guess would file a call into a corpus it does not belong to, which is the
-/// privacy partition being decided by a heuristic.
+/// workspace partition being decided by a heuristic.
 public enum TranscriptGroupRepair {
 
     /// One transcript with no workspace, and what a chooser needs to show about it.

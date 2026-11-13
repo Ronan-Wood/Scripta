@@ -15,25 +15,61 @@ final class ClientsModel: ObservableObject {
         case listed(EngineGrants)
         /// The engine's CLI did not answer with a listing; the sentence says why.
         case unavailable(String)
+        /// There is no engine this app is using to ask. No sentence is stored: the view draws
+        /// `noEngineSentence` from the live lifecycle, so it cannot go stale as the engine moves.
+        case noEngine
     }
 
     @Published private(set) var state: State = .unasked
     @Published private(set) var working = false
     @Published var failure: String?
 
+    /// Bumped by every `refresh`, so a reply that arrives after a newer refresh began is dropped
+    /// rather than overwriting what that one found.
+    private var generation = 0
+
     func refresh() async {
+        generation += 1
+        let mine = generation
         guard let cli = SubstrateEngine.shared.serving?.cli else {
-            state = .unavailable("The engine is not running, so its clients cannot be listed.")
+            state = .noEngine
             return
         }
         if case .unasked = state { state = .listing }
         let run = await SubstrateCLI.run(cli, ["grants", "--json"])
+        guard mine == generation else { return }
         if run.succeeded, let listing = EngineGrants.parse(run.stdout) {
             state = .listed(listing)
         } else {
             state = .unavailable("This engine did not list its clients (`\(run.line)`). An engine "
                                  + "older than v0.2.0 has none.")
         }
+    }
+
+    /// Why there is no engine to list clients from, in the engine's own terms. "Not running" is said
+    /// only when none is: an engine on the socket that this app will not use is named, with the
+    /// remedy for that kind (`Occupant.finding`/`remedy`), and one coming up is said to be.
+    static func noEngineSentence(_ lifecycle: SubstrateEngine.Lifecycle) -> String {
+        switch lifecycle {
+        case .socketBusy(_, let occupant):
+            return "\(occupant.finding) The engine's clients cannot be listed here until Scripta is "
+                + "using an engine. \(occupant.remedy)."
+        case .starting:
+            return "The engine is starting. Its clients are listed once it answers."
+        case .serving:
+            // Serving, and still here: the source carries no CLI to run `grants` with.
+            return "The engine is running, but Scripta found no `substrate` command beside it, so "
+                + "its clients cannot be listed."
+        case .idle, .notInstalled, .failed:
+            return "The engine is not running, so its clients cannot be listed."
+        }
+    }
+
+    /// The same path as Ask's "Start the engine": discovery and the socket check run again, so this
+    /// also covers "I quit the engine that was in the way".
+    func startEngine() async {
+        SubstrateEngine.shared.restart()
+        await refresh()
     }
 
     func allow(_ client: String) async { await change(["grant", client]) }
@@ -55,6 +91,7 @@ final class ClientsModel: ObservableObject {
 
 struct ClientsSettings: View {
     @StateObject private var model = ClientsModel()
+    @ObservedObject private var engine = SubstrateEngine.shared
     @State private var newClient = ""
 
     var body: some View {
@@ -64,6 +101,16 @@ struct ClientsSettings: View {
                 Text("Asking the engine…").font(.caption).foregroundStyle(.secondary)
             case .unavailable(let why):
                 Text(why).font(.caption).foregroundStyle(.secondary)
+            case .noEngine:
+                Text(ClientsModel.noEngineSentence(engine.lifecycle))
+                    .font(.caption).foregroundStyle(.secondary)
+                // Not while one is starting, and not for an engine that serves without a CLI:
+                // restarting a healthy engine cannot supply the missing command.
+                switch engine.lifecycle {
+                case .starting, .serving: EmptyView()
+                default:
+                    Button(engine.lifecycle.retryTitle) { Task { await model.startEngine() } }
+                }
             case .listed(let listing):
                 if listing.requested.isEmpty {
                     Text("No client is waiting.").font(.caption).foregroundStyle(.secondary)
@@ -125,6 +172,9 @@ struct ClientsSettings: View {
                 .foregroundStyle(.secondary)
         }
         .task { await model.refresh() }
+        // Listed again when the engine comes up or goes. The no-engine sentence needs no refresh: it
+        // is drawn from the live lifecycle.
+        .onChange(of: engine.lifecycle.isServing) { _, _ in Task { await model.refresh() } }
         .alert("The engine refused", isPresented: .init(
             get: { model.failure != nil }, set: { if !$0 { model.failure = nil } })) {
             Button("OK", role: .cancel) { model.failure = nil }

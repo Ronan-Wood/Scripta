@@ -16,7 +16,7 @@ public struct TranscriptMeta: Identifiable, Hashable {
     public var commitments: [String] = []
     /// Recorded in Conference mode (single source, unlabeled) rather than a two-party call.
     public var isConference: Bool = false
-    /// The privacy/workspace partition this call belongs to. "" = ungrouped.
+    /// The workspace this call belongs to. "" = ungrouped.
     public var group: String = ""
 
     public var id: URL { url }

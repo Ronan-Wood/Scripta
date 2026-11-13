@@ -63,10 +63,11 @@ public final class EntityRegistry {
     /// workspaces (a person known across two clients' calls) — `resolve`/`confirm` match by name
     /// globally, with no group filter, by design. But a lookup surface that's about to DISPLAY
     /// the entity's data (aliases, gloss) is a different question than "does this id exist" —
-    /// showing a surface form only ever spoken in workspace B's private calls from inside
-    /// workspace A's UI breaks the privacy wall the moment there's a UI surface that renders
-    /// aliases at all (M19 is the first). Mirrors the group check `confirmedAliases`/
-    /// `resolveConfirmed` already enforce elsewhere in this class.
+    /// a surface form only ever spoken in workspace B's calls does not belong on workspace A's
+    /// screens, which show one workspace at a time (M19 is the first surface to render aliases).
+    /// This scopes what the app shows; it is not an access control: an MCP client on the engine's
+    /// socket reads every workspace, and the engine gates only its writes, per client. Mirrors the group check `confirmedAliases`/
+    /// `resolveConfirmed` already apply elsewhere in this class.
     public func entity(id: String, group: String) -> Entity? {
         lock.lock(); defer { lock.unlock() }
         return entities.first { $0.id == id && ($0.groups.contains(group) || $0.groups.contains("")) }

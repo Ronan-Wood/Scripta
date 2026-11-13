@@ -283,7 +283,8 @@ public struct AskConversation: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     public var title: String
     public var created: Date
-    /// The workspace this happened in — the privacy wall applies to chat history too.
+    /// The workspace this happened in — Ask's history is filed per workspace, like everything else
+    /// the app shows.
     ///
     /// THE WORKSPACE, NOT THE SCOPE, and the choice is deliberate now that Ask reads a bound scope.
     /// Two workspaces can be bound to one scope, and their threads must still not see each other;

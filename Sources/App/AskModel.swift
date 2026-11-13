@@ -250,8 +250,8 @@ final class AskModel: ObservableObject {
         let workspaceChanged = bound.workspace != workspace || loadedWorkspace == nil
         guard workspaceChanged || bound.readsScope != scope else { return }
         // FLUSHED UNDER ITS OWN NAME, before `workspace` advances. The outgoing thread belongs to
-        // the workspace it was typed in, and writing it after the switch files a private
-        // conversation under the destination — the privacy wall applies to chat history too.
+        // the workspace it was typed in, and writing it after the switch files the conversation
+        // under the destination's history instead.
         if workspaceChanged { syncCurrent(into: loadedWorkspace ?? workspace) }
         workspace = bound.workspace
         scope = bound.readsScope
