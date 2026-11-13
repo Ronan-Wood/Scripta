@@ -215,12 +215,12 @@ final class VaultBrowseModel: ObservableObject {
     ///
     /// IT BUMPS THE GENERATION, and that is the point rather than bookkeeping. Without it a switch
     /// made while a request was in flight left the reply valid: the guard in `load()` still matched,
-    /// and the PREVIOUS workspace's notes landed on the new workspace's screen. That is the privacy
-    /// partition leaking, not a stale view, and it is what `AskModel.adoptBinding` spends
+    /// and the PREVIOUS workspace's notes landed on the new workspace's screen. That is the wrong
+    /// workspace's content, not merely a stale view, and it is what `AskModel.adoptBinding` spends
     /// its `epoch` on.
     func adoptWorkspace() {
-        // A CHOSEN SCOPE SURVIVES A WORKSPACE SWITCH — it was chosen, not inherited. The privacy
-        // partition is unaffected: the reader picked this corpus by name from the roster, which is
+        // A CHOSEN SCOPE SURVIVES A WORKSPACE SWITCH — it was chosen, not inherited. The workspace
+        // filter is unaffected: the reader picked this corpus by name from the roster, which is
         // what Ask's chips have always allowed.
         guard scopeOverride == nil else { return }
         let scope = WorkspaceBindings.active.readsScope

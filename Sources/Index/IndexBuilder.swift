@@ -32,8 +32,8 @@ enum IndexBuilder {
         if let derived, !meta.group.isEmpty, derived != ScriptaVault.slug(meta.group) {
             // Reported, not reconciled: the file is not rewritten here. Location wins because it is
             // the thing the operator can see, and a stale `group:` is exactly what §7 retires — but
-            // a transcript whose two answers disagree is worth knowing about, since one of them was
-            // the privacy wall until this commit.
+            // a transcript whose two answers disagree is worth knowing about, since one of them
+            // used to decide which workspace the call was filed under.
             log.error("\(url.lastPathComponent, privacy: .public) declares group '\(meta.group, privacy: .public)' but sits in the '\(derived, privacy: .public)' vault — indexing it under the vault")
         }
         // RESOLVED BACK TO THE DISPLAY NAME. The vault directory is `slug(workspace)`, and every

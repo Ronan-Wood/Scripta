@@ -5,6 +5,21 @@ What changed in each release of Scripta, newest first. The engine has
 
 ## Unreleased
 
+### Fixed
+
+- **Settings → Clients says what is in the way.** When another engine holds the socket, or the
+  engine is still starting, the pane says so, with what to do, instead of saying no engine is
+  running. It also has a button to start the engine.
+- **The Claude skill names the engine's tools.** It listed tools from the retired helper, and now
+  describes `search`, `documents`, `expand`, `status`, `list_scopes`, `ingest` and `amend`, and
+  the `include_sources: true` that searches need to see calls.
+- **Creating a workspace no longer writes its folder on the main thread,** so a slow or synced
+  folder cannot stall the window.
+
+## 0.3.6
+
+Built from engine v0.2.2.
+
 ### Changed
 
 - **Workspaces no longer limit what Claude reads.** Claude and other MCP clients read every

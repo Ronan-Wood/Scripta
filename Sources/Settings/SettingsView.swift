@@ -641,7 +641,7 @@ struct SettingsView: View {
         } header: {
             Text("Vault Mirror")
         } footer: {
-            Text("Writes entity stub notes (people, companies) into Entities/ inside your folder, wikilinked to their calls. Off by default: the vault can't enforce workspace privacy, so mirroring weakens the wall.")
+            Text("Writes entity stub notes (people, companies) into Entities/ inside your folder, wikilinked to their calls. Off by default, because it writes a note for every person and company into your folder.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

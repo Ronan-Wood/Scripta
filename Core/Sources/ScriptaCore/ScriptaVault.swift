@@ -316,8 +316,8 @@ public struct ScriptaVault: Equatable {
     /// That disagreement is not hypothetical. The export gate found `app: call-transcriber-doc`
     /// sitting three lines under `class: conversation` in a note the exporter had written: the key
     /// that disproved the classification, carried through unread by the code that made it. A
-    /// `group: "Personal"` on a transcript inside the `acme` vault is the same shape, and the
-    /// privacy wall is what it would be wrong about.
+    /// `group: "Personal"` on a transcript inside the `acme` vault is the same shape, and which
+    /// workspace the call is shown and composed in is what it would be wrong about.
     ///
     /// Matched structurally rather than by prefix: the path must be exactly
     /// `<root>/<scope>/_sources/transcripts/<file>` and `<scope>` must carry a manifest. A prefix
@@ -963,6 +963,68 @@ public struct ScriptaVault: Equatable {
         // `workspace`. Passing the slug here set both from one value and put a slug
         // where the display name belonged.
         return try ScriptaVault(root: directory, scope: scope, inherits: inherits)
+    }
+
+    /// "New workspace…": resolve the vault, write its manifest, and leave nothing behind when the
+    /// write fails. Blocking file I/O, so the app calls it off the main thread.
+    ///
+    /// THE BUTTON'S POLICY, NOT CAPTURE'S. Capture (`RecordingSession`) and `TranscriptGroupRepair`
+    /// call `vault(forScope:under:inherits:)` and `write()` themselves, because a failure there
+    /// falls back or is reported rather than cleaned up.
+    ///
+    /// A HALF-WRITTEN VAULT BURNS THE NAME PERMANENTLY. `write()` creates the transcript directory
+    /// first and the manifest second, so a failure between them (a full volume, a killed process)
+    /// leaves a directory that is not an app vault, and every later attempt at that name is refused
+    /// as a collision with a directory the app did not create. So a failed WRITE removes the vault
+    /// directory, and only when this call made it. A refusal from `vault(forScope:)` removes
+    /// nothing: it has not touched the disk.
+    ///
+    /// OWNERSHIP IS THE OPERATING SYSTEM'S ANSWER, not an earlier look. `mkdir` either makes the
+    /// directory, and then this call owns it, or fails with EEXIST because something is already
+    /// there, a dangling symlink included, since `mkdir` does not follow a final link.
+    ///
+    /// WHAT WAS NOT VETTED IS NOT WRITTEN INTO. On EEXIST the write goes ahead only for a real
+    /// directory that was already there when `vault(forScope:)` checked it, which is this
+    /// workspace's own vault being re-resolved. Anything else (a symlink, dangling or not, or a
+    /// directory that appeared after the checks) is refused as a collision, so it is neither
+    /// adopted nor written through. The `lstat` that records what was there comes first, so a
+    /// link is seen as a link.
+    @discardableResult
+    public static func create(forScope scope: String, under root: URL,
+                              inherits: [URL]) throws -> ScriptaVault {
+        try create(forScope: scope, under: root, inherits: inherits, beforeCreate: {},
+                   write: { try $0.write() })
+    }
+
+    /// `create`, with what runs between the checks and the `mkdir`, and the write itself, supplied
+    /// by a test.
+    @discardableResult
+    static func create(forScope scope: String, under root: URL, inherits: [URL],
+                       beforeCreate: () throws -> Void,
+                       write: (ScriptaVault) throws -> Void) throws -> ScriptaVault {
+        let manager = FileManager.default
+        let directory = root.appendingPathComponent(slug(scope), isDirectory: true)
+        // `attributesOfItem` does not follow a final symlink: this is what is AT the path.
+        let vetted = (try? manager.attributesOfItem(atPath: directory.path))?[.type]
+            as? FileAttributeType == .typeDirectory
+        let vault = try Self.vault(forScope: scope, under: root, inherits: inherits)
+        try beforeCreate()
+        try manager.createDirectory(at: root, withIntermediateDirectories: true)
+        let made: Bool
+        do {
+            try manager.createDirectory(at: vault.root, withIntermediateDirectories: false)
+            made = true
+        } catch CocoaError.fileWriteFileExists {
+            guard vetted else { throw VaultError.nameCollidesWithExistingDirectory(scope, vault.root) }
+            made = false
+        }
+        do {
+            try write(vault)
+            return vault
+        } catch {
+            if made { try? manager.removeItem(at: vault.root) }
+            throw error
+        }
     }
 
     /// Which already-composed scope would collide with a workspace of this name, if any.

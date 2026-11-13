@@ -191,32 +191,48 @@ extension SubstrateEngine.Lifecycle {
 
 extension SubstrateEngine.Occupant {
 
-    /// Every arm names the socket AND the remedy.
-    var sentence: String {
+    /// Ask's card: what holds the socket, what to do about it, and the button below.
+    var sentence: String { "\(finding) \(remedy) and press below." }
+
+    /// What holds the socket, naming the socket. Whole sentences, so a surface without Ask's button
+    /// can follow it with a remedy of its own.
+    var finding: String {
         let socket = SubstrateEngine.socketPath
         switch self {
         case .anEngine:
             return "A substrate engine is already answering on \(socket), and Scripta did not "
                 + "start it, but it would not list its scopes, so Scripta cannot tell whether it "
-                + "is one it can use. `lsof -U | grep substrate.sock` names it; quit it and press "
-                + "below."
+                + "is one it can use. `lsof -U | grep substrate.sock` names it."
         case .aStranger(let detail):
             return "Something is listening on \(socket) and it is not a substrate engine, so "
                 + "Scripta cannot bind the socket its own engine needs: \(detail). "
-                + "`lsof -U | grep substrate.sock` names it. Quit it and press below."
+                + "`lsof -U | grep substrate.sock` names it."
         case .untrusted(let why):
             return "Scripta will not use \(socket), because it is not provably this user's: "
-                + "\(why). Nothing was sent to it. Remove whatever is holding that path, or "
-                + "tighten its folder to 700, and press below."
+                + "\(why). Nothing was sent to it."
         case .unattachable(let why):
             return "A substrate engine is already answering on \(socket), and it is not one "
-                + "Scripta can use: \(why). Quit it (`lsof -U | grep substrate.sock` names it) so "
-                + "Scripta can start its own, and press below."
+                + "Scripta can use: \(why). `lsof -U | grep substrate.sock` names it."
         case .otherRelease(let why):
             return "A substrate engine from another release is answering on \(socket), and its "
-                + "replies are in a format this version of Scripta does not read: \(why). Update "
-                + "whichever of the two is older, or quit that engine so Scripta can start its "
-                + "own, and press below."
+                + "replies are in a format this version of Scripta does not read: \(why)."
+        }
+    }
+
+    /// The remedy, as an imperative clause with no closing full stop and no button named.
+    ///
+    /// ANOTHER RELEASE IS UPDATED FIRST: it may be an engine the operator runs on purpose, so
+    /// bringing whichever of the two is older up to date leads, and quitting it is the alternative.
+    var remedy: String {
+        switch self {
+        case .anEngine, .aStranger:
+            return "Quit it"
+        case .untrusted:
+            return "Remove whatever is holding that path, or tighten its folder to 700"
+        case .unattachable:
+            return "Quit it so Scripta can start its own"
+        case .otherRelease:
+            return "Update whichever of the two is older, or quit that engine so Scripta can start its own"
         }
     }
 }
@@ -259,9 +275,8 @@ private struct VaultRosterRefusal: View {
 
 // MARK: - The console
 
-/// The conversation list beside the thread. Workspace-scoped like everything else — the privacy
-/// wall applies to chat history too, and a thread from another workspace appearing in this list
-/// would be the wall's first hole.
+/// The conversation list beside the thread. Workspace-scoped like everything else the app shows,
+/// so a thread typed in another workspace does not appear in this one's list.
 private struct VaultConversationList: View {
     @ObservedObject var model: AskModel
 

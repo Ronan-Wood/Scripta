@@ -35,7 +35,7 @@ struct HomeView: View {
     }
 
     /// Names the workspace, because everything below it is scoped to one and the operator can have
-    /// several. The privacy partition is never a hidden default anywhere else in this app.
+    /// several. The workspace filter is never a hidden default anywhere else in this app.
     private var greeting: some View {
         VStack(alignment: .leading, spacing: Space.x1) {
             Text(model.activeGroup.isEmpty ? "Ungrouped" : model.activeGroup)

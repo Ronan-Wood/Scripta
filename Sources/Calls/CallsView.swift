@@ -124,8 +124,8 @@ struct CallsView: View {
                     CarbonIcon(name: "document", size: 28, color: Carbon.iconSecondary)
                     Text(query.isEmpty ? "No calls in \(scopeName)" : "No matches in \(scopeName)")
                         .font(CarbonFont.body(13)).foregroundStyle(Carbon.textSecondary)
-                    // Blind affordance: offer to widen WITHOUT revealing whether other workspaces
-                    // actually contain matches (the privacy wall must not leak via the no-result path).
+                    // Offers to widen to every workspace without first searching them to say
+                    // whether they hold matches. A display choice: the list shows one workspace.
                     if !query.isEmpty && !allGroups && !appModel.availableGroups().isEmpty {
                         Button("Search all workspaces") { allGroups = true; refresh() }
                             .buttonStyle(.borderedProminent).controlSize(.small)
@@ -266,7 +266,7 @@ struct CallsView: View {
             }
         } else {
             rows = TranscriptStore.list().filter { meta in
-                (group.map { meta.group == $0 } ?? true)   // the privacy wall on the browse list (nil = all)
+                (group.map { meta.group == $0 } ?? true)   // the workspace filter on the browse list (nil = all)
                 && (participant.map { p in meta.participants.contains { $0.range(of: p, options: .caseInsensitive) != nil } } ?? true)
                 && (tag.map { t in meta.tags.contains { $0.range(of: t, options: .caseInsensitive) != nil } } ?? true)
             }.map { CallRow(id: $0.url, title: $0.displayTitle, subtitle: $0.subtitle, snippet: nil) }

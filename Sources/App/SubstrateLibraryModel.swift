@@ -197,8 +197,8 @@ final class SubstrateLibraryModel: ObservableObject {
     /// `transcripts/acme`, over ACME's exported corpus, and the `--clean` compose then dropped
     /// ACME's index and registered the new name against that path.
     ///
-    /// That is the wall Doc 3 §4 calls the privacy boundary between workspaces, reopened on this
-    /// side after the engine closed it on its own — and it is the same shape as the
+    /// That is the separation between workspaces' corpora that Doc 3 §4 describes, broken on this
+    /// side after the engine had fixed its own half — and it is the same shape as the
     /// bug there: A NAME AND A LOCATION THAT MUST AGREE, HELD AS TWO INDEPENDENT VALUES. Deriving
     /// one from the other is what makes them unable to come apart, rather than a rule someone has
     /// to remember at each of the two call sites.
@@ -870,9 +870,10 @@ final class SubstrateLibraryModel: ObservableObject {
         // THE VAULT IS CREATED IF IT IS NOT THERE, which is the whole first-run case. A workspace
         // that has never recorded a call has no vault on disk, and that is exactly the operator this
         // path exists for — refusing them here would rebuild the dead end it was written to remove.
-        // `createWorkspace`'s hazard applies unchanged: `write()` makes the transcripts directory
-        // first and the manifest second, so a failure between them burns the name for every later
-        // attempt. Cleaned up only when this call is what created the directory.
+        // The hazard `ScriptaVault.create` documents applies unchanged: `write()` makes the
+        // transcripts directory first and the manifest second, so a failure between them burns the
+        // name for every later attempt. Cleaned up only when this call is what created the
+        // directory. `create` decides that ownership from `mkdir` rather than this earlier look.
         let root = AppSettings.outputFolder
         let directory = root.appendingPathComponent(ScriptaVault.slug(workspace), isDirectory: true)
         let preexisting = FileManager.default.fileExists(atPath: directory.path)

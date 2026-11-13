@@ -105,6 +105,9 @@ final class AppModel: ObservableObject {
     /// Non-nil while recording in a non-default mode (e.g. "Conference · System audio"), for the UI.
     @Published var recordingModeName: String?
 
+    /// True while `createWorkspace` is writing a vault, so the buttons that start one wait for it.
+    @Published private(set) var creatingWorkspace = false
+
     /// The active workspace: what the app shows and what Ask reads. Persisted. MCP clients are not
     /// bound to it; they read every workspace vault.
     @Published var activeGroup: String = AppSettings.activeGroup {
@@ -121,39 +124,11 @@ final class AppModel: ObservableObject {
             SubstrateLibraryModel.shared.adoptWorkspace()
             // The browser is the third engine surface bound to the workspace, and the one where a
             // missed re-read is worst: Ask showing the old scope's answer is a wrong answer, but a
-            // LIST still showing the old workspace's notes is the privacy partition leaking.
+            // LIST still showing the old workspace's notes puts them on the wrong workspace's screen.
             VaultBrowseModel.shared.adoptWorkspace()
         }
     }
 
-    /// Create a workspace's vault and switch into it. Returns `nil`, or a sentence to show.
-    ///
-    /// UNTIL 2026-08-14 NOTHING BUT CAPTURE WROTE A VAULT, and the Library said so out loud: "There
-    /// is no vault for X yet. One is written the first time a call is recorded into this workspace,
-    /// so record a call." That refusal is honest and its reasoning — one author for the layout — is
-    /// right, but it made the Library unreachable on a fresh install until a call had landed, which
-    /// is a dead end for anyone who came to index documents. Doc 5 decided the trigger, not the
-    /// author, was the part that had to change.
-    ///
-    /// SO THE AUTHOR IS STILL `ScriptaVault`. It calls the same `vault(forScope:under:inherits:)` +
-    /// `write()` pair with the same `inherits` lookup `RecordingSession` uses, so every guard that
-    /// construction applies — the slug guard, the reserved-name guard, the adoption guard, the
-    /// ownership guard — applies here unchanged.
-    ///
-    /// IT IS NOT IDENTICAL TO CAPTURE, and saying so would be a claim nothing enforces: capture maps
-    /// `""` to `ScriptaVault.defaultScope` and falls back to the flat folder when construction
-    /// throws, because the transcript is the one artefact that cannot be recreated. This refuses
-    /// `""` and surfaces the error, because a person is standing at a button. Those are different
-    /// policies over one construction, which is the part that must not fork.
-    ///
-    /// A NEW WORKSPACE HAS NO BINDING, so `contextVaults` is normally empty and the manifest starts
-    /// with no inheritance. That is not a divergence to correct: capture calls `write()` on every
-    /// recording, so the first call into this workspace refreshes the manifest with whatever binding
-    /// exists by then.
-    ///
-    /// Errors are RETURNED rather than logged, because the caller is a button. `RecordingSession`
-    /// can afford to fall back and log — the transcript is the artefact that cannot be recreated —
-    /// but a person who just typed a name and pressed Create has to be told it did not happen.
     /// A composed scope that ALREADY answers to the name this workspace would take, from somewhere
     /// other than the folder the workspace would be created in.
     ///
@@ -181,12 +156,54 @@ final class AppModel: ObservableObject {
             outputFolder: AppSettings.outputFolder)
     }
 
+    /// Create a workspace's vault and switch into it. Returns `nil`, or a sentence to show.
+    ///
+    /// UNTIL 2026-08-14 NOTHING BUT CAPTURE WROTE A VAULT, and the Library said so out loud: "There
+    /// is no vault for X yet. One is written the first time a call is recorded into this workspace,
+    /// so record a call." That refusal is honest and its reasoning — one author for the layout — is
+    /// right, but it made the Library unreachable on a fresh install until a call had landed, which
+    /// is a dead end for anyone who came to index documents. Doc 5 decided the trigger, not the
+    /// author, was the part that had to change.
+    ///
+    /// SO THE AUTHOR IS STILL `ScriptaVault`. `ScriptaVault.create` builds the vault with the same
+    /// `vault(forScope:under:inherits:)` and `write()` that `RecordingSession` uses, from the same
+    /// `inherits` lookup, so every guard that construction applies — the slug guard, the
+    /// reserved-name guard, the adoption guard, the ownership guard — applies here unchanged.
+    ///
+    /// IT IS NOT IDENTICAL TO CAPTURE, and saying so would be a claim nothing enforces: capture maps
+    /// `""` to `ScriptaVault.defaultScope` and falls back to the flat folder when construction
+    /// throws, because the transcript is the one artefact that cannot be recreated. This refuses
+    /// `""` and surfaces the error, because a person is standing at a button. Those are different
+    /// policies over one construction, which is the part that must not fork.
+    ///
+    /// A NEW WORKSPACE HAS NO BINDING, so `contextVaults` is normally empty and the manifest starts
+    /// with no inheritance. That is not a divergence to correct: capture calls `write()` on every
+    /// recording, so the first call into this workspace refreshes the manifest with whatever binding
+    /// exists by then.
+    ///
+    /// Errors are RETURNED rather than logged, because the caller is a button. `RecordingSession`
+    /// can afford to fall back and log — the transcript is the artefact that cannot be recreated —
+    /// but a person who just typed a name and pressed Create has to be told it did not happen.
+    ///
+    /// THE VAULT IS WRITTEN OFF THE MAIN THREAD, as the launch-time manifest pass is: it is
+    /// directory creation and a manifest write on a folder that may be synced or on an external
+    /// drive. Everything after it waits for it, so the binding is stored, the switcher's cache
+    /// dropped and the workspace switched to only once the vault is on disk, and a refusal reaches
+    /// the caller instead.
+    ///
+    /// ONE AT A TIME. While a creation is in flight `creatingWorkspace` is set, the Create and
+    /// Connect buttons are disabled, and a second call is refused rather than racing the first for
+    /// the same directory.
+    ///
     /// - Parameter inheriting: a vault the new workspace should read, on top of whatever its binding
     ///   already names. This is what `vaultAlreadyNamed` is resolved into once the operator has said
     ///   yes — connecting the two rather than letting them compete for the name.
-    func createWorkspace(named raw: String, inheriting adopted: URL? = nil) -> String? {
+    func createWorkspace(named raw: String, inheriting adopted: URL? = nil) async -> String? {
+        guard !creatingWorkspace else { return "Another workspace is still being created." }
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return "A workspace needs a name." }
+        creatingWorkspace = true
+        defer { creatingWorkspace = false }
         // CASE-DIVERGENT NAMES ARE REFUSED BEFORE THEY EXIST, because the guards downstream only
         // fire once a vault is on disk. Creating "deals" beside a calendar-mapped "Deals" that has
         // no vault yet writes `<root>/deals` owning the name "deals" — and every later recording
@@ -209,21 +226,15 @@ final class AppModel: ObservableObject {
             inherits.append(adopted)
         }
         let root = AppSettings.outputFolder
-        // Whether the directory pre-dated this call decides whether we may clean it up below.
-        let directory = root.appendingPathComponent(ScriptaVault.slug(name), isDirectory: true)
-        let preexisting = FileManager.default.fileExists(atPath: directory.path)
-        do {
-            let vault = try ScriptaVault.vault(forScope: name, under: root, inherits: inherits)
-            try vault.write()
-        } catch {
-            // A HALF-WRITTEN VAULT BURNS THE NAME PERMANENTLY. `write()` creates the transcript
-            // directory first and the manifest second, so a failure between them (a full volume, a
-            // killed process) leaves a directory that is not an app vault — and every later attempt
-            // at that name, from this button AND from capture, is refused as a collision with a
-            // directory the app did not create. Removed only when this call is what created it.
-            if !preexisting { try? FileManager.default.removeItem(at: directory) }
-            return error.localizedDescription
-        }
+        let refusal = await Task.detached(priority: .userInitiated) { () -> String? in
+            do {
+                try ScriptaVault.create(forScope: name, under: root, inherits: inherits)
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        }.value
+        if let refusal { return refusal }
         // RECORDED IN THE BINDING TOO, not only in the manifest. `contextVaults` is what every later
         // manifest write is built from, and a vault present on disk but absent from the binding is
         // one the next regeneration would drop — the manifest and the app disagreeing about what

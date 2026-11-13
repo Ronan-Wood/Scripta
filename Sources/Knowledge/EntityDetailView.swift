@@ -2,7 +2,7 @@ import SwiftUI
 import ScriptaCore
 
 /// One person/topic's own page (M19): canonical name + aliases + gloss (`EntityRegistry` is
-/// already the trust layer — merge verdicts, privacy walls, provenance), a mention timeline
+/// already the trust layer — merge verdicts, workspace scoping, provenance), a mention timeline
 /// across calls, and who/what else co-occurs with them. Read-only, no new mutation path —
 /// brain ≠ editor holds here same as everywhere else; this only displays identity data other
 /// features (the registry, extraction, the correction loop) already own and write.
@@ -288,11 +288,11 @@ struct EntityDetailView: View {
     private func load() async {
         let id = entityID, g = group
         let (foundEntity, foundMentions, foundCommitments, foundCoOccurring) = await Task.detached(priority: .userInitiated) {
-            // Group-scoped (crosscheck, security lens): one identity can legitimately span
-            // workspaces by design, but this is the first UI surface that DISPLAYS an entity's
-            // aliases — an unscoped lookup would show surface forms only ever spoken in a
-            // DIFFERENT workspace's private calls. Mentions/co-occurrence below are already
-            // correctly SQL-scoped; this closes the one unscoped read.
+            // Group-scoped, as a display choice: one identity can legitimately span workspaces by
+            // design, but this is the first UI surface that DISPLAYS an entity's aliases, and an
+            // unscoped lookup would show surface forms only ever spoken in a DIFFERENT workspace's
+            // calls. Mentions/co-occurrence below are scoped to the workspace in SQL, so this
+            // lookup now matches them.
             let entity = EntityRegistry.shared.entity(id: id, group: g)
             let mentions = IndexStore.shared?.callsMentioning(entityID: id, group: g) ?? []
             // SQL-level owner filter (crosscheck): filtering client-side after commitments(group:)'s

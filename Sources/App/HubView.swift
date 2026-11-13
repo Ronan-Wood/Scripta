@@ -124,10 +124,11 @@ struct HubView: View {
                 // is set while this one dismisses is routinely dropped.
                 if let existing = model.vaultAlreadyNamed(newWorkspaceName) {
                     Task { @MainActor in adoptable = existing }
-                } else if let refusal = model.createWorkspace(named: newWorkspaceName) {
-                    Task { @MainActor in workspaceRefusal = refusal }
+                } else {
+                    create(newWorkspaceName)
                 }
             }
+            .disabled(model.creatingWorkspace)
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Creates the workspace's vault and switches you into it. Calls you record while "
@@ -143,19 +144,17 @@ struct HubView: View {
             Button("Connect to it") {
                 let vault = URL(fileURLWithPath: row.vault, isDirectory: true)
                 adoptable = nil
-                if let refusal = model.createWorkspace(named: newWorkspaceName, inheriting: vault) {
-                    Task { @MainActor in workspaceRefusal = refusal }
-                }
+                create(newWorkspaceName, inheriting: vault)
             }
+            .disabled(model.creatingWorkspace)
             // SEPARATE, AND NOT THE DEFAULT. Creating anyway is a real thing to want — two unrelated
             // things can share a word — but it is the choice that produced the state this alert
             // exists to prevent, so it is not the button the return key presses.
             Button("Create separately") {
                 adoptable = nil
-                if let refusal = model.createWorkspace(named: newWorkspaceName) {
-                    Task { @MainActor in workspaceRefusal = refusal }
-                }
+                create(newWorkspaceName)
             }
+            .disabled(model.creatingWorkspace)
             Button("Cancel", role: .cancel) { adoptable = nil }
         } message: { row in
             Text("The scope \"\(row.scope)\" already answers from \(abbreviated(row.vault)).\n\n"
@@ -169,6 +168,16 @@ struct HubView: View {
             Button("OK", role: .cancel) { workspaceRefusal = nil }
         } message: {
             Text(workspaceRefusal ?? "")
+        }
+    }
+
+    /// Creates the workspace and shows a refusal. The name is read now, before the await, and the
+    /// refusal arrives a turn later at the earliest, after the alert that asked has dismissed.
+    private func create(_ name: String, inheriting vault: URL? = nil) {
+        Task { @MainActor in
+            if let refusal = await model.createWorkspace(named: name, inheriting: vault) {
+                workspaceRefusal = refusal
+            }
         }
     }
 

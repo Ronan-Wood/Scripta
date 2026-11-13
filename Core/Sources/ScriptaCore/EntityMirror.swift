@@ -4,7 +4,7 @@ import ScriptaShared
 /// Mirrors the entity graph into the Obsidian vault as group-foldered stub notes, so the vault's
 /// backlinks/graph reflect it (I2/Fable 7). The app NEVER rewrites transcript bodies — stubs live
 /// under `Entities/<Group>/` and point AT transcripts via `[[wikilinks]]`. Opt-in and default-off
-/// (enabling it weakens the privacy boundary, since the vault enforces nothing).
+/// (enabling it writes a note per person and company into the operator's folder).
 ///
 /// Safety: a distinct marker (`app: call-transcriber-entity`, NOT the transcript marker) so stubs
 /// are never indexed as calls; a delimited **managed region** so anything a user adds outside it is

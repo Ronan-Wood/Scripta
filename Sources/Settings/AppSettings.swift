@@ -281,7 +281,7 @@ enum AppSettings {
     }
 
     /// Maps a calendar identifier to a group. Calls recorded from that calendar are captured into
-    /// that group; a calendar becomes a first-class privacy/workspace partition.
+    /// that group; a calendar becomes a first-class workspace partition.
     static var calendarGroups: [String: String] {
         get { (defaults.dictionary(forKey: Keys.calendarGroups) as? [String: String]) ?? [:] }
         set { defaults.set(newValue, forKey: Keys.calendarGroups) }
